@@ -1,0 +1,31 @@
+- Login / Register
+  - google 
+  - apple
+- Settings
+  - Change Password
+  - local mode
+- Chat Conversation
+  - Save History
+  - Delete History
+  - Incognito Mode
+  - Search Chat
+  - Encryption (password protected chats)
+- Rate limiting (count token)
+- Vision $
+  - Camera Button
+- Image Gen $
+  - View Image 
+  - Save Image
+  - Should have an editor view on the right side like for graph/code?
+- Voice Mode
+- Audio Gen?? $
+- Document Upload/Parse $
+- Code Mode
+- Search Web
+- Graph Mode 
+- Map Mode
+- Apps
+  - Therapy
+  - Language learning
+- Code Assist 
+- API Access
