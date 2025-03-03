@@ -39,6 +39,26 @@ type ChatRequest struct {
 }
 
 type ChatPayload struct {
-	ConversationID primitive.ObjectID    `json:"conversation_id"`
-	Messages []utils.Message `json:"messages"`
+	ConversationID  primitive.ObjectID    `json:"conversation_id"`
+	ModelSelected		utils.ModelSelected `json:"model_selected"`
+	Messages 				[]utils.Message `json:"messages"`
+}
+
+type AIChunk struct {
+	Model string `json:"model"`
+	Usage struct {
+		TotalTokens int `json:"total_tokens"`
+	} `json:"usage,omitempty"`
+	Choices []struct {
+		Text  string `json:"text"`
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
+}
+
+// Command represents a parsed command with its type and arguments
+type Command struct {
+	Type string
+	Args string
 }

@@ -1,5 +1,10 @@
-// MessageContentURL to match the backend structure
+// Step 1: Add Hive annotations to your existing models (minimal changes)
+import 'package:hive/hive.dart';
+part 'types.g.dart';
+
+@HiveType(typeId: 1)
 class MessageContentURL {
+  @HiveField(0)
   final String url;
 
   MessageContentURL({required this.url});
@@ -11,10 +16,15 @@ class MessageContentURL {
   }
 }
 
-// MessageContent to represent different content types
+@HiveType(typeId: 2)
 class MessageContent {
+  @HiveField(0)
   final String type;
+
+  @HiveField(1)
   String? text;
+
+  @HiveField(2)
   MessageContentURL? imageUrl;
 
   MessageContent({required this.type, this.text, this.imageUrl});
@@ -44,12 +54,10 @@ class MessageContent {
     );
   }
 
-  // Helper constructor for text content
   factory MessageContent.text(String text) {
     return MessageContent(type: 'text', text: text);
   }
 
-  // Helper constructor for image content
   factory MessageContent.image(String imageUrl) {
     return MessageContent(
       type: 'image_url',
@@ -58,10 +66,15 @@ class MessageContent {
   }
 }
 
-// Refactored Message class
+@HiveType(typeId: 3)
 class Message {
+  @HiveField(0)
   final String role;
+
+  @HiveField(1)
   final List<MessageContent> content;
+
+  @HiveField(2)
   DateTime timestamp;
 
   Message({required this.role, required this.content, DateTime? timestamp})
@@ -69,12 +82,10 @@ class Message {
 
   bool get isBot => role == 'assistant';
 
-  // Create a message with text content only
   factory Message.text({required String text, required String role}) {
     return Message(role: role, content: [MessageContent.text(text)]);
   }
 
-  // Create a message with both image and text
   factory Message.withImage({
     required String text,
     required String role,
@@ -86,20 +97,17 @@ class Message {
     );
   }
 
-  // Convert to JSON for local storage
   Map<String, dynamic> toJson() => {
     'role': role,
-    'timestamp': timestamp.toIso8601String(), // Convert DateTime to string
+    'timestamp': timestamp.toIso8601String(),
     'content': content.map((c) => c.toJson()).toList(),
   };
 
-  // Convert to API format (if needed for backward compatibility)
   Map<String, dynamic> toAPI() => {
     'role': role,
     'content': content.map((c) => c.toJson()).toList(),
   };
 
-  // Create from JSON (local storage format)
   factory Message.fromJson(Map<String, dynamic> json) {
     return Message(
       role: json['role'],
@@ -112,7 +120,6 @@ class Message {
     );
   }
 
-  // Helper method to get text content
   String get text {
     final textContent = content.firstWhere(
       (element) => element.type == 'text',
@@ -121,7 +128,6 @@ class Message {
     return textContent.text ?? '';
   }
 
-  // Helper method to get image URL if exists
   String get imageUrl {
     try {
       final imageContent = content.firstWhere(
@@ -134,45 +140,55 @@ class Message {
   }
 }
 
-// Refactored Conversation class
-class Conversation {
+@HiveType(typeId: 4)
+class Conversation extends HiveObject {
+  @HiveField(0)
   final String id;
-  final String userId;
-  final String title;
+
+  @HiveField(2)
+  String title;
+
+  @HiveField(3)
   final DateTime createdAt;
-  final DateTime lastMessageAt;
-  final List<Message> messages;
+
+  @HiveField(4)
+  DateTime lastMessageAt;
+
+  @HiveField(5)
+  List<Message> messages;
+
+  @HiveField(6)
+  ModelSelected modelSelected;
 
   Conversation({
     required this.id,
-    required this.userId,
     required this.title,
     required this.lastMessageAt,
+    required this.modelSelected,
     DateTime? createdAt,
     required this.messages,
   }) : createdAt = createdAt ?? DateTime.now();
 
   Map<String, dynamic> toJson() => {
     'id': id,
-    'user_id': userId,
     'title': title,
     'created_at': createdAt.toIso8601String(),
     'last_message_at': lastMessageAt.toIso8601String(),
     'messages': messages.map((m) => m.toJson()).toList(),
+    'model_selected': modelSelected.toJson(),
   };
 
   Map<String, dynamic> toAPI() => {
     'id': id,
-    'user_id': userId,
     'title': title,
     'last_message_at': lastMessageAt.toIso8601String(),
     'messages': messages.map((m) => m.toAPI()).toList(),
+    'model_selected': modelSelected.toJson(),
   };
 
   factory Conversation.fromJson(Map<String, dynamic> json) {
     return Conversation(
       id: json['id'] ?? json['_id'] ?? '',
-      userId: json['user_id'] ?? '',
       title: json['title'] ?? 'Untitled',
       createdAt:
           json['created_at'] != null
@@ -188,11 +204,14 @@ class Conversation {
                   .map((m) => Message.fromJson(m as Map<String, dynamic>))
                   .toList()
               : [],
+      modelSelected:
+          json['model_selected'] != null
+              ? ModelSelected.fromJson(json['model_selected'])
+              : ModelSelected(),
     );
   }
 }
 
-// Custom exception for API errors
 class APIException implements Exception {
   final String message;
   final int? statusCode;
@@ -201,4 +220,137 @@ class APIException implements Exception {
 
   @override
   String toString() => message;
+}
+
+@HiveType(typeId: 5)
+class Attachment {
+  @HiveField(0)
+  final String type;
+
+  @HiveField(1)
+  final String content;
+
+  @HiveField(2)
+  final String? filename;
+
+  @HiveField(3)
+  final String? ext;
+
+  Attachment({
+    required this.type,
+    required this.content,
+    this.filename,
+    this.ext,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'type': type,
+    'content': content,
+    'filename': filename,
+    'ext': ext,
+  };
+
+  factory Attachment.fromJson(Map<String, dynamic> json) {
+    return Attachment(
+      type: json['type'],
+      content: json['content'],
+      filename: json['filename'],
+      ext: json['ext'],
+    );
+  }
+}
+
+@HiveType(typeId: 6)
+class ModelSelected {
+  @HiveField(0)
+  final Model? text;
+  @HiveField(1)
+  final Model? vision;
+  @HiveField(2)
+  final Model? imageGen;
+  @HiveField(3)
+  final Model? audioTranscribe;
+  @HiveField(4)
+  final Model? voiceGen;
+  @HiveField(5)
+  final Model? audioGen;
+  @HiveField(6)
+  final Model? videoGen;
+  @HiveField(7)
+  final Model? videoVision;
+  @HiveField(8)
+  final Model? code;
+
+  const ModelSelected({
+    this.text = const Model(
+      name: 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
+      params: {},
+    ),
+    this.vision = const Model(
+      name: 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
+      params: {},
+    ),
+    this.imageGen = const Model(
+      name: 'black-forest-labs/FLUX.1-schnell',
+      params: {},
+    ),
+    this.audioGen = const Model(
+      name: 'cartesia/sonic',
+      params: {"voice": "sweet lady"},
+    ),
+    this.voiceGen = const Model(name: '', params: {}),
+    this.audioTranscribe = const Model(name: '', params: {}),
+    this.videoGen = const Model(name: '', params: {}),
+    this.videoVision = const Model(name: '', params: {}),
+    this.code = const Model(
+      name: 'codellama/CodeLlama-34b-Instruct-hf',
+      params: {},
+    ),
+  });
+
+  Map<String, dynamic> toJson() => {
+    'text': text!.toJson(),
+    'vision': vision!.toJson(),
+    'image_gen': imageGen!.toJson(),
+    'audio_gen': audioGen!.toJson(),
+    'voice_gen': voiceGen!.toJson(),
+    'audio_transcribe': audioTranscribe!.toJson(),
+    'video_gen': videoGen!.toJson(),
+    'video_vision': videoVision!.toJson(),
+    'code': code!.toJson(),
+  };
+
+  factory ModelSelected.fromJson(Map<String, dynamic> json) {
+    return ModelSelected(
+      text: json['text'] != null ? Model.fromJson(json['text']) : null,
+      vision: json['vision'] != null ? Model.fromJson(json['vision']) : null,
+      imageGen:
+          json['image_gen'] != null ? Model.fromJson(json['image_gen']) : null,
+      audioGen:
+          json['audio_gen'] != null ? Model.fromJson(json['audio_gen']) : null,
+      voiceGen:
+          json['voice_gen'] != null ? Model.fromJson(json['voice_gen']) : null,
+      audioTranscribe:
+          json['audio_transcribe'] != null
+              ? Model.fromJson(json['audio_transcribe'])
+              : null,
+    );
+  }
+}
+
+@HiveType(typeId: 7)
+class Model {
+  @HiveField(0)
+  final String name;
+
+  @HiveField(1)
+  final Map<String, String>? params;
+
+  const Model({required this.name, required this.params});
+
+  Map<String, dynamic> toJson() => {'name': name, 'params': params};
+
+  factory Model.fromJson(Map<String, dynamic> json) {
+    return Model(name: json['name'], params: json['params']);
+  }
 }

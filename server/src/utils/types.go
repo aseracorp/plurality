@@ -21,10 +21,37 @@ type Message struct {
 	Content   []MessageContent `json:"content" bson:"content"`
 }
 
+func (m Message) Text() string {
+	for _, c := range m.Content {
+		if c.Type == "text" {
+			return c.Text
+		}
+	}
+	return ""
+}
+
+type Model struct {
+	Name   string            `json:"name"`
+	Params map[string]string `json:"params"`
+}
+
+type ModelSelected struct {
+	Text            Model `json:"text"`
+	Vision          Model `json:"vision"`
+	ImageGen        Model `json:"image_gen"`
+	AudioTranscribe Model `json:"audio_transcribe"`
+	VoiceGen        Model `json:"voice_gen"`
+	AudioGen        Model `json:"audio_gen"`
+	VideoGen        Model `json:"video_gen"`
+	VideoVision     Model `json:"video_vision"`
+	Code            Model `json:"code"`
+}
+
 type Conversation struct {
 	ID 		        primitive.ObjectID `json:"id,omitempty" bson:"_id,omitempty"`
 	UserID        string    `json:"user_id" bson:"user_id"`
 	Messages      []Message `json:"messages" bson:"messages"`
 	Title 	      string    `json:"title" bson:"title"`
 	LastMessageAt time.Time    `json:"last_message_at" bson:"last_message_at"`
+	ModelSelected ModelSelected `json:"model_selected" bson:"model_selected"`
 }

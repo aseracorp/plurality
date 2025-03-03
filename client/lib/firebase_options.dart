@@ -63,7 +63,7 @@ class DefaultFirebaseOptions {
     messagingSenderId: '986982379072',
     projectId: 'plurality-ai',
     storageBucket: 'plurality-ai.firebasestorage.app',
-    iosBundleId: 'com.example.plurality',
+    iosBundleId: 'com.beyond.plurality',
   );
 
   static const FirebaseOptions macos = FirebaseOptions(
@@ -72,7 +72,7 @@ class DefaultFirebaseOptions {
     messagingSenderId: '986982379072',
     projectId: 'plurality-ai',
     storageBucket: 'plurality-ai.firebasestorage.app',
-    iosBundleId: 'com.example.plurality',
+    iosBundleId: 'com.beyond.plurality',
   );
 
   static const FirebaseOptions windows = FirebaseOptions(
@@ -83,5 +83,4 @@ class DefaultFirebaseOptions {
     authDomain: 'plurality-ai.firebaseapp.com',
     storageBucket: 'plurality-ai.firebasestorage.app',
   );
-
 }

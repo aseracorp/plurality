@@ -1,4 +1,4 @@
-package com.example.plurality
+package com.beyond.plurality
 
 import io.flutter.embedding.android.FlutterActivity
 

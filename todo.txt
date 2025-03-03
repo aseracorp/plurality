@@ -1,3 +1,31 @@
+# personal MVP
+ - Save selected models
+ - Claude / ChatGPT
+ - Search chats
+ - token counts in db
+ - improve title speed
+
+# private MVP
+- bin doc parse / long doc integration
+- Apps
+  - Therapy
+  - Language learning
+- Code Assist
+- Retry button
+- file_picker's save file for non-web?
+- Rate limiting (count token)
+  - show message count 
+  - show budget
+- Login / Register
+  - google 
+  - apple
+  - delete on logout
+- Settings
+  - Change Password
+  - local mode
+- History pagination or infinite scroll?
+
+# Roadmap to public
 - Login / Register
   - google 
   - apple
@@ -16,10 +44,10 @@
 - Image Gen $
   - View Image 
   - Save Image
-  - Should have an editor view on the right side like for graph/code?
+- Should have an editor view on the right side like for graph/code?
 - Voice Mode
 - Audio Gen?? $
-- Document Upload/Parse $
+- Document Upload/Parse
 - Code Mode
 - Search Web
 - Graph Mode 
@@ -29,3 +57,8 @@
   - Language learning
 - Code Assist 
 - API Access
+
+
+# Ideas
+ - CRON jobs
+ - BATCH requests (one prompt per line of a doc)

@@ -13,27 +13,14 @@ import (
 	"github.com/azukaar/plurality/src/utils"
 )
 
-func GetConversationById(ctx context.Context, id string) (*utils.Conversation, error) {
-	client := GetClient()
-	collection := client.Database("plurality").Collection("conversations")
-
-	var conversation utils.Conversation
-	err := collection.FindOne(ctx, bson.M{"id": id}).Decode(&conversation)
-	if err != nil {
-		return nil, err
-	}
-
-	return &conversation, nil
-}
-
 // push new message to conversation (or create new conversation if none)
-func PushMessage(ctx context.Context, conversation utils.Conversation, message utils.Message) (utils.Conversation, error) {
+func PushMessage(ctx context.Context, conversation utils.Conversation, message utils.Message) (utils.Conversation, bool, error) {
   client := GetClient()
   collection := client.Database("plurality").Collection("conversations")
 	userID, ok := ctx.Value("userID").(string)
 
   if !ok {
-    return utils.Conversation{}, errors.New("user ID not found in request context")
+    return utils.Conversation{}, false, errors.New("user ID not found in request context")
   }
  
   // Get current time for LastMessageAt update
@@ -50,7 +37,7 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
     // Insert the new conversation
     result, err := collection.InsertOne(ctx, conversation)
     if err != nil {
-      return utils.Conversation{}, err
+      return utils.Conversation{}, false, err
     }
    
     // Extract the ID from the InsertOne result and set it on the returned conversation
@@ -58,7 +45,7 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
       conversation.ID = oid
     }
    
-    return conversation, nil
+    return conversation, true, nil
   } else {
     // For existing conversations, push the new message and update LastMessageAt
     // Options to return the document after update
@@ -78,19 +65,18 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
         "$push": bson.M{"messages": message},
         "$set": bson.M{
           "last_message_at": currentTime,
-          "title": conversation.Title,
         },
       },
       opts,
     ).Decode(&updatedConversation)
    
     if err != nil {
-      return utils.Conversation{}, err
+      return utils.Conversation{}, false, err
     }
 
     utils.Debug("Updated conversation: ", updatedConversation.UserID, updatedConversation.LastMessageAt)
    
-    return updatedConversation, nil
+    return updatedConversation, false, nil
   }
 }
 
@@ -115,7 +101,7 @@ func ListConversations(ctx context.Context) ([]utils.Conversation, error) {
 
   // sort conversations by LastMessageAt
   sort.Slice(conversations, func(i, j int) bool {
-      return conversations[i].LastMessageAt.Before(conversations[j].LastMessageAt)
+      return conversations[i].LastMessageAt.After(conversations[j].LastMessageAt)
   })
 
   // remove messages from conversations
@@ -124,4 +110,86 @@ func ListConversations(ctx context.Context) ([]utils.Conversation, error) {
   }
 
   return conversations, nil
+}
+
+func DeleteConversation(ctx context.Context, id string) error {
+  client := GetClient()
+  collection := client.Database("plurality").Collection("conversations")
+  userID, ok := ctx.Value("userID").(string)
+
+  if !ok {
+    return errors.New("user ID not found in request context")
+  }
+
+  utils.Debug("Deleting conversation ID %s for user ID %s", id, userID)
+
+  i, _ := primitive.ObjectIDFromHex(id)
+
+  res, err := collection.DeleteOne(ctx, bson.M{
+    // convert to ObjectID
+    "_id": i,
+    "user_id": userID,
+  })
+
+  // check res
+  if res.DeletedCount == 0 {
+    return errors.New("conversation not found")
+  }
+
+  return err
+}
+
+func GetConversationById(ctx context.Context, id string) (*utils.Conversation, error) {
+	client := GetClient()
+  userID, ok := ctx.Value("userID").(string)
+
+  if !ok {
+    return nil, errors.New("user ID not found in request context")
+  }
+
+	collection := client.Database("plurality").Collection("conversations")
+
+  i, _ := primitive.ObjectIDFromHex(id)
+
+	var conversation utils.Conversation
+	err := collection.FindOne(ctx, bson.M{
+    "_id": i,
+    "user_id": userID,
+  }).Decode(&conversation)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &conversation, nil
+}
+
+func UpdateConversationMetadata(ctx context.Context, id primitive.ObjectID, title string) error {
+  client := GetClient()
+  collection := client.Database("plurality").Collection("conversations")
+  userID, ok := ctx.Value("userID").(string)
+
+  if !ok {
+    return errors.New("user ID not found in request context")
+  }
+
+
+  res, err := collection.UpdateOne(ctx, bson.M{
+    "_id": id,
+    "user_id": userID,
+  }, bson.M{
+    "$set": bson.M{
+      "title": title,
+    },
+  })
+
+  if err != nil {
+    return err
+  }
+
+  if res.MatchedCount == 0 {
+    return errors.New("conversation not found")
+  }
+
+  return err
 }

@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"fmt"
 
+	"github.com/gorilla/mux"
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/utils"
 )
@@ -36,8 +37,8 @@ func HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
 	if request.Height == 0 || request.Height > 768 {
 		request.Height = 768
 	}
-	if request.Steps == 0 || request.Steps > 4 {
-		request.Steps = 4
+	if request.Steps == 0 || request.Steps > 40 {
+		request.Steps = 40
 	}
 	if request.N == 0 || request.N > 1 {
 		request.N = 1
@@ -45,6 +46,8 @@ func HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
 	if request.ResponseFormat == "" {
 		request.ResponseFormat = "b64_json"
 	}
+  
+  utils.Log("[HandleImageGeneration] Generating image with model %s and steps %d", request.Model, request.Steps)
 
 	response, err := GenerateImage(request)
 	if err != nil {
@@ -75,14 +78,17 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
     utils.SendHTTPError(w, "No messages provided", http.StatusBadRequest)
     return
   }
+
+  utils.Debug("[HandleChat] Received chat payload for model", payload.ModelSelected)
   
   partialConv := utils.Conversation{
     ID: payload.ConversationID,
+    ModelSelected: payload.ModelSelected,
   }
 
 	utils.Log("[HandleChat] Pushing message to conversation ID: ", payload.ConversationID)
   
-  conv, err := db.PushMessage(r.Context(), partialConv, payload.Messages[0])
+  conv, isNew, err := db.PushMessage(r.Context(), partialConv, payload.Messages[0])
   if err != nil {
     utils.Error("[HandleChat] Error pushing message", err)
     utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
@@ -95,7 +101,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
   w.Header().Set("X-Accel-Buffering", "no")
   w.Header().Set("Transfer-Encoding", "chunked")
   
-  response, err := SendChatCompletion(conv)
+  response, err := SendChatCompletion(SelectModel(payload.ModelSelected, payload.Messages[0]), conv)
   if err != nil {
     utils.Error("[HandleChat] Error sending chat completion", err)
     utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
@@ -120,29 +126,54 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
     jsonData := strings.TrimPrefix(line, "data: ")
     
     // Parse the JSON
-    var chunk struct {
-			Model string `json:"model"`
-			Usage struct {
-				TotalTokens int `json:"total_tokens"`
-			} `json:"usage,omitempty"`
-      Choices []struct {
-        Text  string `json:"text"`
-        Delta struct {
-          Content string `json:"content"`
-        } `json:"delta"`
-      } `json:"choices"`
-    }
+    var chunk AIChunk;
 
 		if jsonData == "[DONE]" {
 			if tokenUsage == 0 {
 				tokenUsage = strings.Count(stringProduced, " ")
 			}
+          
+      if isNew {
+        // Try title
+        pp := payload.Messages[0].Content[0].Text + " \n Response from AI: " + stringProduced
+        if len(pp) > 1024 {
+          pp = pp[:1024]
+        }
+        title, err := GenerateTitleForMessage(pp)
+        if err != nil {
+          utils.Error("[HandleChat] Error generating title", err)
+          title = "Unnamed Cookie"
+        }
+        utils.Log("[HandleChat] Generated title for message", title)
+
+        // Send the final response
+        responseObj := map[string]interface{}{
+          "content":       "",
+          "model":         chunk.Model,
+          "totalTokens":   tokenUsage,
+          "conversationID": conv.ID.Hex(),
+          "conversationTitle": title,
+        }
+
+        responseJSON, err := json.Marshal(responseObj)
+        if err == nil {
+          // Write the original line to the response
+          fmt.Fprintf(w, "%s\n\n", ([]byte)("data: " + string(responseJSON)))
+          w.(http.Flusher).Flush()
+        }
+
+        // update title in DB
+        conv.Title = title
+        if err := db.UpdateConversationMetadata(r.Context(), conv.ID, conv.Title); err != nil {
+          utils.Error("[HandleChat] Error updating conversation", err)
+        }
+      }
 
 			fmt.Fprintf(w, "%s\n\n", line)
-			w.(http.Flusher).Flush()
+			w.(http.Flusher).Flush() 
 
 			// Push message to DB
-			_, err := db.PushMessage(r.Context(), conv, utils.Message{
+			_, _, err := db.PushMessage(r.Context(), conv, utils.Message{
 				Role:      "assistant",
 				Timestamp: time.Now().Format(time.RFC3339),
 				Content: []utils.MessageContent{
@@ -196,6 +227,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
           "model":         chunk.Model,
           "totalTokens":   tokenUsage,
           "conversationID": conv.ID.Hex(),
+          "conversationTitle": conv.Title,
         }
       	
 				responseJSON, err := json.Marshal(responseObj)
@@ -236,7 +268,54 @@ func API_ListConversation(w http.ResponseWriter, r *http.Request) {
     utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
     return
   }
+ 
+  if string(response) == "null" {
+    response = []byte("[]")
+  }
 
   w.Header().Set("Content-Type", "application/json")
   w.Write(response)
+}
+
+func API_HandleConversation(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+  if r.Method == http.MethodDelete {
+    if err := db.DeleteConversation(r.Context(), id); err != nil {
+      utils.Error("[API_HandleConversation] Error deleting conversation", err)
+      utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+      return
+    }
+
+    utils.Log("[API_HandleConversation] Conversation deleted", id)
+
+    w.WriteHeader(http.StatusNoContent)
+    return
+  } else if r.Method == http.MethodGet {
+    conv, err := db.GetConversationById(r.Context(), id); 
+    
+    if err != nil {
+      utils.Error("[API_HandleConversation] Error getting conversation", err)
+      utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+      return
+    }
+    
+    response, err := json.Marshal(conv)
+    if err != nil {
+      utils.Error("[API_HandleConversation] Error marshaling response", err)
+      utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+      return
+    }
+
+    utils.Log("[API_HandleConversation] Returning conversation", string(response))
+
+    w.Header().Set("Content-Type", "application/json")
+    w.Write(response)
+    return
+  } else {
+    utils.Error("[API_HandleConversation] Method not allowed", nil)
+    utils.SendHTTPError(w, "Method not allowed", http.StatusMethodNotAllowed)
+    return
+  }
 }

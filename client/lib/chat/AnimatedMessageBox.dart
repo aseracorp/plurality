@@ -90,6 +90,10 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
 
   @override
   Widget build(BuildContext context) {
+    var isDark = Theme.of(context).brightness == Brightness.dark;
+    var botBG = isDark ? Color.fromRGBO(0, 0, 0, 0.35) : Colors.white;
+    var botFG = isDark ? Colors.white : Colors.black;
+
     return MessageToolbar(
       isBot: widget.isBot,
       isHorizontal: widget.text.length > 500,
@@ -109,9 +113,7 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
                 padding: const EdgeInsets.all(16.0),
                 decoration: BoxDecoration(
                   color:
-                      widget.isBot
-                          ? Colors.white
-                          : Color.fromARGB(255, 204, 52, 65),
+                      widget.isBot ? botBG : Color.fromARGB(255, 204, 52, 65),
                   borderRadius: BorderRadius.circular(12.0),
                   border:
                       widget.isLoading && widget.isBot
@@ -136,6 +138,7 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
                 ),
                 child: SelectionArea(
                   child: MarkdownBody(
+                    softLineBreak: true,
                     onTapLink: (text, url, title) {
                       if (url == null) return;
 
@@ -151,9 +154,7 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
                     builders: {'code': CodeElementBuilder(widget.isBot)},
                     data: widget.text,
                     styleSheet: MarkdownStyleSheet(
-                      p: TextStyle(
-                        color: widget.isBot ? Colors.black : Colors.white,
-                      ),
+                      p: TextStyle(color: widget.isBot ? botFG : Colors.white),
                     ),
                   ),
                 ),

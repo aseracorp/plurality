@@ -1,64 +1,154 @@
+import 'package:plurality/chat/attachments.dart';
+
 import './snackbar.dart';
 import 'package:flutter/material.dart';
 import 'dart:convert';
-import 'dart:io';
 import '../utils/types.dart';
-import '../auth/auth-service.dart';
-import '../api/index.dart';
+import '../api/api.dart';
+import '../api/service.dart';
+import 'package:flutter/services.dart';
 import './AnimatedMessageBox.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:top_snackbar_flutter/top_snack_bar.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import './image.dart';
+import './image-gen.dart';
+import './input.dart';
+import '../utils/file-types.dart';
 
-class ChatInterface extends StatefulWidget {
+class ChatInterface extends ConsumerStatefulWidget {
   final String conversationId;
   final VoidCallback? onConversationUpdated;
   final String initialMessage;
+  final bool isMobile;
+  final Function(String, bool)? setConversationID;
 
   const ChatInterface({
     super.key,
     required this.conversationId,
     this.onConversationUpdated,
     this.initialMessage = '',
+    this.setConversationID,
+    required this.isMobile,
   });
 
   @override
-  State<ChatInterface> createState() => _ChatInterfaceState();
+  ConsumerState<ChatInterface> createState() => _ChatInterfaceState();
 }
 
-class _ChatInterfaceState extends State<ChatInterface> {
-  final apiService = ApiService();
+class _ChatInterfaceState extends ConsumerState<ChatInterface> {
+  final ApiService _apiService = ApiService();
   final FocusNode _inputFocusNode = FocusNode();
-  final _formKey = GlobalKey<FormState>();
+  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   final TextEditingController _messageController = TextEditingController();
-  final List<Message> _messages = [];
-  String _currentStreamedResponse = '';
-  String _currentTitle = '';
-  bool _isLoading = false;
-  String conversationId = '';
-
   final ScrollController _scrollController = ScrollController();
-  bool _shouldAutoScroll = true;
-  bool _interupted = false;
-
   final ImagePicker _imagePicker = ImagePicker();
-  String? _selectedImage;
 
-  Future<void> loadConversation() async {
-    // final conv = await ConversationStorage.getConversation(
-    //   conversationId,
-    // );
-    // setState(() {
-    //   _currentTitle = conv?.title ?? '';
-    //   _messages.clear();
-    //   _messages.addAll(conv?.messages ?? []);
-    // });
+  final List<Attachment> attachments = [];
+
+  String _currentStreamedResponse = '';
+  bool _isLoading = false;
+  bool _shouldAutoScroll = true;
+  bool _interrupted = false;
+
+  ModelSelected _modelSelected = ModelSelected();
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController.addListener(_scrollListener);
+
+    _updateSelectedModel();
+
+    // Send initial message if provided
+    if (widget.initialMessage.isNotEmpty) {
+      Future.delayed(Duration(milliseconds: 500), () {
+        sendMessage(context, widget.initialMessage);
+      });
+    }
   }
 
-  Future<void> _pickImage2() async {
-    return _pickImage(source: ImageSource.camera);
+  @override
+  void didUpdateWidget(ChatInterface oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    // Check if the conversationId has changed
+    if (oldWidget.conversationId != widget.conversationId) {
+      _updateSelectedModel();
+    }
   }
 
-  Future<void> _pickImage({source = ImageSource.gallery}) async {
+  // Extract the model selection logic to a separate method
+  void _updateSelectedModel() {
+    final conversationsState = ref.read(conversationsProvider);
+    final matches =
+        conversationsState
+            .where((conv) => conv.id == widget.conversationId)
+            .toList();
+
+    if (matches.isNotEmpty) {
+      _modelSelected = matches.first.modelSelected;
+    }
+  }
+
+  void _setSelectedModel(ModelSelected modelSelected) {
+    setState(() {
+      _modelSelected = modelSelected;
+    });
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    _inputFocusNode.dispose();
+    _messageController.dispose();
+    super.dispose();
+  }
+
+  void _scrollListener() {
+    final isNearBottom =
+        _scrollController.position.pixels >=
+        _scrollController.position.maxScrollExtent - 200;
+
+    if (isNearBottom != _shouldAutoScroll) {
+      setState(() {
+        _shouldAutoScroll = isNearBottom;
+      });
+    }
+  }
+
+  void _scrollToBottom({bool force = false}) {
+    Future.delayed(Duration(milliseconds: 150), () {
+      if (_shouldAutoScroll || force) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: Duration(milliseconds: (force ? 500 : 100)),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  void _handleStop() {
+    setState(() {
+      _interrupted = true;
+    });
+  }
+
+  void _removeAttachment(Attachment? attachment) {
+    setState(() {
+      attachments.remove(attachment);
+    });
+  }
+
+  void _addAttachment(Attachment attachment) {
+    setState(() {
+      attachments.add(attachment);
+    });
+  }
+
+  Future<void> _pickImage({ImageSource source = ImageSource.gallery}) async {
     try {
       final XFile? image = await _imagePicker.pickImage(
         source: source,
@@ -68,11 +158,17 @@ class _ChatInterfaceState extends State<ChatInterface> {
 
       if (image != null) {
         final bytes = await image.readAsBytes();
-        final mimeType =
-            image.mimeType ?? 'image/jpeg'; // Default to jpeg if type unknown
+        final mimeType = image.mimeType ?? 'image/jpeg';
         final base64Data = base64Encode(bytes);
         setState(() {
-          _selectedImage = 'data:$mimeType;base64,$base64Data';
+          // TEMP: remove existing image attachments because we only support one image for now
+          attachments.removeWhere((a) => a.type == 'image_url');
+          attachments.add(
+            Attachment(
+              type: 'image_url',
+              content: 'data:$mimeType;base64,$base64Data',
+            ),
+          );
         });
       }
     } catch (e) {
@@ -86,235 +182,195 @@ class _ChatInterfaceState extends State<ChatInterface> {
     }
   }
 
-  @override
-  void initState() {
-    super.initState();
-    conversationId = widget.conversationId;
-    _scrollController.addListener(_scrollListener);
-    loadConversation();
+  Future<void> _pickFile() async {
+    try {
+      final FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: textFileExtensions + documentFileExtensions,
+      );
 
-    if (widget.initialMessage.isNotEmpty) {
-      Future.delayed(Duration(milliseconds: 500), () {
-        sendMessage(context, widget.initialMessage);
-      });
-    }
-  }
+      if (result != null) {
+        final PlatformFile file = result.files.single;
+        final xFile = file.xFile;
+        final mimeType = file.extension ?? 'binary/octet-stream';
+        // if is in textFileExtensions see as snippet
 
-  @override
-  void dispose() {
-    _scrollController.dispose();
-    _inputFocusNode.dispose();
+        if (textFileExtensions.contains(mimeType)) {
+          final bytes = await xFile.readAsBytes();
+          final text = utf8.decode(bytes);
+          setState(() {
+            attachments.add(
+              Attachment(
+                type: 'snippet',
+                filename: file.name,
+                ext: mimeType,
+                content: text,
+              ),
+            );
+          });
+        } else {
+          // TODO
+          final bytes = await xFile.readAsBytes();
+          final base64Data = base64Encode(bytes);
 
-    super.dispose();
-  }
-
-  void _scrollListener() {
-    if (_scrollController.position.pixels >=
-        _scrollController.position.maxScrollExtent - 200) {
-      if (!_shouldAutoScroll)
-        setState(() {
-          _shouldAutoScroll = true;
-        });
-    } else if (!_scrollController.position.outOfRange) {
-      if (_shouldAutoScroll)
-        setState(() {
-          _shouldAutoScroll = false;
-        });
-    }
-  }
-
-  void _scrollToBottom({bool force = false}) {
-    // delay the scroll to bottom to allow the list to update
-    Future.delayed(Duration(milliseconds: 150), () {
-      if (_shouldAutoScroll || force) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: Duration(milliseconds: (force ? 500 : 100)),
-          curve: Curves.easeOut,
-        );
+          setState(() {
+            attachments.add(
+              Attachment(
+                type: 'file',
+                filename: file.name,
+                ext: mimeType,
+                content: 'data:$mimeType;base64,$base64Data',
+              ),
+            );
+          });
+        }
       }
-    });
-  }
-
-  void _handleStop() {
-    _interupted = true;
-  }
-
-  Future<void> _setTitle(String userMessage) async {
-    // // if first message, send a title request
-    // if (_messages.length == 1) {
-    //   final stream = await getChatTitle(userMessage);
-
-    //   await for (final chunk in stream) {
-    //     setState(() {
-    //       _currentTitle += chunk;
-    //       if (_currentTitle.startsWith('#')) {
-    //         _currentTitle = _currentTitle.substring(1);
-    //       }
-    //     });
-    //   }
-
-    //   await ConversationStorage.saveTitle(conversationId, _currentTitle);
-
-    //   widget.onConversationUpdated?.call();
-    // }
+    } catch (e) {
+      print('Error picking file: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Failed to pick file'),
+          showCloseIcon: true,
+        ),
+      );
+    }
   }
 
   Future<void> _handleSubmit(BuildContext context) async {
     if (_formKey.currentState!.validate()) {
       final userMessage = _messageController.text;
       _messageController.clear();
-
       await sendMessage(context, userMessage);
     }
   }
 
   Future<void> sendMessage(BuildContext context, String userMessage) async {
-    _setTitle(userMessage);
+    final conversationsNotifier = ref.read(conversationsProvider.notifier);
 
-    // await ConversationStorage.saveMessage(
-    //   conversationId,
-    //   Message(
-    //     text: userMessage,
-    //     role: "user",
-    //     imageBase64: _selectedImage ?? '',
-    //   ),
-    // );
-
-    var newmessage = Message(
+    // Create new message object
+    final newMessage = Message(
       role: "user",
       content: [
         MessageContent.text(userMessage),
-        if (_selectedImage != null) MessageContent.image(_selectedImage!),
+        // if (_selectedImage != null) MessageContent.image(_selectedImage!),
+        ...attachments
+            .map(
+              (a) =>
+                  a.type == "image_url"
+                      ? MessageContent.image(a.content)
+                      : MessageContent(type: a.type, text: a.content),
+            )
+            .toList(),
       ],
     );
 
     setState(() {
-      _messages.add(newmessage);
       _isLoading = true;
-      _selectedImage = null; // Clear the selected image after sending
+      attachments.clear();
+      _interrupted = false;
     });
 
+    var isNewConversation = widget.conversationId == "";
+    var currentConversationID = widget.conversationId;
+
     try {
-      // if start with /image, generate an image instead
-      // if (userMessage.startsWith('/image')) {
-      //   final imageResult = await generateImage(userMessage.substring(7));
+      // Send message to API
+      final stream = await _apiService.sendChatMessage(
+        widget.conversationId,
+        _modelSelected,
+        newMessage,
+        ({newConversationID, newConversationTitle}) {
+          conversationsNotifier.updateConversationMetaData(
+            conversationId: newConversationID,
+            title: newConversationTitle,
+            modelSelected: _modelSelected,
+          );
 
-      //   _currentStreamedResponse = '';
+          if (newConversationID != currentConversationID) {
+            currentConversationID = newConversationID;
 
-      //   setState(() {
-      //     _messages.add(
-      //       Message(
-      //         text: 'Generated image in ${imageResult.time}s',
-      //         role: "assistant",
-      //         imageBase64: imageResult.base64,
-      //       ),
-      //     );
-      //     _isLoading = false;
-      //     _selectedImage = null;
-      //   });
+            // create new conversation
+            conversationsNotifier.createConversation(
+              id: currentConversationID,
+              modelSelected: _modelSelected,
+              title: '',
+            );
 
-      //   await ConversationStorage.saveMessage(
-      //     conversationId,
-      //     Message(
-      //       text: 'Generated image',
-      //       role: "assistant",
-      //       imageBase64: imageResult.base64,
-      //     ),
-      //   );
+            if (isNewConversation) {
+              // Add message to Riverpod state
+              conversationsNotifier.addMessage(
+                conversationId: currentConversationID,
+                message: newMessage,
+              );
+            }
 
-      //   Future.delayed(Duration(milliseconds: 150), () {
-      //     _inputFocusNode.requestFocus();
-      //   });
-
-      //   return;
-      // }
-
-      final stream = await apiService.sendChatMessage(
-        conversationId,
-        newmessage,
-        ({newConversationID}) {
-          setState(() {
-            conversationId = newConversationID;
-          });
-
-          // TODO: Save conversation ID
-          // await ConversationStorage.saveConversationID(
-          //   conversationId,
-          // );
-          // OR SOMETHING LIKE THAT
+            if (widget.setConversationID != null)
+              widget.setConversationID!(currentConversationID, false);
+          }
         },
       );
 
+      if (!isNewConversation) {
+        // Add message to Riverpod state
+        conversationsNotifier.addMessage(
+          conversationId: currentConversationID,
+          message: newMessage,
+        );
+      }
+
+      // Process streaming response
       _currentStreamedResponse = '';
       await for (final chunk in stream) {
-        if (_interupted) {
-          _interupted = false;
-          break;
-        }
-
-        // print('Chunk: $chunk');
+        if (_interrupted) break;
 
         setState(() {
           _currentStreamedResponse += chunk;
-
           if (_currentStreamedResponse.length > 1800) {
             _shouldAutoScroll = false;
           }
         });
       }
 
-      // check if the message contains /image {prompt} \n it can be within a paragraph
-      final imageMatch = RegExp(
-        r'/image ([^\n]+)',
-      ).firstMatch(_currentStreamedResponse);
+      // Process completed response
+      final assistantMessage = Message(
+        role: "assistant",
+        content: [MessageContent.text(_currentStreamedResponse)],
+      );
+
+      // Add assistant's response to Riverpod state
+      conversationsNotifier.addMessage(
+        conversationId: currentConversationID,
+        message: assistantMessage,
+      );
+
+      genImage(
+        _modelSelected.imageGen?.name ?? '',
+        newMessage.text,
+        currentConversationID,
+        conversationsNotifier,
+        _apiService,
+      );
+
+      genImage(
+        _modelSelected.imageGen?.name ?? '',
+        _currentStreamedResponse,
+        currentConversationID,
+        conversationsNotifier,
+        _apiService,
+      );
 
       setState(() {
-        _messages.add(
-          Message(
-            role: "assistant",
-            content: [
-              MessageContent.text(_currentStreamedResponse),
-              if (imageMatch != null)
-                MessageContent.image(
-                  'data:image/png;base64,${base64Encode(utf8.encode(''))}',
-                ),
-            ],
-          ),
-        );
-
         _currentStreamedResponse = '';
         _isLoading = false;
       });
 
-      // await ConversationStorage.saveMessage(
-      //   conversationId,
-      //   Message(text: _messages.last.text, role: "assistant"),
-      // );
+      if (isNewConversation) {
+        if (widget.setConversationID != null) {
+          widget.setConversationID!(currentConversationID, true);
+        }
+      }
 
-      // if (imageMatch != null) {
-      //   final imageResult = await generateImage(imageMatch.group(1)!);
-
-      //   setState(() {
-      //     _messages.add(
-      //       Message(
-      //         text: 'Generated image in ${imageResult.time}s',
-      //         role: "assistant",
-      //         imageBase64: imageResult.base64,
-      //       ),
-      //     );
-      //   });
-
-      //   await ConversationStorage.saveMessage(
-      //     conversationId,
-      //     Message(
-      //       text: 'Generated image',
-      //       role: "assistant",
-      //       imageBase64: imageResult.base64,
-      //     ),
-      //   );
-      // }
-
+      // Focus the input field for next message
       Future.delayed(Duration(milliseconds: 150), () {
         _inputFocusNode.requestFocus();
       });
@@ -333,155 +389,155 @@ class _ChatInterfaceState extends State<ChatInterface> {
 
   @override
   Widget build(BuildContext context) {
-    _scrollToBottom();
+    final conversationsState = ref.watch(conversationsProvider);
+    final currentConversation = conversationsState.firstWhere(
+      (conv) => conv.id == widget.conversationId,
+      orElse:
+          () => Conversation(
+            id: widget.conversationId,
+            title: '',
+            messages: [],
+            lastMessageAt: DateTime.now(),
+            modelSelected: _modelSelected,
+          ),
+    );
 
+    final messages = currentConversation.messages;
+
+    if (messages.isNotEmpty) _scrollToBottom();
     return Stack(
       children: [
         Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Expanded(
-              child: ListView.builder(
-                controller: _scrollController,
-                padding: const EdgeInsets.all(16.0),
-                itemCount:
-                    _messages.length +
-                    (_currentStreamedResponse.isNotEmpty ? 1 : 0),
-                itemBuilder: (context, index) {
-                  Message message;
-                  if (index < _messages.length) {
-                    message = _messages[index];
-                  } else {
-                    message = Message(
-                      role: "assistant",
-                      content: [MessageContent.text(_currentStreamedResponse)],
-                    );
-                  }
+            if (widget.conversationId.isNotEmpty)
+              Expanded(
+                child: ListView.builder(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.all(16.0),
+                  itemCount:
+                      messages.length +
+                      (_currentStreamedResponse.isNotEmpty ? 1 : 0),
+                  itemBuilder: (context, index) {
+                    Message message;
+                    if (index < messages.length) {
+                      message = messages[index];
+                    } else {
+                      message = Message(
+                        role: "assistant",
+                        content: [
+                          MessageContent.text(_currentStreamedResponse),
+                        ],
+                      );
+                    }
 
-                  return Align(
-                    alignment:
-                        message.isBot
-                            ? Alignment.centerLeft
-                            : Alignment.centerRight,
-                    child: Column(
-                      crossAxisAlignment:
+                    return Align(
+                      alignment:
                           message.isBot
-                              ? CrossAxisAlignment.start
-                              : CrossAxisAlignment.end,
-                      children: [
-                        if (message.content.any((c) => c.type == "image"))
+                              ? Alignment.centerLeft
+                              : Alignment.centerRight,
+                      child: Column(
+                        crossAxisAlignment:
+                            message.isBot
+                                ? CrossAxisAlignment.start
+                                : CrossAxisAlignment.end,
+                        children: [
                           ...message.content
-                              .where((c) => c.type == "image")
+                              .where((c) => c.type != "text")
                               .map(
-                                (imageContent) => Padding(
-                                  key: ValueKey(
-                                    'image_${index}_${imageContent.imageUrl.hashCode}',
+                                (attach) => AttachmentViewer(
+                                  attachment: Attachment(
+                                    type: attach.type,
+                                    content:
+                                        (attach.type == "image_url"
+                                            ? attach.imageUrl?.url
+                                            : attach.text) ??
+                                        '',
                                   ),
-                                  padding: const EdgeInsets.only(bottom: 8.0),
-                                  child: ClipRRect(
-                                    borderRadius: BorderRadius.circular(8.0),
-                                    child: Image.memory(
-                                      base64Decode(
-                                        (imageContent.imageUrl?.url
-                                                .split(",")
-                                                .last) ??
-                                            '',
-                                        // TODO: Empty image
-                                      ),
-                                      width: 200,
-                                      fit: BoxFit.cover,
-                                      cacheWidth: 200,
-                                      gaplessPlayback: true,
-                                    ),
-                                  ),
+                                  removeAttachment: _removeAttachment,
+                                  editMode: false,
                                 ),
                               )
                               .toList(),
-                        AnimatedMessageBox(
-                          text: message.text,
-                          isBot: message.isBot,
-                          isLoading:
-                              _isLoading &&
-                              index ==
-                                  (_messages.length +
-                                          (_currentStreamedResponse.isNotEmpty
-                                              ? 1
-                                              : 0)) -
-                                      1,
-                        ),
-                      ],
-                    ),
-                  );
-                },
+                          if (message.text != "")
+                            AnimatedMessageBox(
+                              text: message.text,
+                              isBot: message.isBot,
+                              isLoading:
+                                  _isLoading &&
+                                  index ==
+                                      (messages.length +
+                                              (_currentStreamedResponse
+                                                      .isNotEmpty
+                                                  ? 1
+                                                  : 0)) -
+                                          1,
+                            ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
               ),
-            ),
+            if (widget.conversationId.isEmpty)
+              Center(
+                child: Text(
+                  'Start a new conversation',
+                  style: Theme.of(context).textTheme.headlineSmall,
+                ),
+              ),
             Container(
-              padding: const EdgeInsets.all(8.0),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                border: Border(top: BorderSide(color: Colors.grey.shade300)),
-              ),
+              margin: const EdgeInsets.symmetric(horizontal: 16.0),
+              padding:
+                  widget.conversationId.isNotEmpty
+                      ? const EdgeInsets.symmetric(
+                        horizontal: 12.0,
+                        vertical: 8.0,
+                      )
+                      : const EdgeInsets.symmetric(
+                        horizontal: 32.0,
+                        vertical: 12.0,
+                      ),
+              decoration:
+                  widget.conversationId.isNotEmpty
+                      ? BoxDecoration(
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.1),
+                            blurRadius: 4,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                        color: Colors.white,
+                        borderRadius: BorderRadius.only(
+                          topLeft: Radius.circular(8.0),
+                          topRight: Radius.circular(8.0),
+                        ),
+                        border: Border(
+                          top: BorderSide(color: Color(0xFFEEEEEE)),
+                          left: BorderSide(color: Color(0xFFEEEEEE)),
+                          right: BorderSide(color: Color(0xFFEEEEEE)),
+                        ),
+                      )
+                      : null,
               child: Form(
                 key: _formKey,
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(maxHeight: 300),
-                        child: TextFormField(
-                          controller: _messageController,
-                          focusNode: _inputFocusNode,
-                          decoration: InputDecoration(
-                            hintText:
-                                _selectedImage != null
-                                    ? 'Image selected. Add a message...'
-                                    : 'Type a message...',
-                            border: OutlineInputBorder(),
-                          ),
-                          maxLines: null,
-                          minLines: 1,
-                          enabled: !_isLoading,
-                          textInputAction: TextInputAction.send,
-                          validator: (value) {
-                            if ((value == null || value.trim().isEmpty) &&
-                                _selectedImage == null) {
-                              return 'Please enter a message or select an image';
-                            }
-                            return null;
-                          },
-                          onFieldSubmitted: (_) => _handleSubmit(context),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8.0),
-                    IconButton(
-                      onPressed: _isLoading ? null : _pickImage2,
-                      icon: Icon(
-                        Icons.camera_alt,
-                        color: _isLoading ? Colors.grey : Color(0xffee4654),
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: _isLoading ? null : _pickImage,
-                      icon: Icon(
-                        Icons.image,
-                        color: _isLoading ? Colors.grey : Color(0xffee4654),
-                      ),
-                    ),
-                    IconButton(
-                      onPressed:
-                          () =>
-                              _isLoading
-                                  ? _handleStop()
-                                  : _handleSubmit(context),
-                      icon:
-                          _isLoading
-                              ? const Icon(Icons.stop, color: Color(0xffee4654))
-                              : const Icon(
-                                Icons.send,
-                                color: Color(0xffee4654),
-                              ),
-                    ),
-                  ],
+                child: InputBox(
+                  isMobile: widget.isMobile,
+                  messageController: _messageController,
+                  addAttachment: _addAttachment,
+                  onSend: _handleSubmit,
+                  isLoading: _isLoading,
+                  handleStop: _handleStop,
+                  pickImage: _pickImage,
+                  pickFile: _pickFile,
+                  inputFocusNode: _inputFocusNode,
+                  removeAttachment: _removeAttachment,
+                  setSelectedModel: _setSelectedModel,
+                  selectedModel: _modelSelected,
+                  attachments: attachments,
+                  conversationId: widget.conversationId,
                 ),
               ),
             ),
