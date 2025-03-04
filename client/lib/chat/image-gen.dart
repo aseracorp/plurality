@@ -14,17 +14,10 @@ Function genImage = (
   ).firstMatch(currentStreamedResponse);
 
   if (imageMatch != null) {
-    final imageResult = await apiService.generateImage(
+    final imageMessage = await apiService.generateImage(
+      currentConversationID,
       model,
       imageMatch.group(1)!,
-    );
-
-    final imageMessage = Message(
-      role: "assistant",
-      content: [
-        MessageContent.image(imageResult.base64),
-        MessageContent.text('Generated image in ${imageResult.time}s'),
-      ],
     );
 
     // Add assistant's image response to Riverpod state

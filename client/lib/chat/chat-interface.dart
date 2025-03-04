@@ -1,5 +1,4 @@
 import 'package:plurality/chat/attachments.dart';
-
 import './snackbar.dart';
 import 'package:flutter/material.dart';
 import 'dart:convert';
@@ -16,6 +15,7 @@ import './image.dart';
 import './image-gen.dart';
 import './input.dart';
 import '../utils/file-types.dart';
+import './middle-click.dart';
 
 class ChatInterface extends ConsumerStatefulWidget {
   final String conversationId;
@@ -42,7 +42,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   final FocusNode _inputFocusNode = FocusNode();
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   final TextEditingController _messageController = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
+  final ScrollController _mainScrollController = ScrollController();
   final ImagePicker _imagePicker = ImagePicker();
 
   final List<Attachment> attachments = [];
@@ -57,9 +57,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   @override
   void initState() {
     super.initState();
-    _scrollController.addListener(_scrollListener);
+    _mainScrollController.addListener(_scrollListener);
 
     _updateSelectedModel();
+    _loadConversation(widget.conversationId);
 
     // Send initial message if provided
     if (widget.initialMessage.isNotEmpty) {
@@ -76,6 +77,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     // Check if the conversationId has changed
     if (oldWidget.conversationId != widget.conversationId) {
       _updateSelectedModel();
+      _loadConversation(widget.conversationId);
     }
   }
 
@@ -92,6 +94,12 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     }
   }
 
+  // Extract the model selection logic to a separate method
+  void _loadConversation(String id) {
+    final conversationsNotifier = ref.read(conversationsProvider.notifier);
+    conversationsNotifier.loadConversation(id);
+  }
+
   void _setSelectedModel(ModelSelected modelSelected) {
     setState(() {
       _modelSelected = modelSelected;
@@ -100,7 +108,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
   @override
   void dispose() {
-    _scrollController.dispose();
+    _mainScrollController.dispose();
     _inputFocusNode.dispose();
     _messageController.dispose();
     super.dispose();
@@ -108,8 +116,8 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
   void _scrollListener() {
     final isNearBottom =
-        _scrollController.position.pixels >=
-        _scrollController.position.maxScrollExtent - 200;
+        _mainScrollController.position.pixels >=
+        _mainScrollController.position.maxScrollExtent - 200;
 
     if (isNearBottom != _shouldAutoScroll) {
       setState(() {
@@ -119,11 +127,11 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   }
 
   void _scrollToBottom({bool force = false}) {
-    Future.delayed(Duration(milliseconds: 150), () {
+    Future.delayed(Duration(milliseconds: 160), () {
       if (_shouldAutoScroll || force) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: Duration(milliseconds: (force ? 500 : 100)),
+        _mainScrollController.animateTo(
+          _mainScrollController.position.maxScrollExtent,
+          duration: Duration(milliseconds: (force ? 500 : 90)),
           curve: Curves.easeOut,
         );
       }
@@ -405,6 +413,69 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     final messages = currentConversation.messages;
 
     if (messages.isNotEmpty) _scrollToBottom();
+
+    // Main content ListView
+    final mainContent = ListView.builder(
+      controller: _mainScrollController,
+      padding: const EdgeInsets.all(16.0),
+      itemCount:
+          messages.length + (_currentStreamedResponse.isNotEmpty ? 1 : 0),
+      itemBuilder: (context, index) {
+        Message message;
+        if (index < messages.length) {
+          message = messages[index];
+        } else {
+          message = Message(
+            role: "assistant",
+            content: [MessageContent.text(_currentStreamedResponse)],
+          );
+        }
+
+        return Align(
+          alignment:
+              message.isBot ? Alignment.centerLeft : Alignment.centerRight,
+          child: Column(
+            crossAxisAlignment:
+                message.isBot
+                    ? CrossAxisAlignment.start
+                    : CrossAxisAlignment.end,
+            children: [
+              ...message.content
+                  .where((c) => c.type != "text")
+                  .map(
+                    (attach) => AttachmentViewer(
+                      attachment: Attachment(
+                        type: attach.type,
+                        content:
+                            (attach.type == "image_url"
+                                ? attach.imageUrl?.url
+                                : attach.text) ??
+                            '',
+                      ),
+                      removeAttachment: _removeAttachment,
+                      editMode: false,
+                    ),
+                  )
+                  .toList(),
+              if (message.text != "")
+                AnimatedMessageBox(
+                  text: message.text,
+                  isBot: message.isBot,
+                  isLoading:
+                      _isLoading &&
+                      index ==
+                          (messages.length +
+                                  (_currentStreamedResponse.isNotEmpty
+                                      ? 1
+                                      : 0)) -
+                              1,
+                ),
+            ],
+          ),
+        );
+      },
+    );
+
     return Stack(
       children: [
         Column(
@@ -413,73 +484,13 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
           children: [
             if (widget.conversationId.isNotEmpty)
               Expanded(
-                child: ListView.builder(
-                  controller: _scrollController,
-                  padding: const EdgeInsets.all(16.0),
-                  itemCount:
-                      messages.length +
-                      (_currentStreamedResponse.isNotEmpty ? 1 : 0),
-                  itemBuilder: (context, index) {
-                    Message message;
-                    if (index < messages.length) {
-                      message = messages[index];
-                    } else {
-                      message = Message(
-                        role: "assistant",
-                        content: [
-                          MessageContent.text(_currentStreamedResponse),
-                        ],
-                      );
-                    }
-
-                    return Align(
-                      alignment:
-                          message.isBot
-                              ? Alignment.centerLeft
-                              : Alignment.centerRight,
-                      child: Column(
-                        crossAxisAlignment:
-                            message.isBot
-                                ? CrossAxisAlignment.start
-                                : CrossAxisAlignment.end,
-                        children: [
-                          ...message.content
-                              .where((c) => c.type != "text")
-                              .map(
-                                (attach) => AttachmentViewer(
-                                  attachment: Attachment(
-                                    type: attach.type,
-                                    content:
-                                        (attach.type == "image_url"
-                                            ? attach.imageUrl?.url
-                                            : attach.text) ??
-                                        '',
-                                  ),
-                                  removeAttachment: _removeAttachment,
-                                  editMode: false,
-                                ),
-                              )
-                              .toList(),
-                          if (message.text != "")
-                            AnimatedMessageBox(
-                              text: message.text,
-                              isBot: message.isBot,
-                              isLoading:
-                                  _isLoading &&
-                                  index ==
-                                      (messages.length +
-                                              (_currentStreamedResponse
-                                                      .isNotEmpty
-                                                  ? 1
-                                                  : 0)) -
-                                          1,
-                            ),
-                        ],
-                      ),
-                    );
-                  },
+                child: MiddleClickScroller(
+                  scrollController: _mainScrollController,
+                  iconColor: Theme.of(context).primaryColor,
+                  child: mainContent,
                 ),
               ),
+
             if (widget.conversationId.isEmpty)
               Center(
                 child: Text(
@@ -487,6 +498,8 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                   style: Theme.of(context).textTheme.headlineSmall,
                 ),
               ),
+
+            // Input Container (unchanged)
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 16.0),
               padding:
@@ -543,6 +556,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
             ),
           ],
         ),
+        // Scroll to bottom button
         if (!_shouldAutoScroll)
           Positioned(
             right: 16,

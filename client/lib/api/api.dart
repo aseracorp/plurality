@@ -1,6 +1,4 @@
 import 'dart:convert';
-import 'dart:ffi';
-
 import 'package:http/http.dart' as http;
 
 import '../auth/auth-service.dart';
@@ -138,8 +136,18 @@ class ApiService {
 
       // Process the response
       if (response.statusCode >= 200 && response.statusCode < 300) {
-        final List<dynamic> data = jsonDecode(response.body);
-        return data.map((json) => Conversation.fromJson(json)).toList();
+        final decodedResponse = utf8.decode(response.bodyBytes);
+        final List<dynamic> data = jsonDecode(decodedResponse);
+        List<Conversation> conversations = [];
+        for (var json in data) {
+          try {
+            conversations.add(Conversation.fromJson(json));
+          } catch (e) {
+            // Log or handle the error for the specific conversation
+            print('Failed to parse conversation $json \n $e');
+          }
+        }
+        return conversations;
       } else {
         throw APIException(
           'Failed to fetch conversations: ${response.reasonPhrase}',
@@ -181,7 +189,11 @@ class ApiService {
     }
   }
 
-  Future<ImageResult> generateImage(String model, String prompt) async {
+  Future<Message> generateImage(
+    String convId,
+    String model,
+    String prompt,
+  ) async {
     final request = http.Request('POST', Uri.parse('$_baseUrl/generate-image'));
     request.headers['Content-Type'] = 'application/json';
     request.headers['Authorization'] =
@@ -194,6 +206,7 @@ class ApiService {
     }
 
     request.body = jsonEncode({
+      'conversation_id': convId,
       'model': model,
       'prompt': prompt,
       'width': 1024,
@@ -218,17 +231,53 @@ class ApiService {
     }
 
     try {
+      // final responseData = await response.stream.bytesToString();
+      // final jsonResponse = jsonDecode(responseData);
+      // if (jsonResponse['data']?.isEmpty ?? true) {
+      //   throw APIException('No image data received');
+      // }
+      // var image64 = jsonResponse['data'][0]['b64_json'];
+      // var time = jsonResponse['data'][0]['timings']['inference'];
+      // time = (time * 1000).round() / 1000;
+      // return ImageResult(image64, time);
+
       final responseData = await response.stream.bytesToString();
       final jsonResponse = jsonDecode(responseData);
-      if (jsonResponse['data']?.isEmpty ?? true) {
-        throw APIException('No image data received');
-      }
-      var image64 = jsonResponse['data'][0]['b64_json'];
-      var time = jsonResponse['data'][0]['timings']['inference'];
-      time = (time * 1000).round() / 1000;
-      return ImageResult(image64, time);
+
+      return Message.fromJson(jsonResponse);
     } catch (e) {
       throw APIException('Error processing image response: ${e.toString()}');
+    }
+  }
+
+  // getConversation
+  Future<Conversation?> getConversation(String conversationID) async {
+    try {
+      // Get authentication token
+      String? firebaseToken = await _authService.getCurrentUserToken();
+      if (firebaseToken == null) {
+        throw Exception('User not authenticated');
+      }
+      // Make the GET request
+      final response = await http.get(
+        Uri.parse('$_baseUrl/conversation/$conversationID'),
+        headers: {'Authorization': 'Bearer $firebaseToken'},
+      );
+      // Process the response
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        // Use utf8.decode with response.bodyBytes instead of directly using response.body
+        final decodedResponse = utf8.decode(response.bodyBytes);
+        final json = jsonDecode(decodedResponse);
+        return Conversation.fromJson(json);
+      } else {
+        throw APIException(
+          'Failed to get conversation: ${response.reasonPhrase}',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      if (e is APIException) rethrow;
+      throw APIException('API request failed: $e');
     }
   }
 }

@@ -55,6 +55,18 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 
     // Perform FindOneAndUpdate to get the updated document
     var updatedConversation utils.Conversation
+    toSet := bson.M{
+      "last_message_at": currentTime,
+    }
+
+    if conversation.Title != "" {
+      toSet["title"] = conversation.Title
+    }
+
+    if conversation.ModelSelected.Text.Name != "" {
+      toSet["model_selected"] = conversation.ModelSelected
+    }
+
     err := collection.FindOneAndUpdate(
       ctx,
       bson.M{
@@ -63,9 +75,7 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
       },
       bson.M{
         "$push": bson.M{"messages": message},
-        "$set": bson.M{
-          "last_message_at": currentTime,
-        },
+        "$set": toSet,
       },
       opts,
     ).Decode(&updatedConversation)

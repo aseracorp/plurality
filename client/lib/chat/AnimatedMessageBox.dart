@@ -56,12 +56,14 @@ class AnimatedMessageBox extends StatefulWidget {
   final String text;
   final bool isBot;
   final bool isLoading;
+  final bool mini;
 
   const AnimatedMessageBox({
     super.key,
     required this.text,
     required this.isBot,
     required this.isLoading,
+    this.mini = false,
   });
 
   @override
@@ -98,6 +100,7 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
       isBot: widget.isBot,
       isHorizontal: widget.text.length > 500,
       text: widget.text,
+      mini: widget.mini,
       child: AnimatedBuilder(
         animation: _animationController,
         builder: (context, child) {
@@ -110,11 +113,14 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
                   top: 4.0,
                   bottom: 4.0,
                 ),
-                padding: const EdgeInsets.all(16.0),
+                padding: EdgeInsets.all(widget.mini ? 1.0 : 16.0),
                 decoration: BoxDecoration(
                   color:
                       widget.isBot ? botBG : Color.fromARGB(255, 204, 52, 65),
-                  borderRadius: BorderRadius.circular(12.0),
+                  borderRadius:
+                      widget.mini
+                          ? BorderRadius.circular(2.0)
+                          : BorderRadius.circular(12.0),
                   border:
                       widget.isLoading && widget.isBot
                           ? Border.all(
@@ -151,10 +157,26 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
                         Clipboard.setData(ClipboardData(text: url));
                       }
                     },
-                    builders: {'code': CodeElementBuilder(widget.isBot)},
+                    builders: {
+                      'code': CodeElementBuilder(
+                        widget.isBot,
+                        mini: widget.mini,
+                      ),
+                    },
                     data: widget.text,
                     styleSheet: MarkdownStyleSheet(
-                      p: TextStyle(color: widget.isBot ? botFG : Colors.white),
+                      p: TextStyle(
+                        color: widget.isBot ? botFG : Colors.white,
+                        fontSize: widget.mini ? 3 : 16,
+                      ),
+                      h1: TextStyle(fontSize: widget.mini ? 6 : 24),
+                      h2: TextStyle(fontSize: widget.mini ? 5 : 20),
+                      h3: TextStyle(fontSize: widget.mini ? 4 : 18),
+                      h4: TextStyle(fontSize: widget.mini ? 4 : 16),
+                      h5: TextStyle(fontSize: widget.mini ? 4 : 14),
+                      h6: TextStyle(fontSize: widget.mini ? 4 : 12),
+                      blockquote: TextStyle(fontSize: widget.mini ? 3 : 16),
+                      listBullet: TextStyle(fontSize: widget.mini ? 3 : 16),
                     ),
                   ),
                 ),
@@ -169,8 +191,9 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
 
 class CodeElementBuilder extends MarkdownElementBuilder {
   final bool isBot;
+  final bool mini;
 
-  CodeElementBuilder(this.isBot);
+  CodeElementBuilder(this.isBot, {this.mini = false});
 
   @override
   Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
@@ -194,7 +217,7 @@ class CodeElementBuilder extends MarkdownElementBuilder {
             code,
             style: TextStyle(
               fontFamily: 'monospace',
-              fontSize: 14,
+              fontSize: mini ? 3 : 14,
               color: isBot ? Colors.black : Colors.white,
             ),
           ),
@@ -225,7 +248,7 @@ class CodeElementBuilder extends MarkdownElementBuilder {
                           (index) => Text(
                             '${index + 1}',
                             style: TextStyle(
-                              fontSize: 14,
+                              fontSize: mini ? 3 : 14,
                               fontFamily: 'monospace',
                               color: Colors.grey[400],
                             ),
@@ -242,8 +265,8 @@ class CodeElementBuilder extends MarkdownElementBuilder {
                         language: language.isEmpty ? 'plaintext' : language,
                         theme: vsTheme,
                         padding: const EdgeInsets.all(8),
-                        textStyle: const TextStyle(
-                          fontSize: 14,
+                        textStyle: TextStyle(
+                          fontSize: mini ? 3 : 14,
                           fontFamily: 'monospace',
                           color: Colors.white,
                         ),
@@ -254,7 +277,8 @@ class CodeElementBuilder extends MarkdownElementBuilder {
               ),
             ),
             // Copy button - only for code blocks
-            Positioned(top: 12, right: 4, child: CopyButton(code: code)),
+            if (!mini)
+              Positioned(top: 12, right: 4, child: CopyButton(code: code)),
           ],
         );
       }

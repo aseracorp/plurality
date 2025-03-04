@@ -14,6 +14,7 @@ class MessageToolbar extends StatelessWidget {
   final bool isHorizontal;
   final bool isBot;
   final String text;
+  final bool mini;
 
   const MessageToolbar({
     super.key,
@@ -21,6 +22,7 @@ class MessageToolbar extends StatelessWidget {
     required this.isHorizontal,
     required this.isBot,
     required this.text,
+    this.mini = false,
   });
 
   @override
@@ -36,6 +38,8 @@ class MessageToolbar extends StatelessWidget {
               ),
             )
             .toList();
+
+    if (mini) return child;
 
     return LayoutBuilder(
       builder: (context, constraints) {

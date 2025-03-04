@@ -1,18 +1,12 @@
 # personal MVP
  - Save selected models
- - Claude / ChatGPT
- - Search chats
- - token counts in db
  - improve title speed
+ - Fix login shits
+ - Test web and mobile!
 
-# private MVP
-- bin doc parse / long doc integration
-- Apps
-  - Therapy
-  - Language learning
-- Code Assist
-- Retry button
-- file_picker's save file for non-web?
+# private MVP1 - small
+ - token counts in db
+  - dont forget to count input tokens
 - Rate limiting (count token)
   - show message count 
   - show budget
@@ -22,8 +16,20 @@
   - delete on logout
 - Settings
   - Change Password
-  - local mode
+  
+# private MVP2 - bigger
+- pin conversations and messages?
+- bin doc parse / long doc integration
+- rename conversations
+- Apps
+  - Therapy
+  - Language learning
+- Code Assist
+- Retry button
+- file_picker's save file for non-web?
+- local mode
 - History pagination or infinite scroll?
+- Claude / ChatGPT images vision
 
 # Roadmap to public
 - Login / Register

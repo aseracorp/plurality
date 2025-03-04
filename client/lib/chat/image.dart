@@ -5,9 +5,13 @@ import 'package:share_plus/share_plus.dart';
 
 class ImagePreviewComponent extends StatelessWidget {
   final String imageUrl;
+  final bool mini;
 
-  const ImagePreviewComponent({Key? key, required this.imageUrl})
-    : super(key: key);
+  const ImagePreviewComponent({
+    Key? key,
+    required this.imageUrl,
+    this.mini = false,
+  }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
@@ -18,7 +22,7 @@ class ImagePreviewComponent extends StatelessWidget {
       key: ValueKey('image_${imageUrl.hashCode}'),
       padding: const EdgeInsets.only(bottom: 8.0),
       child: GestureDetector(
-        onTap: () => _showImagePreviewModal(context, imageData),
+        onTap: () => {if (!mini) _showImagePreviewModal(context, imageData)},
         child: ClipRRect(
           borderRadius: BorderRadius.circular(8.0),
           child: Image.memory(

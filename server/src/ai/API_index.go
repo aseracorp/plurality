@@ -3,13 +3,13 @@ package ai
 import (
 	"encoding/json"
 	"net/http"
-	"os"
-	"strings"
 	"time"
-	"bufio"
-	"fmt"
+	"strings"
+	"strconv"
 
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"github.com/gorilla/mux"
+
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/utils"
 )
@@ -24,6 +24,12 @@ func HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		utils.Error("[HandleImageGeneration] Invalid request body", err)
 		utils.SendHTTPError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if request.ConversationID == primitive.NilObjectID {
+		utils.Error("[HandleImageGeneration] No conversation ID provided", nil)
+		utils.SendHTTPError(w, "No conversation ID provided", http.StatusBadRequest)
 		return
 	}
 
@@ -55,197 +61,131 @@ func HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	partialConv := utils.Conversation{
+		ID: request.ConversationID,
+	}
+
+	// parse response
+	type JsonResponse struct {
+    Data []struct {
+			B64Json  string `json:"b64_json"`
+			Timings  struct {
+					Inference float64 `json:"inference"`
+			} `json:"timings"`
+    } `json:"data"`
+	}
+
+	var jsonResponse JsonResponse
+	
+	if err := json.Unmarshal(response, &jsonResponse); err != nil {
+		utils.Error("[HandleImageGeneration] Error unmarshaling response", err)
+		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	data := jsonResponse.Data[0].B64Json
+
+	infTime := jsonResponse.Data[0].Timings.Inference
+
+	message := utils.Message{
+		Role: "assistant",
+		Timestamp: time.Now().Format(time.RFC3339),
+		Content: []utils.MessageContent{
+			utils.MessageContent{
+				Type: "image_url",
+				ImageURL: utils.MessageContentURL{
+					URL: data,
+				},
+			},
+			utils.MessageContent{
+				Type: "text",
+				Text: "Generated in " + strconv.FormatFloat(infTime, 'f', 2, 64) + "s",
+			},
+		},
+	}
+
+	// Save to DB
+	_, _, err = db.PushMessage(r.Context(), partialConv, message)
+	if err != nil {
+		utils.Error("[HandleChat] Error pushing message", err)
+	}
+
+	utils.Log("[HandleImageGeneration] Image generated and saved to DB")
+
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(response)
+	messageAsBytes, _ := json.Marshal(message)
+	w.Write(messageAsBytes)
 }
 
 func HandleChat(w http.ResponseWriter, r *http.Request) {
-  if r.Method != http.MethodPost {
-    utils.Error("[HandleChat] Method not allowed", nil)
-    utils.SendHTTPError(w, "Method not allowed", http.StatusMethodNotAllowed)
-    return
-  }
-  
-  var payload ChatPayload
-  if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-    utils.Error("[HandleChat] Invalid request body", err)
-    utils.SendHTTPError(w, "Invalid request body", http.StatusBadRequest)
-    return
-  }
-  
-  if len(payload.Messages) == 0 {
-    utils.Error("[HandleChat] No messages provided", nil)
-    utils.SendHTTPError(w, "No messages provided", http.StatusBadRequest)
-    return
-  }
+	if r.Method != http.MethodPost {
+		utils.Error("[HandleChat] Method not allowed", nil)
+		utils.SendHTTPError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	var payload ChatPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		utils.Error("[HandleChat] Invalid request body", err)
+		utils.SendHTTPError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	
+	if len(payload.Messages) == 0 {
+		utils.Error("[HandleChat] No messages provided", nil)
+		utils.SendHTTPError(w, "No messages provided", http.StatusBadRequest)
+		return
+	}
 
-  utils.Debug("[HandleChat] Received chat payload for model", payload.ModelSelected)
-  
-  partialConv := utils.Conversation{
-    ID: payload.ConversationID,
-    ModelSelected: payload.ModelSelected,
-  }
+	utils.Debug("[HandleChat] Received chat payload for model", payload.ModelSelected)
+	
+	partialConv := utils.Conversation{
+		ID: payload.ConversationID,
+		ModelSelected: payload.ModelSelected,
+	}
 
 	utils.Log("[HandleChat] Pushing message to conversation ID: ", payload.ConversationID)
-  
-  conv, isNew, err := db.PushMessage(r.Context(), partialConv, payload.Messages[0])
-  if err != nil {
-    utils.Error("[HandleChat] Error pushing message", err)
-    utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
-    return
-  }
-  
-  // Set headers for SSE
-  w.Header().Set("Content-Type", "text/event-stream")
-  w.Header().Set("Cache-Control", "no-cache")
-  w.Header().Set("X-Accel-Buffering", "no")
-  w.Header().Set("Transfer-Encoding", "chunked")
-  
-  response, err := SendChatCompletion(SelectModel(payload.ModelSelected, payload.Messages[0]), conv)
-  if err != nil {
-    utils.Error("[HandleChat] Error sending chat completion", err)
-    utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
-    return
-  }
-  defer response.Close()
-  
-	tokenUsage := 0
-	stringProduced := ""
-
-  // Process the SSE chunks
-  scanner := bufio.NewScanner(response)
-  for scanner.Scan() {
-    line := scanner.Text()
-    
-    // Skip empty lines or non-data lines
-    if !strings.HasPrefix(line, "data: ") {
-      continue
-    }
-    
-    // Extract the JSON payload
-    jsonData := strings.TrimPrefix(line, "data: ")
-    
-    // Parse the JSON
-    var chunk AIChunk;
-
-		if jsonData == "[DONE]" {
-			if tokenUsage == 0 {
-				tokenUsage = strings.Count(stringProduced, " ")
-			}
-          
-      if isNew {
-        // Try title
-        pp := payload.Messages[0].Content[0].Text + " \n Response from AI: " + stringProduced
-        if len(pp) > 1024 {
-          pp = pp[:1024]
-        }
-        title, err := GenerateTitleForMessage(pp)
-        if err != nil {
-          utils.Error("[HandleChat] Error generating title", err)
-          title = "Unnamed Cookie"
-        }
-        utils.Log("[HandleChat] Generated title for message", title)
-
-        // Send the final response
-        responseObj := map[string]interface{}{
-          "content":       "",
-          "model":         chunk.Model,
-          "totalTokens":   tokenUsage,
-          "conversationID": conv.ID.Hex(),
-          "conversationTitle": title,
-        }
-
-        responseJSON, err := json.Marshal(responseObj)
-        if err == nil {
-          // Write the original line to the response
-          fmt.Fprintf(w, "%s\n\n", ([]byte)("data: " + string(responseJSON)))
-          w.(http.Flusher).Flush()
-        }
-
-        // update title in DB
-        conv.Title = title
-        if err := db.UpdateConversationMetadata(r.Context(), conv.ID, conv.Title); err != nil {
-          utils.Error("[HandleChat] Error updating conversation", err)
-        }
-      }
-
-			fmt.Fprintf(w, "%s\n\n", line)
-			w.(http.Flusher).Flush() 
-
-			// Push message to DB
-			_, _, err := db.PushMessage(r.Context(), conv, utils.Message{
-				Role:      "assistant",
-				Timestamp: time.Now().Format(time.RFC3339),
-				Content: []utils.MessageContent{
-					{
-						Type: "text",
-						Text: stringProduced,
-					},
-				},
-			})
-			if err != nil {
-				utils.Error("[HandleChat] Error pushing message", err)
-				utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			utils.Log("[HandleChat] Successfully completed chat using %d tokens", tokenUsage)
-			break
-		}
-    
-    if err := json.Unmarshal([]byte(jsonData), &chunk); err != nil {
-      utils.Error("[HandleChat] Error parsing chunk", err, jsonData)
-      continue
-    }
-
-		if chunk.Usage.TotalTokens > 0 {
-			tokenUsage = chunk.Usage.TotalTokens
-		}
-    
-    // Extract content from the chunk
-    if len(chunk.Choices) > 0 {
-      var content string
-      
-      // Try to get content from delta first (streaming format)
-      if chunk.Choices[0].Delta.Content != "" {
-        content = chunk.Choices[0].Delta.Content
-      } else if chunk.Choices[0].Text != "" {
-        // Fall back to text if available
-        content = chunk.Choices[0].Text
-      }
-      
-      // Only process non-empty content
-      if content != "" {
-				stringProduced += content
-
-				if os.Getenv("LOG_LEVEL") == "DEBUG" {
-					// utils.Debug("[HandleChat] Sending response", content)
-				}
-
-				responseObj := map[string]interface{}{
-          "content":       content,
-          "model":         chunk.Model,
-          "totalTokens":   tokenUsage,
-          "conversationID": conv.ID.Hex(),
-          "conversationTitle": conv.Title,
-        }
-      	
-				responseJSON, err := json.Marshal(responseObj)
-        if err != nil {
-          utils.Error("[HandleChat] Error marshaling response", err)
-          continue
-        }
-
-        // Write the original line to the response
-        fmt.Fprintf(w, "%s\n\n", ([]byte)("data: " + string(responseJSON)))
-        w.(http.Flusher).Flush()
-      }
-    }
-  }
-  
-  if err := scanner.Err(); err != nil {
-    utils.Error("[HandleChat] Error reading response", err)
-  }
+	
+	conv, isNew, err := db.PushMessage(r.Context(), partialConv, payload.Messages[0])
+	if err != nil {
+		utils.Error("[HandleChat] Error pushing message", err)
+		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	
+	// Set headers for SSE
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.Header().Set("Transfer-Encoding", "chunked")
+	
+	// Select the appropriate model
+	model := SelectModel(payload.ModelSelected, payload.Messages[0])
+	
+	// Get the response from the model's API
+	response, err := SendChatCompletion(model, conv)
+	if err != nil {
+		utils.Error("[HandleChat] Error sending chat completion", err)
+		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	
+	// Create a chunk processor for handling the response
+	chunkProcessor := NewChunkProcessor(w, conv, isNew)
+	
+	// Process the response based on the model type
+	var processErr error
+	if strings.HasPrefix(model.Name, "Claude/") {
+		// Use Claude-specific chunk processor
+		processErr = chunkProcessor.ProcessClaudeChunk(r.Context(), response)
+	} else {
+		// Use standard chunk processor for OpenAI and Together AI
+		processErr = chunkProcessor.ProcessStandardChunk(r.Context(), response)
+	}
+	
+	if processErr != nil {
+		utils.Error("[HandleChat] Error processing response", processErr)
+	}
 }
 
 func API_ListConversation(w http.ResponseWriter, r *http.Request) {
@@ -308,7 +248,7 @@ func API_HandleConversation(w http.ResponseWriter, r *http.Request) {
       return
     }
 
-    utils.Log("[API_HandleConversation] Returning conversation", string(response))
+    utils.Log("[API_HandleConversation] Returning conversation %s", id)
 
     w.Header().Set("Content-Type", "application/json")
     w.Write(response)

@@ -116,6 +116,8 @@ class InputBox extends StatelessWidget {
         res += "-" + parts[i];
       } else if (RegExp(r'\d\.\d').hasMatch(parts[i])) {
         res += "-" + parts[i];
+      } else if (RegExp(r'\d').hasMatch(parts[i])) {
+        res += "-" + parts[i];
       }
     }
 

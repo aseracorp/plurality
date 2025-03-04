@@ -28,6 +28,11 @@ class _ModelSelectionModalState extends State<ModelSelectionModal> {
     'deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free',
     'deepseek-ai/DeepSeek-V3',
     'Qwen/Qwen2-VL-72B-Instruct',
+    'ChatGPT/gpt-4o-mini',
+    'ChatGPT/gpt-3.5-turbo',
+    'ChatGPT/gpt-4o',
+    'Claude/claude-3-haiku',
+    'Claude/claude-3-7-sonnet',
   ];
 
   final List<String> _visionModelOptions = [

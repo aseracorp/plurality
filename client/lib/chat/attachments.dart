@@ -8,12 +8,14 @@ class AttachmentViewer extends StatelessWidget {
   final Attachment attachment;
   final void Function(Attachment attachment) removeAttachment;
   final bool editMode;
+  final bool mini;
 
   const AttachmentViewer({
     Key? key,
     required this.attachment,
     required this.removeAttachment,
     required this.editMode,
+    this.mini = false,
   }) : super(key: key);
 
   String summarizeText(int nb, String text) {
@@ -50,8 +52,8 @@ class AttachmentViewer extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(right: 8.0),
             child: Container(
-              width: 100,
-              height: 100,
+              width: mini ? 10 : 100,
+              height: mini ? 10 : 100,
               decoration: BoxDecoration(
                 color: Colors.grey[200],
                 borderRadius: BorderRadius.circular(8.0),
@@ -79,6 +81,7 @@ class AttachmentViewer extends StatelessWidget {
       );
     } else if (attachment.type == "snippet") {
       return TextPreviewComponent(
+        mini: mini,
         content: attachment.content,
         summary: summarizeText(10, attachment.content),
       );
@@ -93,7 +96,7 @@ class AttachmentViewer extends StatelessWidget {
                 constraints: BoxConstraints(maxHeight: 100),
                 child: Image.memory(
                   base64Decode((attachment?.content.split(",")?.last) ?? ''),
-                  width: 100,
+                  width: mini ? 10 : 100,
                   fit: BoxFit.cover,
                   cacheWidth: 100,
                   gaplessPlayback: true,
@@ -114,7 +117,7 @@ class AttachmentViewer extends StatelessWidget {
         ],
       );
     } else if (attachment.type == "image_url") {
-      return ImagePreviewComponent(imageUrl: attachment.content);
+      return ImagePreviewComponent(imageUrl: attachment.content, mini: mini);
     }
     return Container();
   }

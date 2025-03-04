@@ -351,6 +351,12 @@ class Model {
   Map<String, dynamic> toJson() => {'name': name, 'params': params};
 
   factory Model.fromJson(Map<String, dynamic> json) {
-    return Model(name: json['name'], params: json['params']);
+    var params = null;
+    try {
+      params = json['params'] as Map<String, String>? ?? null;
+    } catch (e) {
+      params = null;
+    }
+    return Model(name: json['name'], params: params);
   }
 }

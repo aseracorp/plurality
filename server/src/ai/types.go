@@ -8,6 +8,7 @@ import (
 
 
 type ImageGenerationRequest struct {
+	ConversationID primitive.ObjectID `json:"conversation_id"`
 	Model          string `json:"model"`
 	Prompt         string `json:"prompt"`
 	Width          int    `json:"width"`
@@ -36,6 +37,15 @@ type ChatRequest struct {
 	RepetitionPenalty float64   `json:"repetition_penalty"`
 	Stop              []string  `json:"stop"`
 	Stream            bool      `json:"stream"`
+}
+
+type ChatRequestChatGPT struct {
+	Model             string       `json:"model"`
+	Messages          []MessageReq `json:"messages"`
+	MaxTokens         *int         `json:"max_completion_tokens"`
+	Temperature       float64      `json:"temperature"`
+	TopP              float64      `json:"top_p"`
+	Stream						bool         `json:"stream"`	
 }
 
 type ChatPayload struct {

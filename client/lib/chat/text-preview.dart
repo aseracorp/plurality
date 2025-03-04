@@ -6,11 +6,13 @@ import 'package:share_plus/share_plus.dart';
 class TextPreviewComponent extends StatelessWidget {
   final String content;
   final String summary;
+  final bool mini;
 
   const TextPreviewComponent({
     Key? key,
     required this.content,
     required this.summary,
+    this.mini = false,
   }) : super(key: key);
 
   @override
@@ -19,10 +21,10 @@ class TextPreviewComponent extends StatelessWidget {
       key: ValueKey('text_${content.hashCode}'),
       padding: const EdgeInsets.only(bottom: 8.0),
       child: GestureDetector(
-        onTap: () => _showTextPreviewModal(context),
+        onTap: () => {if (!mini) _showTextPreviewModal(context)},
         child: Container(
-          width: 180,
-          height: 150,
+          width: mini ? 18 : 180,
+          height: mini ? 15 : 150,
           decoration: BoxDecoration(
             color: Colors.grey[200],
             borderRadius: BorderRadius.circular(8.0),

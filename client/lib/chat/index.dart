@@ -18,6 +18,23 @@ class ChatScreen extends ConsumerStatefulWidget {
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   int _selectedIndex = 0;
   String? _selectedConversationId;
+  String convTitle = '';
+  String searchQuery = '';
+
+  // Extract the model selection logic to a separate method
+  void _updateTitle() {
+    final conversationsState = ref.read(conversationsProvider);
+    final matches =
+        conversationsState
+            .where((conv) => conv.id == _selectedConversationId)
+            .toList();
+
+    if (matches.isNotEmpty) {
+      setState(() {
+        convTitle = matches[0].title;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -61,7 +78,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         appBar: AppBar(
           title:
               _selectedConversationId != null
-                  ? Text(_selectedConversationId ?? '')
+                  ? Text(buildTitle(convTitle) ?? '')
                   : Text('Plurality Chat'),
           leading:
               _selectedConversationId != null
@@ -188,8 +205,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   border: null,
                 ),
                 onChanged: (value) {
-                  // Implement search functionality here
-                  // This is where you'd filter the conversations based on the search term
+                  setState(() {
+                    searchQuery = value;
+                  });
                 },
               ),
             ),
@@ -199,49 +217,49 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 itemCount: conversations.length,
                 itemBuilder: (context, index) {
                   final conv = conversations[index];
-                  var title =
-                      conv.title == ""
-                          ? 'Untitled'
-                          : conv.title.replaceAll(RegExp(r'\*\*'), '');
-                  title =
-                      (title.length > 100
-                          ? '${title.substring(0, 100)}'
-                          : title);
-                  return ListTile(
-                    key: ValueKey(conv.id),
-                    title: Text(
-                      title,
-                      maxLines: 2,
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        overflow: TextOverflow.ellipsis,
-                        fontSize: 14,
+                  if (searchQuery.length < 3 ||
+                      conv.title.toLowerCase().contains(
+                        searchQuery.toLowerCase(),
+                      )) {
+                    return ListTile(
+                      key: ValueKey(conv.id),
+                      title: Text(
+                        buildTitle(conv.title),
+                        maxLines: 2,
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          overflow: TextOverflow.ellipsis,
+                          fontSize: 14,
+                        ),
                       ),
-                    ),
-                    subtitle: Text(
-                      conv.lastMessageAt.toString().substring(0, 16),
-                      style: TextStyle(fontSize: 11),
-                    ),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.delete),
-                      onPressed: () {
-                        ref
-                            .read(conversationsProvider.notifier)
-                            .deleteConversation(conv.id);
-                        if (_selectedConversationId == conv.id) {
-                          setState(() {
-                            _selectedConversationId = null;
-                          });
-                        }
+                      subtitle: Text(
+                        conv.lastMessageAt.toString().substring(0, 16),
+                        style: TextStyle(fontSize: 11),
+                      ),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.delete),
+                        onPressed: () {
+                          ref
+                              .read(conversationsProvider.notifier)
+                              .deleteConversation(conv.id);
+                          if (_selectedConversationId == conv.id) {
+                            setState(() {
+                              _selectedConversationId = null;
+                            });
+                          }
+                        },
+                      ),
+                      selected: _selectedConversationId == conv.id,
+                      onTap: () {
+                        setState(() {
+                          _selectedConversationId = conv.id;
+                        });
+                        _updateTitle();
                       },
-                    ),
-                    selected: _selectedConversationId == conv.id,
-                    onTap: () {
-                      setState(() {
-                        _selectedConversationId = conv.id;
-                      });
-                    },
-                  );
+                    );
+                  } else {
+                    return Container();
+                  }
                 },
               ),
             ),
@@ -299,4 +317,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       );
     }
   }
+}
+
+String buildTitle(String title) {
+  title = title == "" ? 'Untitled' : title.replaceAll(RegExp(r'\*\*'), '');
+  title = (title.length > 100 ? '${title.substring(0, 100)}' : title);
+  return title;
 }

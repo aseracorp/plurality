@@ -47,6 +47,14 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
     _loadConversations();
   }
 
+  void loadConversation(String id) async {
+    var conv = await apiService.getConversation(id);
+    if (conv != null) {
+      await ConversationStorage.saveConversation(conv);
+      _loadConversations();
+    }
+  }
+
   // Add a message
   Future<void> addMessage({
     required String conversationId,

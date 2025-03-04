@@ -16,11 +16,17 @@ class ConversationStorage {
 
   // Initialize Hive
   static Future<void> init() async {
-    final appDocumentDirectory = await getApplicationSupportDirectory();
+    try {
+      final appDocumentDirectory = await getApplicationSupportDirectory();
 
-    print('Storage - init - Initializing Hive at ${appDocumentDirectory.path}');
+      print(
+        'Storage - init - Initializing Hive at ${appDocumentDirectory.path}',
+      );
 
-    Hive.init(appDocumentDirectory.path);
+      Hive.init(appDocumentDirectory.path);
+    } catch (e) {
+      Hive.initFlutter();
+    }
 
     // Register adapters
     Hive.registerAdapter(MessageContentURLAdapter());
