@@ -24,7 +24,7 @@ class MiddleClickScroller extends StatefulWidget {
     required this.scrollController,
     this.iconColor = Colors.blue,
     this.iconSize = 40,
-    this.maxScrollSpeed = 100.0,
+    this.maxScrollSpeed = 200.0,
   }) : super(key: key);
 
   @override
@@ -90,7 +90,7 @@ class _MiddleClickScrollerState extends State<MiddleClickScroller> {
   // Start the continuous scrolling timer
   void _startScrollTimer() {
     _scrollTimer?.cancel();
-    _scrollTimer = Timer.periodic(Duration(milliseconds: 16), (timer) {
+    _scrollTimer = Timer.periodic(Duration(milliseconds: 13), (timer) {
       if (!_isScrollModeActive || !mounted) {
         timer.cancel();
         return;
@@ -142,7 +142,7 @@ class _MiddleClickScrollerState extends State<MiddleClickScroller> {
 
     // Calculate normalized scroll speed based on distance from anchor
     // The further from anchor, the faster it scrolls, but with a maximum speed
-    double speed = distance * 0.3; // Base sensitivity
+    double speed = distance * 0.2; // Base sensitivity
 
     // Cap the maximum speed
     if (speed > 0) {

@@ -119,14 +119,17 @@ class TextPreviewComponent extends StatelessWidget {
                           icon: const Icon(Icons.share),
                           onPressed: () async {
                             final bytes = Uint8List.fromList(content.codeUnits);
-                            await Share.shareXFiles([
-                              XFile.fromData(
-                                bytes,
-                                name:
-                                    'text_${DateTime.now().millisecondsSinceEpoch}.txt',
-                                mimeType: 'text/plain',
-                              ),
-                            ]);
+                            await Share.shareXFiles(
+                              [
+                                XFile.fromData(
+                                  bytes,
+                                  name:
+                                      'text_${DateTime.now().millisecondsSinceEpoch}.txt',
+                                  mimeType: 'text/plain',
+                                ),
+                              ],
+                              fileNameOverrides: ['text.txt'],
+                            );
                           },
                           padding: EdgeInsets.zero,
                           constraints: const BoxConstraints(),

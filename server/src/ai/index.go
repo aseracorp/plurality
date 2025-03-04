@@ -45,7 +45,7 @@ func SendChatCompletionTogetherAI(model utils.Model, payload utils.Conversation)
 
 	msgList := append([]utils.Message{SystemPrompt}, payload.Messages...)
 	msgReqList := make([]MessageReq, 0, len(msgList))
-	for _, msg := range msgList {
+	for index, msg := range msgList {
 		msgContent := make([]utils.MessageContent, 0, len(msg.Content))
 		for _, content := range msg.Content {
 			contentType := content.Type;
@@ -59,7 +59,7 @@ func SendChatCompletionTogetherAI(model utils.Model, payload utils.Conversation)
 					Type: contentType,
 					Text: content.Text,
 				})
-			} else if contentType == "image_url" {
+			} else if contentType == "image_url" && index == len(msgList) - 1 {
 				msgContent = append(msgContent, utils.MessageContent{
 					Type: contentType,
 					ImageURL: utils.MessageContentURL{

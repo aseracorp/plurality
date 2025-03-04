@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:plurality/chat/attachments.dart';
 import './snackbar.dart';
 import 'package:flutter/material.dart';
@@ -554,7 +555,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       scrollController: _mainScrollController,
       iconColor: Theme.of(context).primaryColor,
       child: MiniMap(
-        enabled: !widget.isMobile,
+        enabled: !widget.isMobile && !kIsWeb,
         mainScrollController: _mainScrollController,
         miniMapScrollController: _miniMapScrollController,
         miniMapContent: miniMapContent,

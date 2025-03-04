@@ -7,7 +7,7 @@ import '../utils/types.dart';
 class ApiService {
   static final ApiService _instance = ApiService._internal();
   final AuthService _authService = AuthService();
-  final String _baseUrl = 'http://localhost:8090';
+  final String _baseUrl = 'http://192.168.1.225:8090';
 
   // Factory constructor to return the same instance every time
   factory ApiService() {

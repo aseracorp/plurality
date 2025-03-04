@@ -27,7 +27,7 @@ func main() {
 
 	// Register secure routes with the auth middleware
 	r.HandleFunc("/chat", utils.AuthMiddleware(ai.HandleChat)).Methods("POST", "OPTIONS")
-	r.HandleFunc("/generate-image", utils.AuthMiddleware(ai.HandleImageGeneration)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/generate-image", utils.AuthMiddleware(ai.HandleImageGeneration)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/conversations", utils.AuthMiddleware(ai.API_ListConversation)).Methods("GET", "OPTIONS")
 	r.HandleFunc("/conversation/{id}", utils.AuthMiddleware(ai.API_HandleConversation)).Methods("GET", "PUT", "DELETE", "OPTIONS")
 	r.HandleFunc("/generate-title/{id}", utils.AuthMiddleware(ai.API_HandleTitleGeneration)).Methods("GET", "OPTIONS")

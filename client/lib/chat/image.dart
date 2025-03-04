@@ -87,7 +87,7 @@ class ImagePreviewComponent extends StatelessWidget {
                             onPressed: () async {
                               await FileSaver.instance.saveFile(
                                 name:
-                                    'image_${DateTime.now().millisecondsSinceEpoch}.png',
+                                    'image_${DateTime.now().millisecondsSinceEpoch}.jpg',
                                 bytes: decodedImage,
                               );
 
@@ -107,9 +107,10 @@ class ImagePreviewComponent extends StatelessWidget {
                           IconButton(
                             icon: const Icon(Icons.share, color: Colors.white),
                             onPressed: () async {
-                              await Share.shareXFiles([
-                                XFile.fromData(decodedImage),
-                              ]);
+                              await Share.shareXFiles(
+                                [XFile.fromData(decodedImage)],
+                                fileNameOverrides: ['image.jpg'],
+                              );
                             },
                             padding: EdgeInsets.zero,
                             constraints: const BoxConstraints(),
