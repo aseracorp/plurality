@@ -12,8 +12,6 @@ class ConversationStorage {
   static const String _conversationBoxName = 'conversations';
   static const String _prefBoxName = 'preferences';
 
-  final AuthService _authService = AuthService();
-
   // Initialize Hive
   static Future<void> init() async {
     try {
@@ -39,12 +37,35 @@ class ConversationStorage {
 
     // Open box
     await Hive.openBox<Conversation>(_conversationBoxName);
-    await Hive.openBox<String>(_prefBoxName);
+    await Hive.openBox<dynamic>(_prefBoxName);
   }
 
   // Get the box
   static Box<Conversation> _getBox() {
     return Hive.box<Conversation>(_conversationBoxName);
+  }
+
+  // Get preferences
+  static Box<dynamic> _getPrefBox() {
+    return Hive.box<dynamic>(_prefBoxName);
+  }
+
+  // Get Selected Model Preference
+  static ModelSelected getSelectedModel() {
+    final box = _getPrefBox();
+    final modelSelected = box.get('modelSelected');
+
+    if (modelSelected == null) {
+      return ModelSelected();
+    }
+
+    return modelSelected;
+  }
+
+  // Save Selected Model Preference
+  static Future<void> saveSelectedModel(ModelSelected modelSelected) async {
+    final box = _getPrefBox();
+    await box.put('modelSelected', modelSelected);
   }
 
   // CRUD OPERATIONS
@@ -114,15 +135,16 @@ class ConversationStorage {
   // Update conversation title
   static Future<Conversation?> updateConversationMetaData({
     required String conversationId,
-    required String title,
-    required ModelSelected modelSelected,
+    required String? title,
+    required ModelSelected? modelSelected,
   }) async {
     final conversation = getConversation(conversationId);
     if (conversation == null) return null;
 
-    if (title != "") conversation.title = title;
+    if (title != "" && title != null) conversation.title = title;
 
-    conversation.modelSelected = modelSelected;
+    if (modelSelected != null) conversation.modelSelected = modelSelected;
+
     await saveConversation(conversation);
     return conversation;
   }

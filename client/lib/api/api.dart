@@ -116,6 +116,7 @@ class ApiService {
           if (content == null) {
             return '';
           }
+
           return content;
         });
   }
@@ -272,6 +273,36 @@ class ApiService {
       } else {
         throw APIException(
           'Failed to get conversation: ${response.reasonPhrase}',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      if (e is APIException) rethrow;
+      throw APIException('API request failed: $e');
+    }
+  }
+
+  // getConversation
+  Future<String?> generateTitle(String conversationID) async {
+    try {
+      // Get authentication token
+      String? firebaseToken = await _authService.getCurrentUserToken();
+      if (firebaseToken == null) {
+        throw Exception('User not authenticated');
+      }
+      // Make the GET request
+      final response = await http.get(
+        Uri.parse('$_baseUrl/generate-title/$conversationID'),
+        headers: {'Authorization': 'Bearer $firebaseToken'},
+      );
+      // Process the response
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        // Use utf8.decode with response.bodyBytes instead of directly using response.body
+        final decodedResponse = utf8.decode(response.bodyBytes);
+        return decodedResponse;
+      } else {
+        throw APIException(
+          'Failed to generate title for ${conversationID} : ${response.reasonPhrase}',
           statusCode: response.statusCode,
         );
       }

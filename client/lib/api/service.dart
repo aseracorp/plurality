@@ -48,6 +48,10 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
   }
 
   void loadConversation(String id) async {
+    if (id == '') {
+      return;
+    }
+
     var conv = await apiService.getConversation(id);
     if (conv != null) {
       await ConversationStorage.saveConversation(conv);
@@ -79,8 +83,8 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
   // Update title
   Future<void> updateConversationMetaData({
     required String conversationId,
-    required String title,
-    required ModelSelected modelSelected,
+    String? title,
+    ModelSelected? modelSelected,
   }) async {
     final updated = await ConversationStorage.updateConversationMetaData(
       conversationId: conversationId,
@@ -143,6 +147,15 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
       // Return null if not found
       return null;
     }
+  }
+
+  // Get Selected Model Preference
+  ModelSelected getSelectedModel() {
+    return ConversationStorage.getSelectedModel();
+  }
+
+  void saveSelectedModel(ModelSelected modelSelected) {
+    ConversationStorage.saveSelectedModel(modelSelected);
   }
 
   @override

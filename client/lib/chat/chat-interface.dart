@@ -15,7 +15,8 @@ import './image.dart';
 import './image-gen.dart';
 import './input.dart';
 import '../utils/file-types.dart';
-import './middle-click.dart';
+import './minimap.dart'; // MiniMap component
+import './middle-click.dart'; // MiddleClickScroller
 import 'package:super_sliver_list/super_sliver_list.dart';
 
 class ChatInterface extends ConsumerStatefulWidget {
@@ -43,7 +44,13 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   final FocusNode _inputFocusNode = FocusNode();
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   final TextEditingController _messageController = TextEditingController();
+
+  // Main content scroll controller
   final ScrollController _mainScrollController = ScrollController();
+
+  // MiniMap scroll controller
+  final ScrollController _miniMapScrollController = ScrollController();
+
   final ImagePicker _imagePicker = ImagePicker();
 
   final List<Attachment> attachments = [];
@@ -79,12 +86,18 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     if (oldWidget.conversationId != widget.conversationId) {
       _updateSelectedModel();
       _loadConversation(widget.conversationId);
+
+      setState(() {
+        _shouldAutoScroll = true;
+      });
     }
   }
 
   // Extract the model selection logic to a separate method
   void _updateSelectedModel() {
     final conversationsState = ref.read(conversationsProvider);
+    final conversationsNotifier = ref.read(conversationsProvider.notifier);
+
     final matches =
         conversationsState
             .where((conv) => conv.id == widget.conversationId)
@@ -92,6 +105,8 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
     if (matches.isNotEmpty) {
       _modelSelected = matches.first.modelSelected;
+    } else {
+      _modelSelected = conversationsNotifier.getSelectedModel();
     }
   }
 
@@ -105,11 +120,31 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     setState(() {
       _modelSelected = modelSelected;
     });
+
+    final conversationsNotifier = ref.read(conversationsProvider.notifier);
+    conversationsNotifier.saveSelectedModel(modelSelected);
+  }
+
+  void _generateTitle(
+    ConversationsNotifier conversationsNotifier,
+    String conversationId,
+  ) async {
+    // call api.generateTitle and save it to the conversation
+    var title = await _apiService.generateTitle(widget.conversationId);
+
+    // save
+    if (title != null) {
+      conversationsNotifier.updateConversationMetaData(
+        conversationId: widget.conversationId,
+        title: title,
+      );
+    }
   }
 
   @override
   void dispose() {
     _mainScrollController.dispose();
+    _miniMapScrollController.dispose();
     _inputFocusNode.dispose();
     _messageController.dispose();
     super.dispose();
@@ -352,6 +387,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         message: assistantMessage,
       );
 
+      if (isNewConversation) {
+        _generateTitle(conversationsNotifier, currentConversationID);
+      }
+
       genImage(
         _modelSelected.imageGen?.name ?? '',
         newMessage.text,
@@ -396,29 +435,16 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final conversationsState = ref.watch(conversationsProvider);
-    final currentConversation = conversationsState.firstWhere(
-      (conv) => conv.id == widget.conversationId,
-      orElse:
-          () => Conversation(
-            id: widget.conversationId,
-            title: '',
-            messages: [],
-            lastMessageAt: DateTime.now(),
-            modelSelected: _modelSelected,
-          ),
-    );
-
-    final messages = currentConversation.messages;
-
-    if (messages.isNotEmpty) _scrollToBottom();
-
-    // Main content ListView
-    final mainContent = SuperListView.builder(
-      controller: _mainScrollController,
-      padding: const EdgeInsets.all(16.0),
+  // Function to build a message list
+  Widget buildMessageList({
+    required List<Message> messages,
+    required ScrollController controller,
+    bool mini = false,
+    EdgeInsetsGeometry? padding,
+  }) {
+    return SuperListView.builder(
+      controller: controller,
+      padding: padding ?? const EdgeInsets.all(16.0),
       itemCount:
           messages.length + (_currentStreamedResponse.isNotEmpty ? 1 : 0),
       itemBuilder: (context, index) {
@@ -445,6 +471,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                   .where((c) => c.type != "text")
                   .map(
                     (attach) => AttachmentViewer(
+                      mini: mini,
                       attachment: Attachment(
                         type: attach.type,
                         content:
@@ -460,6 +487,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                   .toList(),
               if (message.text != "")
                 AnimatedMessageBox(
+                  mini: mini, // Use mini parameter
                   text: message.text,
                   isBot: message.isBot,
                   isLoading:
@@ -476,6 +504,66 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         );
       },
     );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final conversationsState = ref.watch(conversationsProvider);
+    final currentConversation = conversationsState.firstWhere(
+      (conv) => conv.id == widget.conversationId,
+      orElse:
+          () => Conversation(
+            id: widget.conversationId,
+            title: '',
+            messages: [],
+            lastMessageAt: DateTime.now(),
+            modelSelected: _modelSelected,
+          ),
+    );
+
+    final messages = currentConversation.messages;
+
+    if (messages.isNotEmpty) _scrollToBottom();
+
+    // Get bottom padding to ensure minimap doesn't go under input box
+    final bottomPadding = 0.0; /*
+        MediaQuery.of(context).padding.bottom +
+        80.0; // Input box height estimation
+*/
+    // Build main content and minimap content using the shared function
+    final mainContent = buildMessageList(
+      messages: messages,
+      controller: _mainScrollController,
+    );
+
+    final miniMapContent = buildMessageList(
+      messages: messages,
+      controller: _miniMapScrollController,
+      mini: true,
+      padding: EdgeInsets.only(
+        left: 4.0,
+        right: 4.0,
+        top: 4.0,
+        bottom:
+            bottomPadding, // Add bottom padding to prevent going under input
+      ),
+    );
+
+    // Combine both scrolling methods
+    Widget chatContent = MiddleClickScroller(
+      scrollController: _mainScrollController,
+      iconColor: Theme.of(context).primaryColor,
+      child: MiniMap(
+        enabled: !widget.isMobile,
+        mainScrollController: _mainScrollController,
+        miniMapScrollController: _miniMapScrollController,
+        miniMapContent: miniMapContent,
+        overlayColor: Theme.of(context).primaryColor,
+        miniMapWidth: 140,
+        overlayHeight: 80,
+        child: mainContent,
+      ),
+    );
 
     return Stack(
       children: [
@@ -483,14 +571,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            if (widget.conversationId.isNotEmpty)
-              Expanded(
-                child: MiddleClickScroller(
-                  scrollController: _mainScrollController,
-                  iconColor: Theme.of(context).primaryColor,
-                  child: mainContent,
-                ),
-              ),
+            if (widget.conversationId.isNotEmpty) Expanded(child: chatContent),
 
             if (widget.conversationId.isEmpty)
               Center(
@@ -500,7 +581,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                 ),
               ),
 
-            // Input Container (unchanged)
+            // Input Container
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 16.0),
               padding:

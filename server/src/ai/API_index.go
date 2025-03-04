@@ -259,3 +259,59 @@ func API_HandleConversation(w http.ResponseWriter, r *http.Request) {
     return
   }
 }
+
+// Get first two messages of a conversation and return the title
+func API_HandleTitleGeneration(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	conv, err := db.GetConversationById(r.Context(), id)
+	if err != nil {
+		utils.Error("[API_HandleTitleGeneration] Error getting conversation", err)
+		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var messages []utils.Message
+
+	if len(conv.Messages) > 2 {
+		messages = conv.Messages[:2]
+	} else {
+		messages = conv.Messages
+	}
+
+	title := ""
+	payload := ""
+
+	for _, message := range messages {
+		payload += message.Role + ": \n"
+		for _, content := range message.Content {
+			if content.Type == "text" {
+				payload += content.Text + "\n\n"
+			}
+		}
+	}
+
+	if len(payload) > 500 {
+		payload = payload[:500]
+	}
+
+	title, err = GenerateTitleForMessage(payload)
+	if err != nil {
+		utils.Error("[API_HandleTitleGeneration] Error generating title", err)
+		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	err = db.UpdateConversationMetadata(r.Context(), conv.ID, title)
+	if err != nil {
+		utils.Error("[API_HandleTitleGeneration] Error updating conversation metadata", err)
+		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	utils.Log("[API_HandleTitleGeneration] Title generated and saved to DB")
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(title))
+}

@@ -134,13 +134,16 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
                                 )!,
                           )
                           : null,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.1),
-                      blurRadius: 4,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
+                  boxShadow:
+                      widget.mini
+                          ? [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.1),
+                              blurRadius: 4,
+                              offset: const Offset(0, 2),
+                            ),
+                          ]
+                          : null,
                 ),
                 child: SelectionArea(
                   child: MarkdownBody(
@@ -177,6 +180,27 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
                       h6: TextStyle(fontSize: widget.mini ? 4 : 12),
                       blockquote: TextStyle(fontSize: widget.mini ? 3 : 16),
                       listBullet: TextStyle(fontSize: widget.mini ? 3 : 16),
+                      blockquotePadding: EdgeInsets.symmetric(
+                        horizontal: widget.mini ? 2 : 8,
+                        vertical: widget.mini ? 1 : 4,
+                      ),
+                      listBulletPadding: EdgeInsets.only(
+                        left: widget.mini ? 0 : 8,
+                        right: widget.mini ? 0 : 8,
+                        top: 0,
+                        bottom: 0,
+                      ),
+                      listIndent: widget.mini ? 1 : 24,
+                      tableHead: TextStyle(fontSize: widget.mini ? 3 : 16),
+                      tableBody: TextStyle(fontSize: widget.mini ? 3 : 16),
+                      tablePadding: EdgeInsets.symmetric(
+                        horizontal: widget.mini ? 0 : 8,
+                        vertical: widget.mini ? 0 : 4,
+                      ),
+                      tableCellsPadding: EdgeInsets.symmetric(
+                        horizontal: widget.mini ? 2 : 8,
+                        vertical: widget.mini ? 1 : 4,
+                      ),
                     ),
                   ),
                 ),
@@ -208,7 +232,10 @@ class CodeElementBuilder extends MarkdownElementBuilder {
       if (isInlineCode) {
         // Simple inline code styling
         return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          padding:
+              mini
+                  ? const EdgeInsets.symmetric(horizontal: 2, vertical: 1)
+                  : const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
           decoration: BoxDecoration(
             color: isBot ? const Color(0xFFEEEEEE) : const Color(0xFF3A3A3A),
             borderRadius: BorderRadius.circular(4),
@@ -230,14 +257,14 @@ class CodeElementBuilder extends MarkdownElementBuilder {
               margin: const EdgeInsets.symmetric(vertical: 8),
               decoration: BoxDecoration(
                 color: const Color(0xFF2D2D2D),
-                borderRadius: BorderRadius.circular(4),
+                borderRadius: BorderRadius.circular(mini ? 2 : 4),
                 border: Border.all(color: const Color(0xFF444444)),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // Line numbers column - only for multiline code
-                  if (lines.length > 1)
+                  if (lines.length > 1 && !mini)
                     Container(
                       padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
                       color: const Color(0xFF252525),

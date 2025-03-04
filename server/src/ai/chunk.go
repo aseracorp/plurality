@@ -60,7 +60,7 @@ func (cp *ChunkProcessor) ProcessStandardChunk(ctx context.Context, response io.
 			}
 
 			if cp.IsNew {
-				cp.handleNewConversationTitle(ctx)
+				//cp.handleNewConversationTitle(ctx)
 			}
 
 			fmt.Fprintf(cp.W, "%s\n\n", line)
@@ -157,7 +157,7 @@ func (cp *ChunkProcessor) ProcessClaudeChunk(ctx context.Context, response io.Re
 			}
 
 			if cp.IsNew {
-				cp.handleNewConversationTitle(ctx)
+				//cp.handleNewConversationTitle(ctx)
 			}
 
 			fmt.Fprintf(cp.W, "[DONE]\n", line)
@@ -179,49 +179,6 @@ func (cp *ChunkProcessor) ProcessClaudeChunk(ctx context.Context, response io.Re
 	}
 
 	return scanner.Err()
-}
-
-// handleNewConversationTitle generates and updates the title for new conversations
-func (cp *ChunkProcessor) handleNewConversationTitle(ctx context.Context) {
-	// Try to generate a title
-	firstMessageText := ""
-	if len(cp.Conv.Messages) > 0 && len(cp.Conv.Messages[0].Content) > 0 {
-		firstMessageText = cp.Conv.Messages[0].Content[0].Text
-	}
-	
-	pp := firstMessageText + " \n Response from AI: " + cp.StringProduced
-	if len(pp) > 1024 {
-		pp = pp[:1024]
-	}
-	
-	title, err := GenerateTitleForMessage(pp)
-	if err != nil {
-		utils.Error("[HandleChat] Error generating title", err)
-		title = "Unnamed Cookie"
-	}
-	
-	utils.Log("[HandleChat] Generated title for message", title)
-
-	// Send the final response with title
-	responseObj := map[string]interface{}{
-		"content":          "",
-		"model":            cp.ModelName,
-		"totalTokens":      cp.TokenUsage,
-		"conversationID":   cp.Conv.ID.Hex(),
-		"conversationTitle": title,
-	}
-
-	responseJSON, err := json.Marshal(responseObj)
-	if err == nil {
-		fmt.Fprintf(cp.W, "%s\n\n", ([]byte)("data: " + string(responseJSON)))
-		cp.W.(http.Flusher).Flush()
-	}
-
-	// update title in DB
-	cp.Conv.Title = title
-	if err := db.UpdateConversationMetadata(ctx, cp.Conv.ID, cp.Conv.Title); err != nil {
-		utils.Error("[HandleChat] Error updating conversation", err)
-	}
 }
 
 // sendChunkToClient formats and sends a chunk of text to the client

@@ -24,10 +24,11 @@ class ImagePreviewComponent extends StatelessWidget {
       child: GestureDetector(
         onTap: () => {if (!mini) _showImagePreviewModal(context, imageData)},
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(8.0),
+          borderRadius:
+              mini ? BorderRadius.circular(2.0) : BorderRadius.circular(8.0),
           child: Image.memory(
             base64Decode(imageData),
-            width: 200,
+            width: mini ? 20 : 200,
             fit: BoxFit.cover,
             cacheWidth: 200,
             gaplessPlayback: true,

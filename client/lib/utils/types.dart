@@ -334,6 +334,13 @@ class ModelSelected {
           json['audio_transcribe'] != null
               ? Model.fromJson(json['audio_transcribe'])
               : null,
+      videoGen:
+          json['video_gen'] != null ? Model.fromJson(json['video_gen']) : null,
+      videoVision:
+          json['video_vision'] != null
+              ? Model.fromJson(json['video_vision'])
+              : null,
+      code: json['code'] != null ? Model.fromJson(json['code']) : null,
     );
   }
 }
