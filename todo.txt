@@ -1,5 +1,5 @@
 # private MVP1 - small
- - token counts in db
+- token counts in db
   - dont forget to count input tokens
 - Rate limiting (count token)
   - show message count 
@@ -11,7 +11,7 @@
 - Settings
   - Change Password
 - logo!!
-  
+
 # private MVP2 - bigger
 - pin conversations and messages?
 - bin doc parse / long doc integration
@@ -25,12 +25,14 @@
 - local mode
 - History pagination or infinite scroll?
 - Claude / ChatGPT images vision
+- dark mode
 
 # Roadmap to public
 - Login / Register
   - google 
   - apple
 - Settings
+  - dark mode
   - Change Password
   - local mode
 - Chat Conversation
