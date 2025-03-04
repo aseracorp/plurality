@@ -52,6 +52,7 @@ dependencies:
   file_saver: ^0.2.14
   share_plus: ^10.1.4
   file_picker: ^9.0.2
+  super_sliver_list: ^0.4.1
 
 
 dev_dependencies:

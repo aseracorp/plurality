@@ -16,6 +16,7 @@ import './image-gen.dart';
 import './input.dart';
 import '../utils/file-types.dart';
 import './middle-click.dart';
+import 'package:super_sliver_list/super_sliver_list.dart';
 
 class ChatInterface extends ConsumerStatefulWidget {
   final String conversationId;
@@ -415,7 +416,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     if (messages.isNotEmpty) _scrollToBottom();
 
     // Main content ListView
-    final mainContent = ListView.builder(
+    final mainContent = SuperListView.builder(
       controller: _mainScrollController,
       padding: const EdgeInsets.all(16.0),
       itemCount:
