@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-
 import './auth-service.dart';
 
 class LoginForm extends StatefulWidget {
@@ -23,6 +22,36 @@ class _LoginFormState extends State<LoginForm> {
   final _formKey = GlobalKey<FormState>();
   String email = '';
   String password = '';
+
+  // Method to handle password reset
+  void _resetPassword(BuildContext context) async {
+    if (email.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Please enter your email first'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Password reset email sent. Check your inbox.'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: ${e.toString()}'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -69,9 +98,33 @@ class _LoginFormState extends State<LoginForm> {
               setState(() => password = val);
             },
           ),
+          SizedBox(height: 12.0),
+          Text(
+            widget.error,
+            style: TextStyle(color: Colors.red, fontSize: 14.0),
+          ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              TextButton(
+                child: Text('Register'),
+                onPressed: () {
+                  Navigator.pushNamed(context, '/register');
+                },
+              ),
+              TextButton(
+                child: Text('Forgot Password'),
+                onPressed: () => _resetPassword(context),
+              ),
+            ],
+          ),
           SizedBox(height: 20.0),
           ElevatedButton(
-            child: Text('Sign In', style: TextStyle(color: Colors.white)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.primary,
+              foregroundColor: Theme.of(context).colorScheme.onPrimary,
+            ),
+            child: Text('Sign In'),
             onPressed:
                 widget.loading
                     ? null
@@ -80,17 +133,6 @@ class _LoginFormState extends State<LoginForm> {
                         widget.onSubmit(email, password);
                       }
                     },
-          ),
-          SizedBox(height: 12.0),
-          Text(
-            widget.error,
-            style: TextStyle(color: Colors.red, fontSize: 14.0),
-          ),
-          TextButton(
-            child: Text('Register instead'),
-            onPressed: () {
-              Navigator.pushNamed(context, '/register');
-            },
           ),
         ],
       ),

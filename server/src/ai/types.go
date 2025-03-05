@@ -58,6 +58,8 @@ type AIChunk struct {
 	Model string `json:"model"`
 	Usage struct {
 		TotalTokens int `json:"total_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens int `json:"prompt_tokens"`
 	} `json:"usage,omitempty"`
 	Choices []struct {
 		Text  string `json:"text"`

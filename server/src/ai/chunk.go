@@ -37,7 +37,7 @@ func NewChunkProcessor(w http.ResponseWriter, conv utils.Conversation, isNew boo
 }
 
 // ProcessStandardChunk processes SSE chunks for standard API responses (Together AI and OpenAI)
-func (cp *ChunkProcessor) ProcessStandardChunk(ctx context.Context, response io.ReadCloser) error {
+func (cp *ChunkProcessor) ProcessStandardChunk(ctx context.Context, response io.ReadCloser, modelSelected utils.Model) error {
 	defer response.Close()
 
 	// Process the SSE chunks
@@ -53,10 +53,16 @@ func (cp *ChunkProcessor) ProcessStandardChunk(ctx context.Context, response io.
 		// Extract the JSON payload
 		jsonData := strings.TrimPrefix(line, "data: ")
 
+		utils.Debug("[HandleChat] Received chunk %s", jsonData)
+
 		// Check for the [DONE] marker
 		if jsonData == "[DONE]" {
 			if cp.TokenUsage == 0 {
-				cp.TokenUsage = strings.Count(cp.StringProduced, " ")
+				err, tu := GetTokenNumber(modelSelected, cp.StringProduced)
+				if err != nil {
+					utils.MajorError("[HandleChat] Error getting token number", err)
+				}
+				cp.TokenUsage = int(tu)
 			}
 
 			if cp.IsNew {
@@ -68,6 +74,21 @@ func (cp *ChunkProcessor) ProcessStandardChunk(ctx context.Context, response io.
 
 			// Push message to DB
 			cp.saveMessageToDB(ctx)
+
+			provider := TOGETHER
+			if strings.HasPrefix(cp.ModelName, "ChatGPT/") {
+				provider = OPENAI
+			}
+
+			priceToken := GetPriceFromTokenUsage(TEXT_OUTPUT, provider, modelSelected, float64(cp.TokenUsage))
+			_, err := db.RemoveCredits(ctx, priceToken, utils.UserAction{
+				Type: TEXT_OUTPUT,
+				Provider: provider,
+				Model: modelSelected,
+			})
+			if err != nil {
+				utils.MajorError("[HandleChat] Error removing credits", err)
+			}
 			
 			utils.Log("[HandleChat] Successfully completed chat using %d tokens", cp.TokenUsage)
 			break
@@ -80,8 +101,22 @@ func (cp *ChunkProcessor) ProcessStandardChunk(ctx context.Context, response io.
 			continue
 		}
 
-		if chunk.Usage.TotalTokens > 0 {
-			cp.TokenUsage = chunk.Usage.TotalTokens
+		if chunk.Usage.CompletionTokens > 0 {
+			utils.Debug("[HandleChat] Completion tokens is : %d", chunk.Usage.PromptTokens)
+			cp.TokenUsage = chunk.Usage.CompletionTokens
+		}
+		if chunk.Usage.PromptTokens > 0 {
+			// Only for TogetherAI
+			utils.Debug("[HandleChat] Prompt Tokens is : %d", chunk.Usage.PromptTokens)
+			priceToken := GetPriceFromTokenUsage(TEXT_INPUT, TOGETHER, modelSelected, float64(chunk.Usage.PromptTokens))
+			_, err := db.RemoveCredits(ctx, priceToken, utils.UserAction{
+				Type: TEXT_INPUT,
+				Provider: TOGETHER,
+				Model: modelSelected,
+			})
+			if err != nil {
+				utils.MajorError("[HandleChat] Error removing credits", err)
+			}
 		}
 
 		cp.ModelName = chunk.Model
@@ -111,7 +146,7 @@ func (cp *ChunkProcessor) ProcessStandardChunk(ctx context.Context, response io.
 }
 
 // ProcessClaudeChunk processes SSE chunks specifically for Claude API responses
-func (cp *ChunkProcessor) ProcessClaudeChunk(ctx context.Context, response io.ReadCloser) error {
+func (cp *ChunkProcessor) ProcessClaudeChunk(ctx context.Context, response io.ReadCloser, modelSelected utils.Model) error {
 	defer response.Close()
 
 	scanner := bufio.NewScanner(response)
@@ -143,19 +178,29 @@ func (cp *ChunkProcessor) ProcessClaudeChunk(ctx context.Context, response io.Re
 		// }
 
 		// // Update token usage if available
-		// if claudeChunk.Usage.InputTokens > 0 || claudeChunk.Usage.OutputTokens > 0 {
-		// 	cp.TokenUsage = claudeChunk.Usage.InputTokens + claudeChunk.Usage.OutputTokens
-		// }
+		if claudeChunk.Usage.OutputTokens > 0 {
+			cp.TokenUsage = claudeChunk.Usage.OutputTokens
+		}
+		
+		utils.Debug("[HandleChat] caca: %d", claudeChunk.Message.Usage.InputTokens)
+		if claudeChunk.Message.Usage.InputTokens > 0 {
+			utils.Log("[HandleChat] Input tokens: %d", claudeChunk.Message.Usage.InputTokens)
 
-		// TODO: output token count in output_tokens
+			priceToken := GetPriceFromTokenUsage(TEXT_INPUT, CLAUDE, modelSelected, float64(claudeChunk.Message.Usage.InputTokens))
+			_, err := db.RemoveCredits(ctx, priceToken, utils.UserAction{
+				Type: TEXT_INPUT,
+				Provider: CLAUDE,
+				Model: modelSelected,
+			})
+
+			if err != nil {
+				utils.Error("[HandleChat] Error removing credits", err);
+			}
+		}	
 
 		// Process based on chunk type
 		switch claudeChunk.Type {
 		case "message_stop":
-			if cp.TokenUsage == 0 {
-				cp.TokenUsage = strings.Count(cp.StringProduced, " ")
-			}
-
 			if cp.IsNew {
 				//cp.handleNewConversationTitle(ctx)
 			}
@@ -165,6 +210,14 @@ func (cp *ChunkProcessor) ProcessClaudeChunk(ctx context.Context, response io.Re
 
 			// Push message to DB
 			cp.saveMessageToDB(ctx)
+
+			priceToken := GetPriceFromTokenUsage(TEXT_OUTPUT, CLAUDE, modelSelected, float64(cp.TokenUsage))
+
+			db.RemoveCredits(ctx, priceToken, utils.UserAction{
+				Type: TEXT_OUTPUT,
+				Provider: CLAUDE,
+				Model: modelSelected,
+			})
 			
 			utils.Log("[HandleChat] Successfully completed Claude chat using %d tokens", cp.TokenUsage)
 			break

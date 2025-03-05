@@ -92,7 +92,7 @@ func Error(message string, err error, args ...interface{}) {
 	}
 }
 
-func MajorError(message string, err error) {
+func MajorError(message string, err error, args ...interface{}) {
 	Error(message, err)
 }
 

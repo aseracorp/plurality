@@ -11,11 +11,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"context"
 
 	"github.com/azukaar/plurality/src/utils"
+	"github.com/azukaar/plurality/src/db"
 )
 
-func SendChatCompletionClaude(model utils.Model, payload utils.Conversation) (io.ReadCloser, error) {
+func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload utils.Conversation) (io.ReadCloser, error) {
 	var SystemPrompt = baseSystemPrompt +
 		time.Now().String() +
 		" on " +
@@ -31,6 +33,16 @@ func SendChatCompletionClaude(model utils.Model, payload utils.Conversation) (io
 	}
 
 	utils.Debug("Payload: ", payload)
+	
+	if model.Name == "" {
+		model.Name = "Claude/claude-3-haiku-20240307" // Default model
+	}
+
+
+	err, priceToken := GetPrice(TEXT_INPUT, CLAUDE, model, SystemPrompt)
+	if err != nil {
+		return nil, err
+	}
 
 	// Claude API expects a different message format compared to OpenAI
 	// Convert our messages to Claude's format
@@ -42,6 +54,13 @@ func SendChatCompletionClaude(model utils.Model, payload utils.Conversation) (io
 		
 		for _, content := range msg.Content {
 			if content.Type == "text" || content.Type == "snippet" {
+				err, _priceToken := GetPrice(TEXT_INPUT, CLAUDE, model, content.Text + " {}{}{}{}{}{}{}")
+				priceToken += _priceToken
+
+				if err != nil {
+					return nil, err
+				}
+
 				contents = append(contents, ClaudeContentReq{
 					Type: "text",
 					Text: content.Text,
@@ -74,10 +93,6 @@ func SendChatCompletionClaude(model utils.Model, payload utils.Conversation) (io
 		modelName = strings.TrimPrefix(model.Name, "Claude/")
 	}
 	
-	if modelName == "" {
-		modelName = "claude-3-haiku-20240307" // Default model
-	}
-
 	if modelName == "claude-3-haiku" {
 		modelName = "claude-3-haiku-20240307"
 	}
@@ -116,6 +131,16 @@ func SendChatCompletionClaude(model utils.Model, payload utils.Conversation) (io
 		System:      SystemPrompt,
 	}
 
+	// Check balance
+	canPerform, err := db.CheckSufficientCredits(ctx, priceToken + 1.0)
+	if err != nil {	
+		return nil, err
+	}
+
+	if !canPerform {
+		return nil, fmt.Errorf("insufficient credits for this action")
+	}
+
 	utils.Debug("A new chat request is being made with the following Claude model: %s", modelName)
 
 	jsonData, err := json.Marshal(requestData)
@@ -138,6 +163,17 @@ func SendChatCompletionClaude(model utils.Model, payload utils.Conversation) (io
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
+	}
+
+	// deduce the price of the request
+	// _, err = db.RemoveCredits(ctx, priceToken, utils.UserAction{
+	// 	Type: TEXT_INPUT,
+	// 	Provider: CLAUDE,
+	// 	Model: model,
+	// })
+
+	if err != nil {
+		utils.Error("Error removing credits: %v", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -195,7 +231,8 @@ type ClaudeChatRequest struct {
 type ClaudeAIChunk struct {
 	Type     string `json:"type"`
 	Delta    ClaudeDelta `json:"delta,omitempty"`
-	// Usage    ClaudeUsage `json:"usage,omitempty"`
+	Usage    ClaudeUsage `json:"usage,omitempty"`
+	Message  ClaudeMessage `json:"message,omitempty"`
 }
 
 type ClaudeMessage struct {
@@ -204,6 +241,7 @@ type ClaudeMessage struct {
 	Role     string `json:"role"`
 	Content  []ClaudeContent `json:"content"`
 	Model    string `json:"model"`
+	Usage 	 ClaudeUsage `json:"usage"`
 }
 
 type ClaudeDelta struct {
@@ -220,101 +258,3 @@ type ClaudeUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 }
-/*
-// ProcessClaudeStream processes the streamed response from Claude API
-// and converts it to the format expected by your application
-func ProcessClaudeStream(responseBody io.ReadCloser, writer io.Writer) error {
-	scanner := bufio.NewScanner(responseBody)
-	defer responseBody.Close()
-	
-	for scanner.Scan() {
-		line := scanner.Text()
-		
-		// Skip empty lines
-		if line == "" {
-			continue
-		}
-		
-		// Remove "data: " prefix from SSE
-		jsonData := strings.TrimPrefix(line, "data: ")
-		
-		// Handle the "[DONE]" marker
-		if jsonData == "[DONE]" {
-			break
-		}
-		
-		// Parse the JSON chunk
-		var claudeChunk ClaudeAIChunk
-		if err := json.Unmarshal([]byte(jsonData), &claudeChunk); err != nil {
-			utils.Error("Error parsing Claude response", err, "")
-			continue
-		}
-		
-		// Process based on chunk type
-		switch claudeChunk.Type {
-		case "message_start":
-			// Message start doesn't typically contain content to stream
-			continue
-			
-		case "content_block_start":
-			// Content block start doesn't typically contain text to stream
-			continue
-			
-		case "content_block_delta":
-			// This is the main streaming text from Claude
-			if claudeChunk.Delta.Type == "text" && claudeChunk.Delta.Text != "" {
-				// Convert Claude delta to your app's expected format
-				aiChunk := AIChunk{
-					Model: claudeChunk.Message.Model,
-					Choices: []struct {
-						Text  string `json:"text"`
-						Delta struct {
-							Content string `json:"content"`
-						} `json:"delta"`
-					}{
-						{
-							Delta: struct {
-								Content string `json:"content"`
-							}{
-								Content: claudeChunk.Delta.Text,
-							},
-						},
-					},
-				}
-				
-				// Marshal to JSON and write to the output
-				chunkBytes, err := json.Marshal(aiChunk)
-				if err != nil {
-					utils.Error("Error marshaling chunk", err, "")
-					continue
-				}
-				
-				if _, err := writer.Write([]byte("data: " + string(chunkBytes) + "\n\n")); err != nil {
-					utils.Error("Error writing response", err, "")
-					return err
-				}
-			}
-			
-		case "content_block_stop":
-			// Content block stop doesn't typically contain text to stream
-			continue
-			
-		case "message_delta":
-			// Message deltas might not contain text to stream
-			continue
-			
-		case "message_stop":
-			// Message stop signals the end of the message
-			break
-			
-		}
-	}
-	
-	// Write the [DONE] marker at the end
-	if _, err := writer.Write([]byte("data: [DONE]\n\n")); err != nil {
-		utils.Error("Error writing final response", err, "")
-		return err
-	}
-	
-	return scanner.Err()
-}*/

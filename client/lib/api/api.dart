@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 
 import '../auth/auth-service.dart';
 import '../utils/types.dart';
+import './balance.dart';
 
 class ApiService {
   static final ApiService _instance = ApiService._internal();
@@ -200,10 +201,10 @@ class ApiService {
     request.headers['Authorization'] =
         'Bearer ${await _authService.getCurrentUserToken()}';
 
-    var steps = 40;
+    var steps = 30;
 
     if (model.contains("FLUX.1-schnell")) {
-      steps = 12;
+      steps = 6;
     }
 
     request.body = jsonEncode({
@@ -303,6 +304,35 @@ class ApiService {
       } else {
         throw APIException(
           'Failed to generate title for ${conversationID} : ${response.reasonPhrase}',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      if (e is APIException) rethrow;
+      throw APIException('API request failed: $e');
+    }
+  }
+
+  Future<Balance> getBalance() async {
+    try {
+      // Get authentication token
+      String? firebaseToken = await _authService.getCurrentUserToken();
+      if (firebaseToken == null) {
+        throw Exception('User not authenticated');
+      }
+      // Make the GET request
+      final response = await http.get(
+        Uri.parse('$_baseUrl/balance'),
+        headers: {'Authorization': 'Bearer $firebaseToken'},
+      );
+      // Process the response
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final decodedResponse = utf8.decode(response.bodyBytes);
+        final json = jsonDecode(decodedResponse);
+        return Balance.fromJson(json);
+      } else {
+        throw APIException(
+          'Failed to get balance: ${response.reasonPhrase}',
           statusCode: response.statusCode,
         );
       }

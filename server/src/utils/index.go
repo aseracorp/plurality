@@ -15,21 +15,32 @@ import (
 // Firebase auth client
 var firebaseAuth *auth.Client
 
-// Initialize Firebase
 func InitFirebase() {
-	// You can use a service account file or application default credentials
-	opt := option.WithCredentialsFile("firebase.json")
-
-	// Create a new Firebase app
-	app, err := firebase.NewApp(context.Background(), nil, opt)
-	if err != nil {
-		Fatal("Error initializing Firebase app", err)
+	var app *firebase.App
+	var err error
+	
+	// Check if credentials are provided via environment variable
+	if credentials := os.Getenv("FIREBASE_CREDENTIALS"); credentials != "" {
+			// Use credentials from environment variable
+			opt := option.WithCredentialsJSON([]byte(credentials))
+			app, err = firebase.NewApp(context.Background(), nil, opt)
+	} else if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
+			// Use application default credentials path
+			app, err = firebase.NewApp(context.Background(), nil)
+	} else {
+			// Fallback to file if it exists
+			opt := option.WithCredentialsFile("firebase.json")
+			app, err = firebase.NewApp(context.Background(), nil, opt)
 	}
-
+	
+	if err != nil {
+			Fatal("Error initializing Firebase app", err)
+	}
+	
 	// Initialize Firebase Auth client
 	firebaseAuth, err = app.Auth(context.Background())
 	if err != nil {
-		Fatal("Error initializing Firebase Auth client", err)
+			Fatal("Error initializing Firebase Auth client", err)
 	}
 }
 
@@ -86,4 +97,21 @@ func SendHTTPError(w http.ResponseWriter,  message string, code int) {
 		Error("User error", nil, userError, ":", message)
 		http.Error(w, "An unexpected error happened (Code: " + userError + ")", http.StatusInternalServerError)
 	}
+}
+
+func SPAHandler(targetFolder string) http.Handler {
+	// pwd,_ := os.Getwd()
+	fs := http.FileServer(http.Dir(targetFolder))
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		Debug("Serving SPA from " + targetFolder + r.URL.Path)
+		// if file does not exist or is a directory, serve index.html
+		if stat, err := os.Stat(targetFolder + r.URL.Path); os.IsNotExist(err) || stat.IsDir() {
+			Debug("Serving SPA index.html")
+			http.ServeFile(w, r, targetFolder + "/index.html")
+		} else {
+			Debug("Serving SPA from " + targetFolder + r.URL.Path)
+			fs.ServeHTTP(w, r)
+		}
+	})
 }

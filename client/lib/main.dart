@@ -5,6 +5,7 @@ import './firebase_options.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import './auth/auth-service.dart';
+import './auth/account.dart';
 import './auth/login.dart';
 import './api/storage.dart';
 import './api/service.dart';
@@ -50,6 +51,7 @@ class MyApp extends ConsumerWidget {
         '/login': (context) => LoginScreen(),
         '/register': (context) => RegisterScreen(),
         '/home': (context) => ChatScreen(isMobile: isMobile),
+        '/account': (context) => SettingsScreen(),
       },
     );
   }

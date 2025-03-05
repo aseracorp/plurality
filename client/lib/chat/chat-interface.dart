@@ -6,6 +6,7 @@ import 'dart:convert';
 import '../utils/types.dart';
 import '../api/api.dart';
 import '../api/service.dart';
+import '../api/balance.dart';
 import 'package:flutter/services.dart';
 import './AnimatedMessageBox.dart';
 import 'package:image_picker/image_picker.dart';
@@ -291,6 +292,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
   Future<void> sendMessage(BuildContext context, String userMessage) async {
     final conversationsNotifier = ref.read(conversationsProvider.notifier);
+    final balanceNotifier = ref.read(balanceProvider.notifier);
 
     // Create new message object
     final newMessage = Message(
@@ -407,6 +409,8 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         conversationsNotifier,
         _apiService,
       );
+
+      balanceNotifier.refresh();
 
       setState(() {
         _currentStreamedResponse = '';
@@ -555,7 +559,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       scrollController: _mainScrollController,
       iconColor: Theme.of(context).primaryColor,
       child: MiniMap(
-        enabled: !widget.isMobile && !kIsWeb,
+        enabled: !widget.isMobile,
         mainScrollController: _mainScrollController,
         miniMapScrollController: _miniMapScrollController,
         miniMapContent: miniMapContent,

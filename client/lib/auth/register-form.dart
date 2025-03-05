@@ -90,9 +90,24 @@ class _RegisterFormState extends State<RegisterForm> {
               setState(() => confirmPassword = val);
             },
           ),
+          SizedBox(height: 12.0),
+          Text(
+            widget.error,
+            style: TextStyle(color: Colors.red, fontSize: 14.0),
+          ),
+          TextButton(
+            child: Text('Login'),
+            onPressed: () {
+              Navigator.pushNamed(context, '/login');
+            },
+          ),
           SizedBox(height: 20.0),
           ElevatedButton(
-            child: Text('Register', style: TextStyle(color: Colors.white)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.primary,
+              foregroundColor: Theme.of(context).colorScheme.onPrimary,
+            ),
+            child: Text('Register'),
             onPressed:
                 widget.loading
                     ? null
@@ -101,17 +116,6 @@ class _RegisterFormState extends State<RegisterForm> {
                         widget.onSubmit(email, password);
                       }
                     },
-          ),
-          SizedBox(height: 12.0),
-          Text(
-            widget.error,
-            style: TextStyle(color: Colors.red, fontSize: 14.0),
-          ),
-          TextButton(
-            child: Text('Login instead'),
-            onPressed: () {
-              Navigator.pushNamed(context, '/login');
-            },
           ),
         ],
       ),

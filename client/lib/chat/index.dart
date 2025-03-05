@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:plurality/chat/chat-interface.dart';
 import '../auth/auth-service.dart';
 import '../api/service.dart';
+import './budget.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final bool isMobile;
@@ -133,6 +134,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       body: Row(
         children: [
           NavigationRail(
+            leading: Image.asset(
+              'assets/logo_64.png',
+              width: 48.0,
+              height: 48.0,
+            ),
             selectedIndex: _selectedIndex,
             onDestinationSelected: (int index) {
               setState(() {
@@ -150,26 +156,33 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 }
               });
             },
-            destinations:
-                destinations
-                    .map(
-                      (dest) => NavigationRailDestination(
-                        icon: dest['icon'] as Widget,
-                        label: dest['label'] as Widget,
-                      ),
-                    )
-                    .toList(),
+            destinations: [
+              ...destinations
+                  .map(
+                    (dest) => NavigationRailDestination(
+                      icon: dest['icon'] as Widget,
+                      label: dest['label'] as Widget,
+                    ),
+                  )
+                  .toList(),
+            ],
             trailing: Expanded(
               child: Align(
                 alignment: Alignment.bottomCenter,
                 child: Padding(
                   padding: const EdgeInsets.only(bottom: 20.0),
-                  child: IconButton(
-                    icon: Icon(Icons.logout),
-                    onPressed: () async {
-                      final authService = AuthService();
-                      await authService.signOut();
-                    },
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      BalanceProgressCircle(),
+                      Divider(),
+                      IconButton(
+                        icon: Icon(Icons.account_circle),
+                        onPressed: () async {
+                          Navigator.pushNamed(context, '/account');
+                        },
+                      ),
+                    ],
                   ),
                 ),
               ),

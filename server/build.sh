@@ -9,9 +9,8 @@ echo "Building for Linux..."
 GOOS=linux GOARCH=amd64 go build -o build/Plurality src/index.go
 
 # Build for Windows
-echo "Building for Windows..."
-GOOS=windows GOARCH=amd64 go build -o build/Plurality.exe src/index.go
+# echo "Building for Windows..."
+# GOOS=windows GOARCH=amd64 go build -o build/Plurality.exe src/index.go
 
 echo "Build complete. Binaries are in the 'build' directory."
 echo "Linux binary: build/Plurality"
-echo "Windows binary: build/Plurality.exe"

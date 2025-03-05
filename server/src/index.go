@@ -3,6 +3,8 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/azukaar/plurality/src/ai"
 	"github.com/azukaar/plurality/src/db"
@@ -12,10 +14,7 @@ import (
 )
 
 func main() {
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file")
-	}
+	godotenv.Load()
 
 	// Initialize Firebase Auth
 	utils.InitFirebase()
@@ -31,7 +30,14 @@ func main() {
 	r.HandleFunc("/conversations", utils.AuthMiddleware(ai.API_ListConversation)).Methods("GET", "OPTIONS")
 	r.HandleFunc("/conversation/{id}", utils.AuthMiddleware(ai.API_HandleConversation)).Methods("GET", "PUT", "DELETE", "OPTIONS")
 	r.HandleFunc("/generate-title/{id}", utils.AuthMiddleware(ai.API_HandleTitleGeneration)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/balance", utils.AuthMiddleware(ai.API_GetUserBalance)).Methods("GET", "OPTIONS")
 
+	// /static folder as SPA
+	exec,_ := os.Executable()
+	pwd := filepath.Dir(exec)
+	p := filepath.Join(pwd, "web")
+	r.PathPrefix("/").Handler(utils.SPAHandler(p))
+	
 	// CORS middleware wrapper for the entire router
 	corsMiddleware := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

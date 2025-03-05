@@ -43,8 +43,8 @@ func HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
 	if request.Height == 0 || request.Height > 768 {
 		request.Height = 768
 	}
-	if request.Steps == 0 || request.Steps > 40 {
-		request.Steps = 40
+	if request.Steps == 0 {
+		request.Steps = 12
 	}
 	if request.N == 0 || request.N > 1 {
 		request.N = 1
@@ -52,8 +52,49 @@ func HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
 	if request.ResponseFormat == "" {
 		request.ResponseFormat = "b64_json"
 	}
+
+	if !CheckModel(request.Model) {
+		utils.Error("[HandleImageGeneration] Invalid model %s", nil, request.Model)
+		utils.SendHTTPError(w, "Invalid model", http.StatusBadRequest)
+		return
+	}
   
-  utils.Log("[HandleImageGeneration] Generating image with model %s and steps %d", request.Model, request.Steps)
+	// check balance before sending request
+	priceToken := GetImageGenPrice(request.Model, (request.Width * request.Height), request.Steps)
+
+	canPerform, err := db.CheckSufficientCredits(r.Context(), priceToken)
+	if err != nil {	
+		utils.Error("[HandleImageGeneration] Error checking credits", err)
+		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	
+	if !canPerform {
+		utils.Error("[HandleImageGeneration] Insufficient credits", err)
+		utils.SendHTTPError(w, "Insufficient credits", http.StatusPaymentRequired)
+		return
+	}
+	
+  utils.Log("[HandleImageGeneration] Generating image with model %s and steps %d for %f credits", request.Model, request.Steps, priceToken)
+
+	_, err = db.RemoveCredits(r.Context(), priceToken, utils.UserAction{
+		Type: IMAGE_GEN,
+		Provider: TOGETHER,
+		Model: utils.Model{
+			Name: request.Model,
+			Params: map[string]string{
+				"width": strconv.Itoa(request.Width),
+				"height": strconv.Itoa(request.Height),
+				"steps": strconv.Itoa(request.Steps),
+			},
+		},
+	})
+
+	if err != nil {
+		utils.Error("[HandleImageGeneration] Error removing credits", err)
+		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	response, err := GenerateImage(request)
 	if err != nil {
@@ -139,6 +180,16 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 
 	utils.Debug("[HandleChat] Received chat payload for model", payload.ModelSelected)
 	
+	
+	// Select the appropriate model
+	model := SelectModel(payload.ModelSelected, payload.Messages[0])
+
+	if !CheckModel(model.Name) {
+		utils.Error("[HandleImageGeneration] Invalid model %s", nil, model.Name)
+		utils.SendHTTPError(w, "Invalid model", http.StatusBadRequest)
+		return
+	}
+
 	partialConv := utils.Conversation{
 		ID: payload.ConversationID,
 		ModelSelected: payload.ModelSelected,
@@ -159,11 +210,8 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("Transfer-Encoding", "chunked")
 	
-	// Select the appropriate model
-	model := SelectModel(payload.ModelSelected, payload.Messages[0])
-	
 	// Get the response from the model's API
-	response, err := SendChatCompletion(model, conv)
+	response, err := SendChatCompletion(r.Context(), model, conv)
 	if err != nil {
 		utils.Error("[HandleChat] Error sending chat completion", err)
 		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
@@ -177,10 +225,10 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	var processErr error
 	if strings.HasPrefix(model.Name, "Claude/") {
 		// Use Claude-specific chunk processor
-		processErr = chunkProcessor.ProcessClaudeChunk(r.Context(), response)
+		processErr = chunkProcessor.ProcessClaudeChunk(r.Context(), response, model)
 	} else {
 		// Use standard chunk processor for OpenAI and Together AI
-		processErr = chunkProcessor.ProcessStandardChunk(r.Context(), response)
+		processErr = chunkProcessor.ProcessStandardChunk(r.Context(), response, model)
 	}
 	
 	if processErr != nil {
@@ -314,4 +362,23 @@ func API_HandleTitleGeneration(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(title))
+}
+
+func API_GetUserBalance(w http.ResponseWriter, r *http.Request) {
+	balance, err := db.GetUserBalance(r.Context())
+	if err != nil {
+		utils.Error("[API_GetUserBalance] Error getting user balance", err)
+		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response, err := json.Marshal(balance)
+	if err != nil {
+		utils.Error("[API_GetUserBalance] Error marshaling response", err)
+		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(response)
 }

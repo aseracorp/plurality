@@ -31,8 +31,8 @@ func (m Message) Text() string {
 }
 
 type Model struct {
-	Name   string            `json:"name"`
-	Params map[string]string `json:"params"`
+	Name   string            `json:"name",omitempty bson:"name,omitempty"`
+	Params map[string]string `json:"params",omitempty bson:"params,omitempty"`
 }
 
 type ModelSelected struct {
@@ -54,4 +54,10 @@ type Conversation struct {
 	Title 	      string    `json:"title" bson:"title"`
 	LastMessageAt time.Time    `json:"last_message_at" bson:"last_message_at"`
 	ModelSelected ModelSelected `json:"model_selected" bson:"model_selected"`
+}
+
+type UserAction struct {
+	Type     int `bson:"type"`
+	Provider int `bson:"provider"`
+	Model    Model `bson:"model"`
 }

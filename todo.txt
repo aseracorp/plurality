@@ -1,19 +1,19 @@
 # private MVP1 - small
-- token counts in db
-  - dont forget to count input tokens
-- Rate limiting (count token)
-  - show message count 
-  - show budget
 - Login / Register
-  - google 
+  - google
   - apple
-  - delete on logout
-- Settings
-  - Change Password
-- logo!!
-- fix share button
+  - verify email
+  - 2FA
+  - delete hive on logout
+  - delete account
+- List accepted token for request
 
 # private MVP2 - bigger
+- Free accounts of 100.000 credits
+  - force_plan in DB to override plan. Those plan should be renewed 1st of each month
+  - 1st of each month, reset all free plan to 100.000
+  - initialize all users to free plan
+- Add token price to titles
 - pin conversations and messages?
 - bin doc parse / long doc integration
 - rename conversations
@@ -21,7 +21,11 @@
   - Therapy
   - Language learning
 - Code Assist
+- Warning large context convo
 - Retry button
+- model icons 
+- more models
+- change share to share a hosted page rather than the image / text / converastion
 - file_picker's save file for non-web?
 - local mode
 - History pagination or infinite scroll?
