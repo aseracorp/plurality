@@ -7,13 +7,16 @@
   - delete hive on logout
   - delete account
 - List accepted token for request
+- llama 3.3 broken
+- vision mid conv broken
 
 # private MVP2 - bigger
 - Free accounts of 100.000 credits
   - force_plan in DB to override plan. Those plan should be renewed 1st of each month
   - 1st of each month, reset all free plan to 100.000
   - initialize all users to free plan
-- Add token price to titles
+- dark mode
+- Warning large context convo
 - pin conversations and messages?
 - bin doc parse / long doc integration
 - rename conversations
@@ -21,7 +24,6 @@
   - Therapy
   - Language learning
 - Code Assist
-- Warning large context convo
 - Retry button
 - model icons 
 - more models
@@ -30,7 +32,7 @@
 - local mode
 - History pagination or infinite scroll?
 - Claude / ChatGPT images vision
-- dark mode
+- Add token price to titles
 
 # Roadmap to public
 - Login / Register

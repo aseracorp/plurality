@@ -63,11 +63,11 @@ func GetPriceFromTokenUsage(reqType int, provider int, model utils.Model, usage 
 			}
 		} else if(provider == CLAUDE) {
 			if model.Name == "Claude/claude-3-haiku" {
-				// cost 1$ per 1M tokens
-				price = usage
+				// cost 4$ per 1M tokens
+				price = usage * 4.0
 			} else if model.Name == "Claude/claude-3-7-sonnet" {
-				// cost 3.75$ per 1M tokens
-				price = usage * 3.75
+				// cost 15 $ per 1M tokens
+				price = usage * 15.00
 			}
 		}
 	}

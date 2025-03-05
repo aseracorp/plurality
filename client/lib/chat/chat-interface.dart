@@ -320,6 +320,14 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     var isNewConversation = widget.conversationId == "";
     var currentConversationID = widget.conversationId;
 
+    if (!isNewConversation) {
+      // Add message to Riverpod state
+      conversationsNotifier.addMessage(
+        conversationId: currentConversationID,
+        message: newMessage,
+      );
+    }
+
     try {
       // Send message to API
       final stream = await _apiService.sendChatMessage(
@@ -356,14 +364,6 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
           }
         },
       );
-
-      if (!isNewConversation) {
-        // Add message to Riverpod state
-        conversationsNotifier.addMessage(
-          conversationId: currentConversationID,
-          message: newMessage,
-        );
-      }
 
       // Process streaming response
       _currentStreamedResponse = '';

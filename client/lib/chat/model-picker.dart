@@ -22,6 +22,7 @@ class _ModelSelectionModalState extends State<ModelSelectionModal> {
     'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
     'meta-llama/Llama-3.2-8B-Instruct-Turbo',
     'meta-llama/Llama-3.2-3B-Instruct-Turbo',
+    // for some reason its broekn
     'meta-llama/Llama-3.3-70B-Instruct-Turbo',
     'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo',
     'meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo',
