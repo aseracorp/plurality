@@ -59,10 +59,10 @@ workflows:
   build-test-deploy:
     jobs:
       - build-and-publish:
-          # Only run on main branch
+          # Only run on master branch
           filters:
             branches:
-              only: main
+              only: master
           # Uncomment below if you want to run on tags
           # filters:
           #   tags:

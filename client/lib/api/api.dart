@@ -1,6 +1,7 @@
 import 'dart:convert';
+import 'package:code_highlight_view/themes/foundation.dart';
 import 'package:http/http.dart' as http;
-
+import 'package:flutter/foundation.dart';
 import '../auth/auth-service.dart';
 import '../utils/types.dart';
 import './balance.dart';
@@ -8,7 +9,10 @@ import './balance.dart';
 class ApiService {
   static final ApiService _instance = ApiService._internal();
   final AuthService _authService = AuthService();
-  final String _baseUrl = 'http://192.168.1.225:8090';
+  final String _baseUrl =
+      kReleaseMode
+          ? 'https://app.plurality-ai.com'
+          : 'http://192.168.1.225:8090';
 
   // Factory constructor to return the same instance every time
   factory ApiService() {
