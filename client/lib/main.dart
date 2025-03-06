@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import './firebase_options.dart';
@@ -10,6 +11,9 @@ import './auth/login.dart';
 import './api/storage.dart';
 import './api/service.dart';
 import 'chat/index.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:google_sign_in_dartio/google_sign_in_dartio.dart';
+import 'dart:io' show Platform;
 
 // Flag to track if we've completed the initial auth check
 bool _initialAuthCheckComplete = false;
@@ -18,6 +22,15 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await ConversationStorage.init();
+
+  var isDesktop =
+      !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+  if (isDesktop) {
+    await GoogleSignInDart.register(
+      clientId:
+          "986982379072-g44aaifpc7nqilq672frk1p16j0o7a0a.apps.googleusercontent.com",
+    );
+  }
 
   // if (!kIsWeb && Platform.isWindows) {
   //   await GoogleSignInDart.register(

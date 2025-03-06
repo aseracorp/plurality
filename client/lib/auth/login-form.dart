@@ -19,6 +19,7 @@ class LoginForm extends StatefulWidget {
 }
 
 class _LoginFormState extends State<LoginForm> {
+  final AuthService _authService = AuthService();
   final _formKey = GlobalKey<FormState>();
   String email = '';
   String password = '';
@@ -132,6 +133,20 @@ class _LoginFormState extends State<LoginForm> {
                       if (_formKey.currentState!.validate()) {
                         widget.onSubmit(email, password);
                       }
+                    },
+          ),
+          SizedBox(height: 20.0),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.primary,
+              foregroundColor: Theme.of(context).colorScheme.onPrimary,
+            ),
+            child: Text('Sign In Google'),
+            onPressed:
+                widget.loading
+                    ? null
+                    : () {
+                      _authService.signInWithGoogle();
                     },
           ),
         ],

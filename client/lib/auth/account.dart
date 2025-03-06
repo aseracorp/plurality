@@ -80,7 +80,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   // Setup 2FA (placeholder for now)
-  void _setup2FA() {
+  void _setup2FA() async {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('2FA setup functionality coming soon'),

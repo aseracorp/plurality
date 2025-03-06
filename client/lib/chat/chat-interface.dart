@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:plurality/chat/attachments.dart';
 import './snackbar.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'dart:convert';
 import '../utils/types.dart';
 import '../api/api.dart';
@@ -20,6 +21,8 @@ import '../utils/file-types.dart';
 import './minimap.dart'; // MiniMap component
 import './middle-click.dart'; // MiddleClickScroller
 import 'package:super_sliver_list/super_sliver_list.dart';
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, TargetPlatform;
 
 class ChatInterface extends ConsumerStatefulWidget {
   final String conversationId;
@@ -447,67 +450,74 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     bool mini = false,
     EdgeInsetsGeometry? padding,
   }) {
-    return SuperListView.builder(
+    return Scrollbar(
+      thickness: 14.0, // Adjust this value to make the scrollbar thicker
+      radius: Radius.circular(0.0),
       controller: controller,
-      padding: padding ?? const EdgeInsets.all(16.0),
-      itemCount:
-          messages.length + (_currentStreamedResponse.isNotEmpty ? 1 : 0),
-      itemBuilder: (context, index) {
-        Message message;
-        if (index < messages.length) {
-          message = messages[index];
-        } else {
-          message = Message(
-            role: "assistant",
-            content: [MessageContent.text(_currentStreamedResponse)],
-          );
-        }
+      thumbVisibility: true,
+      child: SuperListView.builder(
+        controller: controller,
+        cacheExtent: 100,
+        padding: padding ?? const EdgeInsets.all(16.0),
+        itemCount:
+            messages.length + (_currentStreamedResponse.isNotEmpty ? 1 : 0),
+        itemBuilder: (context, index) {
+          Message message;
+          if (index < messages.length) {
+            message = messages[index];
+          } else {
+            message = Message(
+              role: "assistant",
+              content: [MessageContent.text(_currentStreamedResponse)],
+            );
+          }
 
-        return Align(
-          alignment:
-              message.isBot ? Alignment.centerLeft : Alignment.centerRight,
-          child: Column(
-            crossAxisAlignment:
-                message.isBot
-                    ? CrossAxisAlignment.start
-                    : CrossAxisAlignment.end,
-            children: [
-              ...message.content
-                  .where((c) => c.type != "text")
-                  .map(
-                    (attach) => AttachmentViewer(
-                      mini: mini,
-                      attachment: Attachment(
-                        type: attach.type,
-                        content:
-                            (attach.type == "image_url"
-                                ? attach.imageUrl?.url
-                                : attach.text) ??
-                            '',
+          return Align(
+            alignment:
+                message.isBot ? Alignment.centerLeft : Alignment.centerRight,
+            child: Column(
+              crossAxisAlignment:
+                  message.isBot
+                      ? CrossAxisAlignment.start
+                      : CrossAxisAlignment.end,
+              children: [
+                ...message.content
+                    .where((c) => c.type != "text")
+                    .map(
+                      (attach) => AttachmentViewer(
+                        mini: mini,
+                        attachment: Attachment(
+                          type: attach.type,
+                          content:
+                              (attach.type == "image_url"
+                                  ? attach.imageUrl?.url
+                                  : attach.text) ??
+                              '',
+                        ),
+                        removeAttachment: _removeAttachment,
+                        editMode: false,
                       ),
-                      removeAttachment: _removeAttachment,
-                      editMode: false,
-                    ),
-                  )
-                  .toList(),
-              if (message.text != "")
-                AnimatedMessageBox(
-                  mini: mini, // Use mini parameter
-                  text: message.text,
-                  isBot: message.isBot,
-                  isLoading:
-                      _isLoading &&
-                      index ==
-                          (messages.length +
-                                  (_currentStreamedResponse.isNotEmpty
-                                      ? 1
-                                      : 0)) -
-                              1,
-                ),
-            ],
-          ),
-        );
-      },
+                    )
+                    .toList(),
+                if (message.text != "")
+                  AnimatedMessageBox(
+                    mini: mini, // Use mini parameter
+                    text: message.text,
+                    isBot: message.isBot,
+                    isLoading:
+                        _isLoading &&
+                        index ==
+                            (messages.length +
+                                    (_currentStreamedResponse.isNotEmpty
+                                        ? 1
+                                        : 0)) -
+                                1,
+                  ),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -559,7 +569,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       scrollController: _mainScrollController,
       iconColor: Theme.of(context).primaryColor,
       child: MiniMap(
-        enabled: !widget.isMobile,
+        enabled: !widget.isMobile && !kIsWeb,
         mainScrollController: _mainScrollController,
         miniMapScrollController: _miniMapScrollController,
         miniMapContent: miniMapContent,

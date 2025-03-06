@@ -8,7 +8,6 @@
   - delete account
 - List accepted token for request
 - llama 3.3 broken
-- vision mid conv broken
 
 # private MVP2 - bigger
 - Free accounts of 100.000 credits

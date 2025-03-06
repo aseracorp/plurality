@@ -55,6 +55,8 @@ dependencies:
   super_sliver_list: ^0.4.1
   flutter_svg: ^2.0.17
   intl: ^0.20.2
+  google_sign_in: ^6.2.2
+  google_sign_in_dartio: ^0.3.0
 
 
 dev_dependencies:

@@ -1,12 +1,39 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:google_sign_in_dartio/google_sign_in_dartio.dart';
+import 'package:flutter/foundation.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
   // Auth state changes stream
   Stream<User?> get authStateChanges => _auth.authStateChanges();
+
+  Future<UserCredential> signInWithGoogle() async {
+    // Trigger the authentication flow
+    final GoogleSignInAccount? googleUser =
+        await GoogleSignIn(
+          clientId:
+              kIsWeb
+                  ? "986982379072-rnlbo109kg5db0pe3f9nt866l76drsm4.apps.googleusercontent.com"
+                  : null,
+        ).signIn();
+
+    // Obtain the auth details from the request
+    final GoogleSignInAuthentication? googleAuth =
+        await googleUser?.authentication;
+
+    // Create a new credential
+    final credential = GoogleAuthProvider.credential(
+      accessToken: googleAuth?.accessToken,
+      idToken: googleAuth?.idToken,
+    );
+
+    // Once signed in, return the UserCredential
+    return await FirebaseAuth.instance.signInWithCredential(credential);
+  }
 
   // Sign in with email and password
   Future<UserCredential?> signInWithEmailPassword(
