@@ -169,10 +169,14 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
   void _scrollToBottom({bool force = false}) {
     Future.delayed(Duration(milliseconds: 160), () {
-      if (_shouldAutoScroll || force) {
+      if ((_shouldAutoScroll && !_isLoading) || force) {
+        _mainScrollController.jumpTo(
+          _mainScrollController.position.maxScrollExtent,
+        );
+      } else if (_shouldAutoScroll) {
         _mainScrollController.animateTo(
           _mainScrollController.position.maxScrollExtent,
-          duration: Duration(milliseconds: (force ? 500 : 90)),
+          duration: Duration(milliseconds: 500),
           curve: Curves.easeOut,
         );
       }
