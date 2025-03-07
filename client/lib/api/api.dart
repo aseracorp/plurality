@@ -10,7 +10,7 @@ class ApiService {
   static final ApiService _instance = ApiService._internal();
   final AuthService _authService = AuthService();
   final String _baseUrl =
-      !kReleaseMode
+      kReleaseMode
           ? 'https://app.plurality-ai.com'
           : 'http://192.168.1.225:8090';
 
