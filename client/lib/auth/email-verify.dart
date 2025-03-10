@@ -11,7 +11,7 @@ class EmailVerificationPage extends StatefulWidget {
 class _EmailVerificationPageState extends State<EmailVerificationPage> {
   final AuthService _authService = AuthService();
   bool _isResending = false;
-  bool _isInitialized = false;
+  static bool _isInitialized = false;
 
   // init
   @override
@@ -23,10 +23,15 @@ class _EmailVerificationPageState extends State<EmailVerificationPage> {
     }
   }
 
+  // Dispose
+  @override
+  void dispose() {
+    super.dispose();
+    _isInitialized = false;
+  }
+
   Future<void> _resendVerificationEmail() async {
-    setState(() {
-      _isResending = true;
-    });
+    _isResending = true;
 
     try {
       await _authService.sendEmailVerification();
@@ -111,8 +116,8 @@ class _EmailVerificationPageState extends State<EmailVerificationPage> {
               ),
               const SizedBox(height: 24),
               TextButton(
-                onPressed: () {
-                  _authService.forceRefresh();
+                onPressed: () async {
+                  await _authService.forceRefresh();
                   Navigator.pushNamed(context, "/");
                 },
                 child: const Text('I am verified. Continue'),

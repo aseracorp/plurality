@@ -121,6 +121,8 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		Debug("Token verified: ", token.UID)
+
 		// Check if the email is verified
 		emailVerified, _, err := CheckEmailVerified(idToken)
 		if err != nil {

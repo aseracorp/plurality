@@ -96,7 +96,7 @@ class AuthService {
     return _auth.currentUser != null;
   }
 
-  void forceRefresh() async {
+  forceRefresh() async {
     await FirebaseAuth.instance.currentUser?.getIdToken(true);
     print(await FirebaseAuth.instance.currentUser?.getIdTokenResult(true));
   }

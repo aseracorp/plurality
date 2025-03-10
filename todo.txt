@@ -1,5 +1,10 @@
 # private MVP2 - bigger
+- Sends 2 emails for verif???
+- Password str validation as you type
+- Remove title in "Verify Your Email" page
 - Free can only use 11B models and down
+- paste image
+- drag and drop
 - Show token price on message
 - Warning large context convo
 - Retry button
@@ -24,8 +29,6 @@
 - History pagination or infinite scroll?
 - Claude / ChatGPT images vision
 - Add token price to titles
-- Password str validation as you type
-- Remove title in "Verify Your Email" page
 
 # Roadmap to public
 - Login / Register
