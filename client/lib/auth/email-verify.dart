@@ -112,6 +112,7 @@ class _EmailVerificationPageState extends State<EmailVerificationPage> {
               const SizedBox(height: 24),
               TextButton(
                 onPressed: () {
+                  _authService.forceRefresh();
                   Navigator.pushNamed(context, "/");
                 },
                 child: const Text('I am verified. Continue'),

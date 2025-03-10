@@ -24,6 +24,8 @@
 - History pagination or infinite scroll?
 - Claude / ChatGPT images vision
 - Add token price to titles
+- Password str validation as you type
+- Remove title in "Verify Your Email" page
 
 # Roadmap to public
 - Login / Register
