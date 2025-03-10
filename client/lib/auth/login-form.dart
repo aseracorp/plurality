@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import './auth-service.dart';
+import '../api/service.dart';
 
-class LoginForm extends StatefulWidget {
+class LoginForm extends ConsumerStatefulWidget {
   final Function(String email, String password) onSubmit;
   final String error;
   final bool loading;
@@ -15,14 +17,19 @@ class LoginForm extends StatefulWidget {
   }) : super(key: key);
 
   @override
-  _LoginFormState createState() => _LoginFormState();
+  ConsumerState<LoginForm> createState() => _LoginFormState();
 }
 
-class _LoginFormState extends State<LoginForm> {
+class _LoginFormState extends ConsumerState<LoginForm> {
   final AuthService _authService = AuthService();
   final _formKey = GlobalKey<FormState>();
   String email = '';
   String password = '';
+
+  resetConv() {
+    final conversationsNotifier = ref.read(conversationsProvider.notifier);
+    conversationsNotifier.deleteAllConversations();
+  }
 
   // Method to handle password reset
   void _resetPassword(BuildContext context) async {
@@ -104,33 +111,18 @@ class _LoginFormState extends State<LoginForm> {
             widget.error,
             style: TextStyle(color: Colors.red, fontSize: 14.0),
           ),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              TextButton(
-                child: Text('Register'),
-                onPressed: () {
-                  Navigator.pushNamed(context, '/register');
-                },
-              ),
-              TextButton(
-                child: Text('Forgot Password'),
-                onPressed: () => _resetPassword(context),
-              ),
-            ],
-          ),
-          SizedBox(height: 20.0),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: Theme.of(context).colorScheme.primary,
               foregroundColor: Theme.of(context).colorScheme.onPrimary,
             ),
-            child: Text('Sign In'),
+            child: Text('Sign In With Email'),
             onPressed:
                 widget.loading
                     ? null
                     : () {
                       if (_formKey.currentState!.validate()) {
+                        resetConv();
                         widget.onSubmit(email, password);
                       }
                     },
@@ -141,13 +133,32 @@ class _LoginFormState extends State<LoginForm> {
               backgroundColor: Theme.of(context).colorScheme.primary,
               foregroundColor: Theme.of(context).colorScheme.onPrimary,
             ),
-            child: Text('Sign In Google'),
+            child: Text('Sign In With Google'),
             onPressed:
                 widget.loading
                     ? null
-                    : () {
-                      _authService.signInWithGoogle();
+                    : () async {
+                      resetConv();
+                      await _authService.signInWithGoogle();
+                      Navigator.pushNamed(context, '/');
                     },
+          ),
+          SizedBox(height: 20.0),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              TextButton(
+                child: Text('Register With Email'),
+                onPressed: () {
+                  resetConv();
+                  Navigator.pushNamed(context, '/register');
+                },
+              ),
+              TextButton(
+                child: Text('Forgot Password'),
+                onPressed: () => _resetPassword(context),
+              ),
+            ],
           ),
         ],
       ),

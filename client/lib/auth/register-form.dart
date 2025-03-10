@@ -95,12 +95,6 @@ class _RegisterFormState extends State<RegisterForm> {
             widget.error,
             style: TextStyle(color: Colors.red, fontSize: 14.0),
           ),
-          TextButton(
-            child: Text('Login'),
-            onPressed: () {
-              Navigator.pushNamed(context, '/login');
-            },
-          ),
           SizedBox(height: 20.0),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -116,6 +110,13 @@ class _RegisterFormState extends State<RegisterForm> {
                         widget.onSubmit(email, password);
                       }
                     },
+          ),
+          SizedBox(height: 12.0),
+          TextButton(
+            child: Text('Go to Login'),
+            onPressed: () {
+              Navigator.pushNamed(context, '/login');
+            },
           ),
         ],
       ),

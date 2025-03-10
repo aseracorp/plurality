@@ -203,3 +203,26 @@ func UpdateConversationMetadata(ctx context.Context, id primitive.ObjectID, titl
 
   return err
 }
+
+// DeleteAllConversations deletes all conversations for a specific user
+func DeleteAllConversations(ctx context.Context, userID string) (int64, error) {
+  client := GetClient()
+  collection := client.Database("plurality").Collection("conversations")
+
+  if userID == "" {
+    return 0, errors.New("user ID cannot be empty")
+  }
+
+  utils.Log("[DeleteAllConversations] Deleting all conversations for user ID: %s", userID)
+
+  // Delete all conversations for the user
+  deleteResult, err := collection.DeleteMany(ctx, bson.M{"user_id": userID})
+  if err != nil {
+    utils.Error("[DeleteAllConversations] Error deleting user conversations", err)
+    return 0, err
+  }
+
+  utils.Log("[DeleteAllConversations] Deleted %d conversations for user ID: %s", deleteResult.DeletedCount, userID)
+  
+  return deleteResult.DeletedCount, nil
+}

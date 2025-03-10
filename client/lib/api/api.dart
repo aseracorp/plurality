@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../auth/auth-service.dart';
 import '../utils/types.dart';
 import './balance.dart';
+import 'package:flutter/material.dart';
 
 class ApiService {
   static final ApiService _instance = ApiService._internal();
@@ -21,6 +22,23 @@ class ApiService {
 
   // Private constructor used by the factory constructor
   ApiService._internal();
+
+  Future<void> CheckVerifyEmail(Function redirect) async {
+    String? firebaseToken = await _authService.getCurrentUserToken();
+
+    if (firebaseToken == null) {
+      throw Exception('User not authenticated');
+    }
+
+    final response = await http.get(
+      Uri.parse('$_baseUrl/check'),
+      headers: {'Authorization': 'Bearer $firebaseToken'},
+    );
+
+    if (response.statusCode == 412) {
+      redirect();
+    }
+  }
 
   // Generic method to send authenticated POST requests
   Future<Map<String, dynamic>> sendPostRequest({
@@ -154,6 +172,8 @@ class ApiService {
           }
         }
         return conversations;
+      } else if (response.statusCode == 412) {
+        throw APINeedEmailVerify();
       } else {
         throw APIException(
           'Failed to fetch conversations: ${response.reasonPhrase}',
@@ -162,6 +182,7 @@ class ApiService {
       }
     } catch (e) {
       if (e is APIException) rethrow;
+      if (e is APINeedEmailVerify) rethrow;
       throw APIException('API request failed: $e');
     }
   }
@@ -334,6 +355,8 @@ class ApiService {
         final decodedResponse = utf8.decode(response.bodyBytes);
         final json = jsonDecode(decodedResponse);
         return Balance.fromJson(json);
+      } else if (response.statusCode == 412) {
+        throw APINeedEmailVerify();
       } else {
         throw APIException(
           'Failed to get balance: ${response.reasonPhrase}',
@@ -342,6 +365,35 @@ class ApiService {
       }
     } catch (e) {
       if (e is APIException) rethrow;
+      if (e is APINeedEmailVerify) rethrow;
+      throw APIException('API request failed: $e');
+    }
+  }
+
+  // call DELETE /delete-user
+
+  Future<void> deleteUser() async {
+    try {
+      // Get authentication token
+      String? firebaseToken = await _authService.getCurrentUserToken();
+      if (firebaseToken == null) {
+        throw Exception('User not authenticated');
+      }
+      // Make the DELETE request
+      final response = await http.delete(
+        Uri.parse('$_baseUrl/delete-user'),
+        headers: {'Authorization': 'Bearer $firebaseToken'},
+      );
+      // Process the response
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return;
+      } else {
+        throw APIException(
+          'Failed to delete user: ${response.reasonPhrase}',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
       throw APIException('API request failed: $e');
     }
   }
@@ -351,4 +403,8 @@ class ImageResult {
   final String base64;
   final double time;
   ImageResult(this.base64, this.time);
+}
+
+class APINeedEmailVerify implements Exception {
+  final String message = 'Email verification required';
 }

@@ -83,6 +83,10 @@ class AuthService {
     }
   }
 
+  Future<void> sendEmailVerification() async {
+    FirebaseAuth.instance.currentUser?.sendEmailVerification();
+  }
+
   // Sign out
   Future<void> signOut() async {
     return await _auth.signOut();
@@ -90,5 +94,10 @@ class AuthService {
 
   bool isUserLoggedIn() {
     return _auth.currentUser != null;
+  }
+
+  void forceRefresh() async {
+    await FirebaseAuth.instance.currentUser?.getIdToken(true);
+    print(await FirebaseAuth.instance.currentUser?.getIdTokenResult(true));
   }
 }

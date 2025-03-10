@@ -31,6 +31,9 @@ type UserBalance struct {
 	Balance   float64            `json:"balance" bson:"balance"`
 	UpdatedAt time.Time          `json:"updated_at" bson:"updated_at"`
 	Plan 		  float64            `json:"plan" bson:"plan,omitempty"`
+	ManualPlan 		  float64      `json:"manual_plan" bson:"manual_plan,omitempty"`
+	LastManualPlan 		  time.Time      `json:"last_manual_plan" bson:"last_manual_plan,omitempty"`
+	PlanName 		  string      `json:"plan_name" bson:"plan_name,omitempty"`
 }
 
 // GetUserBalance retrieves the current balance for a user
@@ -46,12 +49,19 @@ func GetUserBalance(ctx context.Context) (*UserBalance, error) {
 	var balance UserBalance
 	err := collection.FindOne(ctx, bson.M{"user_id": userID}).Decode(&balance)
 
-	// If no balance record exists, create one with zero balance
+	// If no balance record exists, create one with free plan
 	if err == mongo.ErrNoDocuments {
+		utils.Log("No balance record found for user %s, creating new record", userID)
+
 		balance = UserBalance{
 			UserID:    userID,
-			Balance:   0,
+			PlanName: "Free",
+			// TODO : DOWNGRADE TO 100k
+			Balance:   100000,
+			Plan:   100000,
+			ManualPlan:   100000,
 			UpdatedAt: time.Now(),
+			LastManualPlan: time.Now(),
 		}
 
 		result, err := collection.InsertOne(ctx, balance)
@@ -64,6 +74,18 @@ func GetUserBalance(ctx context.Context) (*UserBalance, error) {
 		}
 
 		return &balance, nil
+	}
+
+	// if LastManualPlan was last Month, set Balance to ManualPlan
+	if balance.LastManualPlan.Month() != time.Now().Month() {
+		utils.Log("LastManualPlan was last Month, setting Balance to ManualPlan for user %s", userID)
+		balance.Balance = balance.ManualPlan
+		balance.LastManualPlan = time.Now()
+		_, err :=
+			collection.UpdateOne(ctx, bson.M{"user_id": userID}, bson.M{"$set": bson.M{"balance": balance.ManualPlan, "last_manual_plan": time.Now()}})
+		if err != nil {
+			utils.Error("Error updating balance: %v", err)
+		}
 	}
 
 	if err != nil {
@@ -215,4 +237,26 @@ func CheckSufficientCredits(ctx context.Context, requiredAmount float64) (bool, 
 	}
 
 	return balance.Balance >= requiredAmount, nil
+}
+
+// Delete balnce
+func DeleteBalance(ctx context.Context) error {
+	client := GetClient()
+	collection := client.Database("plurality").Collection("balances")
+	userID, ok := ctx.Value("userID").(string)
+
+	utils.Log("Deleting balance for user %s", userID)
+
+	if !ok {
+		return errors.New("user ID not found in request context")
+	}
+
+	c, err := collection.DeleteOne(ctx, bson.M{"user_id": userID})
+
+	// count 
+	if c.DeletedCount == 0 {
+		return errors.New("balance not found")
+	}
+
+	return err
 }

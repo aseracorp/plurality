@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../auth/auth-service.dart';
+import '../api/api.dart';
+import 'dart:convert';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({Key? key}) : super(key: key);
@@ -11,6 +13,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final AuthService _authService = AuthService();
+  final ApiService _apiService = ApiService();
   bool _isLoading = false;
   String? _errorMessage;
 
@@ -80,14 +83,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   // Setup 2FA (placeholder for now)
-  void _setup2FA() async {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('2FA setup functionality coming soon'),
-        backgroundColor: Colors.blue,
-      ),
-    );
-  }
+  void _setup2FA() async {}
 
   // Delete account (placeholder for now)
   void _deleteAccount() {
@@ -97,7 +93,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return AlertDialog(
           title: const Text('Delete Account'),
           content: const Text(
-            'Are you sure you want to delete your account? This action cannot be undone.',
+            'Are you sure you want to delete your account? This action cannot be undone and will delete all your data.',
           ),
           actions: [
             TextButton(
@@ -106,13 +102,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             TextButton(
               onPressed: () {
-                Navigator.of(context).pop();
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Account deletion functionality coming soon'),
-                    backgroundColor: Colors.red,
-                  ),
-                );
+                _apiService.deleteUser();
+                _authService.signOut();
+                Navigator.of(context).pushNamed('/');
               },
               child: const Text('Delete', style: TextStyle(color: Colors.red)),
             ),
@@ -196,13 +188,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
 
                       // 2FA setup button
-                      SettingsButton(
-                        icon: Icons.security,
-                        label: 'Setup 2FA',
-                        onTap: _setup2FA,
-                        color: colorScheme.primary,
-                      ),
-
+                      // SettingsButton(
+                      //   icon: Icons.security,
+                      //   label: 'Setup 2FA',
+                      //   onTap: _setup2FA,
+                      //   color: colorScheme.primary,
+                      // ),
                       const SizedBox(height: 24),
 
                       // Account section

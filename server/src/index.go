@@ -8,6 +8,7 @@ import (
 
 	"github.com/azukaar/plurality/src/ai"
 	"github.com/azukaar/plurality/src/db"
+	"github.com/azukaar/plurality/src/user"
 	"github.com/azukaar/plurality/src/utils"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
@@ -31,6 +32,13 @@ func main() {
 	r.HandleFunc("/conversation/{id}", utils.AuthMiddleware(ai.API_HandleConversation)).Methods("GET", "PUT", "DELETE", "OPTIONS")
 	r.HandleFunc("/generate-title/{id}", utils.AuthMiddleware(ai.API_HandleTitleGeneration)).Methods("GET", "OPTIONS")
 	r.HandleFunc("/balance", utils.AuthMiddleware(ai.API_GetUserBalance)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/delete-user", utils.AuthMiddleware(user.API_DeleteUser)).Methods("DELETE", "OPTIONS")
+	r.HandleFunc("/check", utils.AuthMiddleware(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("OK"))
+		},
+	)).Methods("GET", "OPTIONS")
 
 	// /static folder as SPA
 	exec,_ := os.Executable()

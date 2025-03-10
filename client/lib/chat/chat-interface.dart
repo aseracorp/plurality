@@ -8,6 +8,7 @@ import '../utils/types.dart';
 import '../api/api.dart';
 import '../api/service.dart';
 import '../api/balance.dart';
+import '../api/preferences_provider.dart';
 import 'package:flutter/services.dart';
 import './AnimatedMessageBox.dart';
 import 'package:image_picker/image_picker.dart';
@@ -72,6 +73,11 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     super.initState();
     _mainScrollController.addListener(_scrollListener);
 
+    final preferencesNotifier = ref.read(preferencesProvider.notifier);
+    preferencesNotifier.loadAllPreferences().then((_) {
+      _updateSelectedModel();
+    });
+
     _updateSelectedModel();
     _loadConversation(widget.conversationId);
 
@@ -101,24 +107,41 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   // Extract the model selection logic to a separate method
   void _updateSelectedModel() {
     final conversationsState = ref.read(conversationsProvider);
-    final conversationsNotifier = ref.read(conversationsProvider.notifier);
+    final preferences = ref.read(preferencesProvider);
 
+    // Try to get the model from the specific conversation first
     final matches =
         conversationsState
             .where((conv) => conv.id == widget.conversationId)
             .toList();
 
     if (matches.isNotEmpty) {
+      // Use the model from the conversation
       _modelSelected = matches.first.modelSelected;
     } else {
-      _modelSelected = conversationsNotifier.getSelectedModel();
+      // Fall back to the globally selected model from preferences
+      _modelSelected = preferences.selectedModel;
     }
   }
 
   // Extract the model selection logic to a separate method
   void _loadConversation(String id) {
     final conversationsNotifier = ref.read(conversationsProvider.notifier);
-    conversationsNotifier.loadConversation(id);
+    try {
+      conversationsNotifier.loadConversation(id);
+    } catch (e) {
+      // if APINeedEmailVerify
+      // show email verify page
+
+      if (e.toString().contains('APINeedEmailVerify')) {
+        Navigator.of(context).pushNamed('/verify-email');
+      } else {
+        SnackBar(
+          content: Text('Failed to load conversation: $e'),
+          showCloseIcon: true,
+        );
+      }
+    }
   }
 
   void _setSelectedModel(ModelSelected modelSelected) {
@@ -126,8 +149,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       _modelSelected = modelSelected;
     });
 
-    final conversationsNotifier = ref.read(conversationsProvider.notifier);
-    conversationsNotifier.saveSelectedModel(modelSelected);
+    if (widget.conversationId.isEmpty) {
+      final preferencesNotifier = ref.read(preferencesProvider.notifier);
+      preferencesNotifier.setSelectedModel(modelSelected);
+    }
   }
 
   void _generateTitle(
@@ -205,8 +230,9 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     try {
       final XFile? image = await _imagePicker.pickImage(
         source: source,
-        maxWidth: 2048,
-        maxHeight: 2048,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        imageQuality: 80,
       );
 
       if (image != null) {
@@ -454,80 +480,91 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     bool mini = false,
     EdgeInsetsGeometry? padding,
   }) {
-    return Scrollbar(
-      thickness: 14.0, // Adjust this value to make the scrollbar thicker
-      radius: Radius.circular(0.0),
+    var l = SuperListView.builder(
       controller: controller,
-      thumbVisibility: true,
-      child: SuperListView.builder(
-        controller: controller,
-        cacheExtent: 100,
-        padding: padding ?? const EdgeInsets.all(16.0),
-        itemCount:
-            messages.length + (_currentStreamedResponse.isNotEmpty ? 1 : 0),
-        itemBuilder: (context, index) {
-          Message message;
-          if (index < messages.length) {
-            message = messages[index];
-          } else {
-            message = Message(
-              role: "assistant",
-              content: [MessageContent.text(_currentStreamedResponse)],
-            );
-          }
-
-          return Align(
-            alignment:
-                message.isBot ? Alignment.centerLeft : Alignment.centerRight,
-            child: Column(
-              crossAxisAlignment:
-                  message.isBot
-                      ? CrossAxisAlignment.start
-                      : CrossAxisAlignment.end,
-              children: [
-                ...message.content
-                    .where((c) => c.type != "text")
-                    .map(
-                      (attach) => AttachmentViewer(
-                        mini: mini,
-                        attachment: Attachment(
-                          type: attach.type,
-                          content:
-                              (attach.type == "image_url"
-                                  ? attach.imageUrl?.url
-                                  : attach.text) ??
-                              '',
-                        ),
-                        removeAttachment: _removeAttachment,
-                        editMode: false,
-                      ),
-                    )
-                    .toList(),
-                if (message.text != "")
-                  AnimatedMessageBox(
-                    mini: mini, // Use mini parameter
-                    text: message.text,
-                    isBot: message.isBot,
-                    isLoading:
-                        _isLoading &&
-                        index ==
-                            (messages.length +
-                                    (_currentStreamedResponse.isNotEmpty
-                                        ? 1
-                                        : 0)) -
-                                1,
-                  ),
-              ],
-            ),
+      cacheExtent: 100,
+      padding: padding ?? const EdgeInsets.all(16.0),
+      itemCount:
+          messages.length + (_currentStreamedResponse.isNotEmpty ? 1 : 0),
+      itemBuilder: (context, index) {
+        Message message;
+        if (index < messages.length) {
+          message = messages[index];
+        } else {
+          message = Message(
+            role: "assistant",
+            content: [MessageContent.text(_currentStreamedResponse)],
           );
-        },
-      ),
+        }
+
+        return Align(
+          alignment:
+              message.isBot ? Alignment.centerLeft : Alignment.centerRight,
+          child: Column(
+            crossAxisAlignment:
+                message.isBot
+                    ? CrossAxisAlignment.start
+                    : CrossAxisAlignment.end,
+            children: [
+              ...message.content
+                  .where((c) => c.type != "text")
+                  .map(
+                    (attach) => AttachmentViewer(
+                      mini: mini,
+                      attachment: Attachment(
+                        type: attach.type,
+                        content:
+                            (attach.type == "image_url"
+                                ? attach.imageUrl?.url
+                                : attach.text) ??
+                            '',
+                      ),
+                      removeAttachment: _removeAttachment,
+                      editMode: false,
+                    ),
+                  )
+                  .toList(),
+              if (message.text != "")
+                AnimatedMessageBox(
+                  mini: mini, // Use mini parameter
+                  text: message.text,
+                  isBot: message.isBot,
+                  isLoading:
+                      _isLoading &&
+                      index ==
+                          (messages.length +
+                                  (_currentStreamedResponse.isNotEmpty
+                                      ? 1
+                                      : 0)) -
+                              1,
+                ),
+            ],
+          ),
+        );
+      },
+    );
+    return ScrollConfiguration(
+      behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+      child:
+          mini
+              ? l
+              : Scrollbar(
+                thickness: widget.isMobile ? 8.0 : 14.0,
+                radius:
+                    widget.isMobile
+                        ? Radius.circular(4.0)
+                        : Radius.circular(0.0),
+                controller: controller,
+                thumbVisibility: widget.isMobile ? false : true,
+                child: l,
+              ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final conversationsState = ref.watch(conversationsProvider);
+
     final currentConversation = conversationsState.firstWhere(
       (conv) => conv.id == widget.conversationId,
       orElse:

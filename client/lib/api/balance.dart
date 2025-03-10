@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:async';
+import 'package:flutter/material.dart';
 import './api.dart';
 
 // Balance class remains the same
@@ -39,7 +40,7 @@ class BalanceNotifier extends AsyncNotifier<Balance?> {
   @override
   FutureOr<Balance?> build() async {
     try {
-      // Initial fetch when the provider is created
+      print('BalanceNotifier: Fetching balance');
       final balance = await apiService.getBalance();
       return balance;
     } catch (e, stackTrace) {

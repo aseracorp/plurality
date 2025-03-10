@@ -2,6 +2,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:plurality/auth/email-verify.dart';
 import './firebase_options.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -15,9 +16,6 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:google_sign_in_dartio/google_sign_in_dartio.dart';
 import 'dart:io' show Platform;
 
-// Flag to track if we've completed the initial auth check
-bool _initialAuthCheckComplete = false;
-
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
@@ -25,24 +23,13 @@ void main() async {
 
   var isDesktop =
       !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+
   if (isDesktop) {
     await GoogleSignInDart.register(
       clientId:
           "986982379072-g44aaifpc7nqilq672frk1p16j0o7a0a.apps.googleusercontent.com",
     );
   }
-
-  // if (!kIsWeb && Platform.isWindows) {
-  //   await GoogleSignInDart.register(
-  //     clientId:
-  //         '406099696497-g5o9l0blii9970bgmfcfv14pioj90djd.apps.googleusercontent.com',
-  //   );
-  // }
-
-  // Wait for Firebase Auth to restore session from persistence
-  // This is critical - we need to know auth state before showing ANY UI
-
-  _initialAuthCheckComplete = true;
 
   runApp(ProviderScope(child: MyApp()));
 }
@@ -65,6 +52,7 @@ class MyApp extends ConsumerWidget {
         '/register': (context) => RegisterScreen(),
         '/home': (context) => ChatScreen(isMobile: isMobile),
         '/account': (context) => SettingsScreen(),
+        '/verify-email': (context) => EmailVerificationPage(),
       },
     );
   }

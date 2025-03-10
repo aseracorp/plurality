@@ -372,6 +372,8 @@ func API_GetUserBalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	utils.Log("[API_GetUserBalance] User balance: %f", balance)
+
 	response, err := json.Marshal(balance)
 	if err != nil {
 		utils.Error("[API_GetUserBalance] Error marshaling response", err)

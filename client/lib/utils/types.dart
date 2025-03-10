@@ -367,3 +367,27 @@ class Model {
     return Model(name: json['name'], params: params);
   }
 }
+
+class AppPreferences {
+  final ModelSelected selectedModel;
+  final int darkMode; // 0 = light, 1 = dark, 2 = system
+  final bool useMiniMap;
+
+  const AppPreferences({
+    this.selectedModel = const ModelSelected(),
+    this.darkMode = 0,
+    this.useMiniMap = true,
+  });
+
+  AppPreferences copyWith({
+    ModelSelected? selectedModel,
+    int? darkMode,
+    bool? useMiniMap,
+  }) {
+    return AppPreferences(
+      selectedModel: selectedModel ?? this.selectedModel,
+      darkMode: darkMode ?? this.darkMode,
+      useMiniMap: useMiniMap ?? this.useMiniMap,
+    );
+  }
+}

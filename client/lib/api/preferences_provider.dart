@@ -1,0 +1,53 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import './shared_preferences_service.dart';
+import '../utils/types.dart';
+
+// Provider for the SharedPreferences service
+final sharedPrefsServiceProvider = Provider<SharedPreferencesService>((ref) {
+  return SharedPreferencesService();
+});
+
+// Unified preferences provider
+final preferencesProvider =
+    StateNotifierProvider<PreferencesNotifier, AppPreferences>((ref) {
+      final prefsService = ref.watch(sharedPrefsServiceProvider);
+      return PreferencesNotifier(prefsService);
+    });
+
+class PreferencesNotifier extends StateNotifier<AppPreferences> {
+  final SharedPreferencesService _prefsService;
+
+  PreferencesNotifier(this._prefsService) : super(AppPreferences()) {
+    loadAllPreferences();
+  }
+
+  Future<void> loadAllPreferences() async {
+    final selectedModel = await _prefsService.getSelectedModel();
+    final darkMode = await _prefsService.getDarkMode();
+    final useMiniMap = await _prefsService.getUseMiniMap();
+
+    state = AppPreferences(
+      selectedModel: selectedModel,
+      darkMode: darkMode,
+      useMiniMap: useMiniMap,
+    );
+  }
+
+  // Update selected model
+  Future<void> setSelectedModel(ModelSelected model) async {
+    await _prefsService.saveSelectedModel(model);
+    state = state.copyWith(selectedModel: model);
+  }
+
+  // Update dark mode
+  Future<void> setDarkMode(int mode) async {
+    await _prefsService.saveDarkMode(mode);
+    state = state.copyWith(darkMode: mode);
+  }
+
+  // Update mini map preference
+  Future<void> setUseMiniMap(bool use) async {
+    await _prefsService.saveUseMiniMap(use);
+    state = state.copyWith(useMiniMap: use);
+  }
+}

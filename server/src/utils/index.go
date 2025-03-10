@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"strings"
 	"os"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"math/rand"
 
 	firebase "firebase.google.com/go/v4"
@@ -13,7 +16,54 @@ import (
 )
 
 // Firebase auth client
-var firebaseAuth *auth.Client
+var FirebaseAuth *auth.Client
+
+
+// FirebaseTokenPayload represents the payload section of a Firebase JWT
+type FirebaseTokenPayload struct {
+	EmailVerified bool   `json:"email_verified"`
+	Email         string `json:"email"`
+	// Add other fields you might need
+}
+
+// CheckEmailVerified decodes a Firebase JWT token and checks if the email is verified
+func CheckEmailVerified(idToken string) (bool, string, error) {
+	// Split the token into parts
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		return false, "", fmt.Errorf("invalid token format: token should have 3 parts")
+	}
+
+	// Get the payload (middle part)
+	payloadBase64 := parts[1]
+
+	// Add padding if needed
+	if len(payloadBase64)%4 != 0 {
+		padLen := 4 - (len(payloadBase64) % 4)
+		payloadBase64 += strings.Repeat("=", padLen)
+	}
+
+	// Replace URL-safe characters
+	payloadBase64 = strings.ReplaceAll(payloadBase64, "-", "+")
+	payloadBase64 = strings.ReplaceAll(payloadBase64, "_", "/")
+
+	// Decode the payload
+	payloadBytes, err := base64.StdEncoding.DecodeString(payloadBase64)
+	if err != nil {
+		return false, "", fmt.Errorf("error decoding token payload: %v", err)
+	}
+
+	// Parse the payload
+	var payload FirebaseTokenPayload
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return false, "", fmt.Errorf("error parsing token payload: %v", err)
+	}
+
+	// Return the email verification status and the email
+	return payload.EmailVerified, payload.Email, nil
+}
+
+
 
 func InitFirebase() {
 	var app *firebase.App
@@ -38,7 +88,7 @@ func InitFirebase() {
 	}
 	
 	// Initialize Firebase Auth client
-	firebaseAuth, err = app.Auth(context.Background())
+	FirebaseAuth, err = app.Auth(context.Background())
 	if err != nil {
 			Fatal("Error initializing Firebase Auth client", err)
 	}
@@ -64,12 +114,42 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Verify the ID token
-		token, err := firebaseAuth.VerifyIDToken(context.Background(), idToken)
+		token, err := FirebaseAuth.VerifyIDToken(context.Background(), idToken)
 		if err != nil {
 			Error("Invalid token", err)
 			http.Error(w, "Invalid token: "+err.Error(), http.StatusUnauthorized)
 			return
 		}
+
+		// Check if the email is verified
+		emailVerified, _, err := CheckEmailVerified(idToken)
+		if err != nil {
+			Error("Error checking email verification", err)
+			http.Error(w, "Error checking email verification: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if !emailVerified {
+			Error("Email is not verified", nil)
+			http.Error(w, "Email is not verified", 412)
+			return
+		}
+		
+		/*
+		claims := map[string]interface{}{
+				"test-claim": true,
+		}
+		err = FirebaseAuth.SetCustomUserClaims(context.Background(), token.UID, claims)
+		if err != nil {
+				Error("Error setting custom claims", err)
+				http.Error(w, "Error setting custom claims: "+err.Error(), http.StatusInternalServerError)
+				return
+		}
+
+		Log("Custom claims set for user: ", token)*/
+
+		// display the token's decoded claims
+		// Log("Claims: ", token.Claims)
 
 		// Add the verified user ID to the request context
 		ctx := context.WithValue(r.Context(), "userID", token.UID)

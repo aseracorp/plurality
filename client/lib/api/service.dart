@@ -20,13 +20,16 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
   StreamSubscription? _authSubscription;
   final apiService = ApiService();
 
+  static bool _isInitialized = false;
+
   ConversationsNotifier() : super([]) {
     // Load initial local data
     _loadConversations();
 
     // Subscribe to auth changes
     _authSubscription = _authService.authStateChanges.listen((user) {
-      if (user != null) {
+      if (user != null && !_isInitialized) {
+        _isInitialized = true;
         print('User logged in, loading conversations');
         Future.microtask(() {
           refresh();
@@ -112,6 +115,7 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
 
   // Delete all conversations
   Future<void> deleteAllConversations() async {
+    _isInitialized = false;
     await ConversationStorage.deleteAllConversations();
     state = [];
   }
@@ -147,15 +151,6 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
       // Return null if not found
       return null;
     }
-  }
-
-  // Get Selected Model Preference
-  ModelSelected getSelectedModel() {
-    return ConversationStorage.getSelectedModel();
-  }
-
-  void saveSelectedModel(ModelSelected modelSelected) {
-    ConversationStorage.saveSelectedModel(modelSelected);
   }
 
   @override

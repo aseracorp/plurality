@@ -1,21 +1,14 @@
-# private MVP1 - small
-- Login / Register
-  - google
-  - apple
-  - verify email
-  - 2FA
-  - delete hive on logout
-  - delete account
-- List accepted token for request
-- llama 3.3 broken
-
 # private MVP2 - bigger
-- Free accounts of 100.000 credits
-  - force_plan in DB to override plan. Those plan should be renewed 1st of each month
-  - 1st of each month, reset all free plan to 100.000
-  - initialize all users to free plan
-- dark mode
+- Free can only use 11B models and down
+- Show token price on message
 - Warning large context convo
+- Retry button
+- Login / Register
+  - apple
+  - may be facebook
+- Publish Apps each platform
+- dark mode
+- refresh message/convo
 - pin conversations and messages?
 - bin doc parse / long doc integration
 - rename conversations
@@ -23,12 +16,11 @@
   - Therapy
   - Language learning
 - Code Assist
-- Retry button
-- model icons 
+- model icons / conversation icons
 - more models
 - change share to share a hosted page rather than the image / text / converastion
 - file_picker's save file for non-web?
-- local mode
+- local or incognito mode? or both?
 - History pagination or infinite scroll?
 - Claude / ChatGPT images vision
 - Add token price to titles
