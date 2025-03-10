@@ -3,6 +3,7 @@
 - Password str validation as you type
 - Remove title in "Verify Your Email" page
 - Free can only use 11B models and down
+- ceil credit left in UI
 - paste image
 - drag and drop
 - Show token price on message
