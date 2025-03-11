@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -22,17 +21,20 @@ type ChunkProcessor struct {
 	IsNew          bool
 	TokenUsage     int
 	StringProduced string
-	ModelName      string
+	Model      utils.Model
+	InputPriceToken int
 }
 
 // NewChunkProcessor creates a new ChunkProcessor instance
-func NewChunkProcessor(w http.ResponseWriter, conv utils.Conversation, isNew bool) *ChunkProcessor {
+func NewChunkProcessor(w http.ResponseWriter, conv utils.Conversation, isNew bool, inputPriceToken int, model utils.Model) *ChunkProcessor {
 	return &ChunkProcessor{
 		W:              w,
 		Conv:           conv,
 		IsNew:          isNew,
 		TokenUsage:     0,
 		StringProduced: "",
+		InputPriceToken: inputPriceToken,
+		Model:			 model,
 	}
 }
 
@@ -69,18 +71,17 @@ func (cp *ChunkProcessor) ProcessStandardChunk(ctx context.Context, response io.
 				//cp.handleNewConversationTitle(ctx)
 			}
 
-			fmt.Fprintf(cp.W, "%s\n\n", line)
-			cp.W.(http.Flusher).Flush()
-
-			// Push message to DB
-			cp.saveMessageToDB(ctx)
-
 			provider := TOGETHER
-			if strings.HasPrefix(cp.ModelName, "ChatGPT/") {
+			if strings.HasPrefix(cp.Model.Name, "ChatGPT/") {
 				provider = OPENAI
 			}
 
 			priceToken := GetPriceFromTokenUsage(TEXT_OUTPUT, provider, modelSelected, float64(cp.TokenUsage))
+			cp.TokenUsage = int(priceToken) + cp.InputPriceToken
+			
+			// Push message to DB
+			cp.saveMessageToDB(ctx)
+
 			_, err := db.RemoveCredits(ctx, priceToken, utils.UserAction{
 				Type: TEXT_OUTPUT,
 				Provider: provider,
@@ -91,6 +92,8 @@ func (cp *ChunkProcessor) ProcessStandardChunk(ctx context.Context, response io.
 			}
 			
 			utils.Log("[HandleChat] Successfully completed chat using %d tokens", cp.TokenUsage)
+
+			cp.sendChunkToClient("")
 			break
 		}
 
@@ -119,7 +122,7 @@ func (cp *ChunkProcessor) ProcessStandardChunk(ctx context.Context, response io.
 			}
 		}
 
-		cp.ModelName = chunk.Model
+		// cp.ModelName = chunk.Model
 
 		// Extract content from the chunk
 		if len(chunk.Choices) > 0 {
@@ -182,7 +185,6 @@ func (cp *ChunkProcessor) ProcessClaudeChunk(ctx context.Context, response io.Re
 			cp.TokenUsage = claudeChunk.Usage.OutputTokens
 		}
 		
-		utils.Debug("[HandleChat] caca: %d", claudeChunk.Message.Usage.InputTokens)
 		if claudeChunk.Message.Usage.InputTokens > 0 {
 			utils.Log("[HandleChat] Input tokens: %d", claudeChunk.Message.Usage.InputTokens)
 
@@ -205,13 +207,12 @@ func (cp *ChunkProcessor) ProcessClaudeChunk(ctx context.Context, response io.Re
 				//cp.handleNewConversationTitle(ctx)
 			}
 
-			fmt.Fprintf(cp.W, "[DONE]\n", line)
-			cp.W.(http.Flusher).Flush()
-
+			priceToken := GetPriceFromTokenUsage(TEXT_OUTPUT, CLAUDE, modelSelected, float64(cp.TokenUsage))
+			cp.TokenUsage = int(priceToken) + cp.InputPriceToken
+			
 			// Push message to DB
 			cp.saveMessageToDB(ctx)
 
-			priceToken := GetPriceFromTokenUsage(TEXT_OUTPUT, CLAUDE, modelSelected, float64(cp.TokenUsage))
 
 			db.RemoveCredits(ctx, priceToken, utils.UserAction{
 				Type: TEXT_OUTPUT,
@@ -220,6 +221,8 @@ func (cp *ChunkProcessor) ProcessClaudeChunk(ctx context.Context, response io.Re
 			})
 			
 			utils.Log("[HandleChat] Successfully completed Claude chat using %d tokens", cp.TokenUsage)
+			
+			cp.sendChunkToClient("")
 			break
 		case "content_block_delta":
 			// This is the main streaming text from Claude
@@ -236,13 +239,10 @@ func (cp *ChunkProcessor) ProcessClaudeChunk(ctx context.Context, response io.Re
 
 // sendChunkToClient formats and sends a chunk of text to the client
 func (cp *ChunkProcessor) sendChunkToClient(content string) {
-	if os.Getenv("LOG_LEVEL") == "DEBUG" {
-		// utils.Debug("[HandleChat] Sending response", content)
-	}
 
 	responseObj := map[string]interface{}{
 		"content":          content,
-		"model":            cp.ModelName,
+		"model":            cp.Model,
 		"totalTokens":      cp.TokenUsage,
 		"conversationID":   cp.Conv.ID.Hex(),
 		"conversationTitle": cp.Conv.Title,
@@ -254,6 +254,8 @@ func (cp *ChunkProcessor) sendChunkToClient(content string) {
 		return
 	}
 
+	utils.Debug("[HandleChat] Sending response", "data: " + string(responseJSON))
+
 	// Write the response to the client
 	fmt.Fprintf(cp.W, "%s\n\n", ([]byte)("data: " + string(responseJSON)))
 	cp.W.(http.Flusher).Flush()
@@ -262,6 +264,8 @@ func (cp *ChunkProcessor) sendChunkToClient(content string) {
 // saveMessageToDB saves the complete generated response to the database
 func (cp *ChunkProcessor) saveMessageToDB(ctx context.Context) {
 	_, _, err := db.PushMessage(ctx, cp.Conv, utils.Message{
+		TotalTokens: cp.TokenUsage,
+		Model:	cp.Model,
 		Role:      "assistant",
 		Timestamp: time.Now().Format(time.RFC3339),
 		Content: []utils.MessageContent{

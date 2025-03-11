@@ -8,14 +8,16 @@ class Balance {
   final double balance;
   final DateTime updatedAt;
   final double plan;
+  final String planName;
 
-  Balance(this.balance, this.updatedAt, this.plan);
+  Balance(this.balance, this.updatedAt, this.plan, {this.planName = ''});
 
   factory Balance.fromJson(Map<String, dynamic> json) {
     return Balance(
       _parseToDouble(json['balance']),
       DateTime.parse(json['updated_at'] as String),
       _parseToDouble(json['plan']),
+      planName: json['plan_name'] as String,
     );
   }
 

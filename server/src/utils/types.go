@@ -19,6 +19,8 @@ type Message struct {
 	Role      string           `json:"role" bson:"role"`
 	Timestamp string           `json:"timestamp" bson:"timestamp"`
 	Content   []MessageContent `json:"content" bson:"content"`
+	TotalTokens int `json:"total_tokens" bson:"total_tokens"`
+	Model Model `json:"model" bson:"model"`
 }
 
 func (m Message) Text() string {

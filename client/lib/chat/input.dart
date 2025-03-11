@@ -4,11 +4,12 @@ import 'package:image_picker/image_picker.dart';
 import 'dart:convert';
 import 'dart:io';
 import './model-picker.dart';
-
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:flutter/foundation.dart';
 import '../utils/types.dart';
 import './attachments.dart';
 
-class InputBox extends StatelessWidget {
+class InputBox extends StatefulWidget {
   // Required parameters
   final TextEditingController messageController;
   final Future<void> Function(BuildContext) onSend;
@@ -28,9 +29,6 @@ class InputBox extends StatelessWidget {
   final void Function() handleStop;
   final bool isMobile;
   final ModelSelected selectedModel;
-
-  // Internal state
-  static String _previousText = '';
 
   const InputBox({
     Key? key,
@@ -54,12 +52,26 @@ class InputBox extends StatelessWidget {
     this.validator,
   }) : super(key: key);
 
-  void _handleSubmit(BuildContext context) {
-    onSend(context);
+  @override
+  State<InputBox> createState() => _InputBoxState();
+}
+
+class _InputBoxState extends State<InputBox> {
+  // Internal state
+  static String _previousText = '';
+  late stt.SpeechToText _speech;
+  bool _isListening = false;
+  String _currentText = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _speech = stt.SpeechToText();
+    widget.messageController.addListener(_onTextChanged);
   }
 
   void _onTextChanged() {
-    String currentText = messageController.text;
+    String currentText = widget.messageController.text;
 
     // Check if text was pasted (significant increase in length)
     if (currentText.length > _previousText.length + 250) {
@@ -73,13 +85,53 @@ class InputBox extends StatelessWidget {
       String newText = _previousText + processedContent;
 
       // Update the controller with the processed text
-      messageController.value = TextEditingValue(
+      widget.messageController.value = TextEditingValue(
         text: newText,
         selection: TextSelection.collapsed(offset: newText.length),
       );
     }
 
-    _previousText = messageController.text;
+    _previousText = widget.messageController.text;
+  }
+
+  Future<void> _listen() async {
+    if (!_isListening) {
+      bool available = await _speech.initialize(
+        onStatus: (status) {
+          if (status == 'done' || status == 'notListening') {
+            setState(() {
+              _isListening = false;
+            });
+          }
+        },
+        onError: (error) {
+          setState(() {
+            _isListening = false;
+          });
+        },
+      );
+
+      if (available) {
+        setState(() {
+          _isListening = true;
+        });
+
+        _speech.listen(
+          onResult: (result) {
+            setState(() {
+              _currentText = result.recognizedWords;
+              // Update the text field with the recognized speech
+              widget.messageController.text = _currentText;
+            });
+          },
+        );
+      }
+    } else {
+      setState(() {
+        _isListening = false;
+      });
+      _speech.stop();
+    }
   }
 
   String SummarizeSelectedModel(ModelSelected selectedModel) {
@@ -89,7 +141,7 @@ class InputBox extends StatelessWidget {
     }
 
     // if one of the attachments is an image use vision model
-    for (var attachment in attachments) {
+    for (var attachment in widget.attachments) {
       if (attachment.type == "image_url") {
         if (selectedModel.vision != null) {
           res += selectedModel.vision!.name;
@@ -125,77 +177,81 @@ class InputBox extends StatelessWidget {
   }
 
   String _processText(String text) {
-    addAttachment(Attachment(type: "snippet", content: text));
+    widget.addAttachment(Attachment(type: "snippet", content: text));
     return "";
+  }
+
+  void _handleSubmit(BuildContext context) {
+    widget.onSend(context);
+  }
+
+  Widget getPlus() {
+    return Row(
+      children: [
+        IconButton(
+          onPressed: () => widget.pickImage(source: ImageSource.camera),
+          icon: const Icon(Icons.camera_alt, color: Color(0xffee4654)),
+        ),
+        IconButton(
+          onPressed: () => widget.pickImage(source: ImageSource.gallery),
+          icon: const Icon(Icons.photo, color: Color(0xffee4654)),
+        ),
+        IconButton(
+          onPressed: widget.pickFile,
+          icon: const Icon(Icons.attach_file, color: Color(0xffee4654)),
+        ),
+        // pick AI model
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(),
+          onPressed: () {
+            showDialog(
+              context: context,
+              builder: (BuildContext context) {
+                return ModelSelectionModal(
+                  selectedModel: widget.selectedModel,
+                  onModelSelected: (ModelSelected models) {
+                    widget.setSelectedModel(models);
+                  },
+                );
+              },
+            );
+          },
+          child: Row(
+            children: [
+              Icon(Icons.smart_toy),
+              VerticalDivider(),
+              Text(
+                SummarizeSelectedModel(widget.selectedModel),
+                style: TextStyle(fontSize: 10),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.enter) {
+      if (HardwareKeyboard.instance.isShiftPressed) {
+        return KeyEventResult.ignored;
+      } else {
+        _handleSubmit(context);
+        return KeyEventResult.handled;
+      }
+    }
+    return KeyEventResult.ignored;
   }
 
   @override
   Widget build(BuildContext context) {
-    messageController.addListener(_onTextChanged);
-
-    Widget getPlus() {
-      return Row(
-        children: [
-          IconButton(
-            onPressed: () => pickImage(source: ImageSource.camera),
-            icon: const Icon(Icons.camera_alt, color: Color(0xffee4654)),
-          ),
-          IconButton(
-            onPressed: () => pickImage(source: ImageSource.gallery),
-            icon: const Icon(Icons.photo, color: Color(0xffee4654)),
-          ),
-          IconButton(
-            onPressed: pickFile,
-            icon: const Icon(Icons.attach_file, color: Color(0xffee4654)),
-          ),
-          // pick AI model
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(),
-            onPressed: () {
-              showDialog(
-                context: context,
-                builder: (BuildContext context) {
-                  return ModelSelectionModal(
-                    selectedModel: selectedModel,
-                    onModelSelected: (ModelSelected models) {
-                      setSelectedModel(models);
-                    },
-                  );
-                },
-              );
-            },
-            child: Row(
-              children: [
-                Icon(Icons.smart_toy),
-                VerticalDivider(),
-                Text(
-                  SummarizeSelectedModel(selectedModel),
-                  style: TextStyle(fontSize: 10),
-                ),
-              ],
-            ),
-          ),
-        ],
-      );
-    }
-
-    KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
-      if (event is KeyDownEvent &&
-          event.logicalKey == LogicalKeyboardKey.enter) {
-        if (HardwareKeyboard.instance.isShiftPressed) {
-          return KeyEventResult.ignored;
-        } else {
-          _handleSubmit(context);
-          return KeyEventResult.handled;
-        }
-      }
-      return KeyEventResult.ignored;
-    }
+    bool supportSST =
+        kIsWeb || Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
 
     return Container(
       width: double.infinity,
       constraints: BoxConstraints(
-        maxWidth: conversationId == "" ? 600 : double.infinity,
+        maxWidth: widget.conversationId == "" ? 600 : double.infinity,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -204,16 +260,16 @@ class InputBox extends StatelessWidget {
             width: double.infinity,
             child: Row(
               children: [
-                for (var attachment in attachments ?? [])
+                for (var attachment in widget.attachments ?? [])
                   AttachmentViewer(
                     attachment: attachment,
-                    removeAttachment: removeAttachment,
+                    removeAttachment: widget.removeAttachment,
                     editMode: true,
                   ),
               ],
             ),
           ),
-          // if (isMobile)
+          // if (widget.isMobile)
           getPlus(),
           Container(
             width: double.infinity,
@@ -225,16 +281,16 @@ class InputBox extends StatelessWidget {
                     child: Focus(
                       onKeyEvent: _handleKeyEvent,
                       child: TextFormField(
-                        controller: messageController,
-                        focusNode: inputFocusNode,
+                        controller: widget.messageController,
+                        focusNode: widget.inputFocusNode,
                         decoration: InputDecoration(
                           hintText: 'Message...',
                           border: null, // OutlineInputBorder(),
                         ),
                         maxLines: null,
                         minLines: 1,
-                        autofocus: conversationId.isNotEmpty,
-                        enabled: !isLoading,
+                        autofocus: widget.conversationId.isNotEmpty,
+                        enabled: !widget.isLoading,
                         keyboardType: TextInputType.multiline,
                         textInputAction: TextInputAction.newline,
                         validator: (value) {
@@ -248,17 +304,28 @@ class InputBox extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 8.0),
-                // if (!isMobile) getPlus(),
+                // Speech-to-text microphone button
+                if (supportSST)
+                  IconButton(
+                    onPressed: _listen,
+                    icon: Icon(
+                      _isListening ? Icons.mic : Icons.mic_none,
+                      color: Color(0xffee4654),
+                    ),
+                  ),
+                // Send or Stop button
                 IconButton(
                   onPressed:
-                      isLoading ? handleStop : () => _handleSubmit(context),
+                      widget.isLoading
+                          ? widget.handleStop
+                          : () => _handleSubmit(context),
                   icon:
-                      isLoading
+                      widget.isLoading
                           ? Stack(
                             alignment: Alignment.center,
                             children: [
                               SizedBox(
-                                width: 24, // Adjust size as needed
+                                width: 24,
                                 height: 24,
                                 child: CircularProgressIndicator(
                                   strokeWidth: 2,
@@ -278,6 +345,5 @@ class InputBox extends StatelessWidget {
         ],
       ),
     );
-    ;
   }
 }

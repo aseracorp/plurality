@@ -4,9 +4,12 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart';
 import 'package:code_highlight_view/code_highlight_view.dart';
 import 'package:markdown/markdown.dart' as md;
+import 'dart:async';
 
 import './message-bar.dart';
 import './copy-button.dart';
+import '../api/tts.dart';
+import '../utils/types.dart';
 
 // Real Visual Studio theme colors
 const vsTheme = {
@@ -57,6 +60,7 @@ class AnimatedMessageBox extends StatefulWidget {
   final bool isBot;
   final bool isLoading;
   final bool mini;
+  final Message message;
 
   const AnimatedMessageBox({
     super.key,
@@ -64,6 +68,7 @@ class AnimatedMessageBox extends StatefulWidget {
     required this.isBot,
     required this.isLoading,
     this.mini = false,
+    required this.message,
   });
 
   @override
@@ -73,6 +78,9 @@ class AnimatedMessageBox extends StatefulWidget {
 class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
     with SingleTickerProviderStateMixin {
   late AnimationController _animationController;
+  final TTSService _ttsService = TTSService();
+  late StreamSubscription<bool> _speakingSubscription;
+  bool _isSpeaking = false;
 
   @override
   void initState() {
@@ -82,11 +90,38 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
       duration: const Duration(seconds: 1),
       vsync: this,
     )..repeat(reverse: true);
+
+    _ttsService.initialize();
+
+    // Listen to speaking state changes
+    _speakingSubscription = _ttsService.speakingState.listen((speaking) {
+      // Only update if this message is the one being spoken
+      if (_ttsService.currentText == widget.text || !speaking) {
+        setState(() {
+          _isSpeaking = speaking;
+        });
+      }
+    });
+
+    // Check if this message is currently being spoken
+    _isSpeaking =
+        _ttsService.isSpeaking && _ttsService.currentText == widget.text;
+  }
+
+  Future<void> speak() async {
+    if (widget.text.isNotEmpty) {
+      await _ttsService.speak(widget.text);
+    }
+  }
+
+  Future<void> stop() async {
+    await _ttsService.stop();
   }
 
   @override
   void dispose() {
     _animationController.dispose();
+    _speakingSubscription.cancel();
     super.dispose();
   }
 
@@ -97,10 +132,14 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
     var botFG = isDark ? Colors.white : Colors.black;
 
     return MessageToolbar(
+      message: widget.message,
       isBot: widget.isBot,
       isHorizontal: widget.text.length > 500,
       text: widget.text,
       mini: widget.mini,
+      // Add the TTS functionality to the MessageToolbar
+      ttsCallback: _isSpeaking ? stop : speak,
+      isSpeaking: _isSpeaking,
       child: AnimatedBuilder(
         animation: _animationController,
         builder: (context, child) {

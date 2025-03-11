@@ -12,24 +12,30 @@ class AuthService {
   Stream<User?> get authStateChanges => _auth.authStateChanges();
 
   Future<UserCredential> signInWithGoogle() async {
+    print('google: ${kIsWeb}');
     // Trigger the authentication flow
     final GoogleSignInAccount? googleUser =
-        await GoogleSignIn(
-          clientId:
-              kIsWeb
-                  ? "986982379072-rnlbo109kg5db0pe3f9nt866l76drsm4.apps.googleusercontent.com"
-                  : null,
-        ).signIn();
+        kIsWeb
+            ? await GoogleSignIn(
+              clientId:
+                  "986982379072-rnlbo109kg5db0pe3f9nt866l76drsm4.apps.googleusercontent.com",
+            ).signIn()
+            : await GoogleSignIn().signIn();
 
+    print('google: 1');
     // Obtain the auth details from the request
     final GoogleSignInAuthentication? googleAuth =
         await googleUser?.authentication;
+
+    print('google: 2 ${googleAuth?.accessToken} ${googleAuth?.idToken}');
 
     // Create a new credential
     final credential = GoogleAuthProvider.credential(
       accessToken: googleAuth?.accessToken,
       idToken: googleAuth?.idToken,
     );
+
+    print('google: 3 ${credential.accessToken} ${credential.idToken}');
 
     // Once signed in, return the UserCredential
     return await FirebaseAuth.instance.signInWithCredential(credential);

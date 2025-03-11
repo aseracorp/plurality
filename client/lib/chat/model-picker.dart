@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../api/balance.dart';
 
 import '../utils/types.dart';
 
-class ModelSelectionModal extends StatefulWidget {
+class ModelSelectionModal extends ConsumerStatefulWidget {
   final Function(ModelSelected) onModelSelected;
   final ModelSelected selectedModel;
 
@@ -13,10 +15,12 @@ class ModelSelectionModal extends StatefulWidget {
   }) : super(key: key);
 
   @override
-  _ModelSelectionModalState createState() => _ModelSelectionModalState();
+  ConsumerState<ModelSelectionModal> createState() =>
+      _ModelSelectionModalState();
 }
 
-class _ModelSelectionModalState extends State<ModelSelectionModal> {
+class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
+    with SingleTickerProviderStateMixin {
   // Available options for each dropdown
   final List<String> _modelOptions = [
     'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
@@ -51,16 +55,118 @@ class _ModelSelectionModalState extends State<ModelSelectionModal> {
   String _selectedVisionModel = '';
   String _selectedImageGenModel = '';
 
-  // init
+  late TabController _tabController;
+  int _currentTabIndex = 0;
+
+  // Preset configurations
+  final Map<String, ModelSelected> _presets = {
+    'Fast': ModelSelected(
+      text: Model(name: 'meta-llama/Llama-3.2-3B-Instruct-Turbo', params: null),
+      vision: Model(
+        name: 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
+        params: null,
+      ),
+      imageGen: Model(name: 'black-forest-labs/FLUX.1-schnell', params: null),
+    ),
+    'Balanced': ModelSelected(
+      text: Model(
+        name: 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
+        params: null,
+      ),
+      vision: Model(
+        name: 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
+        params: null,
+      ),
+      imageGen: Model(name: 'black-forest-labs/FLUX.1-schnell', params: null),
+    ),
+    'Smart': ModelSelected(
+      text: Model(
+        name: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+        params: null,
+      ),
+      vision: Model(
+        name: 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
+        params: null,
+      ),
+      imageGen: Model(name: 'black-forest-labs/FLUX.1-schnell', params: null),
+    ),
+  };
 
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(_handleTabChange);
+
     _selectedModel = widget.selectedModel.text?.name ?? _modelOptions.first;
     _selectedVisionModel =
         widget.selectedModel.vision?.name ?? _visionModelOptions.first;
     _selectedImageGenModel =
         widget.selectedModel.imageGen?.name ?? _imageGenModelOptions.first;
+
+    // Check if user is free and set default models if needed
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkAndSetDefaultModels();
+    });
+  }
+
+  String _getSelectedPresetName() {
+    // Find which preset matches the current selection
+    for (var entry in _presets.entries) {
+      if (entry.value.text?.name == _selectedModel &&
+          entry.value.vision?.name == _selectedVisionModel &&
+          entry.value.imageGen?.name == _selectedImageGenModel) {
+        return entry.key;
+      }
+    }
+
+    // Default to Balanced if no match
+    return '';
+  }
+
+  void _handleTabChange() {
+    setState(() {
+      _currentTabIndex = _tabController.index;
+    });
+  }
+
+  void _checkAndSetDefaultModels() {
+    final balanceState = ref.read(balanceProvider);
+    final balance = balanceState.value;
+    final isFree = balance?.planName == 'Free';
+
+    if (isFree) {
+      final defaultVisionModel =
+          'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo';
+      final defaultImageGenModel = 'black-forest-labs/FLUX.1-schnell';
+      final defaultTextModel = 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo';
+
+      if (_selectedVisionModel != defaultVisionModel ||
+          _selectedImageGenModel != defaultImageGenModel ||
+          _selectedModel != defaultTextModel) {
+        setState(() {
+          _selectedVisionModel = defaultVisionModel;
+          _selectedImageGenModel = defaultImageGenModel;
+          _selectedModel = defaultTextModel;
+        });
+
+        // Call setModel to update the selected models
+        widget.onModelSelected(
+          ModelSelected(
+            text: Model(name: _selectedModel, params: null),
+            vision: Model(name: _selectedVisionModel, params: null),
+            imageGen: Model(name: _selectedImageGenModel, params: null),
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _tabController.removeListener(_handleTabChange);
+    _tabController.dispose();
+    super.dispose();
   }
 
   @override
@@ -74,6 +180,10 @@ class _ModelSelectionModalState extends State<ModelSelectionModal> {
   }
 
   Widget contentBox(BuildContext context) {
+    final balanceState = ref.watch(balanceProvider);
+    final balance = balanceState.value;
+    final isFree = balance?.planName == 'Free';
+
     return Container(
       constraints: const BoxConstraints(maxWidth: 400),
       padding: const EdgeInsets.all(20),
@@ -89,98 +199,295 @@ class _ModelSelectionModalState extends State<ModelSelectionModal> {
           ),
         ],
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          const Text(
-            'Select AI Models',
-            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 24),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const Text(
+              'Select AI Models',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 16),
 
-          // Text Model Dropdown
-          _buildDropdown(
-            label: 'Text Model',
-            value: _selectedModel,
-            items: _modelOptions,
-            onChanged: (value) {
-              setState(() {
-                _selectedModel = value!;
-              });
-            },
-          ),
-          const SizedBox(height: 16),
+            // Tab bar
+            TabBar(
+              controller: _tabController,
+              tabs: const [Tab(text: 'Presets'), Tab(text: 'Custom')],
+              labelColor: Theme.of(context).primaryColor,
+              unselectedLabelColor: Colors.grey,
+              indicatorColor: Theme.of(context).primaryColor,
+            ),
 
-          // Vision Model Dropdown
-          _buildDropdown(
-            label: 'Vision Model',
-            value: _selectedVisionModel,
-            items: _visionModelOptions,
-            onChanged: (value) {
-              setState(() {
-                _selectedVisionModel = value!;
-              });
-            },
-          ),
-          const SizedBox(height: 16),
+            const SizedBox(height: 24),
 
-          // Image Generation Model Dropdown
-          _buildDropdown(
-            label: 'Image Generation Model',
-            value: _selectedImageGenModel,
-            items: _imageGenModelOptions,
-            onChanged: (value) {
-              setState(() {
-                _selectedImageGenModel = value!;
-              });
-            },
-          ),
-          const SizedBox(height: 24),
+            // Tab content
+            SizedBox(
+              height: _currentTabIndex == 0 ? 300 : 300,
+              child: TabBarView(
+                controller: _tabController,
+                children: [
+                  // Presets tab
+                  _buildPresetsTab(isFree),
 
-          // Action Buttons
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              TextButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                },
-                child: const Text('Cancel'),
+                  // Custom tab
+                  _buildCustomTab(isFree),
+                ],
               ),
-              const SizedBox(width: 8),
-              ElevatedButton(
-                onPressed: () {
-                  // Return the selected models to the parent widget
-                  widget.onModelSelected(
-                    ModelSelected(
-                      text: Model(name: _selectedModel, params: null),
-                      vision: Model(name: _selectedVisionModel, params: null),
-                      imageGen: Model(
-                        name: _selectedImageGenModel,
-                        params: null,
-                      ),
-                    ),
-                  );
-                  Navigator.pop(context);
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue,
-                  foregroundColor: Colors.white,
+            ),
+
+            // Free user message
+            if (isFree)
+              Container(
+                margin: const EdgeInsets.only(top: 16),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade100,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.red),
                 ),
-                child: const Text('Confirm'),
+                child: const Text(
+                  "Only subscribers can change the models, free users are restricted to the currently selected models",
+                  style: TextStyle(
+                    color: Colors.red,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
               ),
-            ],
-          ),
-        ],
+
+            const SizedBox(height: 24),
+
+            // Action Buttons
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(context);
+                  },
+                  child: const Text('Cancel'),
+                ),
+                const SizedBox(width: 8),
+                if (_currentTabIndex == 1)
+                  ElevatedButton(
+                    onPressed:
+                        isFree
+                            ? null
+                            : () {
+                              // Return the selected models to the parent widget
+                              final selectedModels =
+                                  _currentTabIndex == 0
+                                      ? _getSelectedPreset()
+                                      : ModelSelected(
+                                        text: Model(
+                                          name: _selectedModel,
+                                          params: null,
+                                        ),
+                                        vision: Model(
+                                          name: _selectedVisionModel,
+                                          params: null,
+                                        ),
+                                        imageGen: Model(
+                                          name: _selectedImageGenModel,
+                                          params: null,
+                                        ),
+                                      );
+
+                              widget.onModelSelected(selectedModels);
+                              Navigator.pop(context);
+                            },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Theme.of(context).primaryColor,
+                      foregroundColor: Colors.white,
+                      disabledBackgroundColor: Colors.grey.shade300,
+                      disabledForegroundColor: Colors.grey.shade500,
+                    ),
+                    child: const Text('Confirm'),
+                  ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
+  }
+
+  Widget _buildPresetsTab(bool isFree) {
+    return Column(
+      children: [
+        _buildPresetButton(
+          'Fast',
+          'Fast and low cost',
+          '\$',
+          Colors.green.shade100,
+          Colors.green,
+          isFree,
+          _getSelectedPresetName() == 'Fast',
+        ),
+        const SizedBox(height: 12),
+        _buildPresetButton(
+          'Balanced',
+          'Recommended',
+          '\$\$',
+          Colors.blue.shade100,
+          Colors.blue,
+          isFree,
+          _getSelectedPresetName() == 'Balanced',
+        ),
+        const SizedBox(height: 12),
+        _buildPresetButton(
+          'Smart',
+          'Best quality but slow',
+          '\$\$\$',
+          Colors.purple.shade100,
+          Colors.purple,
+          isFree,
+          _getSelectedPresetName() == 'Smart',
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPresetButton(
+    String title,
+    String description,
+    String pricing,
+    Color color,
+    Color colorSelected,
+    bool isFree,
+    bool isSelected,
+  ) {
+    return InkWell(
+      onTap:
+          isFree
+              ? null
+              : () {
+                setState(() {
+                  // Set the models based on the preset
+                  final preset = _presets[title]!;
+                  _selectedModel = preset.text!.name;
+                  _selectedVisionModel = preset.vision!.name;
+                  _selectedImageGenModel = preset.imageGen!.name;
+                });
+
+                // Apply the preset immediately
+                widget.onModelSelected(_presets[title]!);
+                Navigator.pop(context);
+              },
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: color,
+          borderRadius: BorderRadius.circular(8),
+          border:
+              isSelected
+                  ? Border.all(color: colorSelected, width: 3)
+                  : Border.all(color: color.withOpacity(0.5)),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    description,
+                    style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
+                  ),
+                ],
+              ),
+            ),
+            Text(
+              pricing,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCustomTab(bool isFree) {
+    return Column(
+      children: [
+        // Text Model Dropdown
+        _buildDropdown(
+          label: 'Text Model',
+          value: _selectedModel,
+          items: _modelOptions,
+          onChanged:
+              isFree
+                  ? (value) {}
+                  : (value) {
+                    setState(() {
+                      _selectedModel = value!;
+                    });
+                  },
+        ),
+        const SizedBox(height: 16),
+
+        // Vision Model Dropdown
+        _buildDropdown(
+          label: 'Vision Model',
+          value: _selectedVisionModel,
+          items: _visionModelOptions,
+          onChanged:
+              isFree
+                  ? (value) {}
+                  : (value) {
+                    setState(() {
+                      _selectedVisionModel = value!;
+                    });
+                  },
+        ),
+        const SizedBox(height: 16),
+
+        // Image Generation Model Dropdown
+        _buildDropdown(
+          label: 'Image Generation Model',
+          value: _selectedImageGenModel,
+          items: _imageGenModelOptions,
+          onChanged:
+              isFree
+                  ? (value) {}
+                  : (value) {
+                    setState(() {
+                      _selectedImageGenModel = value!;
+                    });
+                  },
+        ),
+      ],
+    );
+  }
+
+  ModelSelected _getSelectedPreset() {
+    // Find which preset matches the current selection
+    for (var entry in _presets.entries) {
+      if (entry.value.text?.name == _selectedModel &&
+          entry.value.vision?.name == _selectedVisionModel &&
+          entry.value.imageGen?.name == _selectedImageGenModel) {
+        return entry.value;
+      }
+    }
+
+    // Default to Balanced if no match
+    return _presets['Balanced']!;
   }
 
   Widget _buildDropdown({
     required String label,
     required String value,
     required List<String> items,
-    required Function(String?) onChanged,
+    required Function(String?)? onChanged,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

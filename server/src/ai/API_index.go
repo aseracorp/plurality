@@ -53,7 +53,14 @@ func HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
 		request.ResponseFormat = "b64_json"
 	}
 
-	if !CheckModel(request.Model) {
+	planName, err := db.GetPlanName(r.Context())
+	if err != nil {
+		utils.Error("[HandleImageGeneration] Error getting plan name", err)
+		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if !CheckModel(request.Model, planName) {
 		utils.Error("[HandleImageGeneration] Invalid model %s", nil, request.Model)
 		utils.SendHTTPError(w, "Invalid model", http.StatusBadRequest)
 		return
@@ -131,6 +138,15 @@ func HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
 	message := utils.Message{
 		Role: "assistant",
 		Timestamp: time.Now().Format(time.RFC3339),
+		TotalTokens: int(priceToken),
+		Model: utils.Model{
+			Name: request.Model,
+			Params: map[string]string{
+				"width": strconv.Itoa(request.Width),
+				"height": strconv.Itoa(request.Height),
+				"steps": strconv.Itoa(request.Steps),
+			},
+		},
 		Content: []utils.MessageContent{
 			utils.MessageContent{
 				Type: "image_url",
@@ -184,7 +200,14 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	// Select the appropriate model
 	model := SelectModel(payload.ModelSelected, payload.Messages[0])
 
-	if !CheckModel(model.Name) {
+	planName, err := db.GetPlanName(r.Context())
+	if err != nil {
+		utils.Error("[HandleImageGeneration] Error getting plan name", err)
+		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if !CheckModel(model.Name, planName) {
 		utils.Error("[HandleImageGeneration] Invalid model %s", nil, model.Name)
 		utils.SendHTTPError(w, "Invalid model", http.StatusBadRequest)
 		return
@@ -211,7 +234,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Transfer-Encoding", "chunked")
 	
 	// Get the response from the model's API
-	response, err := SendChatCompletion(r.Context(), model, conv)
+	response, inputPriceToken, err := SendChatCompletion(r.Context(), model, conv)
 	if err != nil {
 		utils.Error("[HandleChat] Error sending chat completion", err)
 		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
@@ -219,7 +242,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	
 	// Create a chunk processor for handling the response
-	chunkProcessor := NewChunkProcessor(w, conv, isNew)
+	chunkProcessor := NewChunkProcessor(w, conv, isNew, inputPriceToken, model)
 	
 	// Process the response based on the model type
 	var processErr error

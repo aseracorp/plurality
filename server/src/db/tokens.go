@@ -260,3 +260,22 @@ func DeleteBalance(ctx context.Context) error {
 
 	return err
 }
+
+func GetPlanName(ctx context.Context) (string, error) {
+	client := GetClient()
+	collection := client.Database("plurality").Collection("balances")
+	userID, ok := ctx.Value("userID").(string)
+
+	if !ok {
+		return "", errors.New("user ID not found in request context")
+	}
+
+	var balance UserBalance
+	err := collection.FindOne(ctx, bson.M{"user_id": userID}).Decode(&balance)
+
+	if err != nil {
+		return "", err
+	}
+
+	return balance.PlanName, nil
+}

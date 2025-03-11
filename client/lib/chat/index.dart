@@ -1,11 +1,13 @@
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:plurality/chat/chat-interface.dart';
 import '../auth/auth-service.dart';
 import '../api/service.dart';
 import '../api/api.dart';
+import '../api/tts.dart';
 import '../auth/account.dart';
 import './budget.dart';
 
@@ -262,6 +264,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         )
         : Column(
           children: [
+            if (!kIsWeb) SizedBox(height: 20),
             // Search bar widget
             Padding(
               padding: const EdgeInsets.all(8.0),

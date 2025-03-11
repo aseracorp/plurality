@@ -30,9 +30,25 @@ var ValidModels = []string{
 	"black-forest-labs/FLUX.1-schnell",
 	"black-forest-labs/FLUX.1-dev",
 }
+var ValidFreeModels = []string{
+	"meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo",
+	"meta-llama/Llama-3.2-8B-Instruct-Turbo",
+	"meta-llama/Llama-3.2-3B-Instruct-Turbo",
+	"black-forest-labs/FLUX.1-schnell",
+}
+
 
 // CheckModel checks if a given model name is in the ValidModels list
-func CheckModel(modelName string) bool {
+func CheckModel(modelName string, planName string) bool {
+	if planName == "Free" {
+		for _, validModel := range ValidFreeModels {
+			if validModel == modelName {
+				return true
+			}
+		}
+		return false
+	}
+
 	for _, validModel := range ValidModels {
 		if validModel == modelName {
 			return true

@@ -94,19 +94,25 @@ class MessageAdapter extends TypeAdapter<Message> {
       role: fields[0] as String,
       content: (fields[1] as List).cast<MessageContent>(),
       timestamp: fields[2] as DateTime?,
+      totalTokens: fields[3] as int?,
+      model: fields[4] as Model?,
     );
   }
 
   @override
   void write(BinaryWriter writer, Message obj) {
     writer
-      ..writeByte(3)
+      ..writeByte(5)
       ..writeByte(0)
       ..write(obj.role)
       ..writeByte(1)
       ..write(obj.content)
       ..writeByte(2)
-      ..write(obj.timestamp);
+      ..write(obj.timestamp)
+      ..writeByte(3)
+      ..write(obj.totalTokens)
+      ..writeByte(4)
+      ..write(obj.model);
   }
 
   @override

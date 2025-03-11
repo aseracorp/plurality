@@ -17,7 +17,7 @@ import (
 	"github.com/azukaar/plurality/src/db"
 )
 
-func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload utils.Conversation) (io.ReadCloser, error) {
+func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload utils.Conversation) (io.ReadCloser, int, error) {
 	var SystemPrompt = baseSystemPrompt +
 		time.Now().String() +
 		" on " +
@@ -29,7 +29,7 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 
 	apiKey := os.Getenv("CLAUDE_API_KEY")
 	if apiKey == "" {
-		return nil, fmt.Errorf("CLAUDE_API_KEY is not set")
+		return nil, 0, fmt.Errorf("CLAUDE_API_KEY is not set")
 	}
 
 	utils.Debug("Payload: ", payload)
@@ -41,7 +41,7 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 
 	err, priceToken := GetPrice(TEXT_INPUT, CLAUDE, model, SystemPrompt)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	// Claude API expects a different message format compared to OpenAI
@@ -58,7 +58,7 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 				priceToken += _priceToken
 
 				if err != nil {
-					return nil, err
+					return nil, 0, err
 				}
 
 				contents = append(contents, ClaudeContentReq{
@@ -134,24 +134,24 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 	// Check balance
 	canPerform, err := db.CheckSufficientCredits(ctx, priceToken + 1.0)
 	if err != nil {	
-		return nil, err
+		return nil, 0, err
 	}
 
 	if !canPerform {
-		return nil, fmt.Errorf("insufficient credits for this action")
+		return nil, 0, fmt.Errorf("insufficient credits for this action")
 	}
 
 	utils.Debug("A new chat request is being made with the following Claude model: %s", modelName)
 
 	jsonData, err := json.Marshal(requestData)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	// Claude API endpoint
 	req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewBuffer(jsonData))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	// Set required headers for Claude API
@@ -162,7 +162,7 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	// deduce the price of the request
@@ -180,10 +180,10 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 		respBody, _ := io.ReadAll(resp.Body)
 		strStatus := strconv.Itoa(resp.StatusCode)
 		utils.Error("Claude API request failed with status", nil, strStatus, ":", string(respBody))
-		return nil, fmt.Errorf("Claude API request failed with status %d", resp.StatusCode)
+		return nil, 0, fmt.Errorf("Claude API request failed with status %d", resp.StatusCode)
 	}
 
-	return resp.Body, nil
+	return resp.Body, int(priceToken), nil
 }
 
 // Helper function to convert standard role to Claude-specific role

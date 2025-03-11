@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:plurality/chat/copy-button.dart';
+import '../utils/types.dart';
 
 // Common button styling
 final buttonStyle = IconButton.styleFrom(
@@ -15,6 +16,9 @@ class MessageToolbar extends StatelessWidget {
   final bool isBot;
   final String text;
   final bool mini;
+  final Function()? ttsCallback;
+  final bool isSpeaking;
+  final Message message;
 
   const MessageToolbar({
     super.key,
@@ -23,11 +27,21 @@ class MessageToolbar extends StatelessWidget {
     required this.isBot,
     required this.text,
     this.mini = false,
+    this.ttsCallback,
+    required this.message,
+    this.isSpeaking = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    var toolbarItems = [CopyButton(code: text)];
+    var toolbarItems = [
+      CopyButton(code: text),
+      if (ttsCallback != null) // Only show TTS button if callback is provided
+        TTSButton(onPressed: ttsCallback!, isSpeaking: isSpeaking),
+      // Add the info button
+      InfoButton(message: message),
+    ];
+
     // Toolbar icons
     final toolbarIcons =
         toolbarItems
@@ -56,6 +70,106 @@ class MessageToolbar extends StatelessWidget {
               const SizedBox(height: 4), // Spacing between content and toolbar
             if (isBot)
               Row(mainAxisSize: MainAxisSize.min, children: toolbarIcons),
+          ],
+        );
+      },
+    );
+  }
+}
+
+// New TTS Button widget
+class TTSButton extends StatelessWidget {
+  final VoidCallback onPressed;
+  final bool isSpeaking;
+
+  const TTSButton({Key? key, required this.onPressed, required this.isSpeaking})
+    : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      iconSize: 16,
+      padding: EdgeInsets.zero,
+      onPressed: onPressed,
+      style: IconButton.styleFrom(
+        backgroundColor:
+            isSpeaking ? Theme.of(context).primaryColor : Colors.white,
+        side: const BorderSide(color: Colors.white),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(36)),
+        padding: const EdgeInsets.all(12),
+      ),
+      icon: Icon(
+        isSpeaking ? Icons.volume_off : Icons.volume_up,
+        color: const Color(0xFF333333),
+      ),
+      tooltip: isSpeaking ? 'Stop speaking' : 'Read aloud',
+    );
+  }
+}
+
+// New Info Button widget
+class InfoButton extends StatelessWidget {
+  final Message message;
+
+  const InfoButton({Key? key, required this.message}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      iconSize: 16,
+      padding: EdgeInsets.zero,
+      onPressed: () {
+        _showTokenInfoModal(context);
+      },
+      style: IconButton.styleFrom(
+        backgroundColor: Colors.white,
+        side: const BorderSide(color: Colors.white),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(36)),
+        padding: const EdgeInsets.all(12),
+      ),
+      icon: const Icon(Icons.info_outline, color: Color(0xFF333333)),
+      tooltip: 'message info',
+    );
+  }
+
+  void _showTokenInfoModal(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Message Information'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Credits spent:',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              Text('${message.totalTokens ?? "?"}'),
+              Text(
+                'Model used:',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              Text('${message.model?.name ?? "?"}'),
+              if (message.model?.params != null)
+                Text(
+                  'Parameters:',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+              // for each message.model.param key value
+              if (message.model?.params != null)
+                for (var key in message.model!.params?.keys ?? [])
+                  Text('$key: ${message.model!.params![key]}'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              child: const Text('Close'),
+            ),
           ],
         );
       },

@@ -82,6 +82,7 @@ class ApiService {
     ModelSelected modelSelected,
     Message message,
     Function setMetaData,
+    Function setMessageMetaData,
   ) async {
     final request = http.Request('POST', Uri.parse(_baseUrl + '/chat'));
     request.headers['Content-Type'] = 'application/json';
@@ -135,7 +136,19 @@ class ApiService {
             newConversationID: json['conversationID'] as String?,
             newConversationTitle: json['conversationTitle'] as String?,
           );
+
+          if (json['totalTokens'] != null &&
+              (json['totalTokens'] as int) != 0) {
+            print(json['model']);
+            setMessageMetaData(
+              newTokenPrice: json['totalTokens'] as int,
+              newModel:
+                  json['model'] != null ? Model.fromJson(json['model']) : null,
+            );
+          }
+
           final content = json['content'] as String?;
+
           if (content == null) {
             return '';
           }
@@ -270,6 +283,8 @@ class ApiService {
 
       final responseData = await response.stream.bytesToString();
       final jsonResponse = jsonDecode(responseData);
+
+      print(jsonResponse);
 
       return Message.fromJson(jsonResponse);
     } catch (e) {

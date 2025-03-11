@@ -19,6 +19,23 @@ class RegisterForm extends StatefulWidget {
   _RegisterFormState createState() => _RegisterFormState();
 }
 
+String? _validatePassword(String? val) {
+  if (val!.isEmpty) {
+    return 'Enter a password';
+  }
+
+  // Password must contain at least one uppercase letter, one lowercase and one number
+  if (!RegExp(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$').hasMatch(val)) {
+    return 'Password must contain at least one uppercase letter, one lowercase and one number';
+  }
+
+  if (val.length < 6) {
+    return 'Password must be at least 6 characters';
+  }
+
+  return null;
+}
+
 class _RegisterFormState extends State<RegisterForm> {
   final _formKey = GlobalKey<FormState>();
   String email = '';
@@ -62,9 +79,8 @@ class _RegisterFormState extends State<RegisterForm> {
                 borderSide: BorderSide(color: Colors.blue, width: 2.0),
               ),
             ),
-            validator:
-                (val) =>
-                    val!.length < 6 ? 'Enter a password 6+ chars long' : null,
+            autovalidateMode: AutovalidateMode.onUserInteraction,
+            validator: (val) => _validatePassword(val),
             obscureText: true,
             onChanged: (val) {
               setState(() => password = val);

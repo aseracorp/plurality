@@ -7,6 +7,7 @@ import 'dart:convert';
 import '../utils/types.dart';
 import '../api/api.dart';
 import '../api/service.dart';
+import '../api/tts.dart';
 import '../api/balance.dart';
 import '../api/preferences_provider.dart';
 import 'package:flutter/services.dart';
@@ -65,6 +66,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   bool _isLoading = false;
   bool _shouldAutoScroll = true;
   bool _interrupted = false;
+  bool _closeMessageWarning = false;
 
   ModelSelected _modelSelected = ModelSelected();
 
@@ -95,11 +97,14 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
     // Check if the conversationId has changed
     if (oldWidget.conversationId != widget.conversationId) {
+      TTSService().stop();
+
       _updateSelectedModel();
       _loadConversation(widget.conversationId);
 
       setState(() {
         _shouldAutoScroll = true;
+        _closeMessageWarning = false;
       });
     }
   }
@@ -173,6 +178,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
   @override
   void dispose() {
+    TTSService().stop();
     _mainScrollController.dispose();
     _miniMapScrollController.dispose();
     _inputFocusNode.dispose();
@@ -352,6 +358,8 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
     var isNewConversation = widget.conversationId == "";
     var currentConversationID = widget.conversationId;
+    var tokenPrice = 0;
+    var modelReported = null;
 
     if (!isNewConversation) {
       // Add message to Riverpod state
@@ -396,6 +404,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
               widget.setConversationID!(currentConversationID, false);
           }
         },
+        ({newTokenPrice, newModel}) {
+          tokenPrice = newTokenPrice;
+          modelReported = newModel;
+        },
       );
 
       // Process streaming response
@@ -415,6 +427,8 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       final assistantMessage = Message(
         role: "assistant",
         content: [MessageContent.text(_currentStreamedResponse)],
+        totalTokens: tokenPrice,
+        model: modelReported,
       );
 
       // Add assistant's response to Riverpod state
@@ -527,6 +541,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
               if (message.text != "")
                 AnimatedMessageBox(
                   mini: mini, // Use mini parameter
+                  message: message,
                   text: message.text,
                   isBot: message.isBot,
                   isLoading:
@@ -694,6 +709,45 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
             ),
           ],
         ),
+
+        // if last message of messages has message.TokenPrice > 1000
+        if (!_closeMessageWarning &&
+            messages.isNotEmpty &&
+            messages.last.totalTokens != null &&
+            messages.last.totalTokens! > 20000 &&
+            messages.length > 5)
+          Container(
+            width: double.infinity,
+            margin: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.orange,
+              borderRadius: BorderRadius.circular(5),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.warning, color: Colors.white),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    "Replying to long conversation costs more credits. Consider starting a new conversation whenever possible. Last message cost was " +
+                        messages.last.totalTokens.toString() +
+                        " credits",
+                    style: TextStyle(color: Colors.white, fontSize: 16),
+                  ),
+                ),
+                IconButton(
+                  icon: Icon(Icons.close, color: Colors.white),
+                  onPressed: () {
+                    setState(() {
+                      _closeMessageWarning = true;
+                    });
+                  },
+                ),
+              ],
+            ),
+          ),
+
         // Scroll to bottom button
         if (!_shouldAutoScroll)
           Positioned(

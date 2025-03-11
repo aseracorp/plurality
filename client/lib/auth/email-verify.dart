@@ -58,11 +58,11 @@ class _EmailVerificationPageState extends State<EmailVerificationPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Verify Your Email'),
+      /*appBar: AppBar(
+        // title: const Text('Verify Your Email'),
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Theme.of(context).colorScheme.onPrimary,
-      ),
+      ),*/
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(24.0),

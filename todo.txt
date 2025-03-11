@@ -1,28 +1,19 @@
 # private MVP2 - bigger
-- Sends 2 emails for verif???
-- Password str validation as you type
-- Remove title in "Verify Your Email" page
-- Free can only use 11B models and down
-- ceil credit left in UI
-- paste image
-- drag and drop
-- Show token price on message
-- Warning large context convo
-- Retry button
-- Login / Register
-  - apple
-  - may be facebook
-- Publish Apps each platform
-- dark mode
-- refresh message/convo
-- pin conversations and messages?
-- bin doc parse / long doc integration
-- rename conversations
 - Apps
   - Therapy
   - Language learning
-- Code Assist
+- Follow links 
+- Google Search
+- paste image
+- drag and drop
+- Retry button
+- dark mode
+- refresh message/convo
 - model icons / conversation icons
+- rename conversations
+- pin conversations and messages?
+- bin doc parse / long doc integration
+- Code Assist
 - more models
 - change share to share a hosted page rather than the image / text / converastion
 - file_picker's save file for non-web?
@@ -30,6 +21,13 @@
 - History pagination or infinite scroll?
 - Claude / ChatGPT images vision
 - Add token price to titles
+- Login / Register
+  - apple
+  - may be facebook
+- Publish Apps each platform
+
+# More 
+- model popup should show preset when one is selected
 
 # Roadmap to public
 - Login / Register

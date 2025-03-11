@@ -77,8 +77,19 @@ class Message {
   @HiveField(2)
   DateTime timestamp;
 
-  Message({required this.role, required this.content, DateTime? timestamp})
-    : timestamp = timestamp ?? DateTime.now();
+  @HiveField(3)
+  int? totalTokens;
+
+  @HiveField(4)
+  Model? model;
+
+  Message({
+    required this.role,
+    required this.content,
+    DateTime? timestamp,
+    int? this.totalTokens,
+    Model? this.model,
+  }) : timestamp = timestamp ?? DateTime.now();
 
   bool get isBot => role == 'assistant';
 
@@ -101,6 +112,8 @@ class Message {
     'role': role,
     'timestamp': timestamp.toIso8601String(),
     'content': content.map((c) => c.toJson()).toList(),
+    'total_tokens': totalTokens,
+    'model': model?.toJson(),
   };
 
   Map<String, dynamic> toAPI() => {
@@ -111,6 +124,8 @@ class Message {
   factory Message.fromJson(Map<String, dynamic> json) {
     return Message(
       role: json['role'],
+      totalTokens: json['total_tokens'],
+      model: json['model'] != null ? Model.fromJson(json['model']) : null,
       timestamp:
           json['timestamp'] != null ? DateTime.parse(json['timestamp']) : null,
       content:
@@ -358,13 +373,22 @@ class Model {
   Map<String, dynamic> toJson() => {'name': name, 'params': params};
 
   factory Model.fromJson(Map<String, dynamic> json) {
-    var params = null;
+    Map<String, String>? params;
+
     try {
-      params = json['params'] as Map<String, String>? ?? null;
+      if (json['params'] != null) {
+        // Get the original params map
+        final rawParams = json['params'] as Map<String, dynamic>;
+
+        // Convert all values to strings
+        params = rawParams.map((key, value) => MapEntry(key, value.toString()));
+      }
     } catch (e) {
+      print('Error parsing params: $e');
       params = null;
     }
-    return Model(name: json['name'], params: params);
+
+    return Model(name: json['name'] as String, params: params);
   }
 }
 
