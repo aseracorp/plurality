@@ -8,6 +8,7 @@ import '../utils/types.dart';
 import '../api/api.dart';
 import '../api/service.dart';
 import '../api/tts.dart';
+import '../api/mini-apps.dart';
 import '../api/balance.dart';
 import '../api/preferences_provider.dart';
 import 'package:flutter/services.dart';
@@ -20,8 +21,9 @@ import './image.dart';
 import './image-gen.dart';
 import './input.dart';
 import '../utils/file-types.dart';
-import './minimap.dart'; // MiniMap component
-import './middle-click.dart'; // MiddleClickScroller
+import './minimap.dart';
+import './miniapps.dart';
+import './middle-click.dart';
 import 'package:super_sliver_list/super_sliver_list.dart';
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kIsWeb, TargetPlatform;
@@ -69,6 +71,8 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   bool _closeMessageWarning = false;
 
   ModelSelected _modelSelected = ModelSelected();
+
+  MiniApp? _miniAppSelected;
 
   @override
   void initState() {
@@ -123,9 +127,11 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     if (matches.isNotEmpty) {
       // Use the model from the conversation
       _modelSelected = matches.first.modelSelected;
+      _miniAppSelected = matches.first.miniApp;
     } else {
       // Fall back to the globally selected model from preferences
       _modelSelected = preferences.selectedModel;
+      _miniAppSelected = null;
     }
   }
 
@@ -338,7 +344,6 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       role: "user",
       content: [
         MessageContent.text(userMessage),
-        // if (_selectedImage != null) MessageContent.image(_selectedImage!),
         ...attachments
             .map(
               (a) =>
@@ -372,6 +377,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     try {
       // Send message to API
       final stream = await _apiService.sendChatMessage(
+        _miniAppSelected,
         widget.conversationId,
         _modelSelected,
         newMessage,
@@ -390,6 +396,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
               id: currentConversationID,
               modelSelected: _modelSelected,
               title: '',
+              miniApp: _miniAppSelected,
             );
 
             if (isNewConversation) {
@@ -540,6 +547,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                   .toList(),
               if (message.text != "")
                 AnimatedMessageBox(
+                  iconURL: _miniAppSelected?.iconURL,
                   mini: mini, // Use mini parameter
                   message: message,
                   text: message.text,
@@ -647,15 +655,95 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            if (widget.conversationId.isNotEmpty) Expanded(child: chatContent),
-
-            if (widget.conversationId.isEmpty)
+            if (widget.conversationId.isEmpty && _miniAppSelected == null)
               Center(
                 child: Text(
                   'Start a new conversation',
                   style: Theme.of(context).textTheme.headlineSmall,
                 ),
               ),
+
+            if (_miniAppSelected != null && widget.conversationId.isEmpty)
+              Center(
+                child: Column(
+                  children: [
+                    SizedBox(height: 24),
+                    Container(
+                      width: 250,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(1000.0),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.1),
+                            blurRadius: 23,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: Image.memory(
+                        base64Decode(_miniAppSelected!.iconURL),
+                        width: 250,
+                        height: 250,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                    SizedBox(height: 24),
+                    Container(
+                      margin: const EdgeInsets.symmetric(
+                        horizontal: 24.0,
+                        vertical: 12.0,
+                      ),
+                      padding: const EdgeInsets.all(16.0),
+                      decoration: BoxDecoration(
+                        border: Border(
+                          left: BorderSide(
+                            color: Theme.of(context).colorScheme.primary,
+                            width: 4.0,
+                          ),
+                        ),
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.surface.withOpacity(0.5),
+                      ),
+                      child: RichText(
+                        text: TextSpan(
+                          style: Theme.of(context).textTheme.headlineSmall,
+                          children: [
+                            TextSpan(
+                              text: '"',
+                              style: TextStyle(
+                                fontSize: 24,
+                                color: Theme.of(context).colorScheme.primary,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            TextSpan(
+                              style: Theme.of(context).textTheme.headlineSmall
+                                  ?.copyWith(fontStyle: FontStyle.italic),
+                              text:
+                                  _miniAppSelected!.InitialMessage?['en'] ??
+                                  'What can I help you with?',
+                            ),
+                            TextSpan(
+                              text: '"',
+                              style: TextStyle(
+                                fontSize: 24,
+                                color: Theme.of(context).colorScheme.primary,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    SizedBox(height: 64),
+                  ],
+                ),
+              ),
+
+            if (widget.conversationId.isNotEmpty) Expanded(child: chatContent),
 
             // Input Container
             Container(
@@ -730,6 +818,18 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                 ),
               ),
             ),
+
+            if (widget.conversationId.isEmpty && _miniAppSelected == null)
+              SizedBox(height: 32),
+
+            if (widget.conversationId.isEmpty && _miniAppSelected == null)
+              MiniAppsBrowser(
+                onStartMiniApp: (miniapp) {
+                  setState(() {
+                    _miniAppSelected = miniapp;
+                  });
+                },
+              ),
           ],
         ),
 
@@ -768,6 +868,21 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                   },
                 ),
               ],
+            ),
+          ),
+
+        if (widget.conversationId.isEmpty && _miniAppSelected != null)
+          Positioned(
+            left: 16,
+            top: 16,
+            child: IconButton(
+              onPressed: () {
+                setState(() {
+                  _miniAppSelected = null;
+                });
+              },
+              iconSize: 32,
+              icon: Icon(Icons.close),
             ),
           ),
 

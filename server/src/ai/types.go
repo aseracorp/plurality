@@ -52,6 +52,7 @@ type ChatPayload struct {
 	ConversationID  primitive.ObjectID    `json:"conversation_id"`
 	ModelSelected		utils.ModelSelected `json:"model_selected"`
 	Messages 				[]utils.Message `json:"messages"`
+	MiniApp         utils.MiniApp         `json:"mini_app"`
 }
 
 type AIChunk struct {

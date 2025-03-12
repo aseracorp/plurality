@@ -3,7 +3,9 @@ import 'package:flutter/services.dart';
 
 class CopyButton extends StatefulWidget {
   final String code;
-  const CopyButton({Key? key, required this.code}) : super(key: key);
+  final bool isLight;
+  const CopyButton({Key? key, required this.code, this.isLight = false})
+    : super(key: key);
 
   @override
   State<CopyButton> createState() => _CopyButtonState();
@@ -15,6 +17,7 @@ class _CopyButtonState extends State<CopyButton> {
     return IconButton(
       icon: Icon(Icons.copy, size: 16),
       style: IconButton.styleFrom(
+        backgroundColor: widget.isLight ? Colors.white : null,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(36)),
         padding: const EdgeInsets.all(12),
       ),

@@ -143,13 +143,14 @@ class ConversationAdapter extends TypeAdapter<Conversation> {
       modelSelected: fields[6] as ModelSelected,
       createdAt: fields[3] as DateTime?,
       messages: (fields[5] as List).cast<Message>(),
+      miniApp: fields[7] as MiniApp?,
     );
   }
 
   @override
   void write(BinaryWriter writer, Conversation obj) {
     writer
-      ..writeByte(6)
+      ..writeByte(7)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(2)
@@ -161,7 +162,9 @@ class ConversationAdapter extends TypeAdapter<Conversation> {
       ..writeByte(5)
       ..write(obj.messages)
       ..writeByte(6)
-      ..write(obj.modelSelected);
+      ..write(obj.modelSelected)
+      ..writeByte(7)
+      ..write(obj.miniApp);
   }
 
   @override
@@ -309,6 +312,104 @@ class ModelAdapter extends TypeAdapter<Model> {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is ModelAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
+}
+
+class MiniAppAdapter extends TypeAdapter<MiniApp> {
+  @override
+  final int typeId = 8;
+
+  @override
+  MiniApp read(BinaryReader reader) {
+    final numOfFields = reader.readByte();
+    final fields = <int, dynamic>{
+      for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
+    };
+    return MiniApp(
+      id: fields[0] as String,
+      name: fields[1] as String,
+      description: fields[2] as String,
+      iconURL: fields[3] as String,
+      author: fields[4] as String?,
+      models: (fields[5] as List).cast<Model>(),
+      inputs: (fields[6] as List).cast<MiniAppInput>(),
+      InitialMessage: (fields[7] as Map?)?.cast<String, String>(),
+    );
+  }
+
+  @override
+  void write(BinaryWriter writer, MiniApp obj) {
+    writer
+      ..writeByte(8)
+      ..writeByte(0)
+      ..write(obj.id)
+      ..writeByte(1)
+      ..write(obj.name)
+      ..writeByte(2)
+      ..write(obj.description)
+      ..writeByte(3)
+      ..write(obj.iconURL)
+      ..writeByte(4)
+      ..write(obj.author)
+      ..writeByte(5)
+      ..write(obj.models)
+      ..writeByte(6)
+      ..write(obj.inputs)
+      ..writeByte(7)
+      ..write(obj.InitialMessage);
+  }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MiniAppAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
+}
+
+class MiniAppInputAdapter extends TypeAdapter<MiniAppInput> {
+  @override
+  final int typeId = 9;
+
+  @override
+  MiniAppInput read(BinaryReader reader) {
+    final numOfFields = reader.readByte();
+    final fields = <int, dynamic>{
+      for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
+    };
+    return MiniAppInput(
+      name: fields[0] as String,
+      description: fields[1] as String,
+      type: fields[2] as String,
+      options: (fields[3] as List).cast<String>(),
+    );
+  }
+
+  @override
+  void write(BinaryWriter writer, MiniAppInput obj) {
+    writer
+      ..writeByte(4)
+      ..writeByte(0)
+      ..write(obj.name)
+      ..writeByte(1)
+      ..write(obj.description)
+      ..writeByte(2)
+      ..write(obj.type)
+      ..writeByte(3)
+      ..write(obj.options);
+  }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MiniAppInputAdapter &&
           runtimeType == other.runtimeType &&
           typeId == other.typeId;
 }

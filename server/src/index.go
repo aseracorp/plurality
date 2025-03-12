@@ -9,6 +9,7 @@ import (
 	"github.com/azukaar/plurality/src/ai"
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/user"
+	"github.com/azukaar/plurality/src/miniapps"
 	"github.com/azukaar/plurality/src/utils"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
@@ -33,6 +34,16 @@ func main() {
 	r.HandleFunc("/generate-title/{id}", utils.AuthMiddleware(ai.API_HandleTitleGeneration)).Methods("GET", "OPTIONS")
 	r.HandleFunc("/balance", utils.AuthMiddleware(ai.API_GetUserBalance)).Methods("GET", "OPTIONS")
 	r.HandleFunc("/delete-user", utils.AuthMiddleware(user.API_DeleteUser)).Methods("DELETE", "OPTIONS")
+	
+	r.HandleFunc("/miniapps", utils.AuthMiddleware(miniapps.API_ListMiniApps)).Methods("GET")
+	r.HandleFunc("/miniapps/pinned", utils.AuthMiddleware(miniapps.API_GetUserPinnedMiniApps)).Methods("GET")
+	// r.HandleFunc("/miniapps/{id}", utils.AuthMiddleware(miniapps.API_HandleMiniApp)).Methods("GET", "DELETE")
+	// r.HandleFunc("/miniapps", utils.AuthMiddleware(miniapps.API_CreateMiniApp)).Methods("POST")
+	r.HandleFunc("/miniapps/{id}", utils.AuthMiddleware(miniapps.API_UpdateMiniApp)).Methods("PUT")
+	r.HandleFunc("/miniapps/{id}/pin", utils.AuthMiddleware(miniapps.API_PinMiniApp)).Methods("POST")
+	r.HandleFunc("/miniapps/{id}/unpin", utils.AuthMiddleware(miniapps.API_UnpinMiniApp)).Methods("POST")
+	// r.HandleFunc("/miniapps/{id}/use", utils.AuthMiddleware(miniapps.API_UseMiniApp)).Methods("POST")
+		
 	r.HandleFunc("/check", utils.AuthMiddleware(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)

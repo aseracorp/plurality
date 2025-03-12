@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:plurality/chat/copy-button.dart';
 import '../utils/types.dart';
+import 'dart:convert';
 
 // Common button styling
 final buttonStyle = IconButton.styleFrom(
@@ -19,10 +20,12 @@ class MessageToolbar extends StatelessWidget {
   final Function()? ttsCallback;
   final bool isSpeaking;
   final Message message;
+  final String? iconURL;
 
   const MessageToolbar({
     super.key,
     required this.child,
+    this.iconURL,
     required this.isHorizontal,
     required this.isBot,
     required this.text,
@@ -56,11 +59,37 @@ class MessageToolbar extends StatelessWidget {
     if (mini) return child;
 
     return LayoutBuilder(
+      key: ValueKey('message_toolbar_${text.hashCode}'),
       builder: (context, constraints) {
         return Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (iconURL != null && isBot)
+              Container(
+                key: ValueKey('image_${iconURL.hashCode}_${text.hashCode}'),
+                margin: const EdgeInsets.only(bottom: 8),
+                width: 48,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(1000.0),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 23,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Image.memory(
+                  base64Decode(iconURL!),
+                  width: 48,
+                  height: 48,
+                  fit: BoxFit.cover,
+                  gaplessPlayback: true,
+                ),
+              ),
+
             // Constrain child to take available width
             ConstrainedBox(
               constraints: BoxConstraints(maxWidth: constraints.maxWidth),

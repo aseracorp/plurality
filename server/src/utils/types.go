@@ -56,10 +56,31 @@ type Conversation struct {
 	Title 	      string    `json:"title" bson:"title"`
 	LastMessageAt time.Time    `json:"last_message_at" bson:"last_message_at"`
 	ModelSelected ModelSelected `json:"model_selected" bson:"model_selected"`
+	MiniApp 		  *MiniApp `json:"mini_app,omitempty" bson:"mini_app"`
 }
 
 type UserAction struct {
 	Type     int `bson:"type"`
 	Provider int `bson:"provider"`
 	Model    Model `bson:"model"`
+}
+
+type MiniAppInput struct {
+	Name string `json:"name" bson:"name"`
+	Description string `json:"description" bson:"description"`
+	Type string `json:"type" bson:"type"`
+	Options []string `json:"options" bson:"options"`
+}
+
+type MiniApp struct {
+	ID          primitive.ObjectID `json:"id,omitempty" bson:"_id,omitempty"`
+	Name        string             `json:"name" bson:"name"`
+	Description string             `json:"description" bson:"description"`
+	IconURL     string             `json:"icon_url" bson:"icon_url"`
+	Author      string             `json:"author" bson:"author"`
+	Prompt 	    map[string]string  `json:"-" bson:"prompt"`
+	Models      []ModelSelected    `json:"models" bson:"models"`
+	Inputs			[]MiniAppInput     `json:"inputs" bson:"inputs"`
+	InitialMessage map[string]string `json:"initial_message" bson:"initial_message"`
+	InputPlaceholderMessage map[string]string `json:"input_placeholder_message" bson:"input_placeholder_message"`
 }

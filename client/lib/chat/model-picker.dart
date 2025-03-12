@@ -88,7 +88,7 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
         name: 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
         params: null,
       ),
-      imageGen: Model(name: 'black-forest-labs/FLUX.1-schnell', params: null),
+      imageGen: Model(name: 'black-forest-labs/FLUX.1-dev', params: null),
     ),
   };
 

@@ -131,6 +131,7 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
     required String id,
     required String title,
     required ModelSelected modelSelected,
+    MiniApp? miniApp,
   }) async {
     final newConv = Conversation(
       id: id,
@@ -138,6 +139,7 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
       modelSelected: modelSelected,
       messages: [],
       lastMessageAt: DateTime.now(),
+      miniApp: miniApp,
     );
     await ConversationStorage.saveConversation(newConv);
     state = [newConv, ...state];

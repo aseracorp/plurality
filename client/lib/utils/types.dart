@@ -1,5 +1,6 @@
 // Step 1: Add Hive annotations to your existing models (minimal changes)
 import 'package:hive/hive.dart';
+import 'package:plurality/api/mini-apps.dart';
 part 'types.g.dart';
 
 @HiveType(typeId: 1)
@@ -175,6 +176,9 @@ class Conversation extends HiveObject {
   @HiveField(6)
   ModelSelected modelSelected;
 
+  @HiveField(7)
+  MiniApp? miniApp;
+
   Conversation({
     required this.id,
     required this.title,
@@ -182,6 +186,7 @@ class Conversation extends HiveObject {
     required this.modelSelected,
     DateTime? createdAt,
     required this.messages,
+    this.miniApp,
   }) : createdAt = createdAt ?? DateTime.now();
 
   Map<String, dynamic> toJson() => {
@@ -191,6 +196,7 @@ class Conversation extends HiveObject {
     'last_message_at': lastMessageAt.toIso8601String(),
     'messages': messages.map((m) => m.toJson()).toList(),
     'model_selected': modelSelected.toJson(),
+    'mini_app': miniApp?.toJson(),
   };
 
   Map<String, dynamic> toAPI() => {
@@ -199,12 +205,17 @@ class Conversation extends HiveObject {
     'last_message_at': lastMessageAt.toIso8601String(),
     'messages': messages.map((m) => m.toAPI()).toList(),
     'model_selected': modelSelected.toJson(),
+    'mini_app': miniApp?.toJson(),
   };
 
   factory Conversation.fromJson(Map<String, dynamic> json) {
+    // if (json['mini_app'] != null) print("CACA: " + json['mini_app']);
+
     return Conversation(
       id: json['id'] ?? json['_id'] ?? '',
       title: json['title'] ?? 'Untitled',
+      miniApp:
+          json['mini_app'] != null ? MiniApp.fromJson(json['mini_app']) : null,
       createdAt:
           json['created_at'] != null
               ? DateTime.parse(json['created_at'])
@@ -388,7 +399,7 @@ class Model {
       params = null;
     }
 
-    return Model(name: json['name'] as String, params: params);
+    return Model(name: (json['name'] ?? '') as String, params: params);
   }
 }
 
@@ -413,5 +424,129 @@ class AppPreferences {
       darkMode: darkMode ?? this.darkMode,
       useMiniMap: useMiniMap ?? this.useMiniMap,
     );
+  }
+}
+
+@HiveType(typeId: 8)
+class MiniApp {
+  @HiveField(0)
+  final String id;
+
+  @HiveField(1)
+  final String name;
+
+  @HiveField(2)
+  final String description;
+
+  @HiveField(3)
+  final String iconURL;
+
+  @HiveField(4)
+  final String? author;
+
+  @HiveField(5)
+  final List<Model> models;
+
+  @HiveField(6)
+  final List<MiniAppInput> inputs;
+
+  @HiveField(7)
+  Map<String, String>? InitialMessage;
+
+  MiniApp({
+    required this.id,
+    required this.name,
+    required this.description,
+    required this.iconURL,
+    required this.author,
+    required this.models,
+    required this.inputs,
+    this.InitialMessage,
+  });
+
+  factory MiniApp.fromJson(Map<String, dynamic> json) {
+    var r = MiniApp(
+      id: json['id'],
+      name: json['name'],
+      description: json['description'],
+      iconURL: json['icon_url'],
+      author: json['author'],
+      models:
+          (json['models'] as List)
+              .map((model) => Model.fromJson(model))
+              .toList(),
+      inputs:
+          (json['inputs'] as List)
+              .map((input) => MiniAppInput.fromJson(input))
+              .toList(),
+      // InitialMessage: json['initial_message'],
+    );
+
+    try {
+      if (json['initial_message'] != null) {
+        final rawParams = json['initial_message'] as Map<String, dynamic>;
+        r.InitialMessage = rawParams.map(
+          (key, value) => MapEntry(key, value.toString()),
+        );
+      }
+    } catch (e) {
+      print('Error parsing InitialMessage: $e');
+      r.InitialMessage = null;
+    }
+
+    return r;
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'name': name,
+      'description': description,
+      'icon_url': iconURL,
+      'author': author,
+      'models': models.map((model) => model.toJson()).toList(),
+      'inputs': inputs.map((input) => input.toJson()).toList(),
+      'InitialMessage': InitialMessage,
+    };
+  }
+}
+
+@HiveType(typeId: 9)
+class MiniAppInput {
+  @HiveField(0)
+  final String name;
+
+  @HiveField(1)
+  final String description;
+
+  @HiveField(2)
+  final String type;
+
+  @HiveField(3)
+  final List<String> options;
+
+  MiniAppInput({
+    required this.name,
+    required this.description,
+    required this.type,
+    required this.options,
+  });
+
+  factory MiniAppInput.fromJson(Map<String, dynamic> json) {
+    return MiniAppInput(
+      name: json['name'],
+      description: json['description'],
+      type: json['type'],
+      options: List<String>.from(json['options'] ?? []),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'name': name,
+      'description': description,
+      'type': type,
+      'options': options,
+    };
   }
 }

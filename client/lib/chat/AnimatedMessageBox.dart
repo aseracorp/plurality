@@ -61,9 +61,11 @@ class AnimatedMessageBox extends StatefulWidget {
   final bool isLoading;
   final bool mini;
   final Message message;
+  final String? iconURL;
 
   const AnimatedMessageBox({
     super.key,
+    this.iconURL,
     required this.text,
     required this.isBot,
     required this.isLoading,
@@ -136,6 +138,8 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
             : Color.fromARGB(255, 204, 52, 65);
 
     return MessageToolbar(
+      key: ValueKey('message_xtoolbar_${widget.text.hashCode}'),
+      iconURL: widget.iconURL,
       message: widget.message,
       isBot: widget.isBot,
       isHorizontal: widget.text.length > 500,
@@ -353,7 +357,11 @@ class CodeElementBuilder extends MarkdownElementBuilder {
             ),
             // Copy button - only for code blocks
             if (!mini)
-              Positioned(top: 12, right: 4, child: CopyButton(code: code)),
+              Positioned(
+                top: 12,
+                right: 4,
+                child: CopyButton(code: code, isLight: true),
+              ),
           ],
         );
       }

@@ -196,8 +196,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.Debug("[HandleChat] Received chat payload for model", payload.ModelSelected)
-	
-	
+		
 	// Select the appropriate model
 	model := SelectModel(payload.ModelSelected, payload.Messages[0])
 
@@ -213,10 +212,11 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		utils.SendHTTPError(w, "Invalid model", http.StatusBadRequest)
 		return
 	}
-
+	
 	partialConv := utils.Conversation{
 		ID: payload.ConversationID,
 		ModelSelected: payload.ModelSelected,
+		MiniApp: &payload.MiniApp,
 	}
 
 	utils.Log("[HandleChat] Pushing message to conversation ID: ", payload.ConversationID)
@@ -235,7 +235,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Transfer-Encoding", "chunked")
 	
 	// Get the response from the model's API
-	response, inputPriceToken, err := SendChatCompletion(r.Context(), model, conv)
+	response, inputPriceToken, err := SendChatCompletion(r.Context(), model, conv, payload.MiniApp.ID)
 	if err != nil {
 		utils.Error("[HandleChat] Error sending chat completion", err)
 		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)

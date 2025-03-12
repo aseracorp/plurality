@@ -78,6 +78,7 @@ class ApiService {
 
   // Specific method for chat functionality
   Future<Stream<String>> sendChatMessage(
+    MiniApp? miniAppID,
     String conversationID,
     ModelSelected modelSelected,
     Message message,
@@ -92,6 +93,7 @@ class ApiService {
       'messages': [message],
       'conversation_id': conversationID,
       "model_selected": modelSelected,
+      "mini_app": miniAppID?.toJson(),
     });
 
     final streamedResponse = await request.send();
@@ -139,7 +141,6 @@ class ApiService {
 
           if (json['totalTokens'] != null &&
               (json['totalTokens'] as int) != 0) {
-            print(json['model']);
             setMessageMetaData(
               newTokenPrice: json['totalTokens'] as int,
               newModel:
@@ -179,9 +180,10 @@ class ApiService {
         for (var json in data) {
           try {
             conversations.add(Conversation.fromJson(json));
-          } catch (e) {
+          } catch (e, s) {
             // Log or handle the error for the specific conversation
             print('Failed to parse conversation $json \n $e');
+            print(s);
           }
         }
         return conversations;
@@ -283,8 +285,6 @@ class ApiService {
 
       final responseData = await response.stream.bytesToString();
       final jsonResponse = jsonDecode(responseData);
-
-      print(jsonResponse);
 
       return Message.fromJson(jsonResponse);
     } catch (e) {

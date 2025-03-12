@@ -33,6 +33,8 @@ class ConversationStorage {
     Hive.registerAdapter(AttachmentAdapter());
     Hive.registerAdapter(ModelSelectedAdapter());
     Hive.registerAdapter(ModelAdapter());
+    Hive.registerAdapter(MiniAppAdapter());
+    Hive.registerAdapter(MiniAppInputAdapter());
 
     // Open box
     await Hive.openBox<Conversation>(_conversationBoxName);

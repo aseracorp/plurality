@@ -17,8 +17,8 @@ import (
 	"github.com/azukaar/plurality/src/db"
 )
 
-func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload utils.Conversation) (io.ReadCloser, int, error) {
-	var SystemPrompt = baseSystemPrompt +
+func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload utils.Conversation, systemPrompt string) (io.ReadCloser, int, error) {
+	var SystemPrompt = systemPrompt +
 		time.Now().String() +
 		" on " +
 		strconv.Itoa(time.Now().Day()) +
