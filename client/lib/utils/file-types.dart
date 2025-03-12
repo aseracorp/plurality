@@ -51,6 +51,7 @@ final List<String> textFileExtensions = [
   'rs',
   'dart',
   'groovy',
+  'dockerfile',
 
   // Web Development
   'jsx',
