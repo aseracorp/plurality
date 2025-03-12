@@ -60,16 +60,16 @@ class MyApp extends ConsumerWidget {
     ThemeMode themeMode;
     switch (darkModeValue) {
       case 0:
-        themeMode = ThemeMode.light;
-        break;
-      case 1:
-        themeMode = ThemeMode.dark;
-        break;
-      case 2:
         themeMode = ThemeMode.system;
         break;
-      default:
+      case 1:
         themeMode = ThemeMode.light;
+        break;
+      case 2:
+        themeMode = ThemeMode.dark;
+        break;
+      default:
+        themeMode = ThemeMode.system;
     }
 
     return MaterialApp(

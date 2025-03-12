@@ -27,7 +27,6 @@ class InputBox extends StatefulWidget {
   final List<Attachment> attachments;
   final String conversationId;
   final String hintText;
-  final Color accentColor;
   final FormFieldValidator<String>? validator;
   final FocusNode inputFocusNode;
   final void Function(Attachment? attachment) removeAttachment;
@@ -54,7 +53,6 @@ class InputBox extends StatefulWidget {
     this.hintText = 'Message...',
     required this.removeAttachment,
     required this.inputFocusNode,
-    this.accentColor = const Color(0xffee4654),
     this.validator,
   }) : super(key: key);
 
@@ -392,20 +390,20 @@ class _InputBoxState extends State<InputBox> {
     return mimeTypes[ext];
   }
 
-  Widget getPlus() {
+  Widget getPlus(Color primaryColor) {
     return Row(
       children: [
         IconButton(
           onPressed: () => widget.pickImage(source: ImageSource.camera),
-          icon: const Icon(Icons.camera_alt, color: Color(0xffee4654)),
+          icon: Icon(Icons.camera_alt, color: primaryColor),
         ),
         IconButton(
           onPressed: () => widget.pickImage(source: ImageSource.gallery),
-          icon: const Icon(Icons.photo, color: Color(0xffee4654)),
+          icon: Icon(Icons.photo, color: primaryColor),
         ),
         IconButton(
           onPressed: widget.pickFile,
-          icon: const Icon(Icons.attach_file, color: Color(0xffee4654)),
+          icon: Icon(Icons.attach_file, color: primaryColor),
         ),
         // pick AI model
         ElevatedButton(
@@ -465,6 +463,11 @@ class _InputBoxState extends State<InputBox> {
 
   @override
   Widget build(BuildContext context) {
+    final primaryColor =
+        (Theme.of(context).brightness == Brightness.dark)
+            ? Color.fromRGBO(215, 193, 193, 1.0)
+            : Color(0xffee4654);
+
     bool supportSST =
         kIsWeb || Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
 
@@ -490,9 +493,7 @@ class _InputBoxState extends State<InputBox> {
         ),
         decoration: BoxDecoration(
           border:
-              _isDragging
-                  ? Border.all(color: Color(0xffee4654), width: 2.0)
-                  : null,
+              _isDragging ? Border.all(color: primaryColor!, width: 2.0) : null,
           borderRadius: _isDragging ? BorderRadius.circular(4.0) : null,
         ),
         child: Column(
@@ -506,7 +507,7 @@ class _InputBoxState extends State<InputBox> {
                 child: Text(
                   'Drop files or images here',
                   style: TextStyle(
-                    color: Color(0xffee4654),
+                    color: primaryColor,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
@@ -525,7 +526,7 @@ class _InputBoxState extends State<InputBox> {
               ),
             ),
             // if (widget.isMobile)
-            getPlus(),
+            getPlus(primaryColor!),
             Container(
               width: double.infinity,
               child: Row(
@@ -583,13 +584,13 @@ class _InputBoxState extends State<InputBox> {
                       onPressed: _listen,
                       icon: Icon(
                         _isListening ? Icons.mic : Icons.mic_none,
-                        color: Color(0xffee4654),
+                        color: primaryColor,
                       ),
                     ),
                   // Paste button for explicit paste functionality
                   // IconButton(
                   //   onPressed: () => _handlePaste(context),
-                  //   icon: const Icon(Icons.content_paste, color: Color(0xffee4654)),
+                  //   icon: const Icon(Icons.content_paste, color: primaryColor),
                   //   tooltip: 'Paste from clipboard',
                   // ),
                   // Send or Stop button
@@ -609,17 +610,14 @@ class _InputBoxState extends State<InputBox> {
                                   child: CircularProgressIndicator(
                                     strokeWidth: 2,
                                     valueColor: AlwaysStoppedAnimation<Color>(
-                                      Color(0xffee4654),
+                                      primaryColor!,
                                     ),
                                   ),
                                 ),
-                                const Icon(
-                                  Icons.stop,
-                                  color: Color(0xffee4654),
-                                ),
+                                Icon(Icons.stop, color: primaryColor),
                               ],
                             )
-                            : const Icon(Icons.send, color: Color(0xffee4654)),
+                            : Icon(Icons.send, color: primaryColor),
                   ),
                 ],
               ),

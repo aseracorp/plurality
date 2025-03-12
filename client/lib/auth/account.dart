@@ -127,13 +127,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   String _getThemeModeName(int mode) {
     switch (mode) {
       case 0:
-        return 'Light';
-      case 1:
-        return 'Dark';
-      case 2:
         return 'System';
-      default:
+      case 1:
         return 'Light';
+      case 2:
+        return 'Dark';
+      default:
+        return 'System';
     }
   }
 
