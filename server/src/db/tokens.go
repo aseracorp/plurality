@@ -77,9 +77,9 @@ func GetUserBalance(ctx context.Context) (*UserBalance, error) {
 	}
 
 	// if LastManualPlan was last Month, set Balance to ManualPlan
-	if balance.LastManualPlan.Month() != time.Now().Month() {
+	if balance.LastManualPlan.Month() != time.Now().Month() && balance.PlanName != "" {
 		utils.Log("LastManualPlan was last Month, setting Balance to ManualPlan for user %s", userID)
-		balance.Balance = balance.ManualPlan
+		balance.Balance = max(balance.ManualPlan, balance.Balance)
 		balance.LastManualPlan = time.Now()
 		_, err :=
 			collection.UpdateOne(ctx, bson.M{"user_id": userID}, bson.M{"$set": bson.M{"balance": balance.ManualPlan, "last_manual_plan": time.Now()}})
