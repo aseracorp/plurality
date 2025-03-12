@@ -233,7 +233,15 @@ class _InputBoxState extends State<InputBox> {
       print('Error checking for clipboard files: $e');
     }
 
-    // Regular text paste will be handled by the TextField automatically
+    // paste to the field
+    try {
+      final text = await Pasteboard.text;
+      if (text != null) {
+        widget.messageController.text += text;
+      }
+    } catch (e) {
+      print('Error checking for clipboard text: $e');
+    }
   }
 
   // Process pasted image data

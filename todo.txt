@@ -4,8 +4,6 @@
   - Language learning
 - Follow links 
 - Google Search
-- paste image
-- drag and drop
 - Retry button
 - dark mode
 - refresh message/convo

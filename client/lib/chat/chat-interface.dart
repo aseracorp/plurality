@@ -620,6 +620,8 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       ),
     );
 
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
     // Combine both scrolling methods
     Widget chatContent = MiddleClickScroller(
       scrollController: _mainScrollController,
@@ -629,7 +631,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         mainScrollController: _mainScrollController,
         miniMapScrollController: _miniMapScrollController,
         miniMapContent: miniMapContent,
-        overlayColor: Theme.of(context).primaryColor,
+        overlayColor:
+            Theme.of(context).brightness == Brightness.dark
+                ? Theme.of(context).textTheme.bodySmall?.color ?? Colors.red
+                : Theme.of(context).primaryColor,
         miniMapWidth: 140,
         overlayHeight: 80,
         child: mainContent,
@@ -675,15 +680,33 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                             offset: const Offset(0, 2),
                           ),
                         ],
-                        color: Colors.white,
+                        color:
+                            isDarkMode
+                                ? Color.fromARGB(255, 34, 27, 27)
+                                : Colors.white,
                         borderRadius: BorderRadius.only(
                           topLeft: Radius.circular(8.0),
                           topRight: Radius.circular(8.0),
                         ),
                         border: Border(
-                          top: BorderSide(color: Color(0xFFEEEEEE)),
-                          left: BorderSide(color: Color(0xFFEEEEEE)),
-                          right: BorderSide(color: Color(0xFFEEEEEE)),
+                          top: BorderSide(
+                            color:
+                                isDarkMode
+                                    ? Color(0x010101)
+                                    : Color(0xFFEEEEEE),
+                          ),
+                          left: BorderSide(
+                            color:
+                                isDarkMode
+                                    ? Color(0x010101)
+                                    : Color(0xFFEEEEEE),
+                          ),
+                          right: BorderSide(
+                            color:
+                                isDarkMode
+                                    ? Color(0x010101)
+                                    : Color(0xFFEEEEEE),
+                          ),
                         ),
                       )
                       : null,

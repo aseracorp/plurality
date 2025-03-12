@@ -11,6 +11,7 @@ import './auth/account.dart';
 import './auth/login.dart';
 import './api/storage.dart';
 import './api/service.dart';
+import './api/preferences_provider.dart';
 import 'chat/index.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:google_sign_in_dartio/google_sign_in_dartio.dart';
@@ -34,17 +35,48 @@ void main() async {
   runApp(ProviderScope(child: MyApp()));
 }
 
+// Define light and dark themes
+final ThemeData lightTheme = ThemeData(
+  colorScheme: ColorScheme.fromSeed(seedColor: Color(0xffee4654)),
+);
+
+final ThemeData darkTheme = ThemeData(
+  colorScheme: ColorScheme.fromSeed(
+    seedColor: Color(0xffee4654),
+    brightness: Brightness.dark,
+  ),
+);
+
 class MyApp extends ConsumerWidget {
   const MyApp({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isMobile = MediaQuery.of(context).size.width < 820;
+    final preferences = ref.watch(preferencesProvider);
+    final darkModeValue = preferences.darkMode;
+
+    // Determine the theme mode based on user preference
+    ThemeMode themeMode;
+    switch (darkModeValue) {
+      case 0:
+        themeMode = ThemeMode.light;
+        break;
+      case 1:
+        themeMode = ThemeMode.dark;
+        break;
+      case 2:
+        themeMode = ThemeMode.system;
+        break;
+      default:
+        themeMode = ThemeMode.light;
+    }
+
     return MaterialApp(
       title: 'Plurality',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Color(0xffee4654)),
-      ),
+      theme: lightTheme,
+      darkTheme: darkTheme,
+      themeMode: themeMode,
       // No longer passing user ID here - the AuthGate component handles it
       home: AuthGate(isMobile: isMobile),
       routes: {

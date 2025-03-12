@@ -26,6 +26,16 @@ class BudgetScreen extends ConsumerWidget {
             ? Colors.orange
             : Colors.lightGreen;
 
+    final boxColor =
+        Theme.of(context).brightness == Brightness.light
+            ? Colors.grey[100]
+            : Colors.grey[800];
+
+    final boxTextColor =
+        Theme.of(context).brightness == Brightness.light
+            ? Colors.grey[800]
+            : Colors.grey[200];
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -80,7 +90,7 @@ class BudgetScreen extends ConsumerWidget {
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.grey[100],
+                color: boxColor,
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Column(
@@ -91,7 +101,7 @@ class BudgetScreen extends ConsumerWidget {
                     children: [
                       Text(
                         'Current Plan',
-                        style: TextStyle(fontSize: 16, color: Colors.grey[800]),
+                        style: TextStyle(fontSize: 16, color: boxTextColor),
                       ),
                       Text(
                         balance.planName,
@@ -112,7 +122,7 @@ class BudgetScreen extends ConsumerWidget {
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: Colors.grey[100],
+              color: boxColor,
               borderRadius: BorderRadius.circular(12),
             ),
             child: Column(
@@ -123,7 +133,7 @@ class BudgetScreen extends ConsumerWidget {
                   children: [
                     Text(
                       'Credits Left',
-                      style: TextStyle(fontSize: 16, color: Colors.grey[800]),
+                      style: TextStyle(fontSize: 16, color: boxTextColor),
                     ),
                     Text(
                       formatter.format(balance.balance),
@@ -143,7 +153,7 @@ class BudgetScreen extends ConsumerWidget {
                   children: [
                     Text(
                       'Credits Plan',
-                      style: TextStyle(fontSize: 16, color: Colors.grey[800]),
+                      style: TextStyle(fontSize: 16, color: boxTextColor),
                     ),
                     Text(
                       NumberFormat.decimalPattern().format(balance.plan),
@@ -164,14 +174,14 @@ class BudgetScreen extends ConsumerWidget {
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: Colors.grey[100],
+              color: boxColor,
               borderRadius: BorderRadius.circular(12),
             ),
             child: Column(
               children: [
                 Text(
-                  'Estimation of your remaining budget based on the default AI present',
-                  style: TextStyle(fontSize: 16, color: Colors.grey[800]),
+                  'Estimation of your remaining budget based on the balanced AI preset',
+                  style: TextStyle(fontSize: 16, color: boxTextColor),
                 ),
 
                 const SizedBox(height: 16),
@@ -182,7 +192,7 @@ class BudgetScreen extends ConsumerWidget {
                   children: [
                     Text(
                       'Messages',
-                      style: TextStyle(fontSize: 14, color: Colors.grey[800]),
+                      style: TextStyle(fontSize: 14, color: boxTextColor),
                     ),
                     Text(
                       NumberFormat.decimalPattern().format(
@@ -206,7 +216,7 @@ class BudgetScreen extends ConsumerWidget {
                   children: [
                     Text(
                       'Images Generation',
-                      style: TextStyle(fontSize: 14, color: Colors.grey[800]),
+                      style: TextStyle(fontSize: 14, color: boxTextColor),
                     ),
                     Text(
                       NumberFormat.decimalPattern().format(
@@ -355,7 +365,7 @@ class BalanceProgressCircle extends ConsumerWidget {
           child: Container(
             width: 500,
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: Theme.of(context).scaffoldBackgroundColor,
               borderRadius: BorderRadius.circular(16),
               boxShadow: [
                 BoxShadow(

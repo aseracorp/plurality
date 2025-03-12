@@ -317,7 +317,7 @@ class _MiniMapState extends State<MiniMap> with WidgetsBindingObserver {
                   // MiniMap content
                   Container(
                     decoration: BoxDecoration(
-                      color: Colors.white,
+                      color: Theme.of(context).scaffoldBackgroundColor,
                       boxShadow: [
                         BoxShadow(
                           color: Colors.black.withOpacity(0.15),

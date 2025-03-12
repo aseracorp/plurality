@@ -17,6 +17,8 @@ class TextPreviewComponent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
     return Padding(
       key: ValueKey('text_${content.hashCode}'),
       padding: const EdgeInsets.only(bottom: 8.0),
@@ -26,14 +28,17 @@ class TextPreviewComponent extends StatelessWidget {
           width: mini ? 18 : 180,
           height: mini ? 15 : 150,
           decoration: BoxDecoration(
-            color: Colors.grey[200],
+            color: isDarkMode ? Colors.grey[800] : Colors.grey[200],
             borderRadius: BorderRadius.circular(8.0),
           ),
           padding: const EdgeInsets.all(8.0),
           child: Text(
             softWrap: false,
             summary,
-            style: TextStyle(color: Colors.grey[800], fontSize: 8.0),
+            style: TextStyle(
+              color: isDarkMode ? Colors.grey[400] : Colors.grey[800],
+              fontSize: 8.0,
+            ),
           ),
         ),
       ),
@@ -44,6 +49,8 @@ class TextPreviewComponent extends StatelessWidget {
     showDialog(
       context: context,
       builder: (BuildContext context) {
+        final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
         return Dialog(
           insetPadding: const EdgeInsets.all(16.0),
           shape: RoundedRectangleBorder(
@@ -57,7 +64,7 @@ class TextPreviewComponent extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
                 decoration: BoxDecoration(
-                  color: Colors.grey[200],
+                  color: isDarkMode ? Colors.grey[800] : Colors.grey[100],
                   borderRadius: const BorderRadius.only(
                     topLeft: Radius.circular(8.0),
                     topRight: Radius.circular(8.0),
@@ -143,7 +150,7 @@ class TextPreviewComponent extends StatelessWidget {
               // Text content with scrolling
               Container(
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: isDarkMode ? Colors.grey[900] : Colors.white,
                   borderRadius: const BorderRadius.only(
                     bottomLeft: Radius.circular(8.0),
                     bottomRight: Radius.circular(8.0),
@@ -156,7 +163,10 @@ class TextPreviewComponent extends StatelessWidget {
                 child: SingleChildScrollView(
                   child: SelectableText(
                     content,
-                    style: const TextStyle(fontSize: 14.0, color: Colors.black),
+                    style: TextStyle(
+                      fontSize: 14.0,
+                      color: isDarkMode ? Colors.white : Colors.black,
+                    ),
                   ),
                 ),
               ),

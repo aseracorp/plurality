@@ -128,8 +128,12 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
   @override
   Widget build(BuildContext context) {
     var isDark = Theme.of(context).brightness == Brightness.dark;
-    var botBG = isDark ? Color.fromRGBO(0, 0, 0, 0.35) : Colors.white;
+    var botBG = isDark ? Color.fromARGB(255, 34, 27, 27) : Colors.white;
     var botFG = isDark ? Colors.white : Colors.black;
+    var userBG =
+        isDark
+            ? Color.fromARGB(255, 156, 42, 52)
+            : Color.fromARGB(255, 204, 52, 65);
 
     return MessageToolbar(
       message: widget.message,
@@ -154,8 +158,7 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
                 ),
                 padding: EdgeInsets.all(widget.mini ? 1.0 : 16.0),
                 decoration: BoxDecoration(
-                  color:
-                      widget.isBot ? botBG : Color.fromARGB(255, 204, 52, 65),
+                  color: widget.isBot ? botBG : userBG,
                   borderRadius:
                       widget.mini
                           ? BorderRadius.circular(2.0)
@@ -202,6 +205,7 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
                     builders: {
                       'code': CodeElementBuilder(
                         widget.isBot,
+                        isDark,
                         mini: widget.mini,
                       ),
                     },
@@ -240,6 +244,10 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
                         horizontal: widget.mini ? 2 : 8,
                         vertical: widget.mini ? 1 : 4,
                       ),
+                      codeblockDecoration: BoxDecoration(
+                        color: Colors.transparent,
+                        borderRadius: BorderRadius.circular(0),
+                      ),
                     ),
                   ),
                 ),
@@ -255,8 +263,9 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
 class CodeElementBuilder extends MarkdownElementBuilder {
   final bool isBot;
   final bool mini;
+  final bool isDark;
 
-  CodeElementBuilder(this.isBot, {this.mini = false});
+  CodeElementBuilder(this.isBot, this.isDark, {this.mini = false});
 
   @override
   Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
@@ -276,7 +285,7 @@ class CodeElementBuilder extends MarkdownElementBuilder {
                   ? const EdgeInsets.symmetric(horizontal: 2, vertical: 1)
                   : const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
           decoration: BoxDecoration(
-            color: isBot ? const Color(0xFFEEEEEE) : const Color(0xFF3A3A3A),
+            color: Color.fromARGB(255, 212, 212, 212),
             borderRadius: BorderRadius.circular(4),
           ),
           child: Text(
@@ -284,7 +293,7 @@ class CodeElementBuilder extends MarkdownElementBuilder {
             style: TextStyle(
               fontFamily: 'monospace',
               fontSize: mini ? 3 : 14,
-              color: isBot ? Colors.black : Colors.white,
+              color: const Color.fromARGB(255, 0, 0, 0),
             ),
           ),
         );

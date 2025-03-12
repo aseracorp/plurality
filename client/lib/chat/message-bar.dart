@@ -92,15 +92,13 @@ class TTSButton extends StatelessWidget {
       padding: EdgeInsets.zero,
       onPressed: onPressed,
       style: IconButton.styleFrom(
-        backgroundColor:
-            isSpeaking ? Theme.of(context).primaryColor : Colors.white,
-        side: const BorderSide(color: Colors.white),
+        backgroundColor: isSpeaking ? Theme.of(context).primaryColor : null,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(36)),
         padding: const EdgeInsets.all(12),
       ),
       icon: Icon(
         isSpeaking ? Icons.volume_off : Icons.volume_up,
-        color: const Color(0xFF333333),
+        color: isSpeaking ? Theme.of(context).colorScheme.onPrimary : null,
       ),
       tooltip: isSpeaking ? 'Stop speaking' : 'Read aloud',
     );
@@ -122,12 +120,10 @@ class InfoButton extends StatelessWidget {
         _showTokenInfoModal(context);
       },
       style: IconButton.styleFrom(
-        backgroundColor: Colors.white,
-        side: const BorderSide(color: Colors.white),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(36)),
         padding: const EdgeInsets.all(12),
       ),
-      icon: const Icon(Icons.info_outline, color: Color(0xFF333333)),
+      icon: const Icon(Icons.info_outline),
       tooltip: 'message info',
     );
   }

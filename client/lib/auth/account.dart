@@ -1,17 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../auth/auth-service.dart';
 import '../api/api.dart';
+import '../api/preferences_provider.dart';
 import 'dart:convert';
 
-class SettingsScreen extends StatefulWidget {
+class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({Key? key}) : super(key: key);
 
   @override
-  _SettingsScreenState createState() => _SettingsScreenState();
+  ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
+class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final AuthService _authService = AuthService();
   final ApiService _apiService = ApiService();
   bool _isLoading = false;
@@ -114,133 +116,268 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // Change theme mode
+  void _changeThemeMode(int? mode) {
+    if (mode != null) {
+      final preferencesNotifier = ref.read(preferencesProvider.notifier);
+      preferencesNotifier.setDarkMode(mode);
+    }
+  }
+
+  String _getThemeModeName(int mode) {
+    switch (mode) {
+      case 0:
+        return 'Light';
+      case 1:
+        return 'Dark';
+      case 2:
+        return 'System';
+      default:
+        return 'Light';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final preferences = ref.watch(preferencesProvider);
+    final currentThemeMode = preferences.darkMode;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Settings'),
-        backgroundColor: colorScheme.primary,
-        foregroundColor: Colors.white,
-      ),
+      appBar: AppBar(title: const Text('Settings')),
       body:
           _isLoading
               ? const Center(child: CircularProgressIndicator())
-              : SingleChildScrollView(
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // User info card
-                      Card(
-                        elevation: 2,
-                        child: Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'Account Information',
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              const SizedBox(height: 16),
-                              Row(
+              : Align(
+                alignment: Alignment.topCenter,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 600),
+                  child: SingleChildScrollView(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // User info card
+                          Card(
+                            elevation: 2,
+                            child: Padding(
+                              padding: const EdgeInsets.all(16.0),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  const Icon(Icons.person, size: 24),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      'Logged in as: $_userEmail',
-                                      style: const TextStyle(fontSize: 16),
-                                      overflow: TextOverflow.ellipsis,
+                                  const Text(
+                                    'Account Information',
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
                                     ),
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Row(
+                                    children: [
+                                      const Icon(Icons.person, size: 24),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          'Logged in as: $_userEmail',
+                                          style: const TextStyle(fontSize: 16),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ],
                               ),
-                            ],
+                            ),
                           ),
-                        ),
-                      ),
 
-                      const SizedBox(height: 24),
+                          const SizedBox(height: 24),
 
-                      // Security section
-                      const Text(
-                        'Security',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-
-                      // Password reset button
-                      SettingsButton(
-                        icon: Icons.lock_reset,
-                        label: 'Reset Password',
-                        onTap: _resetPassword,
-                        color: colorScheme.primary,
-                      ),
-
-                      // 2FA setup button
-                      // SettingsButton(
-                      //   icon: Icons.security,
-                      //   label: 'Setup 2FA',
-                      //   onTap: _setup2FA,
-                      //   color: colorScheme.primary,
-                      // ),
-                      const SizedBox(height: 24),
-
-                      // Account section
-                      const Text(
-                        'Account',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-
-                      // Logout button
-                      SettingsButton(
-                        icon: Icons.logout,
-                        label: 'Logout',
-                        onTap: _logout,
-                        color: Colors.orange,
-                      ),
-
-                      // Delete account button
-                      SettingsButton(
-                        icon: Icons.delete_forever,
-                        label: 'Delete Account',
-                        onTap: _deleteAccount,
-                        color: Colors.red,
-                      ),
-
-                      // Error message
-                      if (_errorMessage != null) ...[
-                        const SizedBox(height: 16),
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: Colors.red.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(8),
+                          // Appearance section
+                          const Text(
+                            'Appearance',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
-                          child: Text(
-                            _errorMessage!,
-                            style: const TextStyle(color: Colors.red),
+                          const SizedBox(height: 16),
+
+                          // Theme mode selector
+                          Card(
+                            margin: const EdgeInsets.only(bottom: 12),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 12,
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(
+                                        Icons.brightness_4,
+                                        color: colorScheme.primary,
+                                      ),
+                                      const SizedBox(width: 16),
+                                      Text(
+                                        'Theme Mode',
+                                        style: TextStyle(fontSize: 16),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceEvenly,
+                                    children: [
+                                      _buildThemeOption(
+                                        0,
+                                        'Light',
+                                        Icons.light_mode,
+                                        currentThemeMode,
+                                      ),
+                                      _buildThemeOption(
+                                        1,
+                                        'Dark',
+                                        Icons.dark_mode,
+                                        currentThemeMode,
+                                      ),
+                                      _buildThemeOption(
+                                        2,
+                                        'System',
+                                        Icons.settings_system_daydream,
+                                        currentThemeMode,
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
-                        ),
-                      ],
-                    ],
+
+                          const SizedBox(height: 24),
+
+                          // Security section
+                          const Text(
+                            'Security',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+
+                          // Password reset button
+                          SettingsButton(
+                            icon: Icons.lock_reset,
+                            label: 'Reset Password',
+                            onTap: _resetPassword,
+                            color: colorScheme.primary,
+                          ),
+
+                          // 2FA setup button
+                          // SettingsButton(
+                          //   icon: Icons.security,
+                          //   label: 'Setup 2FA',
+                          //   onTap: _setup2FA,
+                          //   color: colorScheme.primary,
+                          // ),
+                          const SizedBox(height: 24),
+
+                          // Account section
+                          const Text(
+                            'Account',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+
+                          // Logout button
+                          SettingsButton(
+                            icon: Icons.logout,
+                            label: 'Logout',
+                            onTap: _logout,
+                            color: Colors.orange,
+                          ),
+
+                          // Delete account button
+                          SettingsButton(
+                            icon: Icons.delete_forever,
+                            label: 'Delete Account',
+                            onTap: _deleteAccount,
+                            color: Colors.red,
+                          ),
+
+                          // Error message
+                          if (_errorMessage != null) ...[
+                            const SizedBox(height: 16),
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.red.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                _errorMessage!,
+                                style: const TextStyle(color: Colors.red),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ),
+    );
+  }
+
+  Widget _buildThemeOption(
+    int mode,
+    String label,
+    IconData icon,
+    int currentMode,
+  ) {
+    final isSelected = mode == currentMode;
+    final theme = Theme.of(context);
+
+    return InkWell(
+      onTap: () => _changeThemeMode(mode),
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: isSelected ? theme.colorScheme.primary.withOpacity(0.2) : null,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color:
+                isSelected ? theme.colorScheme.primary : Colors.grey.shade300,
+            width: 2,
+          ),
+        ),
+        child: Column(
+          children: [
+            Icon(
+              icon,
+              color: isSelected ? theme.colorScheme.primary : Colors.grey,
+              size: 24,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              label,
+              style: TextStyle(
+                color: isSelected ? theme.colorScheme.primary : Colors.grey,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

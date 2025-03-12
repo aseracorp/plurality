@@ -183,13 +183,14 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     final balanceState = ref.watch(balanceProvider);
     final balance = balanceState.value;
     final isFree = balance?.planName == 'Free';
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
 
     return Container(
       constraints: const BoxConstraints(maxWidth: 400),
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         shape: BoxShape.rectangle,
-        color: Colors.white,
+        color: Theme.of(context).scaffoldBackgroundColor,
         borderRadius: BorderRadius.circular(16),
         boxShadow: const [
           BoxShadow(
@@ -213,9 +214,9 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
             TabBar(
               controller: _tabController,
               tabs: const [Tab(text: 'Presets'), Tab(text: 'Custom')],
-              labelColor: Theme.of(context).primaryColor,
-              unselectedLabelColor: Colors.grey,
-              indicatorColor: Theme.of(context).primaryColor,
+              labelColor: Color.fromARGB(255, 204, 52, 65),
+              unselectedLabelColor: isDarkMode ? Colors.white : Colors.black,
+              indicatorColor: Color.fromARGB(255, 204, 52, 65),
             ),
 
             const SizedBox(height: 24),
@@ -393,9 +394,10 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
                 children: [
                   Text(
                     title,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
+                      color: Colors.grey[900],
                     ),
                   ),
                   const SizedBox(height: 4),
@@ -408,7 +410,11 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
             ),
             Text(
               pricing,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              style: TextStyle(
+                color: Colors.grey[900],
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ],
         ),
