@@ -72,7 +72,6 @@ class _LoginFormState extends ConsumerState<LoginForm> {
             decoration: InputDecoration(
               hintText: 'Email',
               filled: true,
-              fillColor: Colors.white,
               enabledBorder: OutlineInputBorder(
                 borderSide: BorderSide(color: Colors.white, width: 2.0),
               ),
@@ -90,7 +89,6 @@ class _LoginFormState extends ConsumerState<LoginForm> {
             decoration: InputDecoration(
               hintText: 'Password',
               filled: true,
-              fillColor: Colors.white,
               enabledBorder: OutlineInputBorder(
                 borderSide: BorderSide(color: Colors.white, width: 2.0),
               ),

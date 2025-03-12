@@ -53,7 +53,6 @@ class _RegisterFormState extends State<RegisterForm> {
             decoration: InputDecoration(
               hintText: 'Email',
               filled: true,
-              fillColor: Colors.white,
               enabledBorder: OutlineInputBorder(
                 borderSide: BorderSide(color: Colors.white, width: 2.0),
               ),
@@ -71,7 +70,6 @@ class _RegisterFormState extends State<RegisterForm> {
             decoration: InputDecoration(
               hintText: 'Password',
               filled: true,
-              fillColor: Colors.white,
               enabledBorder: OutlineInputBorder(
                 borderSide: BorderSide(color: Colors.white, width: 2.0),
               ),
@@ -91,7 +89,6 @@ class _RegisterFormState extends State<RegisterForm> {
             decoration: InputDecoration(
               hintText: 'Confirm Password',
               filled: true,
-              fillColor: Colors.white,
               enabledBorder: OutlineInputBorder(
                 borderSide: BorderSide(color: Colors.white, width: 2.0),
               ),
