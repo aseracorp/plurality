@@ -824,6 +824,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
             if (widget.conversationId.isEmpty && _miniAppSelected == null)
               MiniAppsBrowser(
+                isMobile: widget.isMobile,
                 onStartMiniApp: (miniapp) {
                   setState(() {
                     _miniAppSelected = miniapp;

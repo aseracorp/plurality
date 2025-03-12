@@ -209,7 +209,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 
 	if !CheckModel(model.Name, planName) {
 		utils.Error("[HandleImageGeneration] Invalid model %s", nil, model.Name)
-		utils.SendHTTPError(w, "Invalid model", http.StatusBadRequest)
+		http.Error(w, "Invalid model", http.StatusBadRequest)
 		return
 	}
 	
@@ -238,7 +238,11 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	response, inputPriceToken, err := SendChatCompletion(r.Context(), model, conv, payload.MiniApp.ID)
 	if err != nil {
 		utils.Error("[HandleChat] Error sending chat completion", err)
-		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		if strings.Contains(err.Error(), "Insufficient credits") {
+			http.Error(w, err.Error(), http.StatusPaymentRequired)
+		} else {
+			utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 	

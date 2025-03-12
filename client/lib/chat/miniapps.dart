@@ -7,10 +7,12 @@ import 'dart:convert';
 class MiniAppsBrowser extends StatefulWidget {
   final Function(MiniApp) onStartMiniApp;
   final bool showPinnedOnly;
+  final bool isMobile;
 
   const MiniAppsBrowser({
     Key? key,
     required this.onStartMiniApp,
+    required this.isMobile,
     this.showPinnedOnly = false,
   }) : super(key: key);
 
@@ -190,6 +192,7 @@ class _MiniAppsBrowserState extends State<MiniAppsBrowser> {
           itemBuilder: (context, index) {
             final miniApp = _miniApps[index];
             return _MiniAppCard(
+              isMobile: widget.isMobile,
               miniApp: miniApp,
               onTap: () => _showMiniAppDetails(context, miniApp),
             );
@@ -203,9 +206,14 @@ class _MiniAppsBrowserState extends State<MiniAppsBrowser> {
 class _MiniAppCard extends StatelessWidget {
   final MiniApp miniApp;
   final VoidCallback onTap;
+  final bool isMobile;
 
-  const _MiniAppCard({Key? key, required this.miniApp, required this.onTap})
-    : super(key: key);
+  const _MiniAppCard({
+    Key? key,
+    required this.miniApp,
+    required this.onTap,
+    required this.isMobile,
+  }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
@@ -248,13 +256,14 @@ class _MiniAppCard extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      miniApp.description,
-                      style: Theme.of(context).textTheme.bodySmall,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                    if (!isMobile) const SizedBox(height: 4),
+                    if (!isMobile)
+                      Text(
+                        miniApp.description,
+                        style: Theme.of(context).textTheme.bodySmall,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                   ],
                 ),
               ),

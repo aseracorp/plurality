@@ -61,7 +61,10 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
   // Preset configurations
   final Map<String, ModelSelected> _presets = {
     'Fast': ModelSelected(
-      text: Model(name: 'meta-llama/Llama-3.2-3B-Instruct-Turbo', params: null),
+      text: Model(
+        name: 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
+        params: null,
+      ),
       vision: Model(
         name: 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
         params: null,
@@ -70,18 +73,18 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     ),
     'Balanced': ModelSelected(
       text: Model(
-        name: 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
+        name: 'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo',
         params: null,
       ),
       vision: Model(
-        name: 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
+        name: 'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo',
         params: null,
       ),
       imageGen: Model(name: 'black-forest-labs/FLUX.1-schnell', params: null),
     ),
     'Smart': ModelSelected(
       text: Model(
-        name: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+        name: 'meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo',
         params: null,
       ),
       vision: Model(

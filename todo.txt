@@ -1,4 +1,5 @@
 # private MVP2 - bigger
+- better error no credits!! (remember prod dont see errors)
 - Apps
   - Therapy
   - Language learning
