@@ -21,12 +21,14 @@ class MessageToolbar extends StatelessWidget {
   final bool isSpeaking;
   final Message message;
   final String? iconURL;
+  final bool isLoading;
 
   const MessageToolbar({
     super.key,
     required this.child,
     this.iconURL,
     required this.isHorizontal,
+    required this.isLoading,
     required this.isBot,
     required this.text,
     this.mini = false,
@@ -59,7 +61,10 @@ class MessageToolbar extends StatelessWidget {
     if (mini) return child;
 
     return LayoutBuilder(
-      key: ValueKey('message_toolbar_${text.hashCode}'),
+      key:
+          isLoading
+              ? ValueKey('message_toolbar_loading')
+              : ValueKey('message_toolbar_${text.hashCode}'),
       builder: (context, constraints) {
         return Column(
           mainAxisSize: MainAxisSize.min,
@@ -67,7 +72,14 @@ class MessageToolbar extends StatelessWidget {
           children: [
             if (iconURL != null && isBot)
               Container(
-                key: ValueKey('image_${iconURL.hashCode}_${text.hashCode}'),
+                key:
+                    isLoading
+                        ? ValueKey(
+                          'image_message_toolbar_loading_${iconURL.hashCode}',
+                        )
+                        : ValueKey(
+                          'image_${iconURL.hashCode}_${text.hashCode}',
+                        ),
                 margin: const EdgeInsets.only(bottom: 8),
                 width: 48,
                 decoration: BoxDecoration(

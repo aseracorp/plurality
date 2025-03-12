@@ -199,6 +199,8 @@ class _InputBoxState extends State<InputBox> {
 
   // Process clipboard paste event
   Future<void> _handlePaste(BuildContext context) async {
+    if (kIsWeb) return;
+
     // Check for image in clipboard
     try {
       final imageBytes = await Pasteboard.image;
@@ -449,13 +451,15 @@ class _InputBoxState extends State<InputBox> {
         }
       }
 
-      // Paste handling with Ctrl+V or Cmd+V
-      if ((event.logicalKey == LogicalKeyboardKey.keyV) &&
-          (HardwareKeyboard.instance.isControlPressed ||
-              HardwareKeyboard.instance.isMetaPressed)) {
-        _handlePaste(context);
-        // We return ignored to let the default paste behavior also happen
-        return KeyEventResult.ignored;
+      if (!kIsWeb) {
+        // Paste handling with Ctrl+V or Cmd+V
+        if ((event.logicalKey == LogicalKeyboardKey.keyV) &&
+            (HardwareKeyboard.instance.isControlPressed ||
+                HardwareKeyboard.instance.isMetaPressed)) {
+          _handlePaste(context);
+          // We return ignored to let the default paste behavior also happen
+          return KeyEventResult.ignored;
+        }
       }
     }
     return KeyEventResult.ignored;
@@ -537,18 +541,21 @@ class _InputBoxState extends State<InputBox> {
                       child: Focus(
                         onKeyEvent: _handleKeyEvent,
                         child: CallbackShortcuts(
-                          bindings: {
-                            const SingleActivator(
-                                  LogicalKeyboardKey.keyV,
-                                  control: true,
-                                ):
-                                () => _handlePaste(context),
-                            const SingleActivator(
-                                  LogicalKeyboardKey.keyV,
-                                  meta: true,
-                                ):
-                                () => _handlePaste(context),
-                          },
+                          bindings:
+                              kIsWeb
+                                  ? {}
+                                  : {
+                                    const SingleActivator(
+                                          LogicalKeyboardKey.keyV,
+                                          control: true,
+                                        ):
+                                        () => _handlePaste(context),
+                                    const SingleActivator(
+                                          LogicalKeyboardKey.keyV,
+                                          meta: true,
+                                        ):
+                                        () => _handlePaste(context),
+                                  },
                           child: TextFormField(
                             controller: widget.messageController,
                             focusNode: widget.inputFocusNode,

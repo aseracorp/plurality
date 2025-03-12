@@ -144,6 +144,7 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
       isBot: widget.isBot,
       isHorizontal: widget.text.length > 500,
       text: widget.text,
+      isLoading: widget.isLoading,
       mini: widget.mini,
       // Add the TTS functionality to the MessageToolbar
       ttsCallback: _isSpeaking ? stop : speak,
