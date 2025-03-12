@@ -5,7 +5,6 @@
 - Follow links 
 - Google Search
 - Retry button
-- dark mode
 - refresh message/convo
 - model icons / conversation icons
 - rename conversations

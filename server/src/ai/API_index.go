@@ -145,6 +145,7 @@ func HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
 				"width": strconv.Itoa(request.Width),
 				"height": strconv.Itoa(request.Height),
 				"steps": strconv.Itoa(request.Steps),
+				"prompt": request.Prompt,
 			},
 		},
 		Content: []utils.MessageContent{

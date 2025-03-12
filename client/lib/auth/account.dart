@@ -235,20 +235,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                     children: [
                                       _buildThemeOption(
                                         0,
+                                        'System',
+                                        Icons.settings_system_daydream,
+                                        currentThemeMode,
+                                      ),
+                                      _buildThemeOption(
+                                        1,
                                         'Light',
                                         Icons.light_mode,
                                         currentThemeMode,
                                       ),
                                       _buildThemeOption(
-                                        1,
+                                        2,
                                         'Dark',
                                         Icons.dark_mode,
-                                        currentThemeMode,
-                                      ),
-                                      _buildThemeOption(
-                                        2,
-                                        'System',
-                                        Icons.settings_system_daydream,
                                         currentThemeMode,
                                       ),
                                     ],
