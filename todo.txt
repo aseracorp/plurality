@@ -1,5 +1,6 @@
 # private MVP2 - bigger
 - better error no credits!! (remember prod dont see errors)
+- mini app suggest model
 - Apps
   - Therapy
   - Language learning

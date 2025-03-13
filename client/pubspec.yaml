@@ -65,6 +65,7 @@ dependencies:
   mime: ^1.0.4
   pasteboard: ^0.2.0
   cached_network_image: ^3.4.1
+  fading_edge_scrollview: ^4.1.1
 
 
 dev_dependencies:

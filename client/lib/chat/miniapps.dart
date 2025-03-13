@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:fading_edge_scrollview/fading_edge_scrollview.dart';
 import '../utils/types.dart';
+
 import '../api/mini-apps.dart';
 import 'dart:convert';
 
@@ -25,6 +27,7 @@ class _MiniAppsBrowserState extends State<MiniAppsBrowser> {
   List<MiniApp> _miniApps = [];
   bool _isLoading = true;
   String? _errorMessage;
+  final _controller = ScrollController();
 
   @override
   void initState() {
@@ -177,26 +180,31 @@ class _MiniAppsBrowserState extends State<MiniAppsBrowser> {
     return RefreshIndicator(
       onRefresh: _loadMiniApps,
       child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: 600),
-        child: GridView.builder(
-          padding: const EdgeInsets.all(16),
-          shrinkWrap:
-              true, // This will make the grid take only the space it needs
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 2,
-            childAspectRatio: 1,
-            crossAxisSpacing: 16,
-            mainAxisSpacing: 16,
+        constraints: BoxConstraints(
+          maxWidth: 600,
+          maxHeight: MediaQuery.of(context).size.height * 0.6,
+        ),
+        child: FadingEdgeScrollView.fromScrollView(
+          child: GridView.builder(
+            controller: _controller,
+            padding: const EdgeInsets.all(16),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              childAspectRatio: 1,
+              crossAxisSpacing: 16,
+              mainAxisSpacing: 16,
+            ),
+            itemCount: _miniApps.length,
+            shrinkWrap: true,
+            itemBuilder: (context, index) {
+              final miniApp = _miniApps[index];
+              return _MiniAppCard(
+                isMobile: widget.isMobile,
+                miniApp: miniApp,
+                onTap: () => _showMiniAppDetails(context, miniApp),
+              );
+            },
           ),
-          itemCount: _miniApps.length,
-          itemBuilder: (context, index) {
-            final miniApp = _miniApps[index];
-            return _MiniAppCard(
-              isMobile: widget.isMobile,
-              miniApp: miniApp,
-              onTap: () => _showMiniAppDetails(context, miniApp),
-            );
-          },
         ),
       ),
     );

@@ -838,7 +838,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         if (!_closeMessageWarning &&
             messages.isNotEmpty &&
             messages.last.totalTokens != null &&
-            messages.last.totalTokens! > 20000 &&
+            messages.last.totalTokens! > 40000 &&
             messages.length > 5)
           Container(
             width: double.infinity,
