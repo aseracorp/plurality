@@ -23,16 +23,14 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     with SingleTickerProviderStateMixin {
   // Available options for each dropdown
   final List<String> _modelOptions = [
-    'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
     'meta-llama/Llama-3.2-8B-Instruct-Turbo',
     'meta-llama/Llama-3.2-3B-Instruct-Turbo',
-    // for some reason its broekn
     'meta-llama/Llama-3.3-70B-Instruct-Turbo',
-    'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo',
     'meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo',
     'deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free',
     'deepseek-ai/DeepSeek-V3',
-    'Qwen/Qwen2-VL-72B-Instruct',
+    'Qwen/Qwen2.5-7B-Instruct-Turbo',
+    'Qwen/Qwen2.5-72B-Instruct-Turbo',
     'ChatGPT/gpt-4o-mini',
     'ChatGPT/gpt-3.5-turbo',
     'ChatGPT/gpt-4o',
@@ -48,7 +46,6 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
   final List<String> _imageGenModelOptions = [
     'black-forest-labs/FLUX.1-schnell',
     'black-forest-labs/FLUX.1-dev',
-    // 'stabilityai/stable-diffusion-xl-base-1.0',
   ];
 
   String _selectedModel = '';

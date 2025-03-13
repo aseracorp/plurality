@@ -12,6 +12,7 @@ import (
 
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/utils"
+	"github.com/azukaar/plurality/src/ai_tools"
 )
 
 func HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
@@ -189,16 +190,24 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	if len(payload.Messages) == 0 {
+	/*if len(payload.Messages) == 0 {
 		utils.Error("[HandleChat] No messages provided", nil)
 		utils.SendHTTPError(w, "No messages provided", http.StatusBadRequest)
 		return
-	}
+	}*/
 
 	utils.Debug("[HandleChat] Received chat payload for model", payload.ModelSelected)
 		
-	// Select the appropriate model
-	model := SelectModel(payload.ModelSelected, payload.Messages[0])
+	var messageToProcess utils.Message
+	var model utils.Model
+
+	if len(payload.Messages) > 0 {
+		messageToProcess = payload.Messages[0]
+		model = SelectModel(payload.ModelSelected, payload.Messages[0])
+	} else {
+		model = payload.ModelSelected.Text
+	}
+
 
 	planName, err := db.GetPlanName(r.Context())
 	if err != nil {
@@ -216,18 +225,84 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	partialConv := utils.Conversation{
 		ID: payload.ConversationID,
 		ModelSelected: payload.ModelSelected,
-		MiniApp: &payload.MiniApp,
+		// MiniApp: &payload.MiniApp,
+	}
+
+	if payload.MiniApp.ID != primitive.NilObjectID {
+		partialConv.MiniApp = &payload.MiniApp
 	}
 
 	utils.Log("[HandleChat] Pushing message to conversation ID: ", payload.ConversationID)
 	
-	conv, isNew, err := db.PushMessage(r.Context(), partialConv, payload.Messages[0])
+	var conv utils.Conversation
+	isNew := false
+
+
+	if len(payload.Messages) == 0 {
+		// get conversation
+		currentConv, err := db.GetConversationById(r.Context(), payload.ConversationID.Hex())
+		if err != nil {
+			utils.Error("[HandleChat] Error getting conversation", err)
+			utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// get last message
+		lastMessage := currentConv.Messages[len(currentConv.Messages) - 1]
+
+		if lastMessage.Role != "assistant" {
+			utils.Error("[HandleChat] Last message is not from assistant", nil)
+			utils.SendHTTPError(w, "Last message is not from assistant", http.StatusBadRequest)
+			return
+		}
+
+		// get all tool_use messages
+		toolUseMessageResult := utils.Message{
+			Role: "user",
+			Timestamp: time.Now().Format(time.RFC3339),
+			TotalTokens: 0,
+			Model: utils.Model{},
+			Content: []utils.MessageContent{},
+		}
+
+		for _, messageContent := range lastMessage.Content {
+			utils.Debug("[HandleChat] lastMessage: ", lastMessage)
+			if messageContent.Type == "tool_use" {
+				toolCall := messageContent.ToolCall
+				toolID := toolCall.Name
+				utils.Debug("[HandleChat] Tool id: ", toolID)
+
+				t, ok :=  ai_tools.GetTool(toolID)
+				if ok {
+					toolResult := t.Exec(toolCall.Arguments)
+
+					utils.Debug("[HandleChat] Tool result: ", toolResult)
+	
+					toolUseMessageResult.Content = append(toolUseMessageResult.Content, utils.MessageContent{
+						Type: "tool_result",
+						Text: toolResult,
+						ToolUseId: toolCall.ID,
+					})
+				}
+			}
+		}
+
+		if len(toolUseMessageResult.Content) == 0 {
+			utils.Error("[HandleChat] Tool use message found", nil)
+			utils.SendHTTPError(w, "Tool use message found", http.StatusBadRequest)
+			return
+		}
+
+		messageToProcess = toolUseMessageResult
+	}
+
+	conv, isNew, err = db.PushMessage(r.Context(), partialConv, messageToProcess)
 	if err != nil {
 		utils.Error("[HandleChat] Error pushing message", err)
 		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	
+
 	// Set headers for SSE
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

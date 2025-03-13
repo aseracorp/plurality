@@ -197,3 +197,15 @@ func SPAHandler(targetFolder string) http.Handler {
 		}
 	})
 }
+
+func ParseJson(jsonStr string) map[string]interface{}  {
+	var result map[string]interface{}
+	json.Unmarshal([]byte(jsonStr), &result)
+	return result
+}
+
+func ParseJsonString(jsonStr string) map[string]string  {
+	var result map[string]string
+	json.Unmarshal([]byte(jsonStr), &result)
+	return result
+}

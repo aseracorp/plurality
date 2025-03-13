@@ -14,6 +14,7 @@ import (
 	"bufio"
 
 	"github.com/azukaar/plurality/src/utils"
+	"github.com/azukaar/plurality/src/ai_tools"
 	"github.com/azukaar/plurality/src/db"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -108,25 +109,39 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, payloa
 	msgReqList := make([]MessageReq, 0, len(msgList))
 	for index, msg := range msgList {
 		inputMessage += msg.Role + " "
-		msgContent := make([]utils.MessageContent, 0, len(msg.Content))
+		msgContent := make([]MessageContentReq, 0, len(msg.Content))
+		role := msg.Role
+
 		for _, content := range msg.Content {
 			contentType := content.Type;
+
+			/*if contentType == "tool_use" {
+				continue
+			}*/
 
 			if contentType == "snippet" {
 				contentType = "text"
 			}
 
-			if contentType == "text" {
+			if(contentType == "tool_result") {
+				// TODO FIX THIS
+				role = "tool"
+				msgContent = append(msgContent, MessageContentReq{
+					Type: content.Type,
+					ToolUseId: content.ToolUseId,
+					Content: content.Text,
+				})
+			} else if contentType == "text" {
 				inputMessage += content.Text + " {}{}{}{}{}{}{}"
-				msgContent = append(msgContent, utils.MessageContent{
+				msgContent = append(msgContent, MessageContentReq{
 					Type: contentType,
 					Text: content.Text,
 				})
 			} else if contentType == "image_url" && index == len(msgList) - 1 {
 				basePrice += GetPriceFromTokenUsage(IMAGE_VISION, TOGETHER, model, 0)
-				msgContent = append(msgContent, utils.MessageContent{
+				msgContent = append(msgContent, MessageContentReq{
 					Type: contentType,
-					ImageURL: utils.MessageContentURL{
+					ImageURL: &utils.MessageContentURL{
 						URL: content.ImageURL.URL,
 					},
 				})
@@ -134,7 +149,7 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, payloa
 		}
 
 		msgReqList = append(msgReqList, MessageReq{
-			Role:    msg.Role,
+			Role:    role,
 			Content: msgContent,
 		})
 	}
@@ -151,6 +166,7 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, payloa
 		RepetitionPenalty: RepetitionPenalty,
 		Stop:              []string{"<|eot_id|>"},
 		Stream:            true,
+		Tools:					   ai_tools.GetRequests(),
 	}
 
 	// check balance before sending request
@@ -170,9 +186,7 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, payloa
 		return nil, 0, fmt.Errorf("insufficient credits for this action")
 	}
 
-
 	utils.Debug("A new chat request is being made with the following model: %s", model.Name)
-	
 
 	// deduce the price of the request
 	// _, err = db.RemoveCredits(ctx, priceToken, utils.UserAction{
@@ -281,7 +295,12 @@ func GenerateTitleForMessage(message string) (string, error) {
 	for _, msg := range msgList {
 		msgReqList = append(msgReqList, MessageReq{
 			Role:    msg.Role,
-			Content: msg.Content,
+			Content: []MessageContentReq{
+				{
+					Type: "text",
+					Text: msg.Content[0].Text,
+				},
+			},
 		})
 	}
 
@@ -393,14 +412,17 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, payload u
 	msgList := append([]utils.Message{SystemPrompt}, payload.Messages...)
 	msgReqList := make([]MessageReq, 0, len(msgList))
 	for _, msg := range msgList {
-		msgContent := make([]utils.MessageContent, 0, len(msg.Content))
+		msgContent := make([]MessageContentReq, 0, len(msg.Content))
 		inputMessage += msg.Role + " "
 		for _, content := range msg.Content {
 			// ChatGPT wont support images
+			if content.Type == "tool_use" {
+				continue
+			}
 			if content.Type == "image_url" {
 				continue
 			} else {
-				msgContent = append(msgContent, utils.MessageContent{
+				msgContent = append(msgContent, MessageContentReq{
 					Type: "text",
 					Text: content.Text,
 				})
@@ -447,6 +469,7 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, payload u
 		MaxTokens:         &maxTok,
 		Temperature:       Temperature,
 		Stream:            true,
+		Tools:					   ai_tools.GetRequests(),
 	}
 
 	// check balance before sending request

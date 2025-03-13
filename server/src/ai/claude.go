@@ -15,6 +15,7 @@ import (
 
 	"github.com/azukaar/plurality/src/utils"
 	"github.com/azukaar/plurality/src/db"
+	"github.com/azukaar/plurality/src/ai_tools"
 )
 
 func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload utils.Conversation, systemPrompt string) (io.ReadCloser, int, error) {
@@ -50,10 +51,29 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 	claudeMessages := make([]ClaudeMessageReq, 0, len(msgList))
 	
 	for _, msg := range msgList {
-		contents := make([]ClaudeContentReq, 0)
+		contents := make([]MessageContentReq, 0)
 		
 		for _, content := range msg.Content {
-			if content.Type == "text" || content.Type == "snippet" {
+			if content.Type == "tool_use" {
+				args := utils.ParseJsonString(content.ToolCall.Arguments)
+				contents = append(contents, MessageContentReq{
+					Type: content.Type,
+					ID: content.ToolCall.ID,
+					Name: content.ToolCall.Name,
+					Input: args,
+				})
+			}
+			if content.Type == "snippet" {
+				content.Type = "text"
+			}
+			if content.Type == "tool_result" {
+				contents = append(contents, MessageContentReq{
+					Type: content.Type,
+					ToolUseId: content.ToolUseId,
+					Content: content.Text,
+				})
+			}
+			if content.Type == "text" {
 				err, _priceToken := GetPrice(TEXT_INPUT, CLAUDE, model, content.Text + " {}{}{}{}{}{}{}")
 				priceToken += _priceToken
 
@@ -61,16 +81,17 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 					return nil, 0, err
 				}
 
-				contents = append(contents, ClaudeContentReq{
-					Type: "text",
+				contents = append(contents, MessageContentReq{
+					Type: content.Type,
 					Text: content.Text,
+					ToolUseId: content.ToolUseId,
 				})
 			} else if content.Type == "image_url" {
 				continue
 				// Handle image content if provided
 				// Claude API requires images to be base64 encoded
 				// This is a simplified version - actual implementation might need adjustments
-				// contents = append(contents, ClaudeContentReq{
+				// contents = append(contents, MessageContentReq{
 				// 	Type: "image",
 				// 	Source: ClaudeImageSourceReq{
 				// 		Type: "base64",
@@ -82,7 +103,7 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 		}
 		
 		claudeMessages = append(claudeMessages, ClaudeMessageReq{
-			Role:    convertRoleToClaude(msg.Role),
+			Role:    msg.Role,
 			Content: contents,
 		})
 	}
@@ -129,6 +150,7 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 		Temperature: temperature,
 		Stream:      true,
 		System:      SystemPrompt,
+		Tools:		   ai_tools.GetClaudeRequests(),
 	}
 
 	// Check balance
@@ -147,6 +169,8 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 	if err != nil {
 		return nil, 0, err
 	}
+
+	utils.Debug("Request data: ", string(jsonData))
 
 	// Claude API endpoint
 	req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewBuffer(jsonData))
@@ -186,26 +210,7 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 	return resp.Body, int(priceToken), nil
 }
 
-// Helper function to convert standard role to Claude-specific role
-func convertRoleToClaude(role string) string {
-	switch role {
-	case "user":
-		return "user"
-	case "assistant":
-		return "assistant"
-	case "system":
-		return "system"
-	default:
-		return "user" // Default to user for unknown roles
-	}
-}
-
 // Claude-specific request structures
-type ClaudeContentReq struct {
-	Type   string              `json:"type"`
-	Text   string              `json:"text,omitempty"`
-	// Source ClaudeImageSourceReq `json:"source,omitempty"`
-}
 
 type ClaudeImageSourceReq struct {
 	Type       string `json:"type"`
@@ -215,7 +220,7 @@ type ClaudeImageSourceReq struct {
 
 type ClaudeMessageReq struct {
 	Role    string             `json:"role"`
-	Content []ClaudeContentReq `json:"content"`
+	Content []MessageContentReq `json:"content"`
 }
 
 type ClaudeChatRequest struct {
@@ -225,6 +230,7 @@ type ClaudeChatRequest struct {
 	Temperature float64            `json:"temperature"`
 	Stream      bool               `json:"stream"`
 	System      string             `json:"system"`
+	Tools       []utils.FunctionToolsRequest `json:"tools"`
 }
 
 // ClaudeAIChunk represents a chunk of the streaming response from Claude API
@@ -233,6 +239,11 @@ type ClaudeAIChunk struct {
 	Delta    ClaudeDelta `json:"delta,omitempty"`
 	Usage    ClaudeUsage `json:"usage,omitempty"`
 	Message  ClaudeMessage `json:"message,omitempty"`
+	ContentBlock struct {
+		Type string `json:"type"`
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"content_block,omitempty"`
 }
 
 type ClaudeMessage struct {
@@ -247,6 +258,7 @@ type ClaudeMessage struct {
 type ClaudeDelta struct {
 	Type     string `json:"type"`
 	Text     string `json:"text,omitempty"`
+	PartialJson string `json:"partial_json,omitempty"`
 }
 
 type ClaudeContent struct {

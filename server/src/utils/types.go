@@ -9,10 +9,20 @@ type MessageContentURL struct {
 	URL string `json:"url" bson:"url"`
 }
 
+type MessageContentToolCall struct {
+	ID string `json:"id" bson:"id"`
+	Name string `json:"name" bson:"name"`
+	Arguments string `json:"arguments" bson:"arguments"`
+	Loading string `json:"loading" bson:"loading"`
+	IconURL string `json:"icon_url" bson:"icon_url"`
+}
+
 type MessageContent struct {
 	Type     string            `json:"type" bson:"type"`
 	Text     string            `json:"text",omitempty bson:"text,omitempty"`
 	ImageURL MessageContentURL `json:"image_url" bson:"image_url"`
+	ToolCall MessageContentToolCall `json:"tool_call" bson:"tool_call"`
+	ToolUseId string `json:"tool_use_id" bson:"tool_use_id"`
 }
 
 type Message struct {
@@ -83,4 +93,52 @@ type MiniApp struct {
 	Inputs			[]MiniAppInput     `json:"inputs" bson:"inputs"`
 	InitialMessage map[string]string `json:"initial_message" bson:"initial_message"`
 	InputPlaceholderMessage map[string]string `json:"input_placeholder_message" bson:"input_placeholder_message"`
+}
+
+type ToolCall struct {
+	Type string `json:"type"`
+	Function ToolCallFunction `json:"function"`
+	ID string `json:"id,omitempty"`
+}
+
+type ToolCallFunction struct {
+	Name string `json:"name"`
+	Arguments string `json:"arguments"`
+	ID string `json:"id,omitempty"`
+}
+
+type ToolsRequest struct {
+	Type string `json:"type"`
+	Function FunctionToolsRequest `json:"function"`
+}
+
+type FunctionToolsRequest struct {
+	Name string `json:"name"`
+	Description string `json:"description"`
+	Parameters []ParameterToolsRequest `json:"parameters,omitempty"`
+	InputSchema ParameterToolsRequest `json:"input_schema,omitempty"`
+}
+
+type AITool struct {
+	ID primitive.ObjectID `json:"id,omitempty" bson:"_id,omitempty"`
+	Name string `json:"name" bson:"name"`
+	Description string `json:"description" bson:"description"`
+	ToolID string `json:"tool_id" bson:"tool_id"`
+	ToolRequest ToolsRequest `json:"tool_call" bson:"tool_call"`
+	LoadingString string `json:"loading_string" bson:"loading_string"`
+	IconURL string `json:"icon_url" bson:"icon_url"`
+	Author string `json:"author" bson:"author"`
+	Exec   func(string) string `json:"-"`
+}
+
+type ParameterToolsRequest struct {
+	Type string `json:"type"`
+	Properties map[string]PropertyParameterToolsRequest `json:"properties"`
+	Required []string `json:"required,omitempty"`
+}
+
+type PropertyParameterToolsRequest struct{
+	Type string `json:"type"`
+	Description string `json:"description"`
+	Enum []string `json:"enum,omitempty"`
 }

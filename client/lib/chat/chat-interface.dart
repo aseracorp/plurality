@@ -335,25 +335,28 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     }
   }
 
-  Future<void> sendMessage(BuildContext context, String userMessage) async {
+  Future<void> sendMessage(BuildContext context, String? userMessage) async {
     final conversationsNotifier = ref.read(conversationsProvider.notifier);
     final balanceNotifier = ref.read(balanceProvider.notifier);
 
     // Create new message object
-    final newMessage = Message(
-      role: "user",
-      content: [
-        MessageContent.text(userMessage),
-        ...attachments
-            .map(
-              (a) =>
-                  a.type == "image_url"
-                      ? MessageContent.image(a.content)
-                      : MessageContent(type: a.type, text: a.content),
+    final newMessage =
+        userMessage != null && userMessage.isNotEmpty
+            ? Message(
+              role: "user",
+              content: [
+                MessageContent.text(userMessage),
+                ...attachments
+                    .map(
+                      (a) =>
+                          a.type == "image_url"
+                              ? MessageContent.image(a.content)
+                              : MessageContent(type: a.type, text: a.content),
+                    )
+                    .toList(),
+              ],
             )
-            .toList(),
-      ],
-    );
+            : null;
 
     setState(() {
       _isLoading = true;
@@ -365,8 +368,9 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     var currentConversationID = widget.conversationId;
     var tokenPrice = 0;
     var modelReported = null;
+    var toolHaveBeenUsed = false;
 
-    if (!isNewConversation) {
+    if (!isNewConversation && newMessage != null) {
       // Add message to Riverpod state
       conversationsNotifier.addMessage(
         conversationId: currentConversationID,
@@ -399,7 +403,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
               miniApp: _miniAppSelected,
             );
 
-            if (isNewConversation) {
+            if (isNewConversation && newMessage != null) {
               // Add message to Riverpod state
               conversationsNotifier.addMessage(
                 conversationId: currentConversationID,
@@ -414,6 +418,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         ({newTokenPrice, newModel}) {
           tokenPrice = newTokenPrice;
           modelReported = newModel;
+        },
+        ({toolUsed}) {
+          print('Tool used: $toolUsed');
+          toolHaveBeenUsed = true;
         },
       );
 
@@ -431,6 +439,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       }
 
       // Process completed response
+      // TODO: SAVE TOOL USED
       final assistantMessage = Message(
         role: "assistant",
         content: [MessageContent.text(_currentStreamedResponse)],
@@ -448,28 +457,34 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         _generateTitle(conversationsNotifier, currentConversationID);
       }
 
-      genImage(
-        _modelSelected.imageGen?.name ?? '',
-        newMessage.text,
-        currentConversationID,
-        conversationsNotifier,
-        _apiService,
-      );
-
-      genImage(
-        _modelSelected.imageGen?.name ?? '',
-        _currentStreamedResponse,
-        currentConversationID,
-        conversationsNotifier,
-        _apiService,
-      );
-
-      balanceNotifier.refresh();
-
       setState(() {
         _currentStreamedResponse = '';
         _isLoading = false;
       });
+
+      if (toolHaveBeenUsed) {
+        await sendMessage(context, "");
+      }
+
+      if (newMessage != null) {
+        genImage(
+          _modelSelected.imageGen?.name ?? '',
+          newMessage.text,
+          currentConversationID,
+          conversationsNotifier,
+          _apiService,
+        );
+
+        genImage(
+          _modelSelected.imageGen?.name ?? '',
+          _currentStreamedResponse,
+          currentConversationID,
+          conversationsNotifier,
+          _apiService,
+        );
+      }
+
+      balanceNotifier.refresh();
 
       if (isNewConversation) {
         if (widget.setConversationID != null) {

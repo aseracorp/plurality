@@ -81,16 +81,17 @@ class ApiService {
     MiniApp? miniAppID,
     String conversationID,
     ModelSelected modelSelected,
-    Message message,
+    Message? message,
     Function setMetaData,
     Function setMessageMetaData,
+    Function attachToolUse,
   ) async {
     final request = http.Request('POST', Uri.parse(_baseUrl + '/chat'));
     request.headers['Content-Type'] = 'application/json';
     request.headers['Authorization'] =
         'Bearer ${await _authService.getCurrentUserToken()}';
     request.body = jsonEncode({
-      'messages': [message],
+      'messages': message != null ? [message] : null,
       'conversation_id': conversationID,
       "model_selected": modelSelected,
       "mini_app": miniAppID?.toJson(),
@@ -134,10 +135,12 @@ class ApiService {
           }
         })
         .map((json) {
-          setMetaData(
-            newConversationID: json['conversationID'] as String?,
-            newConversationTitle: json['conversationTitle'] as String?,
-          );
+          if (json['conversationID'] != null) {
+            setMetaData(
+              newConversationID: json['conversationID'] as String?,
+              newConversationTitle: json['conversationTitle'] as String?,
+            );
+          }
 
           if (json['totalTokens'] != null &&
               (json['totalTokens'] as int) != 0) {
@@ -148,13 +151,19 @@ class ApiService {
             );
           }
 
-          final content = json['content'] as String?;
+          if (json['type'] == 'text') {
+            final content = json['content'] as String?;
 
-          if (content == null) {
-            return '';
+            if (content == null) {
+              return '';
+            }
+
+            return content;
+          } else if (json['type'] == 'tool_use') {
+            attachToolUse(toolUsed: json);
           }
 
-          return content;
+          return '';
         });
   }
 

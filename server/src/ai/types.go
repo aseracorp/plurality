@@ -6,7 +6,6 @@ import (
 	"github.com/azukaar/plurality/src/utils"
 )
 
-
 type ImageGenerationRequest struct {
 	ConversationID primitive.ObjectID `json:"conversation_id"`
 	Model          string `json:"model"`
@@ -22,9 +21,22 @@ type ImageGenerationResponse struct {
 	B64JSON string `json:"b64_json"`
 }
 
+type MessageContentReq struct {
+	Type   string              `json:"type"`
+	Text   string              `json:"text,omitempty"`
+	ToolUseId string `json:"tool_use_id,omitempty"`
+	Content string `json:"content,omitempty"`
+	ImageURL *utils.MessageContentURL `json:"image_url,omitempty"`
+	
+	// for tool_use
+	ID string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
+	Input map[string]string `json:"input,omitempty"`
+}
+
 type MessageReq struct {
 	Role    string `json:"role"`
-	Content []utils.MessageContent `json:"content"`
+	Content []MessageContentReq `json:"content"`
 }
 
 type ChatRequest struct {
@@ -37,6 +49,7 @@ type ChatRequest struct {
 	RepetitionPenalty float64   `json:"repetition_penalty"`
 	Stop              []string  `json:"stop"`
 	Stream            bool      `json:"stream"`
+	Tools 					  []utils.ToolsRequest  `json:"tools"`
 }
 
 type ChatRequestChatGPT struct {
@@ -46,6 +59,7 @@ type ChatRequestChatGPT struct {
 	Temperature       float64      `json:"temperature"`
 	TopP              float64      `json:"top_p"`
 	Stream						bool         `json:"stream"`	
+	Tools 					  []utils.ToolsRequest  `json:"tools"`
 }
 
 type ChatPayload struct {
@@ -66,9 +80,11 @@ type AIChunk struct {
 		Text  string `json:"text"`
 		Delta struct {
 			Content string `json:"content"`
+			ToolCalls []utils.ToolCall `json:"tool_calls"`
 		} `json:"delta"`
 	} `json:"choices"`
 }
+
 
 // Command represents a parsed command with its type and arguments
 type Command struct {

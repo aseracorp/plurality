@@ -211,11 +211,14 @@ class Conversation extends HiveObject {
   factory Conversation.fromJson(Map<String, dynamic> json) {
     // if (json['mini_app'] != null) print("CACA: " + json['mini_app']);
 
+    var miniapp =
+        json['mini_app'] != null ? MiniApp.fromJson(json['mini_app']) : null;
+    // if (miniapp?.id == null || miniapp?.id == "") miniapp = null;
+
     return Conversation(
       id: json['id'] ?? json['_id'] ?? '',
       title: json['title'] ?? 'Untitled',
-      miniApp:
-          json['mini_app'] != null ? MiniApp.fromJson(json['mini_app']) : null,
+      miniApp: miniapp,
       createdAt:
           json['created_at'] != null
               ? DateTime.parse(json['created_at'])
@@ -309,11 +312,11 @@ class ModelSelected {
 
   const ModelSelected({
     this.text = const Model(
-      name: 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
+      name: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
       params: {},
     ),
     this.vision = const Model(
-      name: 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
+      name: 'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo',
       params: {},
     ),
     this.imageGen = const Model(
@@ -472,13 +475,17 @@ class MiniApp {
       iconURL: json['icon_url'],
       author: json['author'],
       models:
-          (json['models'] as List)
-              .map((model) => Model.fromJson(model))
-              .toList(),
+          json['models'] != null
+              ? (json['models'] as List)
+                  .map((model) => Model.fromJson(model))
+                  .toList()
+              : [],
       inputs:
-          (json['inputs'] as List)
-              .map((input) => MiniAppInput.fromJson(input))
-              .toList(),
+          json['inputs'] != null
+              ? (json['inputs'] as List)
+                  .map((input) => MiniAppInput.fromJson(input))
+                  .toList()
+              : [],
       // InitialMessage: json['initial_message'],
     );
 
