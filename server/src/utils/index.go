@@ -209,3 +209,12 @@ func ParseJsonString(jsonStr string) map[string]string  {
 	json.Unmarshal([]byte(jsonStr), &result)
 	return result
 }
+
+func ContainsString(arr []string, str string) bool {
+	for _, a := range arr {
+		if a == str {
+			return true
+		}
+	}
+	return false
+}

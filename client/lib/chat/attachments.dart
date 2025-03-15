@@ -9,13 +9,17 @@ class AttachmentViewer extends StatelessWidget {
   final void Function(Attachment attachment) removeAttachment;
   final bool editMode;
   final bool mini;
+  final ToolCall? toolCall;
+  final bool loading;
 
   const AttachmentViewer({
     Key? key,
     required this.attachment,
     required this.removeAttachment,
     required this.editMode,
+    this.toolCall,
     this.mini = false,
+    this.loading = false,
   }) : super(key: key);
 
   String summarizeText(int nb, String text) {
@@ -118,7 +122,11 @@ class AttachmentViewer extends StatelessWidget {
       );
     } else if (attachment.type == "image_url") {
       return ImagePreviewComponent(imageUrl: attachment.content, mini: mini);
-    }
+    } /*else if (attachment.type == "tool_use" && !mini) {
+      return ToolCallBadge(toolCall: toolCall!, isLoading: loading);
+    } else if (attachment.type == "tool_result" && !mini) {
+      return Text(attachment.content);
+    }*/
     return Container();
   }
 }

@@ -13,22 +13,20 @@ var WeatherTool = utils.AITool{
 		Function: utils.FunctionToolsRequest{
 			Name: "get_current_weather",
 			Description: "Get the current weather in a given location",
-			Parameters: []utils.ParameterToolsRequest{
-				{
-					Type: "object",
-					Properties: map[string]utils.PropertyParameterToolsRequest {
-						"location": {
-							Type: "string",
-							Description: "The location to get the weather for",
-						},
-						"unit": {
-							Type: "string",
-							Description: "The location to get the weather for",
-							Enum: []string{"celsius", "fahrenheit"},
-						},
+			Parameters: &utils.ParameterToolsRequest{
+				Type: "object",
+				Properties: map[string]utils.PropertyParameterToolsRequest {
+					"location": {
+						Type: "string",
+						Description: "The location to get the weather for",
 					},
-					Required: []string{"location", "unit"},
+					"unit": {
+						Type: "string",
+						Description: "The location to get the weather for",
+						Enum: []string{"celsius", "fahrenheit"},
+					},
 				},
+				Required: []string{"location", "unit"},
 			},
 		},
 	},

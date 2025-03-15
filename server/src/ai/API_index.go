@@ -6,6 +6,7 @@ import (
 	"time"
 	"strings"
 	"strconv"
+	"fmt"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"github.com/gorilla/mux"
@@ -189,26 +190,23 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		utils.SendHTTPError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	
-	/*if len(payload.Messages) == 0 {
-		utils.Error("[HandleChat] No messages provided", nil)
-		utils.SendHTTPError(w, "No messages provided", http.StatusBadRequest)
-		return
-	}*/
 
 	utils.Debug("[HandleChat] Received chat payload for model", payload.ModelSelected)
 		
 	var messageToProcess utils.Message
 	var model utils.Model
 
+	// Message or Tool uses
 	if len(payload.Messages) > 0 {
 		messageToProcess = payload.Messages[0]
 		model = SelectModel(payload.ModelSelected, payload.Messages[0])
+		messageToProcess.Model = model
 	} else {
 		model = payload.ModelSelected.Text
 	}
 
 
+	// Check plan
 	planName, err := db.GetPlanName(r.Context())
 	if err != nil {
 		utils.Error("[HandleImageGeneration] Error getting plan name", err)
@@ -216,6 +214,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// CHeck model name / Free model access from plan
 	if !CheckModel(model.Name, planName) {
 		utils.Error("[HandleImageGeneration] Invalid model %s", nil, model.Name)
 		http.Error(w, "Invalid model", http.StatusBadRequest)
@@ -225,7 +224,6 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	partialConv := utils.Conversation{
 		ID: payload.ConversationID,
 		ModelSelected: payload.ModelSelected,
-		// MiniApp: &payload.MiniApp,
 	}
 
 	if payload.MiniApp.ID != primitive.NilObjectID {
@@ -237,8 +235,15 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	var conv utils.Conversation
 	isNew := false
 
-
+	// Process tools uses 
 	if len(payload.Messages) == 0 {
+		if !CheckActionModel(model.Name) {
+			utils.Error("[HandleChat] Model invalid to use Actions", nil)
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("Model invalid to use Actions"))
+			return
+		}
+
 		// get conversation
 		currentConv, err := db.GetConversationById(r.Context(), payload.ConversationID.Hex())
 		if err != nil {
@@ -261,7 +266,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 			Role: "user",
 			Timestamp: time.Now().Format(time.RFC3339),
 			TotalTokens: 0,
-			Model: utils.Model{},
+			Model: model,
 			Content: []utils.MessageContent{},
 		}
 
@@ -274,7 +279,22 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 
 				t, ok :=  ai_tools.GetTool(toolID)
 				if ok {
-					toolResult := t.Exec(toolCall.Arguments)
+					// deduce the price of the request
+					_, err = db.RemoveCredits(r.Context(), (float64)(t.Cost), utils.UserAction{
+						Type: TOOL_USE,
+						Provider: NONE,
+					})
+					if err != nil {
+						utils.Error("[HandleChat] Error removing credits", err)
+						utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+
+					args := toolCall.Arguments
+					if args == "" {
+						args = "{}"
+					}
+					toolResult := t.Exec(args)
 
 					utils.Debug("[HandleChat] Tool result: ", toolResult)
 	
@@ -282,7 +302,29 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 						Type: "tool_result",
 						Text: toolResult,
 						ToolUseId: toolCall.ID,
+						ToolCall: toolCall,
 					})
+			
+					responseObj := map[string]interface{}{
+						"type": "tool_result",
+						"tool_use_id": toolCall.ID,
+						"name": toolCall.Name,
+						"arguments": toolCall.Arguments,
+						"conversationID": payload.ConversationID,
+						"result": toolResult,
+					}
+			
+					responseJSON, err := json.Marshal(responseObj)
+					if err != nil {
+						utils.Error("[HandleChat] Error marshaling response", err)
+						return
+					}
+			
+					utils.Debug("[HandleChat] Sending tool use response", "data: " + string(responseJSON))
+			
+					// Write the response to the client
+					fmt.Fprintf(w, "%s\n\n", ([]byte)("data: " + string(responseJSON)))
+					w.(http.Flusher).Flush()
 				}
 			}
 		}
@@ -313,7 +355,9 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	response, inputPriceToken, err := SendChatCompletion(r.Context(), model, conv, payload.MiniApp.ID)
 	if err != nil {
 		utils.Error("[HandleChat] Error sending chat completion", err)
-		if strings.Contains(err.Error(), "Insufficient credits") {
+		el := err.Error()
+		el = strings.ToLower(el)
+		if strings.Contains(el, "insufficient credits") {
 			http.Error(w, err.Error(), http.StatusPaymentRequired)
 		} else {
 			utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)

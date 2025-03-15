@@ -187,7 +187,7 @@ class _MiddleClickScrollerState extends State<MiddleClickScroller> {
                       children: [
                         Icon(
                           Icons.swap_vert,
-                          color: widget.iconColor,
+                          color: const Color(0xFFFFFFFF),
                           size: widget.iconSize * 0.6,
                         ),
                         // Optional: Show scroll speed indicator

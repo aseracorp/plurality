@@ -7,22 +7,21 @@ import 'dart:io';
 
 import '../utils/types.dart';
 import '../auth/auth-service.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 
 class ConversationStorage {
   static const String _conversationBoxName = 'conversations';
 
   // Initialize Hive
   static Future<void> init() async {
-    try {
-      final appDocumentDirectory = await getApplicationSupportDirectory();
+    final appDocumentDirectory = await getApplicationSupportDirectory();
 
+    if (!kIsWeb) {
       print(
         'Storage - init - Initializing Hive at ${appDocumentDirectory.path}',
       );
 
       Hive.init(appDocumentDirectory.path);
-    } catch (e) {
-      Hive.initFlutter();
     }
 
     // Register adapters
@@ -35,9 +34,46 @@ class ConversationStorage {
     Hive.registerAdapter(ModelAdapter());
     Hive.registerAdapter(MiniAppAdapter());
     Hive.registerAdapter(MiniAppInputAdapter());
+    Hive.registerAdapter(ToolCallAdapter());
 
     // Open box
-    await Hive.openBox<Conversation>(_conversationBoxName);
+    try {
+      await Hive.openBox<Conversation>(_conversationBoxName);
+    } catch (e) {
+      // wait 1 sec and try again
+      await Future.delayed(Duration(seconds: 1));
+
+      print('Storage - init - Error opening box $_conversationBoxName');
+      // delete the box and try again
+      if (Hive.isBoxOpen(_conversationBoxName)) {
+        await Hive.box(_conversationBoxName).close();
+      }
+
+      String? hivePath =
+          appDocumentDirectory.path + '/$_conversationBoxName.hive';
+
+      if (hivePath != null) {
+        print('hivePath: $hivePath');
+        final file = File(hivePath);
+        if (await file.exists()) {
+          await file.delete();
+          print('Successfully deleted hive file');
+        } else {
+          print('File does not exist at path: $hivePath');
+        }
+
+        // Delete the lock file too
+        final lockFile = File('$hivePath.lock');
+        if (await lockFile.exists()) {
+          await lockFile.delete();
+          print('Successfully deleted hive.lock file');
+        }
+      } else {
+        print('hivePath is null');
+      }
+
+      await Hive.openBox<Conversation>(_conversationBoxName);
+    }
   }
 
   // Get the box

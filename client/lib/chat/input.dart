@@ -86,7 +86,7 @@ class _InputBoxState extends State<InputBox> {
     String currentText = widget.messageController.text;
 
     // Check if text was pasted (significant increase in length)
-    if (currentText.length > _previousText.length + 250) {
+    if (currentText.length > _previousText.length + 300) {
       // Get the pasted content
       String pastedContent = currentText.substring(_previousText.length);
 
@@ -197,7 +197,6 @@ class _InputBoxState extends State<InputBox> {
     widget.onSend(context);
   }
 
-  // Process clipboard paste event
   Future<void> _handlePaste(BuildContext context) async {
     if (kIsWeb) return;
 
@@ -233,11 +232,38 @@ class _InputBoxState extends State<InputBox> {
       print('Error checking for clipboard files: $e');
     }
 
-    // paste to the field
+    // paste text to the field at current cursor position
     try {
       final text = await Pasteboard.text;
       if (text != null) {
-        widget.messageController.text += text;
+        // Get current selection
+        final TextSelection selection = widget.messageController.selection;
+        final String currentText = widget.messageController.text;
+
+        // Calculate new text based on selection
+        final String newText;
+        final int cursorPosition;
+
+        if (selection.isValid) {
+          // Replace selected text or insert at cursor position
+          final String beforeSelection = currentText.substring(
+            0,
+            selection.start,
+          );
+          final String afterSelection = currentText.substring(selection.end);
+          newText = beforeSelection + text + afterSelection;
+          cursorPosition = selection.start + text.length;
+        } else {
+          // If no valid selection, append to end as fallback
+          newText = currentText + text;
+          cursorPosition = newText.length;
+        }
+
+        // Update the controller with the new text and cursor position
+        widget.messageController.value = TextEditingValue(
+          text: newText,
+          selection: TextSelection.collapsed(offset: cursorPosition),
+        );
       }
     } catch (e) {
       print('Error checking for clipboard text: $e');
@@ -458,7 +484,7 @@ class _InputBoxState extends State<InputBox> {
                 HardwareKeyboard.instance.isMetaPressed)) {
           _handlePaste(context);
           // We return ignored to let the default paste behavior also happen
-          return KeyEventResult.ignored;
+          return KeyEventResult.handled;
         }
       }
     }

@@ -49,7 +49,7 @@ type ChatRequest struct {
 	RepetitionPenalty float64   `json:"repetition_penalty"`
 	Stop              []string  `json:"stop"`
 	Stream            bool      `json:"stream"`
-	Tools 					  []utils.ToolsRequest  `json:"tools"`
+	Tools 					  []utils.ToolsRequest  `json:"tools,omitempty"`
 }
 
 type ChatRequestChatGPT struct {
@@ -59,7 +59,7 @@ type ChatRequestChatGPT struct {
 	Temperature       float64      `json:"temperature"`
 	TopP              float64      `json:"top_p"`
 	Stream						bool         `json:"stream"`	
-	Tools 					  []utils.ToolsRequest  `json:"tools"`
+	Tools 					  []utils.ToolsRequest  `json:"tools,omitempty"`
 }
 
 type ChatPayload struct {

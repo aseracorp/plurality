@@ -28,7 +28,10 @@ class MessageContent {
   @HiveField(2)
   MessageContentURL? imageUrl;
 
-  MessageContent({required this.type, this.text, this.imageUrl});
+  @HiveField(3)
+  ToolCall? toolCall;
+
+  MessageContent({required this.type, this.text, this.imageUrl, this.toolCall});
 
   Map<String, dynamic> toJson() {
     final Map<String, dynamic> data = {'type': type};
@@ -41,6 +44,10 @@ class MessageContent {
       data['image_url'] = imageUrl!.toJson();
     }
 
+    if (toolCall != null) {
+      data['tool_call'] = toolCall!.toJson();
+    }
+
     return data;
   }
 
@@ -48,6 +55,10 @@ class MessageContent {
     return MessageContent(
       type: json['type'],
       text: json['text'],
+      toolCall:
+          json['tool_call'] != null
+              ? ToolCall.fromJson(json['tool_call'])
+              : null,
       imageUrl:
           json['image_url'] != null
               ? MessageContentURL.fromJson(json['image_url'])
@@ -64,6 +75,18 @@ class MessageContent {
       type: 'image_url',
       imageUrl: MessageContentURL(url: imageUrl),
     );
+  }
+
+  factory MessageContent.tool(ToolCall tool) {
+    if (tool.result != null) {
+      return MessageContent(
+        type: 'tool_result',
+        toolCall: tool,
+        text: tool.result,
+      );
+    } else {
+      return MessageContent(type: 'tool_use', toolCall: tool);
+    }
   }
 }
 
@@ -314,10 +337,12 @@ class ModelSelected {
     this.text = const Model(
       name: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
       params: {},
+      tools: ['search_web', 'place_search', 'visit_link'],
     ),
     this.vision = const Model(
       name: 'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo',
       params: {},
+      tools: ['search_web', 'place_search', 'visit_link'],
     ),
     this.imageGen = const Model(
       name: 'black-forest-labs/FLUX.1-schnell',
@@ -382,9 +407,20 @@ class Model {
   @HiveField(1)
   final Map<String, String>? params;
 
-  const Model({required this.name, required this.params});
+  @HiveField(2)
+  final List<String> tools;
 
-  Map<String, dynamic> toJson() => {'name': name, 'params': params};
+  const Model({
+    required this.name,
+    required this.params,
+    this.tools = const [],
+  });
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'params': params,
+    'tools': tools,
+  };
 
   factory Model.fromJson(Map<String, dynamic> json) {
     Map<String, String>? params;
@@ -402,7 +438,21 @@ class Model {
       params = null;
     }
 
-    return Model(name: (json['name'] ?? '') as String, params: params);
+    List<String> tools = [];
+    try {
+      if (json['tools'] != null) {
+        tools = List<String>.from(json['tools']);
+      }
+    } catch (e) {
+      print('Error parsing tools: $e');
+      tools = [];
+    }
+
+    return Model(
+      name: (json['name'] ?? '') as String,
+      params: params,
+      tools: tools,
+    );
   }
 }
 
@@ -555,5 +605,55 @@ class MiniAppInput {
       'type': type,
       'options': options,
     };
+  }
+}
+
+@HiveType(typeId: 10)
+class ToolCall {
+  @HiveField(0)
+  final String id;
+
+  @HiveField(1)
+  final String name;
+
+  @HiveField(2)
+  final String arguments;
+
+  @HiveField(3)
+  final String loading;
+
+  @HiveField(4)
+  final String iconURL;
+
+  @HiveField(5)
+  final String? result;
+
+  ToolCall({
+    required this.id,
+    required this.name,
+    required this.arguments,
+    this.loading = '',
+    this.iconURL = '',
+    this.result,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'arguments': arguments,
+    'loading': loading,
+    'icon_url': iconURL,
+    'result': result,
+  };
+
+  factory ToolCall.fromJson(Map<String, dynamic> json) {
+    return ToolCall(
+      id: json['id'] ?? json['tool_use_id'] ?? '',
+      name: json['name'] ?? '',
+      arguments: json['arguments'] ?? '',
+      loading: json['loading'] ?? '',
+      iconURL: json['icon_url'] ?? '',
+      result: json['result'],
+    );
   }
 }

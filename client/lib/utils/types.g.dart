@@ -54,19 +54,22 @@ class MessageContentAdapter extends TypeAdapter<MessageContent> {
       type: fields[0] as String,
       text: fields[1] as String?,
       imageUrl: fields[2] as MessageContentURL?,
+      toolCall: fields[3] as ToolCall?,
     );
   }
 
   @override
   void write(BinaryWriter writer, MessageContent obj) {
     writer
-      ..writeByte(3)
+      ..writeByte(4)
       ..writeByte(0)
       ..write(obj.type)
       ..writeByte(1)
       ..write(obj.text)
       ..writeByte(2)
-      ..write(obj.imageUrl);
+      ..write(obj.imageUrl)
+      ..writeByte(3)
+      ..write(obj.toolCall);
   }
 
   @override
@@ -292,17 +295,20 @@ class ModelAdapter extends TypeAdapter<Model> {
     return Model(
       name: fields[0] as String,
       params: (fields[1] as Map?)?.cast<String, String>(),
+      tools: (fields[2] as List).cast<String>(),
     );
   }
 
   @override
   void write(BinaryWriter writer, Model obj) {
     writer
-      ..writeByte(2)
+      ..writeByte(3)
       ..writeByte(0)
       ..write(obj.name)
       ..writeByte(1)
-      ..write(obj.params);
+      ..write(obj.params)
+      ..writeByte(2)
+      ..write(obj.tools);
   }
 
   @override
@@ -410,6 +416,55 @@ class MiniAppInputAdapter extends TypeAdapter<MiniAppInput> {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is MiniAppInputAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
+}
+
+class ToolCallAdapter extends TypeAdapter<ToolCall> {
+  @override
+  final int typeId = 10;
+
+  @override
+  ToolCall read(BinaryReader reader) {
+    final numOfFields = reader.readByte();
+    final fields = <int, dynamic>{
+      for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
+    };
+    return ToolCall(
+      id: fields[0] as String,
+      name: fields[1] as String,
+      arguments: fields[2] as String,
+      loading: fields[3] as String,
+      iconURL: fields[4] as String,
+      result: fields[5] as String?,
+    );
+  }
+
+  @override
+  void write(BinaryWriter writer, ToolCall obj) {
+    writer
+      ..writeByte(6)
+      ..writeByte(0)
+      ..write(obj.id)
+      ..writeByte(1)
+      ..write(obj.name)
+      ..writeByte(2)
+      ..write(obj.arguments)
+      ..writeByte(3)
+      ..write(obj.loading)
+      ..writeByte(4)
+      ..write(obj.iconURL)
+      ..writeByte(5)
+      ..write(obj.result);
+  }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ToolCallAdapter &&
           runtimeType == other.runtimeType &&
           typeId == other.typeId;
 }

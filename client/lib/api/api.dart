@@ -160,7 +160,10 @@ class ApiService {
 
             return content;
           } else if (json['type'] == 'tool_use') {
-            attachToolUse(toolUsed: json);
+            attachToolUse(toolUsed: ToolCall.fromJson(json));
+          } else if (json['type'] == 'tool_result') {
+            // attachToolUse(toolUsed: ToolCall.fromJson(json));
+            attachToolUse(toolResult: ToolCall.fromJson(json));
           }
 
           return '';

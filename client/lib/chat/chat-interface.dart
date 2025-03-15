@@ -20,11 +20,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import './image.dart';
 import './image-gen.dart';
 import './input.dart';
+import './model-picker.dart';
 import '../utils/file-types.dart';
 import './minimap.dart';
 import './miniapps.dart';
 import './middle-click.dart';
 import 'package:super_sliver_list/super_sliver_list.dart';
+import './toolcall-badge.dart';
+import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kIsWeb, TargetPlatform;
 
@@ -90,7 +93,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     // Send initial message if provided
     if (widget.initialMessage.isNotEmpty) {
       Future.delayed(Duration(milliseconds: 500), () {
-        sendMessage(context, widget.initialMessage);
+        sendMessage(context, widget.initialMessage, null);
       });
     }
   }
@@ -115,6 +118,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
   // Extract the model selection logic to a separate method
   void _updateSelectedModel() {
+    final balanceState = ref.read(balanceProvider);
+    final balance = balanceState.value;
+    final isFree = balance?.planName == 'Free';
+
     final conversationsState = ref.read(conversationsProvider);
     final preferences = ref.read(preferencesProvider);
 
@@ -132,6 +139,11 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       // Fall back to the globally selected model from preferences
       _modelSelected = preferences.selectedModel;
       _miniAppSelected = null;
+
+      // if free plan, set model to free plan
+      if (isFree) {
+        _modelSelected = ModelSelectionModalState.getFastPreset();
+      }
     }
   }
 
@@ -166,7 +178,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     }
   }
 
-  void _generateTitle(
+  _generateTitle(
     ConversationsNotifier conversationsNotifier,
     String conversationId,
   ) async {
@@ -331,11 +343,15 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     if (_formKey.currentState!.validate()) {
       final userMessage = _messageController.text;
       _messageController.clear();
-      await sendMessage(context, userMessage);
+      await sendMessage(context, userMessage, null);
     }
   }
 
-  Future<void> sendMessage(BuildContext context, String? userMessage) async {
+  Future<void> sendMessage(
+    BuildContext context,
+    String? userMessage,
+    String? forceConvId,
+  ) async {
     final conversationsNotifier = ref.read(conversationsProvider.notifier);
     final balanceNotifier = ref.read(balanceProvider.notifier);
 
@@ -364,11 +380,13 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       _interrupted = false;
     });
 
-    var isNewConversation = widget.conversationId == "";
-    var currentConversationID = widget.conversationId;
+    var currentConversationID = forceConvId ?? widget.conversationId;
+    var isNewConversation = currentConversationID == "";
     var tokenPrice = 0;
     var modelReported = null;
     var toolHaveBeenUsed = false;
+    List<ToolCall> toolUsedList = [];
+    List<ToolCall> toolResultList = [];
 
     if (!isNewConversation && newMessage != null) {
       // Add message to Riverpod state
@@ -382,7 +400,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       // Send message to API
       final stream = await _apiService.sendChatMessage(
         _miniAppSelected,
-        widget.conversationId,
+        currentConversationID,
         _modelSelected,
         newMessage,
         ({newConversationID, newConversationTitle}) {
@@ -419,9 +437,13 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
           tokenPrice = newTokenPrice;
           modelReported = newModel;
         },
-        ({toolUsed}) {
-          print('Tool used: $toolUsed');
-          toolHaveBeenUsed = true;
+        ({toolUsed, toolResult}) {
+          if (toolUsed != null) {
+            toolHaveBeenUsed = true;
+            toolUsedList.add(toolUsed);
+          } else if (toolResult != null) {
+            toolResultList.add(toolResult);
+          }
         },
       );
 
@@ -439,10 +461,15 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       }
 
       // Process completed response
-      // TODO: SAVE TOOL USED
+      var allContent = [
+        MessageContent.text(_currentStreamedResponse),
+        ...toolUsedList.map((tool) => MessageContent.tool(tool)),
+        ...toolResultList.map((tool) => MessageContent.tool(tool)),
+      ];
+
       final assistantMessage = Message(
         role: "assistant",
-        content: [MessageContent.text(_currentStreamedResponse)],
+        content: allContent,
         totalTokens: tokenPrice,
         model: modelReported,
       );
@@ -463,7 +490,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       });
 
       if (toolHaveBeenUsed) {
-        await sendMessage(context, "");
+        await sendMessage(context, "", currentConversationID);
       }
 
       if (newMessage != null) {
@@ -533,6 +560,25 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
           );
         }
 
+        var alignMess =
+            message.text != ""
+                ? AnimatedMessageBox(
+                  iconURL: _miniAppSelected?.iconURL,
+                  mini: mini, // Use mini parameter
+                  message: message,
+                  text: message.text,
+                  isBot: message.isBot,
+                  isLoading:
+                      _isLoading &&
+                      index ==
+                          (messages.length +
+                                  (_currentStreamedResponse.isNotEmpty
+                                      ? 1
+                                      : 0)) -
+                              1,
+                )
+                : null;
+
         return Align(
           alignment:
               message.isBot ? Alignment.centerLeft : Alignment.centerRight,
@@ -547,6 +593,8 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                   .map(
                     (attach) => AttachmentViewer(
                       mini: mini,
+                      toolCall: attach.toolCall,
+                      loading: _isLoading && index == messages.length - 1,
                       attachment: Attachment(
                         type: attach.type,
                         content:
@@ -560,22 +608,38 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                     ),
                   )
                   .toList(),
-              if (message.text != "")
-                AnimatedMessageBox(
-                  iconURL: _miniAppSelected?.iconURL,
-                  mini: mini, // Use mini parameter
-                  message: message,
-                  text: message.text,
-                  isBot: message.isBot,
-                  isLoading:
-                      _isLoading &&
-                      index ==
-                          (messages.length +
-                                  (_currentStreamedResponse.isNotEmpty
-                                      ? 1
-                                      : 0)) -
-                              1,
-                ),
+              if (alignMess != null) alignMess,
+              if (!mini)
+                ...message.content
+                    .where((c) => c.type == "tool_use")
+                    .map(
+                      (attach) => ToolCallBadge(
+                        toolCall: attach.toolCall!,
+                        isLoading: _isLoading && index == messages.length - 1,
+                        // if next message contains a tool_result
+                        result:
+                            (index + 1 < messages.length &&
+                                    messages
+                                        .elementAt(index + 1)
+                                        .content
+                                        .any(
+                                          (c) =>
+                                              c.type == "tool_result" &&
+                                              c.toolCall!.id ==
+                                                  attach.toolCall!.id,
+                                        ))
+                                ? messages
+                                    .elementAt(index + 1)
+                                    .content
+                                    .firstWhereOrNull(
+                                      (c) =>
+                                          c.type == "tool_result" &&
+                                          c.toolCall!.id == attach.toolCall!.id,
+                                    )
+                                : null,
+                      ),
+                    )
+                    .toList(),
             ],
           ),
         );

@@ -1,35 +1,39 @@
+# Road to relese 
+	- Integrate LLama via AWS - test first?
+	- Integrate Deepseek via their API
+	- separate API and app backend
+
+	- Model not saved in conv?
+  - rename conversations
+  - pin conversations and messages?
+  - local or incognito mode? or both?
+  - Token de secours
+  - Login / Register
+		- apple
+		- may be facebook
+	- Subscripiton page
+	- Home page
+
+
 # private MVP2 - bigger
-- AI FUnction calls 
-    - Race condition with new messages 
-		- Add loading of function calls 
-		- Fix Together AI / ChatGPT
-		- Make site visit and query arrays so you can visit/search in one go
-- better error no credits!! (remember prod dont see errors)
+- Custom mini apps
+- AI Function calls 
+	- Get tool_Result to work with Toegtehr / ChatGPT ?
+	- embeds (ex. maps or calendars)
 - mini app suggest model
-- Do not paste into a snippet if text input is empty???
-- https://docs.together.ai/docs/logprobs
-- multiple /image per message
-- Apps
-  - Therapy
-  - Language learning
 - Retry button
 - refresh message/convo
 - model icons / conversation icons
-- rename conversations
-- pin conversations and messages?
 - bin doc parse / long doc integration
 - Code Assist
 - more models
 - change share to share a hosted page rather than the image / text / converastion
 - file_picker's save file for non-web?
-- local or incognito mode? or both?
 - History pagination or infinite scroll?
 - Claude / ChatGPT images vision
 - Add token price to titles
-- Login / Register
-  - apple
-  - may be facebook
 - Publish Apps each platform
+- eco mode 
 
 # More 
 - model popup should show preset when one is selected

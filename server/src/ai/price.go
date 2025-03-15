@@ -14,10 +14,12 @@ const (
 	TEXT_OUTPUT = 1
 	IMAGE_VISION = 2
 	IMAGE_GEN = 3
+	TOOL_USE = 4
 )
 
 // providers
 const (
+	NONE = -1
 	OPENAI = 0
 	CLAUDE = 1
 	TOGETHER = 2

@@ -55,6 +55,9 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 		
 		for _, content := range msg.Content {
 			if content.Type == "tool_use" {
+				if content.ToolCall.Arguments == "" {
+					content.ToolCall.Arguments = "{\"_iamhere\": \"true\"}"
+				}
 				args := utils.ParseJsonString(content.ToolCall.Arguments)
 				contents = append(contents, MessageContentReq{
 					Type: content.Type,
@@ -63,29 +66,43 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 					Input: args,
 				})
 			}
+
 			if content.Type == "snippet" {
 				content.Type = "text"
 			}
+
 			if content.Type == "tool_result" {
-				contents = append(contents, MessageContentReq{
-					Type: content.Type,
-					ToolUseId: content.ToolUseId,
-					Content: content.Text,
-				})
-			}
-			if content.Type == "text" {
-				err, _priceToken := GetPrice(TEXT_INPUT, CLAUDE, model, content.Text + " {}{}{}{}{}{}{}")
-				priceToken += _priceToken
+				if content.Text !="" {
+					err, _priceToken := GetPrice(TEXT_INPUT, CLAUDE, model, content.Text + " {}{}{}{}{}{}{}")
+					priceToken += _priceToken
 
-				if err != nil {
-					return nil, 0, err
+					if err != nil {
+						return nil, 0, err
+					}
+
+					contents = append(contents, MessageContentReq{
+						Type: content.Type,
+						ToolUseId: content.ToolUseId,
+						Content: content.Text,
+					})
 				}
+			}
+			
+			if content.Type == "text" {
+				if content.Text !="" {
+					err, _priceToken := GetPrice(TEXT_INPUT, CLAUDE, model, content.Text + " {}{}{}{}{}{}{}")
+					priceToken += _priceToken
 
-				contents = append(contents, MessageContentReq{
-					Type: content.Type,
-					Text: content.Text,
-					ToolUseId: content.ToolUseId,
-				})
+					if err != nil {
+						return nil, 0, err
+					}
+
+					contents = append(contents, MessageContentReq{
+						Type: content.Type,
+						Text: content.Text,
+						ToolUseId: content.ToolUseId,
+					})
+				}
 			} else if content.Type == "image_url" {
 				continue
 				// Handle image content if provided
@@ -102,10 +119,12 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 			}
 		}
 		
-		claudeMessages = append(claudeMessages, ClaudeMessageReq{
-			Role:    msg.Role,
-			Content: contents,
-		})
+		if len(contents) > 0 {
+			claudeMessages = append(claudeMessages, ClaudeMessageReq{
+				Role:    msg.Role,
+				Content: contents,
+			})
+		}
 	}
 
 	// Extract Claude model version from prefix if it exists
@@ -150,7 +169,10 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 		Temperature: temperature,
 		Stream:      true,
 		System:      SystemPrompt,
-		Tools:		   ai_tools.GetClaudeRequests(),
+	}
+	
+	if CheckActionModel(model.Name) && len(ai_tools.GetClaudeRequests(model)) > 0 {
+		requestData.Tools = ai_tools.GetClaudeRequests(model)
 	}
 
 	// Check balance
@@ -230,7 +252,7 @@ type ClaudeChatRequest struct {
 	Temperature float64            `json:"temperature"`
 	Stream      bool               `json:"stream"`
 	System      string             `json:"system"`
-	Tools       []utils.FunctionToolsRequest `json:"tools"`
+	Tools       []utils.FunctionToolsRequest `json:"tools,omitempty"`
 }
 
 // ClaudeAIChunk represents a chunk of the streaming response from Claude API

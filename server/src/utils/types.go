@@ -45,6 +45,7 @@ func (m Message) Text() string {
 type Model struct {
 	Name   string            `json:"name",omitempty bson:"name,omitempty"`
 	Params map[string]string `json:"params",omitempty bson:"params,omitempty"`
+	Tools  []string 				 `json:"tools",omitempty bson:"tools,omitempty"`
 }
 
 type ModelSelected struct {
@@ -115,8 +116,8 @@ type ToolsRequest struct {
 type FunctionToolsRequest struct {
 	Name string `json:"name"`
 	Description string `json:"description"`
-	Parameters []ParameterToolsRequest `json:"parameters,omitempty"`
-	InputSchema ParameterToolsRequest `json:"input_schema,omitempty"`
+	Parameters *ParameterToolsRequest `json:"parameters,omitempty"`
+	InputSchema *ParameterToolsRequest `json:"input_schema,omitempty"`
 }
 
 type AITool struct {
@@ -129,6 +130,7 @@ type AITool struct {
 	IconURL string `json:"icon_url" bson:"icon_url"`
 	Author string `json:"author" bson:"author"`
 	Exec   func(string) string `json:"-"`
+	Cost   int `json:"cost" bson:"cost"`
 }
 
 type ParameterToolsRequest struct {

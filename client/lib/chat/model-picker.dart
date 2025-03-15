@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/balance.dart';
-
 import '../utils/types.dart';
 
 class ModelSelectionModal extends ConsumerStatefulWidget {
@@ -16,14 +15,14 @@ class ModelSelectionModal extends ConsumerStatefulWidget {
 
   @override
   ConsumerState<ModelSelectionModal> createState() =>
-      _ModelSelectionModalState();
+      ModelSelectionModalState();
 }
 
-class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
+class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     with SingleTickerProviderStateMixin {
   // Available options for each dropdown
   final List<String> _modelOptions = [
-    'meta-llama/Llama-3.2-8B-Instruct-Turbo',
+    'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
     'meta-llama/Llama-3.2-3B-Instruct-Turbo',
     'meta-llama/Llama-3.3-70B-Instruct-Turbo',
     'meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo',
@@ -48,6 +47,33 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     'black-forest-labs/FLUX.1-dev',
   ];
 
+  final List<Map<String, dynamic>> _functions = [
+    {
+      'key': 'search_web',
+      'label': 'Search Web',
+      'description': 'Enable web search functionality',
+      'enabled': true,
+    },
+    {
+      'key': 'roll_dice',
+      'label': 'Roll Dice',
+      'description': 'Enable dice rolling functionality',
+      'enabled': true,
+    },
+    {
+      'key': 'place_search',
+      'label': 'Place Search',
+      'description': 'Enable place search functionality',
+      'enabled': true,
+    },
+    {
+      'key': 'visit_link',
+      'label': 'Visit Link',
+      'description': 'Enable link visiting functionality',
+      'enabled': true,
+    },
+  ];
+
   String _selectedModel = '';
   String _selectedVisionModel = '';
   String _selectedImageGenModel = '';
@@ -56,15 +82,17 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
   int _currentTabIndex = 0;
 
   // Preset configurations
-  final Map<String, ModelSelected> _presets = {
+  static Map<String, ModelSelected> presets = {
     'Fast': ModelSelected(
       text: Model(
-        name: 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
+        name: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
         params: null,
+        tools: [],
       ),
       vision: Model(
         name: 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
         params: null,
+        tools: [],
       ),
       imageGen: Model(name: 'black-forest-labs/FLUX.1-schnell', params: null),
     ),
@@ -72,10 +100,12 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
       text: Model(
         name: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
         params: null,
+        tools: ['search_web', 'place_search', 'visit_link'],
       ),
       vision: Model(
         name: 'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo',
         params: null,
+        tools: ['search_web', 'place_search', 'visit_link'],
       ),
       imageGen: Model(name: 'black-forest-labs/FLUX.1-schnell', params: null),
     ),
@@ -83,19 +113,26 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
       text: Model(
         name: 'meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo',
         params: null,
+        tools: ['search_web', 'place_search', 'visit_link'],
       ),
       vision: Model(
         name: 'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo',
         params: null,
+        tools: ['search_web', 'place_search', 'visit_link'],
       ),
       imageGen: Model(name: 'black-forest-labs/FLUX.1-dev', params: null),
     ),
   };
 
+  static getFastPreset() => presets['Fast']!;
+
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(
+      length: 3,
+      vsync: this,
+    ); // Change length to 3
     _tabController.addListener(_handleTabChange);
 
     _selectedModel = widget.selectedModel.text?.name ?? _modelOptions.first;
@@ -103,6 +140,14 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
         widget.selectedModel.vision?.name ?? _visionModelOptions.first;
     _selectedImageGenModel =
         widget.selectedModel.imageGen?.name ?? _imageGenModelOptions.first;
+
+    if (widget.selectedModel.text?.tools != null) {
+      for (var function in _functions) {
+        function['enabled'] = widget.selectedModel.text!.tools!.contains(
+          function['key'],
+        );
+      }
+    }
 
     // Check if user is free and set default models if needed
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -112,7 +157,7 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
 
   String _getSelectedPresetName() {
     // Find which preset matches the current selection
-    for (var entry in _presets.entries) {
+    for (var entry in presets.entries) {
       if (entry.value.text?.name == _selectedModel &&
           entry.value.vision?.name == _selectedVisionModel &&
           entry.value.imageGen?.name == _selectedImageGenModel) {
@@ -159,6 +204,23 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
           ),
         );
       }
+    }
+
+    // Check if the selected models are still in the list
+    if (!_modelOptions.contains(_selectedModel)) {
+      setState(() {
+        _selectedModel = _modelOptions.first;
+      });
+    }
+    if (!_visionModelOptions.contains(_selectedVisionModel)) {
+      setState(() {
+        _selectedVisionModel = _visionModelOptions.first;
+      });
+    }
+    if (!_imageGenModelOptions.contains(_selectedImageGenModel)) {
+      setState(() {
+        _selectedImageGenModel = _imageGenModelOptions.first;
+      });
     }
   }
 
@@ -213,7 +275,11 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
             // Tab bar
             TabBar(
               controller: _tabController,
-              tabs: const [Tab(text: 'Presets'), Tab(text: 'Custom')],
+              tabs: const [
+                Tab(text: 'Presets'),
+                Tab(text: 'Custom'),
+                Tab(text: 'Functions'), // Add the third tab
+              ],
               labelColor: Color.fromARGB(255, 204, 52, 65),
               unselectedLabelColor: isDarkMode ? Colors.white : Colors.black,
               indicatorColor: Color.fromARGB(255, 204, 52, 65),
@@ -229,9 +295,10 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
                 children: [
                   // Presets tab
                   _buildPresetsTab(isFree),
-
                   // Custom tab
                   _buildCustomTab(isFree),
+                  // Functions tab
+                  _buildFunctionsTab(),
                 ],
               ),
             ),
@@ -269,13 +336,22 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
                   child: const Text('Cancel'),
                 ),
                 const SizedBox(width: 8),
-                if (_currentTabIndex == 1)
+                if (_currentTabIndex == 1 || _currentTabIndex == 2)
                   ElevatedButton(
                     onPressed:
                         isFree
                             ? null
                             : () {
-                              // Return the selected models to the parent widget
+                              // Get enabled tools
+                              final enabledTools =
+                                  _functions
+                                      .where((function) => function['enabled'])
+                                      .map(
+                                        (function) => function['key'] as String,
+                                      )
+                                      .toList();
+
+                              // Return the selected models and tools to the parent widget
                               final selectedModels =
                                   _currentTabIndex == 0
                                       ? _getSelectedPreset()
@@ -283,10 +359,12 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
                                         text: Model(
                                           name: _selectedModel,
                                           params: null,
+                                          tools: enabledTools,
                                         ),
                                         vision: Model(
                                           name: _selectedVisionModel,
                                           params: null,
+                                          tools: enabledTools,
                                         ),
                                         imageGen: Model(
                                           name: _selectedImageGenModel,
@@ -365,14 +443,14 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
               : () {
                 setState(() {
                   // Set the models based on the preset
-                  final preset = _presets[title]!;
+                  final preset = presets[title]!;
                   _selectedModel = preset.text!.name;
                   _selectedVisionModel = preset.vision!.name;
                   _selectedImageGenModel = preset.imageGen!.name;
                 });
 
                 // Apply the preset immediately
-                widget.onModelSelected(_presets[title]!);
+                widget.onModelSelected(presets[title]!);
                 Navigator.pop(context);
               },
       child: Container(
@@ -475,9 +553,28 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     );
   }
 
+  Widget _buildFunctionsTab() {
+    return ListView.builder(
+      itemCount: _functions.length,
+      itemBuilder: (context, index) {
+        final function = _functions[index];
+        return SwitchListTile(
+          title: Text(function['label']),
+          subtitle: Text(function['description']),
+          value: function['enabled'],
+          onChanged: (value) {
+            setState(() {
+              _functions[index]['enabled'] = value;
+            });
+          },
+        );
+      },
+    );
+  }
+
   ModelSelected _getSelectedPreset() {
     // Find which preset matches the current selection
-    for (var entry in _presets.entries) {
+    for (var entry in presets.entries) {
       if (entry.value.text?.name == _selectedModel &&
           entry.value.vision?.name == _selectedVisionModel &&
           entry.value.imageGen?.name == _selectedImageGenModel) {
@@ -486,7 +583,7 @@ class _ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     }
 
     // Default to Balanced if no match
-    return _presets['Balanced']!;
+    return presets['Balanced']!;
   }
 
   Widget _buildDropdown({

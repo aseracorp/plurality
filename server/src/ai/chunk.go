@@ -320,7 +320,7 @@ func (cp *ChunkProcessor) sendToolChunksToClient() {
 			"name": tc.Name,
 			"arguments": tc.Arguments,
 			"loading": tool.LoadingString,
-			"iconURL": tool.IconURL,
+			"icon_url": tool.IconURL,
 			"conversationID":   cp.Conv.ID.Hex(),
 			"conversationTitle": cp.Conv.Title,
 		}

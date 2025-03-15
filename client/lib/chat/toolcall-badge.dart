@@ -1,0 +1,186 @@
+import 'package:flutter/material.dart';
+import '../utils/types.dart';
+import 'dart:convert';
+
+class ToolCallBadge extends StatelessWidget {
+  final ToolCall toolCall;
+  final VoidCallback? onTap;
+  final bool isLoading;
+  final MessageContent? result;
+
+  const ToolCallBadge({
+    Key? key,
+    required this.toolCall,
+    this.onTap,
+    this.isLoading = false,
+    this.result,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    String loadingString = toolCall?.loading ?? "Loading...";
+
+    // toolCall.arguments as map of key value pairs
+    var args = Map<String, dynamic>.from(jsonDecode(toolCall.arguments));
+
+    // Search loadingString for {{placeholders}} and rplace them with the actual values
+    args.forEach((key, value) {
+      if (!(value is String)) value = value.toString();
+
+      loadingString = loadingString.replaceAll("{{" + key + "}}", value);
+    });
+
+    // Remove any remaining {{placeholders}} that were not replaced
+    loadingString = loadingString
+        .replaceAll(RegExp(r"{{.*}}"), "")
+        .replaceAll("  ", " ");
+
+    return GestureDetector(
+      onTap: () => _showPreviewModal(context),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceVariant,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: Theme.of(context).colorScheme.outline.withOpacity(0.5),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Icon
+            if (toolCall.iconURL.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: Image.memory(
+                    base64Decode(toolCall.iconURL),
+                    width: 18,
+                    fit: BoxFit.cover,
+                    cacheWidth: 18,
+                    gaplessPlayback: true,
+                  ),
+                ),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Icon(
+                  Icons.extension,
+                  size: 16,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+
+            // Tool Name
+            Text(
+              loadingString,
+              // toolCall.id,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w500,
+                fontSize: 14,
+              ),
+            ),
+
+            // Loading indicator
+            if (isLoading)
+              Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showPreviewModal(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
+        return Dialog(
+          insetPadding: const EdgeInsets.all(16.0),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8.0),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                decoration: BoxDecoration(
+                  color: isDarkMode ? Colors.grey[800] : Colors.grey[100],
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(8.0),
+                    topRight: Radius.circular(8.0),
+                  ),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.of(context).pop(),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      iconSize: 20,
+                    ),
+                    const Text(
+                      'Tool Details',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    SizedBox(height: 8),
+                  ],
+                ),
+              ),
+              Container(
+                decoration: BoxDecoration(
+                  color: isDarkMode ? Colors.grey[900] : Colors.white,
+                  borderRadius: const BorderRadius.only(
+                    bottomLeft: Radius.circular(8.0),
+                    bottomRight: Radius.circular(8.0),
+                  ),
+                ),
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.of(context).size.height * 0.75,
+                ),
+                padding: const EdgeInsets.all(16.0),
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    "Tool ID: " +
+                        toolCall.name +
+                        "\n" +
+                        "Tool Arguments: " +
+                        toolCall.arguments +
+                        "\n" +
+                        "------------------\n" +
+                        (result?.text ?? ""),
+                    style: TextStyle(
+                      fontSize: 14.0,
+                      color: isDarkMode ? Colors.white : Colors.black,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}

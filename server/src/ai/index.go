@@ -43,7 +43,6 @@ func SendChatCompletion(ctx context.Context, model utils.Model, payload utils.Co
 	
 	// If model is ChatGPT, use the ChatGPT API
 	if strings.HasPrefix(model.Name, "ChatGPT/") {
-		model.Name = strings.TrimPrefix(model.Name, "ChatGPT/")
 		return SendChatCompletionChatGPT(ctx, model, payload, systemPrompt)
 	} else if strings.HasPrefix(model.Name, "Claude/") {
 		// If model is Claude, use the Claude API
@@ -115,28 +114,31 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, payloa
 		for _, content := range msg.Content {
 			contentType := content.Type;
 
-			/*if contentType == "tool_use" {
+			if contentType == "tool_use" {
 				continue
-			}*/
+			}
 
 			if contentType == "snippet" {
 				contentType = "text"
 			}
 
 			if(contentType == "tool_result") {
-				// TODO FIX THIS
-				role = "tool"
+				// role = "tool"
 				msgContent = append(msgContent, MessageContentReq{
-					Type: content.Type,
-					ToolUseId: content.ToolUseId,
-					Content: content.Text,
+					// Type: content.Type,
+					// ToolUseId: content.ToolUseId,
+					// Content: content.Text,
+					Type: "text",
+					Text: "[HIDDEN TO USER] FUNCTION CALL RESULT: " + content.Text,
 				})
 			} else if contentType == "text" {
-				inputMessage += content.Text + " {}{}{}{}{}{}{}"
-				msgContent = append(msgContent, MessageContentReq{
-					Type: contentType,
-					Text: content.Text,
-				})
+				if content.Text != "" {
+					inputMessage += content.Text + " {}{}{}{}{}{}{}"
+					msgContent = append(msgContent, MessageContentReq{
+						Type: contentType,
+						Text: content.Text,
+					})
+				}
 			} else if contentType == "image_url" && index == len(msgList) - 1 {
 				basePrice += GetPriceFromTokenUsage(IMAGE_VISION, TOGETHER, model, 0)
 				msgContent = append(msgContent, MessageContentReq{
@@ -148,10 +150,12 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, payloa
 			}
 		}
 
-		msgReqList = append(msgReqList, MessageReq{
-			Role:    role,
-			Content: msgContent,
-		})
+		if len(msgContent) > 0 {
+			msgReqList = append(msgReqList, MessageReq{
+				Role:    role,
+				Content: msgContent,
+			})
+		}
 	}
 
 	maxTok := 4096
@@ -166,8 +170,12 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, payloa
 		RepetitionPenalty: RepetitionPenalty,
 		Stop:              []string{"<|eot_id|>"},
 		Stream:            true,
-		Tools:					   ai_tools.GetRequests(),
 	}
+
+	if CheckActionModel(model.Name) && len(ai_tools.GetRequests(model)) > 0 {
+		requestData.Tools = ai_tools.GetRequests(model)
+	}
+
 
 	// check balance before sending request
 	err, priceToken := GetPrice(TEXT_OUTPUT, OPENAI, model, inputMessage)
@@ -188,6 +196,7 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, payloa
 
 	utils.Debug("A new chat request is being made with the following model: %s", model.Name)
 
+
 	// deduce the price of the request
 	// _, err = db.RemoveCredits(ctx, priceToken, utils.UserAction{
 	// 	Type: TEXT_INPUT,
@@ -203,6 +212,7 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, payloa
 	if err != nil {
 		return nil, 0, err
 	}
+
 
 	req, err := http.NewRequest("POST", "https://api.together.xyz/v1/chat/completions", bytes.NewBuffer(jsonData))
 	if err != nil {
@@ -305,7 +315,7 @@ func GenerateTitleForMessage(message string) (string, error) {
 	}
 
 	requestData := ChatRequest{
-		Model:             "meta-llama/Llama-3.2-3B-Instruct-Turbo",
+		Model:             "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
 		Messages:          msgReqList,
 		MaxTokens:         nil,
 		Temperature:       0.7,
@@ -406,6 +416,12 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, payload u
 	}
 
 	utils.Debug("Payload: ", payload)
+	
+	if model.Name == "" {
+		model.Name = "ChatGPT/gpt-4o"
+	}
+
+	modelName := strings.TrimPrefix(model.Name, "ChatGPT/")
 
 	inputMessage := ""
 
@@ -422,24 +438,29 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, payload u
 			if content.Type == "image_url" {
 				continue
 			} else {
-				msgContent = append(msgContent, MessageContentReq{
-					Type: "text",
-					Text: content.Text,
-				})
-
-				inputMessage += content.Text + " " + " {}{}{}{}{}{}{}"
+				if content.Text != "" {
+					txt := content.Text
+					if content.Type == "tool_result" {
+						txt = "[HIDDEN TO USER] FUNCTION CALL RESULT: " + content.Text
+					}
+					msgContent = append(msgContent, MessageContentReq{
+						Type: "text",
+						Text: txt,
+					})
+					inputMessage += txt + " " + " {}{}{}{}{}{}{}"
+				}
 			}
 		}
 
-		msgReqList = append(msgReqList, MessageReq{
-			Role:    msg.Role,
-			Content: msgContent,
-		})
+		if len(msgContent) > 0 {
+			msgReqList = append(msgReqList, MessageReq{
+				Role:    msg.Role,
+				Content: msgContent,
+			})
+		}
+
 	}
 
-	if model.Name == "" {
-		model.Name = "gpt-4-turbo"
-	}
 	if model.Params == nil {
 		model.Params = make(map[string]string)
 	}
@@ -464,12 +485,16 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, payload u
 	maxTok := 4096
 
 	requestData := ChatRequestChatGPT{
-		Model:             model.Name,
+		Model:             modelName,
 		Messages:          msgReqList,
 		MaxTokens:         &maxTok,
 		Temperature:       Temperature,
 		Stream:            true,
-		Tools:					   ai_tools.GetRequests(),
+	}
+
+
+	if CheckActionModel(model.Name) && len(ai_tools.GetRequests(model)) > 0 {
+		requestData.Tools = ai_tools.GetRequests(model)
 	}
 
 	// check balance before sending request
@@ -489,7 +514,7 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, payload u
 		return nil, 0, fmt.Errorf("insufficient credits for this action")
 	}
 
-	utils.Debug("A new chat request is being made with the following model: %s", model.Name)
+	utils.Debug("A new chat request is being made with the following model: %s", modelName)
 
 	jsonData, err := json.Marshal(requestData)
 	if err != nil {

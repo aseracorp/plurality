@@ -9,8 +9,11 @@ import (
 
 var Registry = map[string]utils.AITool{
 	// WeatherTool.ToolID: WeatherTool,
+	// NewsSearchTool.ToolID: NewsSearchTool,
+	DiceRollTool.ToolID: DiceRollTool,
 	WebTool.ToolID: WebTool,
 	SearchTool.ToolID: SearchTool,
+	PlaceSearchTool.ToolID: PlaceSearchTool,
 }
 
 func RegisterTool(tool utils.AITool) {
@@ -22,10 +25,13 @@ func GetTool(toolID string) (utils.AITool, bool) {
 	return tool, ok
 }
 
-func GetRequests() []utils.ToolsRequest {
+func GetRequests(model utils.Model) []utils.ToolsRequest {
 	var requests []utils.ToolsRequest 
+	var selected = model.Tools
 	for _, tool := range Registry {
-		requests = append(requests, tool.ToolRequest)
+		if utils.ContainsString(selected, tool.ToolID) {
+			requests = append(requests, tool.ToolRequest)
+		}
 	}
 	return requests
 }
@@ -38,16 +44,19 @@ func GetClaudeSchema(toolID string) utils.FunctionToolsRequest {
 	}
 
 	toolRequest := tool.ToolRequest.Function
-	toolRequest.InputSchema = toolRequest.Parameters[0]
+	toolRequest.InputSchema = toolRequest.Parameters
 	toolRequest.Parameters = nil
 
 	return toolRequest
 }
 
-func GetClaudeRequests() []utils.FunctionToolsRequest {
+func GetClaudeRequests(model utils.Model) []utils.FunctionToolsRequest {
 	var requests []utils.FunctionToolsRequest 
+	var selected = model.Tools
 	for _, tool := range Registry {
-		requests = append(requests, GetClaudeSchema(tool.ToolID))
+		if utils.ContainsString(selected, tool.ToolID) {
+			requests = append(requests, GetClaudeSchema(tool.ToolID))
+		}
 	}
 	return requests
 }
