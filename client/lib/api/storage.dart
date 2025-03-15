@@ -4,26 +4,26 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 
 import '../utils/types.dart';
 import '../auth/auth-service.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
 
 class ConversationStorage {
   static const String _conversationBoxName = 'conversations';
 
   // Initialize Hive
   static Future<void> init() async {
-    if (kIsWeb) {
-      print('Storage - init - Initializing Hive for web');
-      await Hive.initFlutter();
-    } else {
+    try {
       final appDocumentDirectory = await getApplicationSupportDirectory();
+
       print(
         'Storage - init - Initializing Hive at ${appDocumentDirectory.path}',
       );
 
       Hive.init(appDocumentDirectory.path);
+    } catch (e) {
+      Hive.initFlutter();
     }
 
     // Register adapters
@@ -38,6 +38,7 @@ class ConversationStorage {
     Hive.registerAdapter(MiniAppInputAdapter());
     Hive.registerAdapter(ToolCallAdapter());
 
+    // Open box
     if (!kIsWeb) {
       try {
         await Hive.openBox<Conversation>(_conversationBoxName);
