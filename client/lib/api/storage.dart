@@ -17,7 +17,6 @@ class ConversationStorage {
     if (kIsWeb) {
       print('Storage - init - Initializing Hive for web');
       await Hive.initFlutter();
-      await Hive.openBox<Conversation>(_conversationBoxName);
     }
 
     // Register adapters
@@ -77,6 +76,10 @@ class ConversationStorage {
 
         await Hive.openBox<Conversation>(_conversationBoxName);
       }
+    } else {
+      print('Storage - init - Hive initialized for web');
+
+      await Hive.openBox<Conversation>(_conversationBoxName);
     }
   }
 
