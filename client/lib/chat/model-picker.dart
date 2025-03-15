@@ -51,25 +51,25 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     {
       'key': 'search_web',
       'label': 'Search Web',
-      'description': 'Enable web search functionality',
-      'enabled': true,
-    },
-    {
-      'key': 'roll_dice',
-      'label': 'Roll Dice',
-      'description': 'Enable dice rolling functionality',
+      'description': 'Search sites via Google',
       'enabled': true,
     },
     {
       'key': 'place_search',
       'label': 'Place Search',
-      'description': 'Enable place search functionality',
+      'description': 'Search locations via Google Maps',
       'enabled': true,
     },
     {
       'key': 'visit_link',
       'label': 'Visit Link',
-      'description': 'Enable link visiting functionality',
+      'description': 'Visit websites shared in the chat',
+      'enabled': true,
+    },
+    {
+      'key': 'roll_dice',
+      'label': 'Roll Dice',
+      'description': 'Well... rolls a dice',
       'enabled': true,
     },
   ];

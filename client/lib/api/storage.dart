@@ -14,14 +14,10 @@ class ConversationStorage {
 
   // Initialize Hive
   static Future<void> init() async {
-    final appDocumentDirectory = await getApplicationSupportDirectory();
-
-    if (!kIsWeb) {
-      print(
-        'Storage - init - Initializing Hive at ${appDocumentDirectory.path}',
-      );
-
-      Hive.init(appDocumentDirectory.path);
+    if (kIsWeb) {
+      print('Storage - init - Initializing Hive for web');
+      await Hive.initFlutter();
+      await Hive.openBox<Conversation>(_conversationBoxName);
     }
 
     // Register adapters
@@ -36,43 +32,51 @@ class ConversationStorage {
     Hive.registerAdapter(MiniAppInputAdapter());
     Hive.registerAdapter(ToolCallAdapter());
 
-    // Open box
-    try {
-      await Hive.openBox<Conversation>(_conversationBoxName);
-    } catch (e) {
-      // wait 1 sec and try again
-      await Future.delayed(Duration(seconds: 1));
+    if (!kIsWeb) {
+      final appDocumentDirectory = await getApplicationSupportDirectory();
+      print(
+        'Storage - init - Initializing Hive at ${appDocumentDirectory.path}',
+      );
 
-      print('Storage - init - Error opening box $_conversationBoxName');
-      // delete the box and try again
-      if (Hive.isBoxOpen(_conversationBoxName)) {
-        await Hive.box(_conversationBoxName).close();
-      }
+      Hive.init(appDocumentDirectory.path);
+      // Open box
+      try {
+        await Hive.openBox<Conversation>(_conversationBoxName);
+      } catch (e) {
+        // wait 1 sec and try again
+        await Future.delayed(Duration(seconds: 1));
 
-      String? hivePath =
-          appDocumentDirectory.path + '/$_conversationBoxName.hive';
+        print('Storage - init - Error opening box $_conversationBoxName');
+        // delete the box and try again
+        if (Hive.isBoxOpen(_conversationBoxName)) {
+          await Hive.box(_conversationBoxName).close();
+        }
 
-      if (hivePath != null) {
-        print('hivePath: $hivePath');
-        final file = File(hivePath);
-        if (await file.exists()) {
-          await file.delete();
-          print('Successfully deleted hive file');
+        String? hivePath =
+            appDocumentDirectory.path + '/$_conversationBoxName.hive';
+
+        if (hivePath != null) {
+          print('hivePath: $hivePath');
+          final file = File(hivePath);
+          if (await file.exists()) {
+            await file.delete();
+            print('Successfully deleted hive file');
+          } else {
+            print('File does not exist at path: $hivePath');
+          }
+
+          // Delete the lock file too
+          final lockFile = File('$hivePath.lock');
+          if (await lockFile.exists()) {
+            await lockFile.delete();
+            print('Successfully deleted hive.lock file');
+          }
         } else {
-          print('File does not exist at path: $hivePath');
+          print('hivePath is null');
         }
 
-        // Delete the lock file too
-        final lockFile = File('$hivePath.lock');
-        if (await lockFile.exists()) {
-          await lockFile.delete();
-          print('Successfully deleted hive.lock file');
-        }
-      } else {
-        print('hivePath is null');
+        await Hive.openBox<Conversation>(_conversationBoxName);
       }
-
-      await Hive.openBox<Conversation>(_conversationBoxName);
     }
   }
 

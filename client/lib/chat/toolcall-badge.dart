@@ -20,15 +20,18 @@ class ToolCallBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     String loadingString = toolCall?.loading ?? "Loading...";
 
-    // toolCall.arguments as map of key value pairs
-    var args = Map<String, dynamic>.from(jsonDecode(toolCall.arguments));
+    try {
+      // toolCall.arguments as map of key value pairs
+      var args = Map<String, dynamic>.from(jsonDecode(toolCall.arguments));
+      // Search loadingString for {{placeholders}} and rplace them with the actual values
+      args.forEach((key, value) {
+        if (!(value is String)) value = value.toString();
 
-    // Search loadingString for {{placeholders}} and rplace them with the actual values
-    args.forEach((key, value) {
-      if (!(value is String)) value = value.toString();
-
-      loadingString = loadingString.replaceAll("{{" + key + "}}", value);
-    });
+        loadingString = loadingString.replaceAll("{{" + key + "}}", value);
+      });
+    } catch (e) {
+      print("Error parsing toolCall.arguments: $e");
+    }
 
     // Remove any remaining {{placeholders}} that were not replaced
     loadingString = loadingString
