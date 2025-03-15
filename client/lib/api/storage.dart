@@ -17,6 +17,13 @@ class ConversationStorage {
     if (kIsWeb) {
       print('Storage - init - Initializing Hive for web');
       await Hive.initFlutter();
+    } else {
+      final appDocumentDirectory = await getApplicationSupportDirectory();
+      print(
+        'Storage - init - Initializing Hive at ${appDocumentDirectory.path}',
+      );
+
+      Hive.init(appDocumentDirectory.path);
     }
 
     // Register adapters
@@ -32,16 +39,10 @@ class ConversationStorage {
     Hive.registerAdapter(ToolCallAdapter());
 
     if (!kIsWeb) {
-      final appDocumentDirectory = await getApplicationSupportDirectory();
-      print(
-        'Storage - init - Initializing Hive at ${appDocumentDirectory.path}',
-      );
-
-      Hive.init(appDocumentDirectory.path);
-      // Open box
       try {
         await Hive.openBox<Conversation>(_conversationBoxName);
       } catch (e) {
+        final appDocumentDirectory = await getApplicationSupportDirectory();
         // wait 1 sec and try again
         await Future.delayed(Duration(seconds: 1));
 
