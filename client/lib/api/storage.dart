@@ -81,6 +81,12 @@ class ConversationStorage {
     } else {
       print('Storage - init - Hive initialized for web');
 
+      // Delete the box completely
+      await Hive.deleteBoxFromDisk(_conversationBoxName);
+
+      // Additional cleanup for indexedDB
+      await Hive.deleteFromDisk();
+
       await Hive.openBox<Conversation>(_conversationBoxName);
     }
   }
