@@ -1,6 +1,8 @@
 # Road to relese 
 
 	- search messages
+	- cache web page
+	- loading web page
 
 	- Integrate LLama via AWS - test first?
 	- Integrate Deepseek via their API
