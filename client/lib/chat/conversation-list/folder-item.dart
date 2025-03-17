@@ -14,15 +14,13 @@ import 'conversation-list.dart';
 class FolderItem extends StatelessWidget {
   final String folderName;
   final bool isExpanded;
-  final VoidCallback onToggle;
-  final List<Widget> children;
+  final Function(String) onToggle;
 
   const FolderItem({
     Key? key,
     required this.folderName,
     required this.isExpanded,
     required this.onToggle,
-    required this.children,
   }) : super(key: key);
 
   @override
@@ -30,10 +28,12 @@ class FolderItem extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (folderName != 'Pinned')
+        Divider(),
         // Folder header
         if (folderName != '')
           InkWell(
-            onTap: onToggle,
+            onTap: () => onToggle(folderName),
             child: Padding(
               padding: const EdgeInsets.all(8.0),
               child: Row(
@@ -61,11 +61,6 @@ class FolderItem extends StatelessWidget {
               ),
             ),
           ),
-
-        // Conversations in this folder
-        if (isExpanded || folderName == 'Pinned') ...children,
-
-        Divider(),
       ],
     );
   }

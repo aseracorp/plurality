@@ -3,6 +3,8 @@
 	- search messages
 	- cache web page
 	- loading web page
+	- Animate the messages better (like word by word)
+	- I think the List view virtualization is broken because i create additional component as children instead of letting the list handle it (so it all gets built at once)
 
 	- Integrate LLama via AWS - test first?
 	- Integrate Deepseek via their API
