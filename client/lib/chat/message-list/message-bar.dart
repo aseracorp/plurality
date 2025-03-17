@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:plurality/chat/copy-button.dart';
-import '../utils/types.dart';
+import 'package:plurality/chat/message-list/copy-button.dart';
+import '../../utils/types.dart';
 import 'dart:convert';
 
 // Common button styling

@@ -147,13 +147,14 @@ class ConversationAdapter extends TypeAdapter<Conversation> {
       createdAt: fields[3] as DateTime?,
       messages: (fields[5] as List).cast<Message>(),
       miniApp: fields[7] as MiniApp?,
+      folder: fields[8] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, Conversation obj) {
     writer
-      ..writeByte(7)
+      ..writeByte(8)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(2)
@@ -167,7 +168,9 @@ class ConversationAdapter extends TypeAdapter<Conversation> {
       ..writeByte(6)
       ..write(obj.modelSelected)
       ..writeByte(7)
-      ..write(obj.miniApp);
+      ..write(obj.miniApp)
+      ..writeByte(8)
+      ..write(obj.folder);
   }
 
   @override

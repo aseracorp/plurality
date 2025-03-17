@@ -1,6 +1,6 @@
-import '../utils/types.dart';
-import '../api/api.dart';
-import '../api/service.dart';
+import '../../utils/types.dart';
+import '../../api/api.dart';
+import '../../api/service.dart';
 
 Function genImage = (
   String model,

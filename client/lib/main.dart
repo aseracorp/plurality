@@ -18,6 +18,12 @@ import 'package:google_sign_in_dartio/google_sign_in_dartio.dart';
 import 'dart:io' show Platform;
 import 'package:flutter/rendering.dart';
 
+// Create an auth state provider
+
+final authStateProvider = StreamProvider<User?>((ref) {
+  return FirebaseAuth.instance.authStateChanges();
+});
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
@@ -52,6 +58,10 @@ final ThemeData darkTheme = ThemeData(
 class MyApp extends ConsumerWidget {
   const MyApp({super.key});
 
+  Widget renderHome(Ref ref) {
+    return Text('Hello');
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isMobile = MediaQuery.of(context).size.width < 820;
@@ -74,17 +84,32 @@ class MyApp extends ConsumerWidget {
         themeMode = ThemeMode.system;
     }
 
+    // Watch the auth state
+    final authState = ref.watch(authStateProvider);
+
     return MaterialApp(
       title: 'Plurality',
       theme: lightTheme,
       darkTheme: darkTheme,
       themeMode: themeMode,
-      // No longer passing user ID here - the AuthGate component handles it
-      home: AuthGate(isMobile: isMobile),
+      home: authState.when(
+        data: (user) {
+          // redirect users to the correct screen
+          if (user == null) {
+            return LoginScreen();
+          } else {
+            if (!user.emailVerified) {
+              return EmailVerificationPage();
+            }
+            return ChatScreen(isMobile: isMobile);
+          }
+        },
+        loading: () => LoadingScreen(),
+        error: (_, __) => ErrorScreen(),
+      ),
       routes: {
         '/login': (context) => LoginScreen(),
         '/register': (context) => RegisterScreen(),
-        '/home': (context) => ChatScreen(isMobile: isMobile),
         '/account': (context) => SettingsScreen(),
         '/verify-email': (context) => EmailVerificationPage(),
       },
@@ -100,51 +125,28 @@ class LoadingScreen extends StatelessWidget {
   }
 }
 
-// Use this for any routes that need auth protection after initial load
-// Updated AuthGate with proper initialization check
-class AuthGate extends StatefulWidget {
-  final bool isMobile;
-
-  const AuthGate({required this.isMobile, Key? key}) : super(key: key);
-
-  @override
-  _AuthGateState createState() => _AuthGateState();
-}
-
-class _AuthGateState extends State<AuthGate> {
-  bool _isInitialized = false;
-  User? _currentUser;
-
-  @override
-  void initState() {
-    super.initState();
-    _checkAuthState();
-  }
-
-  Future<void> _checkAuthState() async {
-    // Listen for auth state changes
-    FirebaseAuth.instance.authStateChanges().listen((User? user) {
-      if (mounted) {
-        setState(() {
-          _currentUser = user;
-          _isInitialized = true;
-        });
-      }
-    });
-  }
-
+// Simple error screen
+class ErrorScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    // Show loading screen while Firebase Auth is initializing
-    if (!_isInitialized) {
-      return LoadingScreen();
-    }
-
-    // Once initialized, show the appropriate screen based on auth state
-    if (_currentUser != null) {
-      return ChatScreen(isMobile: widget.isMobile);
-    } else {
-      return LoginScreen();
-    }
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error_outline, color: Colors.red, size: 48),
+            SizedBox(height: 16),
+            Text('An error occurred. Please try again later.'),
+            SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () {
+                FirebaseAuth.instance.signOut();
+              },
+              child: Text('Sign Out'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

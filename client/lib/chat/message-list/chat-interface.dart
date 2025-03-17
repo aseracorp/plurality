@@ -1,32 +1,32 @@
 import 'package:flutter/foundation.dart';
-import 'package:plurality/chat/attachments.dart';
-import './snackbar.dart';
+import 'package:plurality/chat/message-list/attachments.dart';
+import '../snackbar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:convert';
-import '../utils/types.dart';
-import '../api/api.dart';
-import '../api/service.dart';
-import '../api/tts.dart';
-import '../api/mini-apps.dart';
-import '../api/balance.dart';
-import '../api/preferences_provider.dart';
+import '../../utils/types.dart';
+import '../../api/api.dart';
+import '../../api/service.dart';
+import '../../api/tts.dart';
+import '../../api/mini-apps.dart';
+import '../../api/balance.dart';
+import '../../api/preferences_provider.dart';
 import 'package:flutter/services.dart';
-import './AnimatedMessageBox.dart';
+import 'AnimatedMessageBox.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:top_snackbar_flutter/top_snack_bar.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import './image.dart';
-import './image-gen.dart';
-import './input.dart';
-import './model-picker.dart';
-import '../utils/file-types.dart';
-import './minimap.dart';
-import './miniapps.dart';
-import './middle-click.dart';
+import 'image.dart';
+import 'image-gen.dart';
+import 'input.dart';
+import 'model-picker.dart';
+import '../../utils/file-types.dart';
+import 'minimap.dart';
+import '../miniapps.dart';
+import 'middle-click.dart';
 import 'package:super_sliver_list/super_sliver_list.dart';
-import './toolcall-badge.dart';
+import 'toolcall-badge.dart';
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kIsWeb, TargetPlatform;
@@ -36,6 +36,7 @@ class ChatInterface extends ConsumerStatefulWidget {
   final VoidCallback? onConversationUpdated;
   final String initialMessage;
   final bool isMobile;
+  final Function updateMainTitle;
   final Function(String, bool)? setConversationID;
 
   const ChatInterface({
@@ -45,6 +46,7 @@ class ChatInterface extends ConsumerStatefulWidget {
     this.initialMessage = '',
     this.setConversationID,
     required this.isMobile,
+    required this.updateMainTitle,
   });
 
   @override
@@ -127,7 +129,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
     // Try to get the model from the specific conversation first
     final matches =
-        conversationsState
+        conversationsState.conversations
             .where((conv) => conv.id == widget.conversationId)
             .toList();
 
@@ -191,6 +193,8 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         conversationId: widget.conversationId,
         title: title,
       );
+
+      widget.updateMainTitle();
     }
   }
 
@@ -387,6 +391,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     var toolHaveBeenUsed = false;
     List<ToolCall> toolUsedList = [];
     List<ToolCall> toolResultList = [];
+    String cachedTitle = "";
 
     if (!isNewConversation && newMessage != null) {
       // Add message to Riverpod state
@@ -404,11 +409,16 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         _modelSelected,
         newMessage,
         ({newConversationID, newConversationTitle}) {
-          conversationsNotifier.updateConversationMetaData(
-            conversationId: newConversationID,
-            title: newConversationTitle,
-            modelSelected: _modelSelected,
-          );
+          if (cachedTitle != newConversationTitle &&
+              newConversationTitle != null) {
+            conversationsNotifier.updateConversationMetaData(
+              conversationId: newConversationID,
+              title: newConversationTitle,
+              modelSelected: _modelSelected,
+            );
+
+            cachedTitle = newConversationTitle;
+          }
 
           if (newConversationID != currentConversationID) {
             currentConversationID = newConversationID;
@@ -454,7 +464,8 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
         setState(() {
           _currentStreamedResponse += chunk;
-          if (_currentStreamedResponse.length > 1800) {
+          if (_currentStreamedResponse.length > 1500 &&
+              _currentStreamedResponse.length < 2500) {
             _shouldAutoScroll = false;
           }
         });
@@ -480,23 +491,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         message: assistantMessage,
       );
 
-      if (isNewConversation) {
-        _generateTitle(conversationsNotifier, currentConversationID);
-      }
-
-      setState(() {
-        _currentStreamedResponse = '';
-        _isLoading = false;
-      });
-
-      if (toolHaveBeenUsed) {
-        await sendMessage(context, "", currentConversationID);
-      }
-
       if (newMessage != null) {
         genImage(
           _modelSelected.imageGen?.name ?? '',
-          newMessage.text,
+          newMessage?.text,
           currentConversationID,
           conversationsNotifier,
           _apiService,
@@ -509,6 +507,19 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
           conversationsNotifier,
           _apiService,
         );
+      }
+
+      setState(() {
+        _currentStreamedResponse = '';
+        _isLoading = false;
+      });
+
+      if (toolHaveBeenUsed) {
+        await sendMessage(context, "", currentConversationID);
+      }
+
+      if (isNewConversation) {
+        _generateTitle(conversationsNotifier, currentConversationID);
       }
 
       balanceNotifier.refresh();
@@ -667,7 +678,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   Widget build(BuildContext context) {
     final conversationsState = ref.watch(conversationsProvider);
 
-    final currentConversation = conversationsState.firstWhere(
+    final currentConversation = conversationsState.conversations.firstWhere(
       (conv) => conv.id == widget.conversationId,
       orElse:
           () => Conversation(
@@ -684,10 +695,8 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     if (messages.isNotEmpty) _scrollToBottom();
 
     // Get bottom padding to ensure minimap doesn't go under input box
-    final bottomPadding = 0.0; /*
-        MediaQuery.of(context).padding.bottom +
-        80.0; // Input box height estimation
-*/
+    final bottomPadding = 0.0;
+
     // Build main content and minimap content using the shared function
     final mainContent = buildMessageList(
       messages: messages,

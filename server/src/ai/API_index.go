@@ -531,3 +531,87 @@ func API_GetUserBalance(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(response)
 }
+
+
+func API_UpdateConversationFolder(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	var request struct {
+		Folder string `json:"folder"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		utils.Error("[API_UpdateConversationFolder] Invalid request body", err)
+		utils.SendHTTPError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		// folder cannot contain / \
+		if strings.Contains(request.Folder, "/") || strings.Contains(request.Folder, "\\") {
+			utils.Error("[API_UpdateConversationFolder] Invalid folder name", nil)
+			utils.SendHTTPError(w, "Invalid folder name", http.StatusBadRequest)
+			return
+		}
+
+		oid, err := primitive.ObjectIDFromHex(id)
+		if err != nil {
+			utils.Error("[API_UpdateConversationFolder] Invalid conversation ID", err)
+			utils.SendHTTPError(w, "Invalid conversation ID", http.StatusBadRequest)
+			return
+		}
+    err = db.UpdateConversationFolder(r.Context(), oid, request.Folder)
+		if err != nil {
+			utils.Error("[API_UpdateConversationFolder] Error updating conversation folder", err)
+			utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+  } else {
+    utils.Error("[API_UpdateConversationFolder] Method not allowed", nil)
+    utils.SendHTTPError(w, "Method not allowed", http.StatusMethodNotAllowed)
+    return
+  }
+}
+
+
+func API_UpdateConversationTitle(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	var request struct {
+		Title string `json:"title"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		utils.Error("[API_UpdateConversationTitle] Invalid request body", err)
+		utils.SendHTTPError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		// title cannot contain / \
+		if strings.Contains(request.Title, "/") || strings.Contains(request.Title, "\\") {
+			utils.Error("[API_UpdateConversationTitle] Invalid title name", nil)
+			utils.SendHTTPError(w, "Invalid title name", http.StatusBadRequest)
+			return
+		}
+
+		oid, err := primitive.ObjectIDFromHex(id)
+		if err != nil {
+			utils.Error("[API_UpdateConversationTitle] Invalid conversation ID", err)
+			utils.SendHTTPError(w, "Invalid conversation ID", http.StatusBadRequest)
+			return
+		}
+    err = db.UpdateConversationMetadata(r.Context(), oid, request.Title)
+		if err != nil {
+			utils.Error("[API_UpdateConversationTitle] Error updating conversation title", err)
+			utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+  } else {
+    utils.Error("[API_UpdateConversationTitle] Method not allowed", nil)
+    utils.SendHTTPError(w, "Method not allowed", http.StatusMethodNotAllowed)
+    return
+  }
+}

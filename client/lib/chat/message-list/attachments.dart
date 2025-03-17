@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import './image.dart';
-import './text-preview.dart';
-import '../utils/types.dart';
+import 'image.dart';
+import 'text-preview.dart';
+import '../../utils/types.dart';
 import 'dart:convert';
 
 class AttachmentViewer extends StatelessWidget {

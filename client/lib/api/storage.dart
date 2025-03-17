@@ -186,4 +186,34 @@ class ConversationStorage {
     final box = _getBox();
     await box.clear();
   }
+
+  // set title
+  static Future<Conversation?> updateConversationTitle(
+    String id,
+    String title,
+  ) async {
+    final conversation = getConversation(id);
+    if (conversation == null) return null;
+
+    conversation.title = title;
+
+    await saveConversation(conversation);
+
+    return conversation;
+  }
+
+  // set folder
+  static Future<Conversation?> updateConversationFolder(
+    String id,
+    String folder,
+  ) async {
+    final conversation = getConversation(id);
+    if (conversation == null) return null;
+
+    conversation.folder = folder;
+
+    await saveConversation(conversation);
+
+    return conversation;
+  }
 }

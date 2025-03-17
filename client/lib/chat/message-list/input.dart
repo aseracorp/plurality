@@ -4,14 +4,14 @@ import 'package:image_picker/image_picker.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
-import './model-picker.dart';
+import 'model-picker.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter/foundation.dart';
-import '../utils/types.dart';
-import './attachments.dart';
+import '../../utils/types.dart';
+import 'attachments.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:cross_file/cross_file.dart';
-import '../utils/file-types.dart';
+import '../../utils/file-types.dart';
 import 'package:mime/mime.dart';
 import 'package:pasteboard/pasteboard.dart';
 

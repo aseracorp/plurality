@@ -6,10 +6,10 @@ import 'package:code_highlight_view/code_highlight_view.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'dart:async';
 
-import './message-bar.dart';
-import './copy-button.dart';
-import '../api/tts.dart';
-import '../utils/types.dart';
+import 'message-bar.dart';
+import 'copy-button.dart';
+import '../../api/tts.dart';
+import '../../utils/types.dart';
 
 // Real Visual Studio theme colors
 const vsTheme = {
@@ -108,6 +108,16 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
     // Check if this message is currently being spoken
     _isSpeaking =
         _ttsService.isSpeaking && _ttsService.currentText == widget.text;
+  }
+
+  // on prop change
+  @override
+  void didUpdateWidget(AnimatedMessageBox oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (!(widget.isLoading && widget.isBot)) {
+      _animationController.stop();
+    }
   }
 
   Future<void> speak() async {

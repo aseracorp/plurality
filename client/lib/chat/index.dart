@@ -1,15 +1,11 @@
-import 'dart:math';
-
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:plurality/chat/chat-interface.dart';
-import '../auth/auth-service.dart';
+import 'package:plurality/chat/message-list/chat-interface.dart';
 import '../api/service.dart';
 import '../api/api.dart';
-import '../api/tts.dart';
 import '../auth/account.dart';
 import './budget.dart';
+import 'conversation-list/conversation-list.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final bool isMobile;
@@ -24,14 +20,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   int _selectedIndex = 0;
   String? _selectedConversationId;
   String convTitle = '';
-  String searchQuery = '';
   final ApiService _apiService = ApiService();
 
   // Extract the model selection logic to a separate method
   void _updateTitle() {
     final conversationsState = ref.read(conversationsProvider);
     final matches =
-        conversationsState
+        conversationsState.conversations
             .where((conv) => conv.id == _selectedConversationId)
             .toList();
 
@@ -52,12 +47,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Check if we're on a mobile device
-    // final isMobile = false;
-    //MediaQuery.of(context).size.width < 600;
-
-    // You can access your conversations provider here
-    final conversations = ref.watch(conversationsProvider);
+    final conversations = ref.watch(conversationsProvider).conversations;
 
     // Navigation destinations
     var destinations = [
@@ -75,11 +65,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
         'content': ChatInterface(
           isMobile: widget.isMobile,
+          updateMainTitle: _updateTitle,
           conversationId: _selectedConversationId ?? '',
           setConversationID: (id, navigate) {
             setState(() {
               _selectedConversationId = id;
               if (navigate) _selectedIndex = 1;
+
+              _updateTitle();
             });
           },
         ),
@@ -127,51 +120,63 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     // For mobile: use Scaffold with bottom navigation
     if (widget.isMobile) {
-      return Scaffold(
-        appBar:
-            _selectedConversationId != null
-                ? AppBar(
-                  title:
-                      _selectedConversationId != null
-                          ? Text(buildTitle(convTitle) ?? '')
-                          : Text('Plurality Chat'),
-                  leading: IconButton(
-                    icon: Icon(Icons.arrow_back),
-                    onPressed: () {
+      return PopScope(
+        canPop:
+            _selectedConversationId ==
+            null, // Only allow pop if no conversation is selected
+        onPopInvoked: (didPop) {
+          if (_selectedConversationId != null) {
+            setState(() {
+              _selectedConversationId = null;
+            });
+          }
+        },
+        child: Scaffold(
+          appBar:
+              _selectedConversationId != null
+                  ? AppBar(
+                    title:
+                        _selectedConversationId != null
+                            ? Text(buildTitle(convTitle) ?? '')
+                            : Text('Plurality Chat'),
+                    leading: IconButton(
+                      icon: Icon(Icons.arrow_back),
+                      onPressed: () {
+                        setState(() {
+                          _selectedConversationId = null;
+                        });
+                      },
+                    ),
+                  )
+                  : null,
+          body: destinations[_selectedIndex]['content'] as Widget,
+          bottomNavigationBar:
+              _selectedConversationId == null
+                  ? BottomNavigationBar(
+                    currentIndex: _selectedIndex,
+                    selectedItemColor: Theme.of(context).colorScheme.primary,
+                    onTap: (index) {
                       setState(() {
-                        _selectedConversationId = null;
+                        if (index != _selectedIndex) {
+                          _selectedConversationId = null;
+                        }
+                        _selectedIndex = index;
                       });
                     },
-                  ),
-                )
-                : null,
-        body: destinations[_selectedIndex]['content'] as Widget,
-        bottomNavigationBar:
-            _selectedConversationId == null
-                ? BottomNavigationBar(
-                  currentIndex: _selectedIndex,
-                  selectedItemColor: Theme.of(context).colorScheme.primary,
-                  onTap: (index) {
-                    setState(() {
-                      if (index != _selectedIndex) {
-                        _selectedConversationId = null;
-                      }
-                      _selectedIndex = index;
-                    });
-                  },
-                  items:
-                      destinations
-                          .map(
-                            (dest) => BottomNavigationBarItem(
-                              backgroundColor:
-                                  Theme.of(context).colorScheme.surface,
-                              icon: dest['icon'] as Widget,
-                              label: (dest['label'] as Text).data,
-                            ),
-                          )
-                          .toList(),
-                )
-                : null,
+                    items:
+                        destinations
+                            .map(
+                              (dest) => BottomNavigationBarItem(
+                                backgroundColor:
+                                    Theme.of(context).colorScheme.surface,
+                                icon: dest['icon'] as Widget,
+                                label: (dest['label'] as Text).data,
+                              ),
+                            )
+                            .toList(),
+                  )
+                  : null,
+        ),
       );
     }
 
@@ -254,89 +259,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
-  Widget buildConversationsList(List<dynamic> conversations, bool isMobile) {
-    return conversations.isEmpty
-        ? Center(
-          child: Text(
-            'No conversations yet',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-        )
-        : Column(
-          children: [
-            if (!kIsWeb) SizedBox(height: 20),
-            // Search bar widget
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: TextField(
-                decoration: InputDecoration(
-                  hintText: 'Search conversations',
-                  prefixIcon: Icon(Icons.search),
-                  border: null,
-                ),
-                onChanged: (value) {
-                  setState(() {
-                    searchQuery = value;
-                  });
-                },
-              ),
-            ),
-            // ListView needs to be in an Expanded widget when inside a Column
-            Expanded(
-              child: ListView.builder(
-                itemCount: conversations.length,
-                itemBuilder: (context, index) {
-                  final conv = conversations[index];
-                  if (searchQuery.length < 3 ||
-                      conv.title.toLowerCase().contains(
-                        searchQuery.toLowerCase(),
-                      )) {
-                    return ListTile(
-                      key: ValueKey(conv.id),
-                      title: Text(
-                        buildTitle(conv.title),
-                        maxLines: 2,
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          overflow: TextOverflow.ellipsis,
-                          fontSize: 14,
-                        ),
-                      ),
-                      subtitle: Text(
-                        conv.lastMessageAt.toString().substring(0, 16),
-                        style: TextStyle(fontSize: 11),
-                      ),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.delete),
-                        onPressed: () {
-                          ref
-                              .read(conversationsProvider.notifier)
-                              .deleteConversation(conv.id);
-                          if (_selectedConversationId == conv.id) {
-                            setState(() {
-                              _selectedConversationId = null;
-                            });
-                          }
-                        },
-                      ),
-                      selected: _selectedConversationId == conv.id,
-                      onTap: () {
-                        setState(() {
-                          _selectedConversationId = conv.id;
-                        });
-                        _updateTitle();
-                      },
-                    );
-                  } else {
-                    return Container();
-                  }
-                },
-              ),
-            ),
-          ],
-        );
-  }
-
   // Widget to build the messages content (differs between mobile and desktop)
   Widget buildMessagesContent(
     BuildContext context,
@@ -346,15 +268,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (isMobile) {
       // On mobile, just show the chat interface
       if (_selectedConversationId == null) {
-        return Center(child: buildConversationsList(conversations, isMobile));
+        return Center(
+          child: ConversationList(
+            isMobile: isMobile,
+            selectedConversationId: _selectedConversationId,
+            onConversationSelected: (id) {
+              setState(() {
+                _selectedConversationId = id;
+              });
+              _updateTitle();
+            },
+            onTitleUpdate: _updateTitle,
+          ),
+        );
       } else {
         return ChatInterface(
           conversationId: _selectedConversationId ?? '',
           isMobile: isMobile,
+          updateMainTitle: _updateTitle,
           setConversationID: (id, navigate) {
             setState(() {
               _selectedConversationId = id;
               if (navigate) _selectedIndex = 1;
+              _updateTitle();
             });
           },
         );
@@ -366,7 +302,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           // Conversations list (second rail)
           Container(
             width: 250,
-            child: buildConversationsList(conversations, isMobile),
+            child: ConversationList(
+              isMobile: isMobile,
+              selectedConversationId: _selectedConversationId,
+              onConversationSelected: (id) {
+                setState(() {
+                  _selectedConversationId = id;
+                });
+                _updateTitle();
+              },
+              onTitleUpdate: _updateTitle,
+            ),
           ),
           // Vertical divider between conversation list and chat
           VerticalDivider(thickness: 1, width: 1),
@@ -375,10 +321,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             child: ChatInterface(
               isMobile: isMobile,
               conversationId: _selectedConversationId ?? '',
+              updateMainTitle: _updateTitle,
               setConversationID: (id, navigate) {
                 setState(() {
                   _selectedConversationId = id;
                   if (navigate) _selectedIndex = 1;
+                  _updateTitle();
                 });
               },
             ),
@@ -389,6 +337,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 }
 
+// Keep this helper function
 String buildTitle(String title) {
   title = title == "" ? 'Untitled' : title.replaceAll(RegExp(r'\*\*'), '');
   title = (title.length > 100 ? '${title.substring(0, 100)}' : title);

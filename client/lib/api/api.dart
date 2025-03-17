@@ -424,6 +424,86 @@ class ApiService {
       throw APIException('API request failed: $e');
     }
   }
+
+  // Function to update conversation title
+  Future<void> updateConversationTitle(
+    String conversationID,
+    String title,
+  ) async {
+    try {
+      // Get authentication token
+      String? firebaseToken = await _authService.getCurrentUserToken();
+      if (firebaseToken == null) {
+        throw Exception("User not authenticated");
+      }
+
+      // Prepare request body
+      final requestBody = {"title": title};
+
+      // Make the PUT request
+      final response = await http.post(
+        Uri.parse("$_baseUrl/rename-conversation/$conversationID"),
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer $firebaseToken",
+        },
+        body: jsonEncode(requestBody),
+      );
+
+      // Process the response
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return;
+      } else {
+        throw APIException(
+          "Failed to update conversation title: ${response.reasonPhrase}",
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      if (e is APIException) rethrow;
+      throw APIException("API request failed: $e");
+    }
+  }
+
+  // Function to update conversation folder
+  Future<void> updateConversationFolder(
+    String conversationID,
+    String folder,
+  ) async {
+    try {
+      // Get authentication token
+      String? firebaseToken = await _authService.getCurrentUserToken();
+      if (firebaseToken == null) {
+        throw Exception('User not authenticated');
+      }
+
+      // Prepare request body
+      final requestBody = {'folder': folder};
+
+      // Make the POST request (based on the Go code, this uses POST method)
+      final response = await http.post(
+        Uri.parse('$_baseUrl/set-conversation-folder/$conversationID'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $firebaseToken',
+        },
+        body: jsonEncode(requestBody),
+      );
+
+      // Process the response
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return;
+      } else {
+        throw APIException(
+          'Failed to update conversation folder: ${response.reasonPhrase}',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      if (e is APIException) rethrow;
+      throw APIException('API request failed: $e');
+    }
+  }
 }
 
 class ImageResult {

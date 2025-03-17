@@ -204,6 +204,36 @@ func UpdateConversationMetadata(ctx context.Context, id primitive.ObjectID, titl
   return err
 }
 
+func UpdateConversationFolder(ctx context.Context, id primitive.ObjectID, folder string) error {
+  client := GetClient()
+  collection := client.Database("plurality").Collection("conversations")
+  userID, ok := ctx.Value("userID").(string)
+
+  if !ok {
+    return errors.New("user ID not found in request context")
+  }
+
+
+  res, err := collection.UpdateOne(ctx, bson.M{
+    "_id": id,
+    "user_id": userID,
+  }, bson.M{
+    "$set": bson.M{
+      "folder": folder,
+    },
+  })
+
+  if err != nil {
+    return err
+  }
+
+  if res.MatchedCount == 0 {
+    return errors.New("conversation not found")
+  }
+
+  return err
+}
+
 // DeleteAllConversations deletes all conversations for a specific user
 func DeleteAllConversations(ctx context.Context, userID string) (int64, error) {
   client := GetClient()

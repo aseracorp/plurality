@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../api/balance.dart';
-import '../utils/types.dart';
+import '../../api/balance.dart';
+import '../../utils/types.dart';
 
 class ModelSelectionModal extends ConsumerStatefulWidget {
   final Function(ModelSelected) onModelSelected;

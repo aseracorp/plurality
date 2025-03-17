@@ -202,6 +202,9 @@ class Conversation extends HiveObject {
   @HiveField(7)
   MiniApp? miniApp;
 
+  @HiveField(8)
+  String? folder;
+
   Conversation({
     required this.id,
     required this.title,
@@ -210,6 +213,7 @@ class Conversation extends HiveObject {
     DateTime? createdAt,
     required this.messages,
     this.miniApp,
+    this.folder,
   }) : createdAt = createdAt ?? DateTime.now();
 
   Map<String, dynamic> toJson() => {
@@ -220,6 +224,7 @@ class Conversation extends HiveObject {
     'messages': messages.map((m) => m.toJson()).toList(),
     'model_selected': modelSelected.toJson(),
     'mini_app': miniApp?.toJson(),
+    'folder': folder,
   };
 
   Map<String, dynamic> toAPI() => {
@@ -229,6 +234,7 @@ class Conversation extends HiveObject {
     'messages': messages.map((m) => m.toAPI()).toList(),
     'model_selected': modelSelected.toJson(),
     'mini_app': miniApp?.toJson(),
+    'folder': folder,
   };
 
   factory Conversation.fromJson(Map<String, dynamic> json) {
@@ -242,6 +248,7 @@ class Conversation extends HiveObject {
       id: json['id'] ?? json['_id'] ?? '',
       title: json['title'] ?? 'Untitled',
       miniApp: miniapp,
+      folder: json['folder'],
       createdAt:
           json['created_at'] != null
               ? DateTime.parse(json['created_at'])

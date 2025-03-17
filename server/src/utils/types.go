@@ -68,6 +68,7 @@ type Conversation struct {
 	LastMessageAt time.Time    `json:"last_message_at" bson:"last_message_at"`
 	ModelSelected ModelSelected `json:"model_selected" bson:"model_selected"`
 	MiniApp 		  *MiniApp `json:"mini_app,omitempty" bson:"mini_app"`
+	Folder 		    string `json:"folder" bson:"folder"`
 }
 
 type UserAction struct {

@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../utils/types.dart';
+import '../../utils/types.dart';
 import 'dart:convert';
 
 class ToolCallBadge extends StatelessWidget {

@@ -6,23 +6,30 @@ import './api.dart';
 import '../utils/types.dart';
 import '../auth/auth-service.dart';
 
-// Provider for current user ID
+class ConversationState {
+  final List<Conversation> conversations;
+  final Map<String, List<Conversation>> folderMap;
 
-// Provider for all conversations
-final conversationsProvider =
-    StateNotifierProvider<ConversationsNotifier, List<Conversation>>((ref) {
-      return ConversationsNotifier();
-    });
+  ConversationState({required this.conversations, required this.folderMap});
+}
 
-// Notifier class
-class ConversationsNotifier extends StateNotifier<List<Conversation>> {
+class FolderData {
+  final String name;
+  final List<Conversation> conversations;
+
+  FolderData({required this.name, required this.conversations});
+}
+
+// In service.dart, modify the ConversationsNotifier class
+class ConversationsNotifier extends StateNotifier<ConversationState> {
   final AuthService _authService = AuthService();
   StreamSubscription? _authSubscription;
   final apiService = ApiService();
 
   static bool _isInitialized = false;
 
-  ConversationsNotifier() : super([]) {
+  ConversationsNotifier()
+    : super(ConversationState(conversations: [], folderMap: {})) {
     // Load initial local data
     _loadConversations();
 
@@ -38,11 +45,41 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
     });
   }
 
-  void _loadConversations() async {
-    state = await ConversationStorage.getAllConversations();
+  // Refresh data
+  Future<void> refresh() async {
+    await _loadConversationsFromServer();
+    return Future.value();
   }
 
-  // merge new conversations with existing ones by only setting the new ones
+  // Helper to organize conversations by folder
+  Map<String, List<Conversation>> _organizeFolders(
+    List<Conversation> conversations,
+  ) {
+    Map<String, List<Conversation>> folderMap = {};
+
+    for (var conv in conversations) {
+      String folderName = conv.folder ?? "";
+
+      if (!folderMap.containsKey(folderName)) {
+        folderMap[folderName] = [];
+      }
+
+      folderMap[folderName]!.add(conv);
+    }
+
+    return folderMap;
+  }
+
+  void _loadConversations() async {
+    final conversations = await ConversationStorage.getAllConversations();
+    state = ConversationState(
+      conversations: conversations,
+      folderMap: _organizeFolders(conversations),
+    );
+  }
+
+  // Simply update all methods to maintain both state properties
+
   Future<void> _loadConversationsFromServer() async {
     _loadConversations();
     var newConv = await apiService.getConversations();
@@ -73,13 +110,18 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
     );
 
     if (updated != null) {
-      state =
-          state.map((conv) {
+      final updatedConversations =
+          state.conversations.map((conv) {
             if (conv.id == conversationId) {
               return updated;
             }
             return conv;
           }).toList();
+
+      state = ConversationState(
+        conversations: updatedConversations,
+        folderMap: _organizeFolders(updatedConversations),
+      );
     }
   }
 
@@ -96,20 +138,80 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
     );
 
     if (updated != null) {
-      state =
-          state.map((conv) {
+      final updatedConversations =
+          state.conversations.map((conv) {
             if (conv.id == conversationId) {
               return updated;
             }
             return conv;
           }).toList();
+
+      state = ConversationState(
+        conversations: updatedConversations,
+        folderMap: _organizeFolders(updatedConversations),
+      );
     }
+  }
+
+  Future<void> updateConversationTitle(String id, String title) async {
+    final updated = await ConversationStorage.updateConversationTitle(
+      id,
+      title,
+    );
+
+    if (updated != null) {
+      final updatedConversations =
+          state.conversations.map((conv) {
+            if (conv.id == id) {
+              return updated;
+            }
+            return conv;
+          }).toList();
+
+      state = ConversationState(
+        conversations: updatedConversations,
+        folderMap: _organizeFolders(updatedConversations),
+      );
+    } else {
+      print('Failed to update title locally - null response');
+    }
+
+    await apiService.updateConversationTitle(id, title);
+  }
+
+  Future<void> updateConversationFolder(String id, String folder) async {
+    final updated = await ConversationStorage.updateConversationFolder(
+      id,
+      folder,
+    );
+    if (updated != null) {
+      final updatedConversations =
+          state.conversations.map((conv) {
+            if (conv.id == id) {
+              return updated;
+            }
+            return conv;
+          }).toList();
+
+      state = ConversationState(
+        conversations: updatedConversations,
+        folderMap: _organizeFolders(updatedConversations),
+      );
+    }
+    await apiService.updateConversationFolder(id, folder);
   }
 
   // Delete conversation
   Future<void> deleteConversation(String id) async {
     await ConversationStorage.deleteConversation(id);
-    state = state.where((conv) => conv.id != id).toList();
+    final updatedConversations =
+        state.conversations.where((conv) => conv.id != id).toList();
+
+    state = ConversationState(
+      conversations: updatedConversations,
+      folderMap: _organizeFolders(updatedConversations),
+    );
+
     await apiService.deleteConversation(id);
   }
 
@@ -117,13 +219,8 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
   Future<void> deleteAllConversations() async {
     _isInitialized = false;
     await ConversationStorage.deleteAllConversations();
-    state = [];
-  }
 
-  // Refresh data
-  Future<void> refresh() async {
-    await _loadConversationsFromServer();
-    return Future.value();
+    state = ConversationState(conversations: [], folderMap: {});
   }
 
   // create a new conversation
@@ -142,13 +239,20 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
       miniApp: miniApp,
     );
     await ConversationStorage.saveConversation(newConv);
-    state = [newConv, ...state];
+
+    final updatedConversations = [newConv, ...state.conversations];
+
+    state = ConversationState(
+      conversations: updatedConversations,
+      folderMap: _organizeFolders(updatedConversations),
+    );
+
     return newConv;
   }
 
   Future<Conversation?> getConversation(String id) async {
     try {
-      return state.firstWhere((conv) => conv.id == id);
+      return state.conversations.firstWhere((conv) => conv.id == id);
     } catch (e) {
       // Return null if not found
       return null;
@@ -162,3 +266,52 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
     super.dispose();
   }
 }
+
+// Create a simple provider to access sorted folders
+final sortedFoldersProvider =
+    Provider.family<List<Map<String, dynamic>>, String?>((ref, searchQuery) {
+      final state = ref.watch(conversationsProvider);
+      final folderMap = state.folderMap;
+
+      // Sort folder names
+      final sortedFolderNames =
+          folderMap.keys.toList()..sort((a, b) {
+            if (a == "") return 1;
+            if (b == "") return -1;
+            if (a == "Pinned") return -1;
+            if (b == "Pinned") return 1;
+            return a.compareTo(b);
+          });
+
+      return sortedFolderNames
+          .map((folderName) {
+            final conversations = folderMap[folderName]!;
+
+            // Apply search filter if needed
+            final filteredConversations =
+                (searchQuery != null && searchQuery.length >= 3)
+                    ? conversations
+                        .where(
+                          (conv) => conv.title.toLowerCase().contains(
+                            searchQuery.toLowerCase(),
+                          ),
+                        )
+                        .toList()
+                    : conversations;
+
+            return {'name': folderName, 'conversations': filteredConversations};
+          })
+          // Filter out empty folders when searching
+          .where(
+            (folder) =>
+                searchQuery == null ||
+                searchQuery.length < 3 ||
+                (folder['conversations'] as List).isNotEmpty,
+          )
+          .toList();
+    });
+
+final conversationsProvider =
+    StateNotifierProvider<ConversationsNotifier, ConversationState>((ref) {
+      return ConversationsNotifier();
+    });

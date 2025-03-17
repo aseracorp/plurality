@@ -1,13 +1,14 @@
 # Road to relese 
+
+	- search messages
+
 	- Integrate LLama via AWS - test first?
 	- Integrate Deepseek via their API
 	- separate API and app backend
 
-	- Model not saved in conv?
-  - rename conversations
-  - pin conversations and messages?
   - local or incognito mode? or both?
   - Token de secours
+	- Custom personal mini apps? (or at least placeholders)
   - Login / Register
 		- apple
 		- may be facebook
