@@ -7,8 +7,8 @@ FROM dart:stable AS flutter_builder
 RUN apt-get update && apt-get install -y curl git unzip xz-utils zip libglu1-mesa
 
 # Get Stable Branch
-RUN git clone https://github.com/flutter/flutter.git /flutter
-RUN git branch stable
+RUN git clone https://github.com/flutter/flutter.git /flutter && \
+  git -C /flutter checkout stable
 ENV PATH="/flutter/bin:${PATH}"
 RUN flutter doctor
 RUN flutter config --enable-web
