@@ -31,8 +31,46 @@
 
   <title>plurality</title>
   <link rel="manifest" href="manifest.json">
+
+  <style>
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      background-color: var(--background-color);
+    }
+
+    .spinner {
+      border: 16px solid #f3f3f3;
+      border-top: 16px solid #ee4654;
+      border-radius: 50%;
+      width: 120px;
+      height: 120px;
+      animation: spin 2s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --background-color: #1f1212;
+      }
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --background-color: #fff;
+      }
+    }
+  </style>
 </head>
 <body>
+  <div class="spinner"></div>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

@@ -62,12 +62,12 @@ class _ConversationListState extends ConsumerState<ConversationList> {
 
     // Create a flat list of all items (folders and conversations)
     List<Widget> allItems = [];
-    
+
     for (var folder in folders) {
       final folderName = folder['name'] as String;
       final conversations = folder['conversations'] as List<Conversation>;
       final isExpanded = _folderExpansionState[folderName] ?? true;
-      
+
       // Add folder header
       allItems.add(
         FolderItem(
@@ -78,23 +78,28 @@ class _ConversationListState extends ConsumerState<ConversationList> {
           onToggle: _toggleFolderExpansion,
         ),
       );
-      
+
       // Add conversations if folder is expanded
       if (isExpanded) {
         for (var conv in conversations) {
-          final convKey = conv.id + conv.title + (conv.folder ?? '');
-          
+          final selected = (widget.selectedConversationId == conv.id);
+          final convKey =
+              conv.id +
+              conv.title +
+              (conv.folder ?? '') +
+              (selected ? 'Y' : '');
+
           if (!convCacheFuckYouFlutter.containsKey(convKey)) {
             convCacheFuckYouFlutter[convKey] = ConversationItem(
               key: ValueKey(convKey),
               conversation: conv,
-              isSelected: widget.selectedConversationId == conv.id,
+              isSelected: selected,
               onSelect: widget.onConversationSelected,
               ref: ref,
               onTitleUpdate: widget.onTitleUpdate,
             );
           }
-          
+
           allItems.add(convCacheFuckYouFlutter[convKey]!);
         }
       }
@@ -103,11 +108,10 @@ class _ConversationListState extends ConsumerState<ConversationList> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (
-          !kIsWeb && 
-          widget.isMobile &&
-          (Platform.isAndroid || Platform.isIOS)
-          ) SizedBox(height: 24),
+        if (!kIsWeb &&
+            widget.isMobile &&
+            (Platform.isAndroid || Platform.isIOS))
+          SizedBox(height: 24),
 
         // Search bar widget
         Padding(
@@ -126,12 +130,7 @@ class _ConversationListState extends ConsumerState<ConversationList> {
         ),
 
         // Single flat list for folders and conversations
-        Expanded(
-          child: SuperListView(
-            shrinkWrap: true,
-            children: allItems,
-          ),
-        ),
+        Expanded(child: SuperListView(shrinkWrap: true, children: allItems)),
       ],
     );
   }

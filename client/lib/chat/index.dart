@@ -118,16 +118,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       },
     ];
 
-    // For mobile: use Scaffold with bottom navigation
     if (widget.isMobile) {
       return PopScope(
-        canPop:
-            _selectedConversationId ==
-            null, // Only allow pop if no conversation is selected
+        canPop: _selectedIndex != 1,
         onPopInvoked: (didPop) {
           if (_selectedConversationId != null) {
             setState(() {
               _selectedConversationId = null;
+            });
+          } else {
+            setState(() {
+              _selectedIndex = 0;
             });
           }
         },
