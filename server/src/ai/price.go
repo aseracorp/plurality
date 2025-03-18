@@ -80,32 +80,37 @@ func GetPriceFromTokenUsage(reqType int, provider int, model utils.Model, usage 
 
 	if(provider == TOGETHER && (reqType == TEXT_INPUT || reqType == TEXT_OUTPUT || reqType == IMAGE_VISION)) {
 		if model.Name == "llama-v3p2-11b-vision-instruct" {
-			// cost 0.18 per 1M tokens
-			price = usage * 0.18
+			// cost 0.20 per 1M tokens
+			price = usage * 0.20
 		} else if model.Name == "llama-v3p1-8b-instruct" {
-			// cost 0.18 per 1M tokens
-			price = usage * 0.18
+			// cost 0.20 per 1M tokens
+			price = usage * 0.20
 		} else if model.Name == "llama-v3p1-70b-instruct" {
-			// cost 0.88 per 1M tokens
-			price = usage * 0.88
+			// cost 0.90 per 1M tokens
+			price = usage * 0.90
 		} else if model.Name == "llama-v3p3-70b-instruct" {
-			// cost 0.88 per 1M tokens
-			price = usage * 0.88
+			// cost 0.90 per 1M tokens
+			price = usage * 0.90
 		} else if model.Name == "llama-v3p2-90b-vision-instruct" {
-			// cost 1.20 per 1M tokens
-			price = usage * 1.20
+			// cost 0.90 per 1M tokens
+			price = usage * 0.90
 		} else if model.Name == "llama-v3p1-405b-instruct" {
-			// cost 3.50 per 1M tokens
-			price = usage * 3.50
+			// cost 3.00 per 1M tokens
+			price = usage * 3.00
 		} else if model.Name == "deepseek-r1" {
-			// cost 2.00 per 1M tokens (free tier)
-			price = usage * 2.00
+			if reqType == TEXT_INPUT {
+				// cost 3.00 per 1M tokens
+				price = usage * 3.00
+			} else if reqType == TEXT_OUTPUT {
+				// cost 8.00 per 1M tokens
+				price = usage * 8.00
+			}
 		} else if model.Name == "deepseek-v3" {
-			// cost 1.25 per 1M tokens
-			price = usage * 1.25
+			// cost 0.90 per 1M tokens
+			price = usage * 0.90
 		} else if model.Name == "qwen2p5-72b-instruct" {
-			// cost 1.20 per 1M tokens
-			price = usage * 1.20
+			// cost 0.90 per 1M tokens
+			price = usage * 0.90
 		}
 	}
 
