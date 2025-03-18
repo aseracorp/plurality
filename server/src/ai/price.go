@@ -79,31 +79,31 @@ func GetPriceFromTokenUsage(reqType int, provider int, model utils.Model, usage 
 	}
 
 	if(provider == TOGETHER && (reqType == TEXT_INPUT || reqType == TEXT_OUTPUT || reqType == IMAGE_VISION)) {
-		if model.Name == "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo" {
+		if model.Name == "llama-v3p2-11b-vision-instruct" {
 			// cost 0.18 per 1M tokens
 			price = usage * 0.18
-		} else if model.Name == "meta-llama/Llama-3.2-8B-Instruct-Turbo" {
+		} else if model.Name == "llama-v3p1-8b-instruct" {
 			// cost 0.18 per 1M tokens
 			price = usage * 0.18
-		} else if model.Name == "meta-llama/Llama-3.2-3B-Instruct-Turbo" {
-			// cost 0.06 per 1M tokens
-			price = usage * 0.06
-		} else if model.Name == "meta-llama/Llama-3.3-70B-Instruct-Turbo" {
+		} else if model.Name == "llama-v3p1-70b-instruct" {
 			// cost 0.88 per 1M tokens
 			price = usage * 0.88
-		} else if model.Name == "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo" {
+		} else if model.Name == "llama-v3p3-70b-instruct" {
+			// cost 0.88 per 1M tokens
+			price = usage * 0.88
+		} else if model.Name == "llama-v3p2-90b-vision-instruct" {
 			// cost 1.20 per 1M tokens
 			price = usage * 1.20
-		} else if model.Name == "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo" {
+		} else if model.Name == "llama-v3p1-405b-instruct" {
 			// cost 3.50 per 1M tokens
 			price = usage * 3.50
-		} else if model.Name == "deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free" {
+		} else if model.Name == "deepseek-r1" {
 			// cost 2.00 per 1M tokens (free tier)
 			price = usage * 2.00
-		} else if model.Name == "deepseek-ai/DeepSeek-V3" {
+		} else if model.Name == "deepseek-v3" {
 			// cost 1.25 per 1M tokens
 			price = usage * 1.25
-		} else if model.Name == "Qwen/Qwen2-VL-72B-Instruct" {
+		} else if model.Name == "qwen2p5-72b-instruct" {
 			// cost 1.20 per 1M tokens
 			price = usage * 1.20
 		}

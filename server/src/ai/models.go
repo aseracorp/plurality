@@ -1,9 +1,5 @@
 package ai
 
-import (
-	"strings"
-)
-
 // ValidModels is an array containing all valid model names extracted from the code
 var ValidModels = []string{
 	// OpenAI models
@@ -17,16 +13,17 @@ var ValidModels = []string{
 	"Claude/claude-3-haiku",
 	"Claude/claude-3-7-sonnet",
 	
-	// Together models
-	"meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo",
-	"meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
-	"meta-llama/Llama-3.2-3B-Instruct-Turbo",
-	"meta-llama/Llama-3.3-70B-Instruct-Turbo",
-	"meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
-	"meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo",
-	"deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free",
-	"deepseek-ai/DeepSeek-V3",
-	"Qwen/Qwen2-VL-72B-Instruct",
+	// Firefly models
+	"llama-v3p2-11b-vision-instruct",
+	"llama-v3p2-90b-vision-instruct",
+	"llama-v3p2-3b",
+	"llama-v3p1-8b-instruct",
+	"llama-v3p1-70b-instruct",
+	"llama-v3p3-70b-instruct",
+	"llama-v3p1-405b-instruct",
+	"deepseek-r1",
+	"deepseek-v3",
+	"qwen2p5-72b-instruct",
 	
 	// Image generation models
 	"black-forest-labs/FLUX.1-schnell",
@@ -34,9 +31,9 @@ var ValidModels = []string{
 }
 
 var ValidFreeModels = []string{
-	"meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo",
-	"meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
-	"meta-llama/Llama-3.2-3B-Instruct-Turbo",
+	"llama-v3p2-11b-vision-instruct",
+	"llama-v3p1-8b-instruct",
+	"llama-v3p2-3b",
 	"black-forest-labs/FLUX.1-schnell",
 }
 
@@ -49,12 +46,12 @@ var ValidActionModels = []string{
 	"Claude/claude-3-7-sonnet",
 	
 	// Together models
-	"meta-llama/Llama-3.3-70B-Instruct-Turbo",
-	"meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
-	"meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo",
-	"deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free",
-	"deepseek-ai/DeepSeek-V3",
-	"Qwen/Qwen2-VL-72B-Instruct",
+	"llama-v3p1-70b-instruct",
+	"llama-v3p3-70b-instruct",
+	"llama-v3p1-405b-instruct",
+	"deepseek-r1",
+	"deepseek-v3",
+	"qwen2p5-72b-instruct",
 }
 
 func CheckActionModel(modelName string) bool {
@@ -83,43 +80,4 @@ func CheckModel(modelName string, planName string) bool {
 		}
 	}
 	return false
-}
-
-// GetModelsByProvider returns all models for a specific provider
-func GetModelsByProvider(provider int) []string {
-	var models []string
-	
-	prefix := ""
-	switch provider {
-	case OPENAI:
-		prefix = "ChatGPT/"
-	case CLAUDE:
-		prefix = "Claude/"
-	case TOGETHER:
-		prefixes := []string{
-			"meta-llama/",
-			"deepseek-ai/",
-			"Qwen/",
-		}
-		
-		for _, validModel := range ValidModels {
-			for _, p := range prefixes {
-				if strings.HasPrefix(validModel, p) {
-					models = append(models, validModel)
-					break
-				}
-			}
-		}
-		return models
-	}
-	
-	if prefix != "" {
-		for _, validModel := range ValidModels {
-			if strings.HasPrefix(validModel, prefix) {
-				models = append(models, validModel)
-			}
-		}
-	}
-	
-	return models
 }

@@ -71,15 +71,15 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, payloa
 		},
 	}
 	
-	apiKey := os.Getenv("TOGETHER_API_KEY")
+	apiKey := os.Getenv("FIREWORK_KEY")
 	if apiKey == "" {
-		return nil, 0, fmt.Errorf("TOGETHER_API_KEY is not set")
+		return nil, 0, fmt.Errorf("FIREWORK_KEY is not set")
 	}
 
 	utils.Debug("Payload: ", payload)
 
 	if model.Name == "" {
-		model.Name = "meta-llama/Llama-3.2-3B-Instruct-Turbo"
+		model.Name = "llama-v3p1-70b-instruct"
 	}
 	if model.Params == nil {
 		model.Params = make(map[string]string)
@@ -161,7 +161,7 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, payloa
 	maxTok := 4096
 
 	requestData := ChatRequest{
-		Model:             model.Name,
+		Model:             "accounts/fireworks/models/" + model.Name,
 		Messages:          msgReqList,
 		MaxTokens:         &maxTok,
 		Temperature:       Temperature,
@@ -214,7 +214,7 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, payloa
 	}
 
 
-	req, err := http.NewRequest("POST", "https://api.together.xyz/v1/chat/completions", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", "https://api.fireworks.ai/inference/v1/chat/completions", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, 0, err
 	}

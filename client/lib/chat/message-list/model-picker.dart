@@ -22,14 +22,13 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     with SingleTickerProviderStateMixin {
   // Available options for each dropdown
   final List<String> _modelOptions = [
-    'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
-    'meta-llama/Llama-3.2-3B-Instruct-Turbo',
-    'meta-llama/Llama-3.3-70B-Instruct-Turbo',
-    'meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo',
-    'deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free',
-    'deepseek-ai/DeepSeek-V3',
-    'Qwen/Qwen2.5-7B-Instruct-Turbo',
-    'Qwen/Qwen2.5-72B-Instruct-Turbo',
+    'llama-v3p1-8b-instruct',
+    'llama-v3p2-3b',
+    'llama-v3p1-70b-instruct',
+    'llama-v3p1-405b-instruct',
+    'deepseek-r1',
+    'deepseek-v3',
+    'qwen2p5-72b-instruct',
     'ChatGPT/gpt-4o-mini',
     'ChatGPT/gpt-3.5-turbo',
     'ChatGPT/gpt-4o',
@@ -38,8 +37,8 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
   ];
 
   final List<String> _visionModelOptions = [
-    'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
-    'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo',
+    'llama-v3p2-11b-vision-instruct',
+    'llama-v3p2-90b-vision-instruct',
   ];
 
   final List<String> _imageGenModelOptions = [
@@ -84,13 +83,9 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
   // Preset configurations
   static Map<String, ModelSelected> presets = {
     'Fast': ModelSelected(
-      text: Model(
-        name: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
-        params: null,
-        tools: [],
-      ),
+      text: Model(name: 'llama-v3p1-8b-instruct', params: null, tools: []),
       vision: Model(
-        name: 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
+        name: 'llama-v3p2-11b-vision-instruct',
         params: null,
         tools: [],
       ),
@@ -98,12 +93,12 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     ),
     'Balanced': ModelSelected(
       text: Model(
-        name: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+        name: 'llama-v3p1-70b-instruct',
         params: null,
         tools: ['search_web', 'place_search', 'visit_link'],
       ),
       vision: Model(
-        name: 'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo',
+        name: 'llama-v3p2-90b-vision-instruct',
         params: null,
         tools: ['search_web', 'place_search', 'visit_link'],
       ),
@@ -111,12 +106,12 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     ),
     'Smart': ModelSelected(
       text: Model(
-        name: 'meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo',
+        name: 'deepseek-v3',
         params: null,
         tools: ['search_web', 'place_search', 'visit_link'],
       ),
       vision: Model(
-        name: 'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo',
+        name: 'llama-v3p2-90b-vision-instruct',
         params: null,
         tools: ['search_web', 'place_search', 'visit_link'],
       ),
@@ -181,10 +176,9 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     final isFree = balance?.planName == 'Free';
 
     if (isFree) {
-      final defaultVisionModel =
-          'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo';
+      final defaultVisionModel = 'llama-v3p2-11b-vision-instruct';
       final defaultImageGenModel = 'black-forest-labs/FLUX.1-schnell';
-      final defaultTextModel = 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo';
+      final defaultTextModel = 'llama-v3p1-8b-instruct';
 
       if (_selectedVisionModel != defaultVisionModel ||
           _selectedImageGenModel != defaultImageGenModel ||

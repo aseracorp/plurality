@@ -342,19 +342,16 @@ class ModelSelected {
 
   const ModelSelected({
     this.text = const Model(
-      name: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+      name: 'llama-v3p1-70b-instruct',
       params: {},
       tools: ['search_web', 'place_search', 'visit_link'],
     ),
     this.vision = const Model(
-      name: 'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo',
+      name: 'llama-v3p2-90b-vision-instruct',
       params: {},
       tools: ['search_web', 'place_search', 'visit_link'],
     ),
-    this.imageGen = const Model(
-      name: 'black-forest-labs/FLUX.1-schnell',
-      params: {},
-    ),
+    this.imageGen = const Model(name: 'flux-1-schnell', params: {}),
     this.audioGen = const Model(
       name: 'cartesia/sonic',
       params: {"voice": "sweet lady"},
