@@ -118,15 +118,16 @@ class _ConversationListState extends ConsumerState<ConversationList> {
         SizedBox(height: 8),
 
         // new conversation button
-        Padding(
-          padding: const EdgeInsets.all(8.0),
-          child: ElevatedButton(
-            onPressed: () {
-              widget.onDelete();
-            },
-            child: Text('New conversation'),
+        if (!widget.isMobile)
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: ElevatedButton(
+              onPressed: () {
+                widget.onDelete();
+              },
+              child: Text('New conversation'),
+            ),
           ),
-        ),
 
         // Search bar widget
         Padding(
