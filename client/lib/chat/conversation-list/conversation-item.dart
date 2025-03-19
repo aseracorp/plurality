@@ -17,6 +17,7 @@ class ConversationItem extends StatelessWidget {
   final Function(String) onSelect;
   final WidgetRef ref;
   final Function() onTitleUpdate;
+  final Function() onDelete;
 
   const ConversationItem({
     Key? key,
@@ -25,6 +26,7 @@ class ConversationItem extends StatelessWidget {
     required this.onSelect,
     required this.ref,
     required this.onTitleUpdate,
+    required this.onDelete,
   }) : super(key: key);
 
   @override
@@ -284,5 +286,6 @@ class ConversationItem extends StatelessWidget {
     ref
         .read(conversationsProvider.notifier)
         .deleteConversation(conversation.id);
+    onDelete();
   }
 }

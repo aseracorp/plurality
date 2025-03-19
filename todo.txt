@@ -1,5 +1,8 @@
 # Road to relese 
 
+	- Not showing input anymore when conversation id is null in conv list 
+	- Allow sending snippet without message
+	
 	- search messages
 	- cache web page (https://github.com/flutter/flutter/issues/63500)
 	
@@ -36,6 +39,8 @@
 - Add token price to titles
 - Publish Apps each platform
 - eco mode 
+- Backend to accept new conversation that have multiple messages (seems like a bug that conversation might be missing from DB?)
+		- AHHHH may be I removed a conversation on one client but not the other!!!
 
 # More 
 - model popup should show preset when one is selected

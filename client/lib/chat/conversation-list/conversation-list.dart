@@ -13,6 +13,7 @@ class ConversationList extends ConsumerStatefulWidget {
   final String? selectedConversationId;
   final Function(String) onConversationSelected;
   final Function() onTitleUpdate;
+  final Function() onDelete;
 
   const ConversationList({
     Key? key,
@@ -20,6 +21,7 @@ class ConversationList extends ConsumerStatefulWidget {
     required this.selectedConversationId,
     required this.onConversationSelected,
     required this.onTitleUpdate,
+    required this.onDelete,
   }) : super(key: key);
 
   @override
@@ -97,6 +99,7 @@ class _ConversationListState extends ConsumerState<ConversationList> {
               onSelect: widget.onConversationSelected,
               ref: ref,
               onTitleUpdate: widget.onTitleUpdate,
+              onDelete: widget.onDelete,
             );
           }
 

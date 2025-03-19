@@ -361,11 +361,12 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
     // Create new message object
     final newMessage =
-        userMessage != null && userMessage.isNotEmpty
+        (userMessage != null && userMessage.isNotEmpty) ||
+                attachments.isNotEmpty
             ? Message(
               role: "user",
               content: [
-                MessageContent.text(userMessage),
+                MessageContent.text(userMessage ?? ''),
                 ...attachments
                     .map(
                       (a) =>

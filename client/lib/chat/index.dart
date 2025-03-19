@@ -273,6 +273,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           child: ConversationList(
             isMobile: isMobile,
             selectedConversationId: _selectedConversationId,
+            onDelete: () {
+              setState(() {
+                _selectedConversationId = null;
+              });
+            },
             onConversationSelected: (id) {
               setState(() {
                 _selectedConversationId = id;
@@ -305,6 +310,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             width: 250,
             child: ConversationList(
               isMobile: isMobile,
+              onDelete: () {
+                setState(() {
+                  _selectedConversationId = null;
+                });
+              },
               selectedConversationId: _selectedConversationId,
               onConversationSelected: (id) {
                 setState(() {

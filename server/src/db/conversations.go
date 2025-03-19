@@ -25,7 +25,7 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
  
   // Get current time for LastMessageAt update
   currentTime := time.Now()
- 
+
   if conversation.ID == primitive.NilObjectID {
     // For new conversations, set the LastMessageAt field
     conversation.LastMessageAt = currentTime
@@ -44,6 +44,8 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
     if oid, ok := result.InsertedID.(primitive.ObjectID); ok {
       conversation.ID = oid
     }
+
+    utils.Log("Created new conversation ID: ", conversation.ID, " for user ID: ", userID)
    
     return conversation, true, nil
   } else {
