@@ -114,7 +114,19 @@ class _ConversationListState extends ConsumerState<ConversationList> {
         if (!kIsWeb &&
             widget.isMobile &&
             (Platform.isAndroid || Platform.isIOS))
-          SizedBox(height: 24),
+          SizedBox(height: 20),
+        SizedBox(height: 8),
+
+        // new conversation button
+        Padding(
+          padding: const EdgeInsets.all(8.0),
+          child: ElevatedButton(
+            onPressed: () {
+              widget.onDelete();
+            },
+            child: Text('New conversation'),
+          ),
+        ),
 
         // Search bar widget
         Padding(
