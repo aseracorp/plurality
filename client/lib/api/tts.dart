@@ -58,7 +58,7 @@ class TTSService {
   Future<void> speak(String markdownText) async {
     if (markdownText.isEmpty) return;
 
-    if (Platform.isAndroid) await _flutterTts.setSpeechRate(1.2);
+    if (!kIsWeb && Platform.isAndroid) await _flutterTts.setSpeechRate(1.2);
 
     // Stop any current speech
     if (_isSpeaking) {
