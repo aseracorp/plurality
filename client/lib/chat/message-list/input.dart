@@ -495,8 +495,8 @@ class _InputBoxState extends State<InputBox> {
   Widget build(BuildContext context) {
     final primaryColor =
         (Theme.of(context).brightness == Brightness.dark)
-            ? Color.fromRGBO(215, 193, 193, 1.0)
-            : Color(0xffee4654);
+            ? Theme.of(context).colorScheme.secondary
+            : Theme.of(context).primaryColor;
 
     bool supportSST =
         kIsWeb || Platform.isAndroid || Platform.isIOS || Platform.isMacOS;

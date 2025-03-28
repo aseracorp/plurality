@@ -23,6 +23,7 @@ const (
 	OPENAI = 0
 	CLAUDE = 1
 	TOGETHER = 2
+	GOOGLE = 3
 )
 
 func GetPriceFromTokenUsage(reqType int, provider int, model utils.Model, usage float64) float64 {
@@ -49,6 +50,17 @@ func GetPriceFromTokenUsage(reqType int, provider int, model utils.Model, usage 
 				// cost 3$ per 1M tokens
 				price = usage * 3.00
 			}
+		} else if provider == GOOGLE {
+			if model.Name == "Gemini/gemini-1.5-pro" {
+				// cost 1.25$ per 1M tokens
+				price = usage * 1.25
+			} else if model.Name == "Gemini/gemini-1.5-flash-latest" {
+				// cost 0.75$ per 1M tokens
+				price = usage * 0.75
+			} else if model.Name == "Gemini/gemini-2.0-flash" {
+				// cost 0.10$ per 1M tokens
+				price = usage * 0.10
+			}
 		}
 	} else if(reqType == TEXT_OUTPUT) {
 		if(provider == OPENAI) {
@@ -70,6 +82,17 @@ func GetPriceFromTokenUsage(reqType int, provider int, model utils.Model, usage 
 			} else if model.Name == "Claude/claude-3-7-sonnet" {
 				// cost 15 $ per 1M tokens
 				price = usage * 15.00
+			}
+		} else if provider == GOOGLE {
+			if model.Name == "Gemini/gemini-1.5-pro" {
+				// cost 10.00$ per 1M tokens
+				price = usage * 10.00
+			} else if model.Name == "Gemini/gemini-1.5-flash-latest" {
+				// cost 0.15$ per 1M tokens
+				price = usage * 0.15
+			} else if model.Name == "Gemini/gemini-2.0-flash" {
+				// cost 0.40$ per 1M tokens
+				price = usage * 0.40
 			}
 		}
 	}

@@ -43,16 +43,15 @@ void main() async {
   runApp(ProviderScope(child: MyApp()));
 }
 
+final c = Colors.red;
+
 // Define light and dark themes
 final ThemeData lightTheme = ThemeData(
-  colorScheme: ColorScheme.fromSeed(seedColor: Color(0xffee4654)),
+  colorScheme: ColorScheme.fromSeed(seedColor: c),
 );
 
 final ThemeData darkTheme = ThemeData(
-  colorScheme: ColorScheme.fromSeed(
-    seedColor: Color(0xffee4654),
-    brightness: Brightness.dark,
-  ),
+  colorScheme: ColorScheme.fromSeed(seedColor: c, brightness: Brightness.dark),
 );
 
 class MyApp extends ConsumerWidget {

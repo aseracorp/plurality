@@ -34,6 +34,9 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     'ChatGPT/gpt-4o',
     'Claude/claude-3-haiku',
     'Claude/claude-3-7-sonnet',
+    "Gemini/gemini-1.5-pro",
+    "Gemini/gemini-1.5-flash-latest",
+    "Gemini/gemini-2.0-flash",
   ];
 
   final List<String> _visionModelOptions = [
@@ -274,9 +277,9 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
                 Tab(text: 'Custom'),
                 Tab(text: 'Functions'), // Add the third tab
               ],
-              labelColor: Color.fromARGB(255, 204, 52, 65),
+              labelColor: Theme.of(context).colorScheme.primary,
               unselectedLabelColor: isDarkMode ? Colors.white : Colors.black,
-              indicatorColor: Color.fromARGB(255, 204, 52, 65),
+              indicatorColor: Theme.of(context).colorScheme.primary,
             ),
 
             const SizedBox(height: 24),

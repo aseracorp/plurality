@@ -47,6 +47,8 @@ func SendChatCompletion(ctx context.Context, model utils.Model, payload utils.Co
 	} else if strings.HasPrefix(model.Name, "Claude/") {
 		// If model is Claude, use the Claude API
 		return SendChatCompletionClaude(ctx, model, payload, systemPrompt)
+	} else if strings.HasPrefix(model.Name, "Gemini/") {
+		return SendChatCompletionGoogle(ctx, model, payload, systemPrompt)
 	} else {
 		// Default to TogetherAI for all other models
 		return SendChatCompletionTogetherAI(ctx, model, payload, systemPrompt)

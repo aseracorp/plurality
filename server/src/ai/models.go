@@ -28,6 +28,11 @@ var ValidModels = []string{
 	// Image generation models
 	"black-forest-labs/FLUX.1-schnell",
 	"black-forest-labs/FLUX.1-dev",
+
+	// Gemini
+	"Gemini/gemini-1.5-pro",
+	"Gemini/gemini-1.5-flash-latest",
+	"Gemini/gemini-2.0-flash",
 }
 
 var ValidFreeModels = []string{
@@ -35,6 +40,7 @@ var ValidFreeModels = []string{
 	"llama-v3p1-8b-instruct",
 	"llama-v3p2-3b",
 	"black-forest-labs/FLUX.1-schnell",
+	"Gemini/gemini-2.0-flash",
 }
 
 var ValidActionModels = []string{
@@ -52,6 +58,9 @@ var ValidActionModels = []string{
 	"deepseek-r1",
 	"deepseek-v3",
 	"qwen2p5-72b-instruct",
+	
+	// Gemini
+	"Gemini/gemini-1.5-pro",
 }
 
 func CheckActionModel(modelName string) bool {

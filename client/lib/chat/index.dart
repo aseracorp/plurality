@@ -54,13 +54,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       {
         'icon': Icon(
           Icons.home,
-          color: widget.isMobile ? Theme.of(context).colorScheme.primary : null,
+          color:
+              widget.isMobile
+                  ? Theme.of(context).colorScheme.primary
+                  : Colors.white,
         ),
         'label': Text(
           'Home',
           style: TextStyle(
             color:
-                widget.isMobile ? Theme.of(context).colorScheme.primary : null,
+                widget.isMobile
+                    ? Theme.of(context).colorScheme.primary
+                    : Colors.white,
           ),
         ),
         'content': ChatInterface(
@@ -80,13 +85,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       {
         'icon': Icon(
           Icons.message,
-          color: widget.isMobile ? Theme.of(context).colorScheme.primary : null,
+          color:
+              widget.isMobile
+                  ? Theme.of(context).colorScheme.primary
+                  : Colors.white,
         ),
         'label': Text(
           'Conversations',
           style: TextStyle(
             color:
-                widget.isMobile ? Theme.of(context).colorScheme.primary : null,
+                widget.isMobile
+                    ? Theme.of(context).colorScheme.primary
+                    : Colors.white,
           ),
         ),
         'content': buildMessagesContent(
@@ -98,20 +108,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       {
         'icon': Icon(
           Icons.account_circle,
-          color: widget.isMobile ? Theme.of(context).colorScheme.primary : null,
+          color:
+              widget.isMobile
+                  ? Theme.of(context).colorScheme.primary
+                  : Colors.white,
         ),
         'label': Text(
           'Account',
           style: TextStyle(
             color:
-                widget.isMobile ? Theme.of(context).colorScheme.primary : null,
+                widget.isMobile
+                    ? Theme.of(context).colorScheme.primary
+                    : Colors.white,
           ),
         ),
         'content': SettingsScreen(),
         'hiddenOnDesktop': true,
       },
       {
-        'icon': BalanceProgressCircle(isClickable: false),
+        'icon': BalanceProgressCircle(
+          isClickable: false,
+          isMobile: widget.isMobile,
+          backgroundColor: widget.isMobile ? Colors.grey : Colors.white,
+        ),
         'label': Text('Budget'),
         'content': BudgetScreen(),
         'hiddenOnDesktop': true,
@@ -189,11 +208,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       body: Row(
         children: [
           NavigationRail(
-            leading: Image.asset(
-              'assets/logo_64.png',
-              width: 48.0,
-              height: 48.0,
-            ),
+            backgroundColor: Theme.of(context).primaryColor,
+            // leading: Image.asset(
+            //   'assets/logo_64.png',
+            //   width: 48.0,
+            //   height: 48.0,
+            // ),
             selectedIndex:
                 desktopMaxIndex > _selectedIndex ? _selectedIndex : 0,
             onDestinationSelected: (int index) {
@@ -237,7 +257,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       BalanceProgressCircle(),
                       Divider(),
                       IconButton(
-                        icon: Icon(Icons.account_circle),
+                        icon: Icon(Icons.account_circle, color: Colors.white),
                         onPressed: () async {
                           setState(() {
                             _selectedIndex = 2;

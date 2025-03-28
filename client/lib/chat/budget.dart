@@ -282,14 +282,16 @@ class BalanceProgressCircle extends ConsumerWidget {
   final Color backgroundColor;
   final double strokeWidth;
   final bool isClickable;
+  final bool isMobile;
 
   const BalanceProgressCircle({
     Key? key,
     this.size = 24.0,
     this.progressColor = Colors.blue,
-    this.backgroundColor = Colors.grey,
+    this.backgroundColor = Colors.white,
     this.strokeWidth = 4.0,
     this.isClickable = true,
+    this.isMobile = false,
   }) : super(key: key);
 
   @override
@@ -392,7 +394,7 @@ class BalanceProgressCircle extends ConsumerWidget {
           child: Icon(
             Icons.account_balance_wallet_outlined,
             size: 13,
-            color: Colors.grey,
+            color: isMobile ? Colors.grey : Colors.white,
           ),
         ),
         Center(

@@ -3,8 +3,12 @@
 	- Not showing input anymore when conversation id is null in conv list 
 	- Allow sending snippet without message
 	
+	- "Can you research FOV differences between the bigscreen beyond  2  and the MeganeX superlight 8K" - with Claude broken
 	- search messages
+	- cant pin / etc... on mobile chat view
 	- cache web page (https://github.com/flutter/flutter/issues/63500)
+
+	- update conv when switch tab ? 
 	
 	- Integrate LLama via AWS - test first?
 	- Integrate Deepseek via their API
@@ -18,7 +22,6 @@
 		- may be facebook
 	- Subscripiton page
 	- Home page
-
 
 # private MVP2 - bigger
 - Custom mini apps

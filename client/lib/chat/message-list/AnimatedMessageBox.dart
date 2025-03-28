@@ -140,12 +140,12 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
   @override
   Widget build(BuildContext context) {
     var isDark = Theme.of(context).brightness == Brightness.dark;
-    var botBG = isDark ? Color.fromARGB(255, 34, 27, 27) : Colors.white;
+    var botBG = isDark ? Color.fromARGB(15, 255, 255, 255) : Colors.white;
     var botFG = isDark ? Colors.white : Colors.black;
     var userBG =
         isDark
-            ? Color.fromARGB(255, 156, 42, 52)
-            : Color.fromARGB(255, 204, 52, 65);
+            ? Theme.of(context).colorScheme.surfaceBright
+            : Theme.of(context).primaryColor;
 
     return MessageToolbar(
       key: ValueKey('message_xtoolbar_${widget.text.hashCode}'),

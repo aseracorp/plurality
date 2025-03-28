@@ -859,7 +859,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                         ],
                         color:
                             isDarkMode
-                                ? Color.fromARGB(255, 34, 27, 27)
+                                ? Color.fromARGB(15, 255, 255, 255)
                                 : Colors.white,
                         borderRadius: BorderRadius.only(
                           topLeft: Radius.circular(8.0),

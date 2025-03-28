@@ -373,7 +373,9 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(model.Name, "Claude/") {
 		// Use Claude-specific chunk processor
 		processErr = chunkProcessor.ProcessClaudeChunk(r.Context(), response, model)
-	} else {
+	} else if strings.HasPrefix(model.Name, "Gemini/") {
+		processErr = chunkProcessor.ProcessGeminiChunk(r.Context(), response, model)
+  } else {
 		// Use standard chunk processor for OpenAI and Together AI
 		processErr = chunkProcessor.ProcessStandardChunk(r.Context(), response, model)
 	}
