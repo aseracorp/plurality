@@ -8,7 +8,7 @@
 	- cant pin / etc... on mobile chat view
 	- cache web page (https://github.com/flutter/flutter/issues/63500)
 
-	- update conv when switch tab ? 
+	- Refresh conv when switch tab !!
 	
 	- Integrate LLama via AWS - test first?
 	- Integrate Deepseek via their API

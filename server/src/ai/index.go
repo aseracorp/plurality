@@ -108,7 +108,7 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, payloa
 
 	msgList := append([]utils.Message{SystemPrompt}, payload.Messages...)
 	msgReqList := make([]MessageReq, 0, len(msgList))
-	for index, msg := range msgList {
+	for _, msg := range msgList {
 		inputMessage += msg.Role + " "
 		msgContent := make([]MessageContentReq, 0, len(msg.Content))
 		role := msg.Role
@@ -141,7 +141,7 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, payloa
 						Text: content.Text,
 					})
 				}
-			} else if contentType == "image_url" && index == len(msgList) - 1 {
+			} else if contentType == "image_url" /*&& index == len(msgList) - 1*/ {
 				basePrice += GetPriceFromTokenUsage(IMAGE_VISION, TOGETHER, model, 0)
 				msgContent = append(msgContent, MessageContentReq{
 					Type: contentType,
@@ -386,7 +386,7 @@ func GenerateTitleForMessage(message string) (string, error) {
 func SelectModel(modelSelected utils.ModelSelected, message utils.Message) utils.Model {
 	// look up message content, if they contain an image_url, use vision, otherwise use text
 	for _, content := range message.Content {
-		if content.Type == "image_url" {
+		if content.Type == "image_url" && !utils.ContainsString(ValidVisionModels, modelSelected.Text.Name) {
 			return modelSelected.Vision
 		}
 	}
@@ -438,7 +438,13 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, payload u
 				continue
 			}
 			if content.Type == "image_url" {
-				continue
+				msgContent = append(msgContent, MessageContentReq{
+					Type: "image_url",
+					ImageURL: &utils.MessageContentURL{
+						URL: content.ImageURL.URL,
+					},
+				})
+				inputMessage += content.ImageURL.URL + " {}{}{}{}{}{}{}"
 			} else {
 				if content.Text != "" {
 					txt := content.Text
@@ -490,8 +496,12 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, payload u
 		Model:             modelName,
 		Messages:          msgReqList,
 		MaxTokens:         &maxTok,
-		Temperature:       Temperature,
+		// Temperature:       Temperature,
 		Stream:            true,
+	}
+
+	if model.Name != "ChatGPT/o3-mini" {
+		requestData.Temperature = &Temperature
 	}
 
 

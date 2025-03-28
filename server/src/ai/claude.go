@@ -18,6 +18,7 @@ import (
 	"github.com/azukaar/plurality/src/ai_tools"
 )
 
+
 func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload utils.Conversation, systemPrompt string) (io.ReadCloser, int, error) {
 	var SystemPrompt = systemPrompt +
 		time.Now().String() +
@@ -104,18 +105,22 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 					})
 				}
 			} else if content.Type == "image_url" {
-				continue
+				curl := content.ImageURL.URL
+				curl = strings.TrimPrefix(curl, "data:image/jpeg;base64,")
 				// Handle image content if provided
 				// Claude API requires images to be base64 encoded
 				// This is a simplified version - actual implementation might need adjustments
-				// contents = append(contents, MessageContentReq{
-				// 	Type: "image",
-				// 	Source: ClaudeImageSourceReq{
-				// 		Type: "base64",
-				// 		Media_type: "image/jpeg", // Adjust based on actual image type
-				// 		Data: content.ImageURL.URL, // Assuming this contains base64 data
-				// 	},
-				// })
+				contents = append(contents, MessageContentReq{
+					Type: "image",
+					Source: &ClaudeImageSourceReq{
+						Type: "base64",
+						Media_type: "image/jpeg", // Adjust based on actual image type
+						Data: curl, // Assuming this contains base64 data
+					},
+				})
+
+				// TODO
+				priceToken += 1000
 			}
 		}
 		
@@ -233,12 +238,6 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 }
 
 // Claude-specific request structures
-
-type ClaudeImageSourceReq struct {
-	Type       string `json:"type"`
-	Media_type string `json:"media_type"`
-	Data       string `json:"data"`
-}
 
 type ClaudeMessageReq struct {
 	Role    string             `json:"role"`

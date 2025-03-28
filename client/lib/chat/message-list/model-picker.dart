@@ -22,6 +22,8 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     with SingleTickerProviderStateMixin {
   // Available options for each dropdown
   final List<String> _modelOptions = [
+    'llama-v3p2-11b-vision-instruct',
+    'llama-v3p2-90b-vision-instruct',
     'llama-v3p1-8b-instruct',
     'llama-v3p2-3b',
     'llama-v3p1-70b-instruct',
@@ -30,8 +32,8 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     'deepseek-v3',
     'qwen2p5-72b-instruct',
     'ChatGPT/gpt-4o-mini',
-    'ChatGPT/gpt-3.5-turbo',
     'ChatGPT/gpt-4o',
+    'ChatGPT/o3-mini',
     'Claude/claude-3-haiku',
     'Claude/claude-3-7-sonnet',
     "Gemini/gemini-1.5-pro",
@@ -42,6 +44,10 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
   final List<String> _visionModelOptions = [
     'llama-v3p2-11b-vision-instruct',
     'llama-v3p2-90b-vision-instruct',
+    'ChatGPT/gpt-4o',
+    'ChatGPT/gpt-4o-mini',
+    'Claude/claude-3-haiku',
+    'Claude/claude-3-7-sonnet',
   ];
 
   final List<String> _imageGenModelOptions = [

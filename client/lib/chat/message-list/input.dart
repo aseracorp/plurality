@@ -147,6 +147,15 @@ class _InputBoxState extends State<InputBox> {
   }
 
   String SummarizeSelectedModel(ModelSelected selectedModel) {
+    var ValidVisionModels = [
+      "llama-v3p2-11b-vision-instruct",
+      "llama-v3p2-90b-vision-instruct",
+      "Claude/claude-3-haiku",
+      "Claude/claude-3-7-sonnet",
+      "ChatGPT/gpt-4o-mini",
+      "ChatGPT/gpt-4o",
+    ];
+
     String res = "";
     if (selectedModel.text != null) {
       res += selectedModel.text!.name;
@@ -155,8 +164,9 @@ class _InputBoxState extends State<InputBox> {
     // if one of the attachments is an image use vision model
     for (var attachment in widget.attachments) {
       if (attachment.type == "image_url") {
-        if (selectedModel.vision != null) {
-          res += selectedModel.vision!.name;
+        if (selectedModel.vision != null &&
+            !ValidVisionModels.contains(selectedModel.text!.name)) {
+          res = selectedModel.vision!.name;
         }
         break;
       }

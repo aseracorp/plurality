@@ -4,11 +4,12 @@ package ai
 var ValidModels = []string{
 	// OpenAI models
 	"ChatGPT/gpt-4.5",
-	"ChatGPT/gpt-4o-mini",
 	"ChatGPT/gpt-3.5-turbo",
 	"ChatGPT/gpt-3.5-turbo-mini",
+	"ChatGPT/gpt-4o-mini",
 	"ChatGPT/gpt-4o",
-	
+	"ChatGPT/o3-mini",
+
 	// Claude models
 	"Claude/claude-3-haiku",
 	"Claude/claude-3-7-sonnet",
@@ -42,6 +43,16 @@ var ValidFreeModels = []string{
 	"black-forest-labs/FLUX.1-schnell",
 	"Gemini/gemini-2.0-flash",
 }
+
+var ValidVisionModels = []string{
+	"llama-v3p2-11b-vision-instruct",
+	"llama-v3p2-90b-vision-instruct",
+	"Claude/claude-3-haiku",
+	"Claude/claude-3-7-sonnet",
+	"ChatGPT/gpt-4o-mini",
+	"ChatGPT/gpt-4o",
+}
+	
 
 var ValidActionModels = []string{
 	// OpenAI models

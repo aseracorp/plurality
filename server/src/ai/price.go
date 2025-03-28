@@ -1,7 +1,7 @@
 package ai 
 
 import (
-	"fmt"
+	// "fmt"
 	"strings"
 
 	"github.com/azukaar/plurality/src/utils"
@@ -166,8 +166,7 @@ func GetTokenNumber(model utils.Model, payload string) (error, float64) {
 
 	
 	if err != nil {
-		err = fmt.Errorf("getEncoding: %v", err)
-		return err, 0
+		tke, _ = tiktoken.EncodingForModel("gpt-4o")
 	}
 
 	// encode
