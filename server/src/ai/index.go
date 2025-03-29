@@ -383,11 +383,14 @@ func GenerateTitleForMessage(message string) (string, error) {
 	return stringProduced, nil
 }
 
-func SelectModel(modelSelected utils.ModelSelected, message utils.Message) utils.Model {
+func SelectModel(modelSelected utils.ModelSelected, messages []utils.Message) utils.Model {
 	// look up message content, if they contain an image_url, use vision, otherwise use text
-	for _, content := range message.Content {
-		if content.Type == "image_url" && !utils.ContainsString(ValidVisionModels, modelSelected.Text.Name) {
-			return modelSelected.Vision
+	for _, message := range messages {
+		for _, content := range message.Content {
+			if content.Type == "image_url" && !utils.ContainsString(ValidVisionModels, modelSelected.Text.Name) {
+				utils.Log("Vision model selected: ", modelSelected.Vision.Name)
+				return modelSelected.Vision
+			}
 		}
 	}
 

@@ -199,12 +199,9 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	// Message or Tool uses
 	if len(payload.Messages) > 0 {
 		messageToProcess = payload.Messages[0]
-		model = SelectModel(payload.ModelSelected, payload.Messages[0])
-		messageToProcess.Model = model
 	} else {
 		model = payload.ModelSelected.Text
 	}
-
 
 	// Check plan
 	planName, err := db.GetPlanName(r.Context())
@@ -215,8 +212,8 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// CHeck model name / Free model access from plan
-	if !CheckModel(model.Name, planName) {
-		utils.Error("[HandleImageGeneration] Invalid model %s", nil, model.Name)
+	if !CheckModel(payload.ModelSelected.Text.Name, planName) || !CheckModel(payload.ModelSelected.Vision.Name, planName) {
+		utils.Error("[HandleImageGeneration] Invalid model %s", nil, payload.ModelSelected.Text.Name, payload.ModelSelected.Vision.Name)
 		http.Error(w, "Invalid model", http.StatusBadRequest)
 		return
 	}
@@ -343,6 +340,12 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		utils.Error("[HandleChat] Error pushing message", err)
 		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	if len(payload.Messages) > 0 {
+		// print conv.Messages
+		utils.Debug("[HandleChat] Conversation messages: ", conv.Messages)
+		model = SelectModel(payload.ModelSelected, conv.Messages)
 	}
 
 	// Set headers for SSE
