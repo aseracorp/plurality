@@ -105,22 +105,23 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 					})
 				}
 			} else if content.Type == "image_url" {
-				curl := content.ImageURL.URL
-				curl = strings.TrimPrefix(curl, "data:image/jpeg;base64,")
-				// Handle image content if provided
-				// Claude API requires images to be base64 encoded
-				// This is a simplified version - actual implementation might need adjustments
-				contents = append(contents, MessageContentReq{
-					Type: "image",
-					Source: &ClaudeImageSourceReq{
-						Type: "base64",
-						Media_type: "image/jpeg", // Adjust based on actual image type
-						Data: curl, // Assuming this contains base64 data
-					},
-				})
-
-				// TODO
-				priceToken += 1000
+				if msg.Role == "user" {
+					curl := content.ImageURL.URL
+					curl = strings.TrimPrefix(curl, "data:image/jpeg;base64,")
+					// Handle image content if provided
+					// Claude API requires images to be base64 encoded
+					// This is a simplified version - actual implementation might need adjustments
+					contents = append(contents, MessageContentReq{
+						Type: "image",
+						Source: &ClaudeImageSourceReq{
+							Type: "base64",
+							Media_type: "image/jpeg", // Adjust based on actual image type
+							Data: curl, // Assuming this contains base64 data
+						},
+					})
+				} else {
+					continue
+				}
 			}
 		}
 		

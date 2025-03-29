@@ -142,6 +142,10 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, payloa
 					})
 				}
 			} else if contentType == "image_url" /*&& index == len(msgList) - 1*/ {
+				if msg.Role != "user" {
+					continue
+				}
+				
 				basePrice += GetPriceFromTokenUsage(IMAGE_VISION, TOGETHER, model, 0)
 				msgContent = append(msgContent, MessageContentReq{
 					Type: contentType,
@@ -442,6 +446,10 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, payload u
 				continue
 			}
 			if content.Type == "image_url" {
+				if msg.Role != "user" {
+					continue
+				}
+
 				msgContent = append(msgContent, MessageContentReq{
 					Type: "image_url",
 					ImageURL: &utils.MessageContentURL{
