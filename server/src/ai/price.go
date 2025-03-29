@@ -15,6 +15,7 @@ const (
 	IMAGE_VISION = 2
 	IMAGE_GEN = 3
 	TOOL_USE = 4
+	TRANSCRIBE = 5
 )
 
 // providers

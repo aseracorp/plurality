@@ -67,6 +67,10 @@ dependencies:
   cached_network_image: ^3.4.1
   fading_edge_scrollview: ^4.1.1
   riverpod_annotation: ^2.6.1
+  avatar_glow: ^3.0.1
+  record: ^6.0.0
+  audio_waveforms: ^1.3.0
+  pcmtowave: ^0.0.1
 
 
 dev_dependencies:

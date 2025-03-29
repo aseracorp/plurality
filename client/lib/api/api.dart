@@ -504,6 +504,65 @@ class ApiService {
       throw APIException('API request failed: $e');
     }
   }
+
+  Future<String> transcribeAudio(
+    Uint8List audioBase64, {
+    String model = "whisper-v3-turbo",
+    String? language,
+    double temperature = 0.0,
+    String responseFormat = "text",
+  }) async {
+    try {
+      // Get authentication token
+      String? firebaseToken = await _authService.getCurrentUserToken();
+      if (firebaseToken == null) {
+        throw Exception('User not authenticated');
+      }
+
+      // Create the request
+      final request = http.Request('POST', Uri.parse('$_baseUrl/transcribe'));
+      request.headers['Content-Type'] = 'application/json';
+      request.headers['Authorization'] = 'Bearer $firebaseToken';
+
+      // Prepare request body
+      request.body = jsonEncode({
+        'audioData': audioBase64,
+        'model': model,
+        'language': language,
+        'temperature': temperature,
+        'response_format': responseFormat,
+      });
+
+      // Send the request
+      final response = await request.send();
+
+      // Handle errors
+      if (response.statusCode != 200) {
+        final errorBody = await response.stream.bytesToString();
+        String errorMessage;
+        try {
+          final errorJson = jsonDecode(errorBody);
+          errorMessage = errorJson['error'] ?? 'Failed to transcribe audio';
+        } catch (e) {
+          errorMessage =
+              errorBody.isNotEmpty ? errorBody : 'Failed to transcribe audio';
+        }
+        throw APIException(errorMessage, statusCode: response.statusCode);
+      }
+
+      // Parse the response
+      try {
+        return await response.stream.bytesToString();
+      } catch (e) {
+        throw APIException(
+          'Error processing transcription response: ${e.toString()}',
+        );
+      }
+    } catch (e) {
+      if (e is APIException) rethrow;
+      throw APIException('API request failed: $e');
+    }
+  }
 }
 
 class ImageResult {

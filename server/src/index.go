@@ -35,6 +35,7 @@ func main() {
 	r.HandleFunc("/rename-conversation/{id}", utils.AuthMiddleware(ai.API_UpdateConversationTitle)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/generate-title/{id}", utils.AuthMiddleware(ai.API_HandleTitleGeneration)).Methods("GET", "OPTIONS")
 	r.HandleFunc("/balance", utils.AuthMiddleware(ai.API_GetUserBalance)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/transcribe", utils.AuthMiddleware(ai.HandleTranscribe)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/delete-user", utils.AuthMiddleware(user.API_DeleteUser)).Methods("DELETE", "OPTIONS")
 	
 	r.HandleFunc("/miniapps", utils.AuthMiddleware(miniapps.API_ListMiniApps)).Methods("GET")

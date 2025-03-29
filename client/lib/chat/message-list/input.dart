@@ -7,13 +7,14 @@ import 'dart:typed_data';
 import 'model-picker.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter/foundation.dart';
-import '../../utils/types.dart';
 import 'attachments.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:cross_file/cross_file.dart';
-import '../../utils/file-types.dart';
 import 'package:mime/mime.dart';
 import 'package:pasteboard/pasteboard.dart';
+import '../../utils/types.dart';
+import '../../utils/file-types.dart';
+import '../../api/stt.dart';
 
 class InputBox extends StatefulWidget {
   // Required parameters
@@ -107,7 +108,30 @@ class _InputBoxState extends State<InputBox> {
   }
 
   Future<void> _listen() async {
-    if (!_isListening) {
+    final speechService = SpeechRecognitionService();
+    await speechService.startRecording(context);
+
+    // Listen to the recording state
+    speechService.recordingState.listen((isRecording) {
+      print('Recording state: $isRecording');
+
+      // When recording stops, you can get the transcribed text
+      if (!isRecording) {
+        final recognizedText = speechService.recognizedText;
+        if (recognizedText.isNotEmpty) {
+          // Do something with the transcribed text
+          print('Transcribed text: $recognizedText');
+
+          setState(() {
+            _currentText = recognizedText;
+            // Update the text field with the recognized speech
+            widget.messageController.text = _currentText;
+          });
+        }
+      }
+    });
+
+    /*if (!_isListening) {
       bool available = await _speech.initialize(
         onStatus: (status) {
           if (status == 'done' || status == 'notListening') {
@@ -143,7 +167,7 @@ class _InputBoxState extends State<InputBox> {
         _isListening = false;
       });
       _speech.stop();
-    }
+    }*/
   }
 
   String SummarizeSelectedModel(ModelSelected selectedModel) {
@@ -622,14 +646,14 @@ class _InputBoxState extends State<InputBox> {
                   ),
                   const SizedBox(width: 8.0),
                   // Speech-to-text microphone button
-                  if (supportSST)
-                    IconButton(
-                      onPressed: _listen,
-                      icon: Icon(
-                        _isListening ? Icons.mic : Icons.mic_none,
-                        color: primaryColor,
-                      ),
+                  // if (supportSST)
+                  IconButton(
+                    onPressed: _listen,
+                    icon: Icon(
+                      _isListening ? Icons.mic : Icons.mic_none,
+                      color: primaryColor,
                     ),
+                  ),
                   // Paste button for explicit paste functionality
                   // IconButton(
                   //   onPressed: () => _handlePaste(context),

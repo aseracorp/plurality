@@ -34,6 +34,9 @@ var ValidModels = []string{
 	"Gemini/gemini-1.5-pro",
 	"Gemini/gemini-1.5-flash-latest",
 	"Gemini/gemini-2.0-flash",
+
+	// Audio
+	"whisper-v3-turbo",
 }
 
 var ValidFreeModels = []string{
@@ -42,6 +45,7 @@ var ValidFreeModels = []string{
 	"llama-v3p2-3b",
 	"black-forest-labs/FLUX.1-schnell",
 	"Gemini/gemini-2.0-flash",
+	"whisper-v3-turbo",
 }
 
 var ValidVisionModels = []string{

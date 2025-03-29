@@ -10,6 +10,8 @@ list(APPEND FLUTTER_PLUGIN_LIST
   firebase_core
   flutter_tts
   pasteboard
+  pcmtowave
+  record_windows
   share_plus
   url_launcher_windows
 )
