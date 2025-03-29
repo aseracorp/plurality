@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:pcmtowave/pcmtowave.dart';
 import 'package:avatar_glow/avatar_glow.dart';
@@ -61,9 +62,11 @@ class SpeechRecognitionService {
 
   bool isCall = false;
 
+  int latestAmplitude = 0;
+
   // Method to calculate silence threshold based on amplitude history
   void _calculateSilenceThreshold() {
-    if (_amplitudeHistory.length < 20) {
+    if (_amplitudeHistory.length < 40) {
       // Not enough data points yet
       return;
     }
@@ -72,26 +75,45 @@ class SpeechRecognitionService {
     List<double> sortedAmplitudes = List.from(_amplitudeHistory)..sort();
 
     // Calculate the 90th percentile
-    int index = (sortedAmplitudes.length * 0.9).floor();
-    _silenceThreshold = sortedAmplitudes[index] - 10.0; // Adjusted for silence
+    double lowest = sortedAmplitudes[(sortedAmplitudes.length * 0.8).floor()];
+    double highest = sortedAmplitudes[(sortedAmplitudes.length * 0.92).floor()];
+
+    _silenceThreshold = highest - 5.0; // Default threshold
+
+    if (math.sqrt(math.pow(lowest - highest, 2)) < 15.0) {
+      if (highest > -35) {
+        _silenceThreshold = highest - 5.0; // Adjusted for silence while talking
+      } else {
+        _silenceThreshold = lowest + 5.0; // Adjusted for silence NOT talking
+      }
+    }
+
+    if (_silenceThreshold < -75.0) {
+      _silenceThreshold = -75.0; // Set a lower limit for the threshold
+    }
+
+    if (_silenceThreshold > -20.0) {
+      _silenceThreshold = -20.0; // Set an upper limit for the threshold
+    }
 
     // print(
     //   'Calculated silence threshold: $_silenceThreshold dB (90th percentile)',
     // );
+
     _thresholdCalculated = true;
   }
 
   // Modified _startAmplitudeMonitoring method
   void _startAmplitudeMonitoring({bool autoStop = false}) {
     // Reset amplitude history when starting a new recording
-    _amplitudeHistory.clear();
+    // _amplitudeHistory.clear();
     _thresholdCalculated = false;
 
     // Cancel any existing timer
     _amplitudeTimer?.cancel();
 
     // Create a new timer that fires every 100ms
-    _amplitudeTimer = Timer.periodic(const Duration(milliseconds: 100), (
+    _amplitudeTimer = Timer.periodic(const Duration(milliseconds: 50), (
       timer,
     ) async {
       if (_isRecording) {
@@ -99,6 +121,15 @@ class SpeechRecognitionService {
           // Get the current amplitude
           final amplitude = await _record.getAmplitude();
           final double level = amplitude.current ?? 0.0;
+          if (level < -75.0) {
+            return;
+          } else if (level > -20.0) {
+            return;
+          }
+
+          latestAmplitude = level.toInt(); // Store the latest amplitude
+
+          // print('Current amplitude: $level dB (latest: $latestAmplitude)');
 
           // Add to amplitude history (keep last 300 values)
           _amplitudeHistory.add(level);
@@ -107,8 +138,10 @@ class SpeechRecognitionService {
           }
 
           // Calculate threshold after collecting enough samples
-          if (_amplitudeHistory.length >= 20) {
+          if (_amplitudeHistory.length >= 40) {
             _calculateSilenceThreshold();
+          } else {
+            _thresholdCalculated = false; // Reset if not enough samples
           }
 
           // Add the amplitude to the stream
@@ -119,7 +152,7 @@ class SpeechRecognitionService {
             bool isSilent = level <= _silenceThreshold;
             if (isSilent && autoStop) {
               _silenceCounter++;
-              if (_silenceCounter > 10) {
+              if (_silenceCounter > 30) {
                 // If silent for 20 intervals, stop recording
                 _silenceCounter = 0; // Reset counter
                 await stopRecording(); // Stop recording
@@ -143,8 +176,9 @@ class SpeechRecognitionService {
   double get silenceThreshold => _silenceThreshold;
 
   // Add a method to check if current amplitude is silence
-  bool isCurrentlySilent(double amplitude) {
-    return _thresholdCalculated && amplitude <= _silenceThreshold;
+  bool isCurrentlySilent() {
+    // print('Latest amplitude: $latestAmplitude');
+    return _thresholdCalculated && latestAmplitude <= _silenceThreshold + 2.0;
   }
 
   // Start recording and show modal
@@ -173,7 +207,12 @@ class SpeechRecognitionService {
     );
 
     voiceStream.listen(
-      (data) => voiceStreamBytes.addAll(data),
+      (data) {
+        if (_silenceCounter < 10 || latestAmplitude > _silenceThreshold) {
+          // Add the data to the stream bytes
+          voiceStreamBytes.addAll(data);
+        }
+      },
       onError: (error) {
         print('Error in voice stream: $error');
       },
@@ -220,9 +259,11 @@ class SpeechRecognitionService {
       // Call the transcribe API
       // wait 500ms before calling the API
 
-      await Future.delayed(const Duration(milliseconds: 100));
-
-      print(voiceStreamBytes.length);
+      if (voiceStreamBytes.length < 10000) {
+        voiceStreamBytes = <int>[];
+        print('Audio data is too short to transcribe.');
+        return '';
+      }
 
       recognizedText = await _apiService.transcribeAudio(
         Uint8List.fromList(voiceStreamBytes.toList()),
@@ -297,9 +338,13 @@ class SpeechRecognitionService {
   // Dismiss the modal if it's showing
   void _dismissModal() {
     if (_modalContext != null) {
-      Navigator.of(_modalContext!).pop();
+      Navigator.of(_modalContext!, rootNavigator: true).pop();
       _modalContext = null;
     }
+  }
+
+  void ResetModal() {
+    _modalContext = null;
   }
 
   // Dispose the service
@@ -377,7 +422,7 @@ class _RecordingModalState extends State<_RecordingModal>
         final speechService = SpeechRecognitionService();
         setState(() {
           currentAmplitude = amplitude;
-          isSilent = speechService.isCurrentlySilent(amplitude);
+          isSilent = speechService.isCurrentlySilent();
           silenceThreshold = speechService.silenceThreshold;
         });
       }
@@ -439,6 +484,7 @@ class _RecordingModalState extends State<_RecordingModal>
                 ),
               ),
             ),
+          if (widget.isCall) const SizedBox(height: 16),
           if (!isListening)
             GestureDetector(
               onTap: () {
@@ -470,25 +516,26 @@ class _RecordingModalState extends State<_RecordingModal>
             ),
           ),*/
           // Audio level indicator bar
-          Container(
-            margin: const EdgeInsets.symmetric(vertical: 10),
-            width: double.infinity,
-            height: 10,
-            decoration: BoxDecoration(
-              color: Colors.grey.withOpacity(0.2),
-              borderRadius: BorderRadius.circular(5),
-            ),
-            child: FractionallySizedBox(
-              alignment: Alignment.centerLeft,
-              widthFactor: normalizedAmplitude,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Theme.of(context).primaryColor,
-                  borderRadius: BorderRadius.circular(5),
+          if (isListening)
+            Container(
+              margin: const EdgeInsets.symmetric(vertical: 10),
+              width: double.infinity,
+              height: 10,
+              decoration: BoxDecoration(
+                color: Colors.grey.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(5),
+              ),
+              child: FractionallySizedBox(
+                alignment: Alignment.centerLeft,
+                widthFactor: normalizedAmplitude,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).primaryColor,
+                    borderRadius: BorderRadius.circular(5),
+                  ),
                 ),
               ),
             ),
-          ),
 
           const SizedBox(height: 16),
           FadeTransition(

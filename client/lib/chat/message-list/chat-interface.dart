@@ -771,9 +771,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
               Center(
                 child: Column(
                   children: [
-                    SizedBox(height: 24),
+                    SizedBox(height: 16),
                     Container(
                       width: 250,
+                      height: 150,
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(1000.0),
                         boxShadow: [
@@ -787,12 +788,12 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                       clipBehavior: Clip.antiAlias,
                       child: Image.memory(
                         base64Decode(_miniAppSelected!.iconURL),
-                        width: 250,
-                        height: 250,
+                        width: 150,
+                        height: 150,
                         fit: BoxFit.cover,
                       ),
                     ),
-                    SizedBox(height: 24),
+                    SizedBox(height: 16),
                     Container(
                       margin: const EdgeInsets.symmetric(
                         horizontal: 24.0,
@@ -817,13 +818,14 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                             TextSpan(
                               text: '"',
                               style: TextStyle(
-                                fontSize: 24,
+                                fontSize: 20,
                                 color: Theme.of(context).colorScheme.primary,
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
                             TextSpan(
                               style: Theme.of(context).textTheme.headlineSmall
+                                  ?.copyWith(fontSize: 20)
                                   ?.copyWith(fontStyle: FontStyle.italic),
                               text:
                                   _miniAppSelected!.InitialMessage?['en'] ??
@@ -832,7 +834,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                             TextSpan(
                               text: '"',
                               style: TextStyle(
-                                fontSize: 24,
+                                fontSize: 20,
                                 color: Theme.of(context).colorScheme.primary,
                                 fontWeight: FontWeight.bold,
                               ),
@@ -842,7 +844,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                       ),
                     ),
 
-                    SizedBox(height: 64),
+                    SizedBox(height: 24),
                   ],
                 ),
               ),

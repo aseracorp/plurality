@@ -605,7 +605,10 @@ class _InputBoxState extends State<InputBox> {
 
         // Keep the call button separate
         IconButton(
-          onPressed: _call,
+          onPressed: () {
+            SpeechRecognitionService().ResetModal();
+            _call();
+          },
           icon: Icon(Icons.call, color: primaryColor),
         ),
 

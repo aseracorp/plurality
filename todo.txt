@@ -12,7 +12,6 @@
 
 	- FIX OPEN AI VISION TOKEN PRICE
 
-	- Recording max time for oral 
 	- if oral transcription too long it will be a snippet!
 	- change device in call
 	
