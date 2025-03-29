@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../auth/auth-service.dart';
 import '../utils/types.dart';
 import './balance.dart';
+import './stt.dart';
 import 'package:flutter/material.dart';
 
 class ApiService {
@@ -95,6 +96,7 @@ class ApiService {
       'conversation_id': conversationID,
       "model_selected": modelSelected,
       "mini_app": miniAppID?.toJson(),
+      "is_call": SpeechRecognitionService().isCall,
     });
 
     final streamedResponse = await request.send();
@@ -506,7 +508,7 @@ class ApiService {
   }
 
   Future<String> transcribeAudio(
-    Uint8List audioBase64, {
+    Uint8List audioData, {
     String model = "whisper-v3-turbo",
     String? language,
     double temperature = 0.0,
@@ -526,7 +528,7 @@ class ApiService {
 
       // Prepare request body
       request.body = jsonEncode({
-        'audioData': audioBase64,
+        'audioData': audioData,
         'model': model,
         'language': language,
         'temperature': temperature,

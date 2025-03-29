@@ -22,6 +22,7 @@ import 'image-gen.dart';
 import 'input.dart';
 import 'model-picker.dart';
 import '../../utils/file-types.dart';
+import '../../api/stt.dart';
 import 'minimap.dart';
 import '../miniapps.dart';
 import 'middle-click.dart';
@@ -106,7 +107,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
     // Check if the conversationId has changed
     if (oldWidget.conversationId != widget.conversationId) {
-      TTSService().stop();
+      if (oldWidget.conversationId != "") {
+        // If the conversationId has changed, stop TTS and load the new conversation
+        TTSService().stop();
+      }
 
       _updateSelectedModel();
       _loadConversation(widget.conversationId);
@@ -200,7 +204,6 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
   @override
   void dispose() {
-    TTSService().stop();
     _mainScrollController.dispose();
     _miniMapScrollController.dispose();
     _inputFocusNode.dispose();
@@ -491,6 +494,18 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         conversationId: currentConversationID,
         message: assistantMessage,
       );
+
+      // TTS for calls
+      var stt = SpeechRecognitionService();
+      var tts = TTSService();
+      if (stt.isCall) {
+        print('isCall: ${_currentStreamedResponse}');
+        tts.speak(_currentStreamedResponse, () {
+          if (stt.isCall) {
+            stt.startRecording(context, autoStop: true, call: true);
+          }
+        }, queue: true);
+      }
 
       if (newMessage != null) {
         genImage(

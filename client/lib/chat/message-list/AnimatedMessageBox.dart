@@ -122,7 +122,7 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
 
   Future<void> speak() async {
     if (widget.text.isNotEmpty) {
-      await _ttsService.speak(widget.text);
+      _ttsService.speak(widget.text, null);
     }
   }
 

@@ -10,6 +10,8 @@ import (
 	"bytes"
 	"mime/multipart"
 
+	"github.com/go-audio/wav"
+
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/utils"
 )
@@ -105,6 +107,8 @@ func HandleTranscribe(w http.ResponseWriter, r *http.Request) {
 		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	
+	utils.Log("[HandleTranscribe] Request audio data length: %d", len(request.AudioData))
 
 	// Call the Whisper API (this function would need to be implemented)
 	transcription, err := TranscribeAudio(request.AudioData, request.Model, request.Language, request.Temperature, request.ResponseFormat, request.VadModel)
@@ -118,16 +122,44 @@ func HandleTranscribe(w http.ResponseWriter, r *http.Request) {
 	// messageAsBytes, _ := json.Marshal(message)
 	w.Write(([]byte)(transcription))
 }
+
 func TranscribeAudio(audioData []byte, model string, language string, temperature float64, responseFormat string, vadModel string) (string, error) {
 	// Define the API endpoint
 	apiURL := "https://audio-turbo.us-virginia-1.direct.fireworks.ai/v1/audio/transcriptions"
 
+	// create wav buffer for conversaion
+	wavBuffer := &utils.WriteSeekerInMem{}
+	
+	// Write audio data to file for debug 
+	// err := os.WriteFile("audio-before.wav", audioData, 0644)
+	// if err != nil {
+	// 		return "", fmt.Errorf("error writing audio data to file: %v", err)
+	// }
+
+	wavWriter := wav.NewEncoder(wavBuffer, 8000, 16, 1, 1)
+	// Write the audio data to the wav buffer
+	err := wavWriter.Write(utils.NewAudioIntBufferFromBuffer(audioData))
+	if err != nil {
+			return "", fmt.Errorf("error writing audio data to wav buffer: %v", err)
+	}
+	// Close the wav writer to flush the data	
+	err = wavWriter.Close()
+	if err != nil {
+			return "", fmt.Errorf("error closing wav writer: %v", err)
+	}
+
+	// Write audio data to file for debug 
+	// err = os.WriteFile("audio.wav", wavBuffer.Bytes(), 0644)
+	// if err != nil {
+	// 		return "", fmt.Errorf("error writing audio data to file: %v", err)
+	// }
+	
 	// Create a new multipart writer
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
 	// Add the model parameter
-	err := writer.WriteField("model", model)
+	err = writer.WriteField("model", model)
 	if err != nil {
 			return "", fmt.Errorf("error adding model field: %v", err)
 	}
@@ -168,7 +200,7 @@ func TranscribeAudio(audioData []byte, model string, language string, temperatur
 	}
 
 	// Write the audio data to the form file
-	_, err = part.Write(audioData)
+	_, err = part.Write(wavBuffer.Bytes())
 	if err != nil {
 			return "", fmt.Errorf("error writing audio data: %v", err)
 	}

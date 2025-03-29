@@ -218,3 +218,11 @@ func ContainsString(arr []string, str string) bool {
 	}
 	return false
 }
+
+func ByteSliceToIntSlice(byteSlice []byte) []int {
+	intSlice := make([]int, len(byteSlice))
+	for i, b := range byteSlice {
+			intSlice[i] = int(b)
+	}
+	return intSlice
+}

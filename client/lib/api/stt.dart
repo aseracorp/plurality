@@ -10,6 +10,7 @@ import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import '../utils/types.dart';
 import './api.dart';
+import './tts.dart';
 
 class SpeechRecognitionService {
   // Singleton pattern
@@ -22,7 +23,6 @@ class SpeechRecognitionService {
   bool _isRecording = false;
   String recognizedText = '';
   BuildContext? _modalContext;
-  String? _audioPath;
   final ApiService _apiService = ApiService();
 
   // Stream controllers to notify listeners
@@ -31,6 +31,7 @@ class SpeechRecognitionService {
 
   // New stream controller for amplitude
   final _amplitudeController = StreamController<double>.broadcast();
+  final _listeningController = StreamController<bool>.broadcast();
 
   // Timer for amplitude updates
   Timer? _amplitudeTimer;
@@ -40,6 +41,9 @@ class SpeechRecognitionService {
 
   // New amplitude stream
   Stream<double> get amplitudeStream => _amplitudeController.stream;
+
+  // New amplitude stream
+  Stream<bool> get listeningStream => _listeningController.stream;
 
   // Check if recording is currently active
   bool get isRecording => _isRecording;
@@ -53,8 +57,9 @@ class SpeechRecognitionService {
 
   int _silenceCounter = 0;
 
-  Stream<Uint8List>? voiceStream;
   var voiceStreamBytes = <int>[];
+
+  bool isCall = false;
 
   // Method to calculate silence threshold based on amplitude history
   void _calculateSilenceThreshold() {
@@ -70,9 +75,9 @@ class SpeechRecognitionService {
     int index = (sortedAmplitudes.length * 0.9).floor();
     _silenceThreshold = sortedAmplitudes[index] - 10.0; // Adjusted for silence
 
-    print(
-      'Calculated silence threshold: $_silenceThreshold dB (90th percentile)',
-    );
+    // print(
+    //   'Calculated silence threshold: $_silenceThreshold dB (90th percentile)',
+    // );
     _thresholdCalculated = true;
   }
 
@@ -114,11 +119,10 @@ class SpeechRecognitionService {
             bool isSilent = level <= _silenceThreshold;
             if (isSilent && autoStop) {
               _silenceCounter++;
-              if (_silenceCounter > 15) {
+              if (_silenceCounter > 10) {
                 // If silent for 20 intervals, stop recording
                 _silenceCounter = 0; // Reset counter
                 await stopRecording(); // Stop recording
-                _dismissModal(); // Dismiss modal
                 print('Silence detected, stopping recording...');
               }
             } else {
@@ -144,30 +148,32 @@ class SpeechRecognitionService {
   }
 
   // Start recording and show modal
-  Future<void> startRecording(BuildContext context) async {
+  Future<void> startRecording(
+    BuildContext context, {
+    bool autoStop = false,
+    bool call = false,
+  }) async {
     // Check permissions
     if (!await _record.hasPermission()) {
       return;
     }
 
+    _listeningController.add(true);
+
+    isCall = call;
+
     // Start recording
-    voiceStream = await _record.startStream(
+    var voiceStream = await _record.startStream(
       const RecordConfig(
         encoder: AudioEncoder.pcm16bits,
         bitRate: 128000,
         numChannels: 1,
-        sampleRate: 16000,
+        sampleRate: 8000,
       ),
     );
 
-    final _pcmtowave = convertToWav(
-      sampleRate: 16000,
-      converMiliSeconds: 200,
-      numChannels: 1,
-    );
-
-    voiceStream!.listen(
-      (data) => _pcmtowave.run(data),
+    voiceStream.listen(
+      (data) => voiceStreamBytes.addAll(data),
       onError: (error) {
         print('Error in voice stream: $error');
       },
@@ -175,10 +181,6 @@ class SpeechRecognitionService {
         print('Voice stream done');
       },
     );
-
-    _pcmtowave.convert.listen((event) async {
-      voiceStreamBytes.addAll(event);
-    });
 
     // voiceStream!.listen(
     //   (data) => voiceStreamBytes.addAll(data),
@@ -195,7 +197,7 @@ class SpeechRecognitionService {
     recognizedText = '';
 
     // Start amplitude monitoring
-    _startAmplitudeMonitoring();
+    _startAmplitudeMonitoring(autoStop: autoStop);
 
     // Show modal
     _showRecordingModal(context);
@@ -209,13 +211,19 @@ class SpeechRecognitionService {
     _amplitudeTimer?.cancel();
 
     // Stop recording
-    var test = await _record.stop();
+    await _record.stop();
 
     try {
       // Convert to base64
       // final base64Audio = base64Encode(bytes);
 
       // Call the transcribe API
+      // wait 500ms before calling the API
+
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      print(voiceStreamBytes.length);
+
       recognizedText = await _apiService.transcribeAudio(
         Uint8List.fromList(voiceStreamBytes.toList()),
       );
@@ -228,57 +236,62 @@ class SpeechRecognitionService {
       return recognizedText;
     } catch (e) {
       _isRecording = false;
+      _listeningController.add(false);
       _recordingStateController.add(false);
       print('Error transcribing audio: $e');
       return '';
     } finally {
       _isRecording = false;
       _recordingStateController.add(false);
-      _dismissModal();
+      _listeningController.add(false);
+      if (!isCall) _dismissModal();
     }
   }
 
   // Cancel recording
   Future<void> cancelRecording() async {
-    if (!_isRecording) return;
-
     // Stop amplitude monitoring
     _amplitudeTimer?.cancel();
 
     voiceStreamBytes = <int>[]; // Clear the stream bytes
 
+    isCall = false;
+
     await _record.stop();
     _isRecording = false;
+    _listeningController.add(false);
     _recordingStateController.add(false);
     recognizedText = '';
 
-    // Delete the temporary file if it exists
-    if (_audioPath != null) {
-      final file = File(_audioPath!);
-      if (await file.exists()) {
-        await file.delete();
-      }
-    }
+    TTSService().stop();
 
     _dismissModal();
   }
 
   // Show the recording modal
   void _showRecordingModal(BuildContext context) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext modalContext) {
-        _modalContext = modalContext;
-        return _RecordingModal(
-          onCancel: () => cancelRecording(),
-          onDone: () => stopRecording(),
-          textStream: _textRecognizedController.stream,
-          amplitudeStream:
-              _amplitudeController.stream, // Pass the amplitude stream
-        );
-      },
-    );
+    if (_modalContext == null) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (BuildContext modalContext) {
+          _modalContext = modalContext;
+          return _RecordingModal(
+            onCancel: () => cancelRecording(),
+            onDone: () => stopRecording(),
+            onInterrupt: () {
+              TTSService().stop();
+              startRecording(context, autoStop: true, call: isCall);
+            },
+            textStream: _textRecognizedController.stream,
+            amplitudeStream:
+                _amplitudeController.stream, // Pass the amplitude stream
+            listeningStream: _listeningController.stream,
+            isCall: isCall,
+          );
+        },
+      );
+    }
   }
 
   // Dismiss the modal if it's showing
@@ -303,15 +316,21 @@ class SpeechRecognitionService {
 class _RecordingModal extends StatefulWidget {
   final VoidCallback onCancel;
   final VoidCallback onDone;
+  final VoidCallback onInterrupt;
   final Stream<String> textStream;
   final Stream<double> amplitudeStream; // New parameter for amplitude stream
+  final Stream<bool> listeningStream;
+  final bool isCall;
 
   const _RecordingModal({
     Key? key,
     required this.onCancel,
     required this.onDone,
+    required this.onInterrupt,
     required this.textStream,
     required this.amplitudeStream, // Add this parameter
+    required this.listeningStream,
+    required this.isCall,
   }) : super(key: key);
 
   @override
@@ -326,6 +345,7 @@ class _RecordingModalState extends State<_RecordingModal>
   double currentAmplitude = 0.0; // Track current amplitude
   bool isSilent = false;
   double silenceThreshold = -35.0; // Track silence threshold
+  bool isListening = true;
 
   @override
   void initState() {
@@ -362,6 +382,15 @@ class _RecordingModalState extends State<_RecordingModal>
         });
       }
     });
+
+    // Listen to listening state updates
+    widget.listeningStream.listen((_isListening) {
+      if (mounted) {
+        setState(() {
+          isListening = _isListening;
+        });
+      }
+    });
   }
 
   @override
@@ -388,27 +417,45 @@ class _RecordingModalState extends State<_RecordingModal>
         children: [
           const SizedBox(height: 16),
           // Audio level visualizer
-          AvatarGlow(
-            glowColor: Theme.of(context).primaryColor,
-            duration: const Duration(milliseconds: 2000),
-            repeat: true,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 50),
-              width: 80,
-              height: 75,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: Theme.of(context).primaryColor.withOpacity(0.2),
-              ),
-              child: Center(
-                child: Icon(
-                  Icons.mic,
-                  color: Theme.of(context).primaryColor,
-                  size: 40,
+          if (isListening)
+            AvatarGlow(
+              glowColor: Theme.of(context).primaryColor,
+              duration: const Duration(milliseconds: 2000),
+              repeat: true,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 50),
+                width: 80,
+                height: 75,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Theme.of(context).primaryColor.withOpacity(0.2),
+                ),
+                child: Center(
+                  child: Icon(
+                    Icons.mic,
+                    color: Theme.of(context).primaryColor,
+                    size: 40,
+                  ),
                 ),
               ),
             ),
-          ),
+          if (!isListening)
+            GestureDetector(
+              onTap: () {
+                widget.onInterrupt();
+              },
+              child: Container(
+                width: 80,
+                height: 75,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.red.withOpacity(0.2),
+                ),
+                child: Center(
+                  child: Icon(Icons.mic_off, color: Colors.white, size: 40),
+                ),
+              ),
+            ),
 
           const SizedBox(height: 16),
           /*Container(
@@ -446,13 +493,21 @@ class _RecordingModalState extends State<_RecordingModal>
           const SizedBox(height: 16),
           FadeTransition(
             opacity: _opacityAnimation,
-            child: const Text(
-              "Listening...",
+            child: Text(
+              isListening ? "Listening..." : "Speaking...",
               style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
             ),
           ),
+          if (!isListening)
+            FadeTransition(
+              opacity: _opacityAnimation,
+              child: Text(
+                "Unmute yourself to interrupt",
+                style: TextStyle(fontSize: 14),
+              ),
+            ),
           const SizedBox(height: 20),
-          if (recognizedText.isNotEmpty)
+          if (false && recognizedText.isNotEmpty)
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -472,32 +527,50 @@ class _RecordingModalState extends State<_RecordingModal>
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
-              ElevatedButton.icon(
-                onPressed: widget.onCancel,
-                icon: const Icon(Icons.close),
-                label: const Text("Cancel"),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.grey,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 10,
+              if (!widget.isCall)
+                ElevatedButton.icon(
+                  onPressed: widget.onCancel,
+                  icon: const Icon(Icons.close),
+                  label: const Text("Cancel"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.grey,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 10,
+                    ),
                   ),
                 ),
-              ),
-              ElevatedButton.icon(
-                onPressed: widget.onDone,
-                icon: const Icon(Icons.check),
-                label: const Text("Done"),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Theme.of(context).primaryColor,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 10,
+
+              if (!widget.isCall)
+                ElevatedButton.icon(
+                  onPressed: widget.onDone,
+                  icon: const Icon(Icons.check),
+                  label: const Text("Done"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Theme.of(context).primaryColor,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 10,
+                    ),
                   ),
                 ),
-              ),
+
+              if (widget.isCall)
+                ElevatedButton.icon(
+                  onPressed: widget.onCancel,
+                  icon: const Icon(Icons.phone),
+                  label: const Text("End Call"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 10,
+                    ),
+                  ),
+                ),
             ],
           ),
         ],

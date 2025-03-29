@@ -11,6 +11,7 @@ import './auth/account.dart';
 import './auth/login.dart';
 import './api/storage.dart';
 import './api/service.dart';
+import './api/stt.dart';
 import './api/preferences_provider.dart';
 import 'chat/index.dart';
 import 'package:google_sign_in/google_sign_in.dart';

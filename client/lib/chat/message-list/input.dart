@@ -4,6 +4,7 @@ import 'package:image_picker/image_picker.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:async';
 import 'model-picker.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter/foundation.dart';
@@ -69,16 +70,24 @@ class _InputBoxState extends State<InputBox> {
   String _currentText = '';
   bool _isDragging = false;
   final FocusNode _pasteDetectorFocusNode = FocusNode();
+  StreamSubscription? _subscription;
 
   @override
   void initState() {
     super.initState();
     _speech = stt.SpeechToText();
     widget.messageController.addListener(_onTextChanged);
+    if (SpeechRecognitionService().isCall) {
+      print('123');
+      _call(resuming: true);
+    }
   }
 
   @override
   void dispose() {
+    widget.messageController.removeListener(_onTextChanged);
+    widget.messageController.dispose();
+    _subscription?.cancel();
     _pasteDetectorFocusNode.dispose();
     super.dispose();
   }
@@ -107,12 +116,18 @@ class _InputBoxState extends State<InputBox> {
     _previousText = widget.messageController.text;
   }
 
-  Future<void> _listen() async {
+  Future<void> _call({resuming = false}) async {
+    print('Call function called');
     final speechService = SpeechRecognitionService();
-    await speechService.startRecording(context);
+    if (!resuming)
+      await speechService.startRecording(context, autoStop: true, call: true);
+
+    if (_subscription != null) {
+      _subscription!.cancel();
+    }
 
     // Listen to the recording state
-    speechService.recordingState.listen((isRecording) {
+    _subscription = speechService.recordingState.listen((isRecording) {
       print('Recording state: $isRecording');
 
       // When recording stops, you can get the transcribed text
@@ -126,10 +141,49 @@ class _InputBoxState extends State<InputBox> {
             _currentText = recognizedText;
             // Update the text field with the recognized speech
             widget.messageController.text = _currentText;
+
+            // send the message
+            widget.onSend(context);
           });
+        } else if (speechService.isCall) {
+          print('3445');
+          _call();
         }
       }
     });
+  }
+
+  Future<void> _listen() async {
+    // bool supportSST =
+    //     kIsWeb || Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
+
+    final speechService = SpeechRecognitionService();
+    await speechService.startRecording(context);
+
+    // Listen to the recording state
+    speechService.recordingState
+        .where(
+          (isRecording) => !isRecording,
+        ) // Only process when recording stops
+        .take(1)
+        .listen((isRecording) {
+          print('Recording state: $isRecording');
+
+          // When recording stops, you can get the transcribed text
+          if (!isRecording) {
+            final recognizedText = speechService.recognizedText;
+            if (recognizedText.isNotEmpty) {
+              // Do something with the transcribed text
+              print('Transcribed text: $recognizedText');
+
+              setState(() {
+                _currentText = recognizedText;
+                // Update the text field with the recognized speech
+                widget.messageController.text = _currentText;
+              });
+            }
+          }
+        });
 
     /*if (!_isListening) {
       bool available = await _speech.initialize(
@@ -455,43 +509,142 @@ class _InputBoxState extends State<InputBox> {
   Widget getPlus(Color primaryColor) {
     return Row(
       children: [
-        IconButton(
-          onPressed: () => widget.pickImage(source: ImageSource.camera),
-          icon: Icon(Icons.camera_alt, color: primaryColor),
-        ),
-        IconButton(
-          onPressed: () => widget.pickImage(source: ImageSource.gallery),
-          icon: Icon(Icons.photo, color: primaryColor),
-        ),
-        IconButton(
-          onPressed: widget.pickFile,
-          icon: Icon(Icons.attach_file, color: primaryColor),
-        ),
-        // pick AI model
-        ElevatedButton(
-          style: ElevatedButton.styleFrom(),
-          onPressed: () {
-            showDialog(
-              context: context,
-              builder: (BuildContext context) {
-                return ModelSelectionModal(
-                  selectedModel: widget.selectedModel,
-                  onModelSelected: (ModelSelected models) {
-                    widget.setSelectedModel(models);
+        // Replace the three separate buttons with a single + button
+        widget.isMobile
+            ? IconButton(
+              icon: Icon(Icons.add, color: primaryColor),
+              onPressed: () {
+                // Show bottom sheet on mobile
+                showModalBottomSheet(
+                  context: context,
+                  builder: (BuildContext context) {
+                    return SafeArea(
+                      child: Wrap(
+                        children: <Widget>[
+                          ListTile(
+                            leading: Icon(Icons.camera_alt),
+                            title: Text('Camera'),
+                            onTap: () {
+                              Navigator.pop(context);
+                              widget.pickImage(source: ImageSource.camera);
+                            },
+                          ),
+                          ListTile(
+                            leading: Icon(Icons.photo),
+                            title: Text('Gallery'),
+                            onTap: () {
+                              Navigator.pop(context);
+                              widget.pickImage(source: ImageSource.gallery);
+                            },
+                          ),
+                          ListTile(
+                            leading: Icon(Icons.attach_file),
+                            title: Text('File'),
+                            onTap: () {
+                              Navigator.pop(context);
+                              widget.pickFile();
+                            },
+                          ),
+                        ],
+                      ),
+                    );
                   },
                 );
               },
-            );
-          },
-          child: Row(
-            children: [
-              Icon(Icons.smart_toy),
-              VerticalDivider(),
-              Text(
-                SummarizeSelectedModel(widget.selectedModel),
-                style: TextStyle(fontSize: 10),
-              ),
-            ],
+            )
+            : PopupMenuButton<String>(
+              icon: Icon(Icons.add, color: primaryColor),
+              offset: Offset(0, -100), // Adjust this to position the menu
+              itemBuilder:
+                  (BuildContext context) => <PopupMenuEntry<String>>[
+                    PopupMenuItem<String>(
+                      value: 'camera',
+                      child: Row(
+                        children: [
+                          Icon(Icons.camera_alt, color: primaryColor),
+                          SizedBox(width: 8),
+                          Text('Camera'),
+                        ],
+                      ),
+                    ),
+                    PopupMenuItem<String>(
+                      value: 'gallery',
+                      child: Row(
+                        children: [
+                          Icon(Icons.photo, color: primaryColor),
+                          SizedBox(width: 8),
+                          Text('Gallery'),
+                        ],
+                      ),
+                    ),
+                    PopupMenuItem<String>(
+                      value: 'file',
+                      child: Row(
+                        children: [
+                          Icon(Icons.attach_file, color: primaryColor),
+                          SizedBox(width: 8),
+                          Text('File'),
+                        ],
+                      ),
+                    ),
+                  ],
+              onSelected: (String value) {
+                switch (value) {
+                  case 'camera':
+                    widget.pickImage(source: ImageSource.camera);
+                    break;
+                  case 'gallery':
+                    widget.pickImage(source: ImageSource.gallery);
+                    break;
+                  case 'file':
+                    widget.pickFile();
+                    break;
+                }
+              },
+            ),
+
+        // Keep the call button separate
+        IconButton(
+          onPressed: _call,
+          icon: Icon(Icons.call, color: primaryColor),
+        ),
+
+        SizedBox(width: 8),
+
+        // Keep the AI model selection button
+        Container(
+          constraints: BoxConstraints(maxWidth: 140), // Set maximum width here
+          child: ElevatedButton(
+            style: ElevatedButton.styleFrom(),
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (BuildContext context) {
+                  return ModelSelectionModal(
+                    selectedModel: widget.selectedModel,
+                    onModelSelected: (ModelSelected models) {
+                      widget.setSelectedModel(models);
+                    },
+                  );
+                },
+              );
+            },
+            child: Row(
+              mainAxisSize: MainAxisSize.min, // Make row take minimum space
+              children: [
+                Icon(Icons.smart_toy, size: 16),
+                SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    SummarizeSelectedModel(widget.selectedModel),
+                    style: TextStyle(fontSize: 10),
+                    overflow:
+                        TextOverflow.ellipsis, // Add ellipsis for text overflow
+                    maxLines: 1,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ],
@@ -531,9 +684,6 @@ class _InputBoxState extends State<InputBox> {
         (Theme.of(context).brightness == Brightness.dark)
             ? Theme.of(context).colorScheme.secondary
             : Theme.of(context).primaryColor;
-
-    bool supportSST =
-        kIsWeb || Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
 
     // Wrap with DropTarget for drag & drop functionality
     return DropTarget(

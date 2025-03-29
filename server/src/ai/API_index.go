@@ -355,7 +355,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Transfer-Encoding", "chunked")
 	
 	// Get the response from the model's API
-	response, inputPriceToken, err := SendChatCompletion(r.Context(), model, conv, payload.MiniApp.ID)
+	response, inputPriceToken, err := SendChatCompletion(r.Context(), model, conv, payload.MiniApp.ID, payload.IsCall)
 	if err != nil {
 		utils.Error("[HandleChat] Error sending chat completion", err)
 		el := err.Error()

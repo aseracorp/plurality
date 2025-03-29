@@ -13,6 +13,8 @@ class TTSService {
   final FlutterTts _flutterTts = FlutterTts();
   bool _isSpeaking = false;
 
+  Function? cb;
+
   // Stream controller to notify listeners about speaking state changes
   final _speakingStateController = StreamController<bool>.broadcast();
   Stream<bool> get speakingState => _speakingStateController.stream;
@@ -28,6 +30,7 @@ class TTSService {
       _currentText = null;
       _speakingStateController.add(false);
     });
+    await _flutterTts.awaitSpeakCompletion(true);
   }
 
   // Check if TTS is currently speaking
@@ -54,15 +57,30 @@ class TTSService {
         .trim();
   }
 
+  List<String> SpeakQueue = [];
+
   // Speak text
-  Future<void> speak(String markdownText) async {
+  Future<void> speak(
+    String markdownText,
+    Function? _cb, {
+    bool queue = false,
+  }) async {
     if (markdownText.isEmpty) return;
 
     if (!kIsWeb && Platform.isAndroid) await _flutterTts.setSpeechRate(1.2);
 
     // Stop any current speech
     if (_isSpeaking) {
-      await stop();
+      if (queue) {
+        SpeakQueue.add(markdownText);
+        return;
+      } else {
+        await stop();
+      }
+    }
+
+    if (_cb != null) {
+      cb = _cb;
     }
 
     String plainText = _extractPlainText(markdownText);
@@ -72,10 +90,30 @@ class TTSService {
     _speakingStateController.add(true);
 
     await _flutterTts.speak(plainText);
+    while (SpeakQueue.isNotEmpty) {
+      String nextText = SpeakQueue.first;
+      SpeakQueue.removeAt(0);
+      _currentText = nextText;
+      await _flutterTts.speak(_extractPlainText(nextText));
+    }
+
+    _isSpeaking = false;
+
+    print('Speaking done');
+    if (cb != null) {
+      cb!();
+    }
   }
 
   // Stop speaking
   Future<void> stop() async {
+    cb = null;
+    if (SpeakQueue.isNotEmpty) {
+      SpeakQueue.clear();
+    }
+    if (_currentText != null) {
+      _currentText = null;
+    }
     if (!_isSpeaking) return;
 
     await _flutterTts.stop();

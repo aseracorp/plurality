@@ -75,6 +75,7 @@ type ChatPayload struct {
 	ModelSelected		utils.ModelSelected `json:"model_selected"`
 	Messages 				[]utils.Message `json:"messages"`
 	MiniApp         utils.MiniApp         `json:"mini_app"`
+	IsCall 					bool                `json:"is_call"`
 }
 
 type AIChunk struct {
