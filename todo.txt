@@ -9,6 +9,8 @@
 	- cache web page (https://github.com/flutter/flutter/issues/63500)
 
 	- Refresh conv when switch tab !!
+
+	- FIX OPEN AI VISION TOKEN PRICE
 	
 	- Integrate LLama via AWS - test first?
 	- Integrate Deepseek via their API

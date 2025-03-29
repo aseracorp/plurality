@@ -429,6 +429,7 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, payload u
 	modelName := strings.TrimPrefix(model.Name, "ChatGPT/")
 
 	inputMessage := ""
+	subTokenPrice := 0
 
 	msgList := append([]utils.Message{SystemPrompt}, payload.Messages...)
 	msgReqList := make([]MessageReq, 0, len(msgList))
@@ -447,7 +448,8 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, payload u
 						URL: content.ImageURL.URL,
 					},
 				})
-				inputMessage += content.ImageURL.URL + " {}{}{}{}{}{}{}"
+				// TODO: add image vision price
+				// subTokenPrice += 200
 			} else {
 				if content.Text != "" {
 					txt := content.Text
@@ -515,6 +517,7 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, payload u
 	// check balance before sending request
 	err, priceToken := GetPrice(TEXT_OUTPUT, OPENAI, model, inputMessage)
 	priceToken += 32.0
+	priceToken += float64(subTokenPrice)
 
 	if err != nil {	
 		return nil, 0, err
