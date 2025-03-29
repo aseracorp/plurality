@@ -66,7 +66,7 @@ class SpeechRecognitionService {
 
   // Method to calculate silence threshold based on amplitude history
   void _calculateSilenceThreshold() {
-    if (_amplitudeHistory.length < 40) {
+    if (_amplitudeHistory.length < 20) {
       // Not enough data points yet
       return;
     }
@@ -113,7 +113,7 @@ class SpeechRecognitionService {
     _amplitudeTimer?.cancel();
 
     // Create a new timer that fires every 100ms
-    _amplitudeTimer = Timer.periodic(const Duration(milliseconds: 50), (
+    _amplitudeTimer = Timer.periodic(const Duration(milliseconds: 100), (
       timer,
     ) async {
       if (_isRecording) {
@@ -129,16 +129,16 @@ class SpeechRecognitionService {
 
           latestAmplitude = level.toInt(); // Store the latest amplitude
 
-          // print('Current amplitude: $level dB (latest: $latestAmplitude)');
+          print('$level / $_silenceThreshold dB');
 
           // Add to amplitude history (keep last 300 values)
           _amplitudeHistory.add(level);
-          if (_amplitudeHistory.length > 300) {
+          if (_amplitudeHistory.length > 200) {
             _amplitudeHistory.removeAt(0);
           }
 
           // Calculate threshold after collecting enough samples
-          if (_amplitudeHistory.length >= 40) {
+          if (_amplitudeHistory.length >= 20) {
             _calculateSilenceThreshold();
           } else {
             _thresholdCalculated = false; // Reset if not enough samples
@@ -152,7 +152,7 @@ class SpeechRecognitionService {
             bool isSilent = level <= _silenceThreshold;
             if (isSilent && autoStop) {
               _silenceCounter++;
-              if (_silenceCounter > 30) {
+              if (_silenceCounter > 15) {
                 // If silent for 20 intervals, stop recording
                 _silenceCounter = 0; // Reset counter
                 await stopRecording(); // Stop recording
@@ -187,11 +187,6 @@ class SpeechRecognitionService {
     bool autoStop = false,
     bool call = false,
   }) async {
-    // Check permissions
-    if (!await _record.hasPermission()) {
-      return;
-    }
-
     _listeningController.add(true);
 
     isCall = call;
@@ -208,7 +203,7 @@ class SpeechRecognitionService {
 
     voiceStream.listen(
       (data) {
-        if (_silenceCounter < 10 || latestAmplitude > _silenceThreshold) {
+        if (_silenceCounter < 6 || latestAmplitude > _silenceThreshold) {
           // Add the data to the stream bytes
           voiceStreamBytes.addAll(data);
         }
