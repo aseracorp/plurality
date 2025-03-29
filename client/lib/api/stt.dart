@@ -129,7 +129,7 @@ class SpeechRecognitionService {
 
           latestAmplitude = level.toInt(); // Store the latest amplitude
 
-          print('$level / $_silenceThreshold dB');
+          // print('$level / $_silenceThreshold dB');
 
           // Add to amplitude history (keep last 300 values)
           _amplitudeHistory.add(level);
