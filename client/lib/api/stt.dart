@@ -129,7 +129,7 @@ class SpeechRecognitionService {
 
           latestAmplitude = level.toInt(); // Store the latest amplitude
 
-          // print('$level / $_silenceThreshold dB');
+          print('$level / $_silenceThreshold dB');
 
           // Add to amplitude history (keep last 300 values)
           _amplitudeHistory.add(level);
@@ -191,6 +191,8 @@ class SpeechRecognitionService {
 
     isCall = call;
 
+    var attackBuffer = <int>[];
+
     // Start recording
     var voiceStream = await _record.startStream(
       const RecordConfig(
@@ -204,8 +206,19 @@ class SpeechRecognitionService {
     voiceStream.listen(
       (data) {
         if (_silenceCounter < 6 || latestAmplitude > _silenceThreshold) {
+          // add and clear the attack buffer
+          if (attackBuffer.isNotEmpty) {
+            voiceStreamBytes.addAll(attackBuffer);
+            attackBuffer.clear();
+          }
           // Add the data to the stream bytes
           voiceStreamBytes.addAll(data);
+        } else {
+          attackBuffer.addAll(data);
+          // only keep the last 1000 bytes in the attack buffer
+          if (attackBuffer.length > 2000) {
+            attackBuffer.removeRange(0, attackBuffer.length - 2000);
+          }
         }
       },
       onError: (error) {
@@ -215,16 +228,6 @@ class SpeechRecognitionService {
         print('Voice stream done');
       },
     );
-
-    // voiceStream!.listen(
-    //   (data) => voiceStreamBytes.addAll(data),
-    //   onError: (error) {
-    //     print('Error in voice stream: $error');
-    //   },
-    //   onDone: () {
-    //     print('Voice stream done');
-    //   },
-    // );
 
     _isRecording = true;
     _recordingStateController.add(true);

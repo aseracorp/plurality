@@ -130,13 +130,8 @@ func TranscribeAudio(audioData []byte, model string, language string, temperatur
 	// create wav buffer for conversaion
 	wavBuffer := &utils.WriteSeekerInMem{}
 	
-	// Write audio data to file for debug 
-	// err := os.WriteFile("audio-before.wav", audioData, 0644)
-	// if err != nil {
-	// 		return "", fmt.Errorf("error writing audio data to file: %v", err)
-	// }
-
 	wavWriter := wav.NewEncoder(wavBuffer, 8000, 16, 1, 1)
+
 	// Write the audio data to the wav buffer
 	err := wavWriter.Write(utils.NewAudioIntBufferFromBuffer(audioData))
 	if err != nil {
@@ -149,10 +144,10 @@ func TranscribeAudio(audioData []byte, model string, language string, temperatur
 	}
 
 	// Write audio data to file for debug 
-	// err = os.WriteFile("audio.wav", wavBuffer.Bytes(), 0644)
-	// if err != nil {
-	// 		return "", fmt.Errorf("error writing audio data to file: %v", err)
-	// }
+	err = os.WriteFile("audio.wav", wavBuffer.Bytes(), 0644)
+	if err != nil {
+			return "", fmt.Errorf("error writing audio data to file: %v", err)
+	}
 	
 	// Create a new multipart writer
 	body := &bytes.Buffer{}
