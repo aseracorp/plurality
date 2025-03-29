@@ -530,7 +530,7 @@ class _RecordingModalState extends State<_RecordingModal>
               if (!widget.isCall)
                 ElevatedButton.icon(
                   onPressed: widget.onCancel,
-                  icon: const Icon(Icons.close),
+                  icon: const Icon(Icons.close, color: Colors.white),
                   label: const Text("Cancel"),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.grey,
@@ -545,7 +545,7 @@ class _RecordingModalState extends State<_RecordingModal>
               if (!widget.isCall)
                 ElevatedButton.icon(
                   onPressed: widget.onDone,
-                  icon: const Icon(Icons.check),
+                  icon: const Icon(Icons.check, color: Colors.white),
                   label: const Text("Done"),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Theme.of(context).primaryColor,
@@ -560,7 +560,7 @@ class _RecordingModalState extends State<_RecordingModal>
               if (widget.isCall)
                 ElevatedButton.icon(
                   onPressed: widget.onCancel,
-                  icon: const Icon(Icons.phone),
+                  icon: const Icon(Icons.phone, color: Colors.white),
                   label: const Text("End Call"),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.red,
