@@ -1,24 +1,11 @@
 # Road to relese 
-
-	- Not showing input anymore when conversation id is null in conv list 
-	- Allow sending snippet without message
 	
-	- "Can you research FOV differences between the bigscreen beyond  2  and the MeganeX superlight 8K" - with Claude broken
 	- search messages
-	- cant pin / etc... on mobile chat view
 	- cache web page (https://github.com/flutter/flutter/issues/63500)
-
-	- Refresh conv when switch tab !!
-
-	- FIX OPEN AI VISION TOKEN PRICE
 
 	- if oral transcription too long it will be a snippet!
 	- change device in call
 	
-	- Integrate LLama via AWS - test first?
-	- Integrate Deepseek via their API
-	- separate API and app backend
-
   - local or incognito mode? or both?
   - Token de secours
 	- Custom personal mini apps? (or at least placeholders)

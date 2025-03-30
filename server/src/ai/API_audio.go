@@ -16,7 +16,6 @@ import (
 	"github.com/azukaar/plurality/src/utils"
 )
 
-
 func HandleTranscribe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		utils.SendHTTPError(w, "Method not allowed", http.StatusMethodNotAllowed)

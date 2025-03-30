@@ -49,15 +49,15 @@ type Model struct {
 }
 
 type ModelSelected struct {
-	Text            Model `json:"text"`
-	Vision          Model `json:"vision"`
-	ImageGen        Model `json:"image_gen"`
-	AudioTranscribe Model `json:"audio_transcribe"`
-	VoiceGen        Model `json:"voice_gen"`
-	AudioGen        Model `json:"audio_gen"`
-	VideoGen        Model `json:"video_gen"`
-	VideoVision     Model `json:"video_vision"`
-	Code            Model `json:"code"`
+	Text            *Model `json:"text,omitempty"`
+	Vision          *Model `json:"vision,omitempty"`
+	ImageGen        *Model `json:"image_gen,omitempty"`
+	AudioTranscribe *Model `json:"audio_transcribe,omitempty"`
+	VoiceGen        *Model `json:"voice_gen,omitempty"`
+	AudioGen        *Model `json:"audio_gen,omitempty"`
+	VideoGen        *Model `json:"video_gen,omitempty"`
+	VideoVision     *Model `json:"video_vision,omitempty"`
+	Code            *Model `json:"code,omitempty"`
 }
 
 type Conversation struct {
@@ -69,6 +69,7 @@ type Conversation struct {
 	ModelSelected ModelSelected `json:"model_selected" bson:"model_selected"`
 	MiniApp 		  *MiniApp `json:"mini_app,omitempty" bson:"mini_app"`
 	Folder 		    string `json:"folder" bson:"folder"`
+	Icon    	    string `json:"icon" bson:"icon"`
 }
 
 type UserAction struct {
@@ -91,10 +92,12 @@ type MiniApp struct {
 	IconURL     string             `json:"icon_url" bson:"icon_url"`
 	Author      string             `json:"author" bson:"author"`
 	Prompt 	    map[string]string  `json:"-" bson:"prompt"`
-	Models      []ModelSelected    `json:"models" bson:"models"`
+	ModelSelected      ModelSelected    `json:"model_selected" bson:"model_selected"`
 	Inputs			[]MiniAppInput     `json:"inputs" bson:"inputs"`
 	InitialMessage map[string]string `json:"initial_message" bson:"initial_message"`
 	InputPlaceholderMessage map[string]string `json:"input_placeholder_message" bson:"input_placeholder_message"`
+	Form string `json:"form" bson:"form"`
+	Placeholder string `json:"placeholder" bson:"placeholder"`
 }
 
 type ToolCall struct {

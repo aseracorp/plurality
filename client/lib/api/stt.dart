@@ -461,23 +461,28 @@ class _RecordingModalState extends State<_RecordingModal>
           const SizedBox(height: 16),
           // Audio level visualizer
           if (isListening)
-            AvatarGlow(
-              glowColor: Theme.of(context).primaryColor,
-              duration: const Duration(milliseconds: 2000),
-              repeat: true,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 50),
-                width: 80,
-                height: 75,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Theme.of(context).primaryColor.withOpacity(0.2),
-                ),
-                child: Center(
-                  child: Icon(
-                    Icons.mic,
-                    color: Theme.of(context).primaryColor,
-                    size: 40,
+            GestureDetector(
+              onTap: () {
+                SpeechRecognitionService().stopRecording();
+              },
+              child: AvatarGlow(
+                glowColor: Theme.of(context).primaryColor,
+                duration: const Duration(milliseconds: 2000),
+                repeat: true,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 50),
+                  width: 80,
+                  height: 75,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Theme.of(context).primaryColor.withOpacity(0.2),
+                  ),
+                  child: Center(
+                    child: Icon(
+                      Icons.mic,
+                      color: Theme.of(context).primaryColor,
+                      size: 40,
+                    ),
                   ),
                 ),
               ),
@@ -548,6 +553,14 @@ class _RecordingModalState extends State<_RecordingModal>
               opacity: _opacityAnimation,
               child: Text(
                 "Unmute yourself to interrupt",
+                style: TextStyle(fontSize: 14),
+              ),
+            ),
+          if (isListening)
+            FadeTransition(
+              opacity: _opacityAnimation,
+              child: Text(
+                "Mute yourself to get an answer manually",
                 style: TextStyle(fontSize: 14),
               ),
             ),

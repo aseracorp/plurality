@@ -338,7 +338,8 @@ class ApiService {
   }
 
   // getConversation
-  Future<String?> generateTitle(String conversationID) async {
+
+  Future<Map<String, dynamic>> generateTitle(String conversationID) async {
     try {
       // Get authentication token
       String? firebaseToken = await _authService.getCurrentUserToken();
@@ -354,7 +355,10 @@ class ApiService {
       if (response.statusCode >= 200 && response.statusCode < 300) {
         // Use utf8.decode with response.bodyBytes instead of directly using response.body
         final decodedResponse = utf8.decode(response.bodyBytes);
-        return decodedResponse;
+        // decode json
+        final json = jsonDecode(decodedResponse);
+
+        return json;
       } else {
         throw APIException(
           'Failed to generate title for ${conversationID} : ${response.reasonPhrase}',

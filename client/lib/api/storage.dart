@@ -162,12 +162,15 @@ class ConversationStorage {
   static Future<Conversation?> updateConversationMetaData({
     required String conversationId,
     required String? title,
+    required String? icon,
     required ModelSelected? modelSelected,
   }) async {
     final conversation = getConversation(conversationId);
     if (conversation == null) return null;
 
     if (title != "" && title != null) conversation.title = title;
+
+    if (icon != "" && icon != null) conversation.icon = icon;
 
     if (modelSelected != null) conversation.modelSelected = modelSelected;
 

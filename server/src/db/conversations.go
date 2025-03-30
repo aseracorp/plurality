@@ -65,7 +65,7 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
       toSet["title"] = conversation.Title
     }
 
-    if conversation.ModelSelected.Text.Name != "" {
+    if conversation.ModelSelected.Text != nil {
       toSet["model_selected"] = conversation.ModelSelected
     }
 
@@ -176,7 +176,7 @@ func GetConversationById(ctx context.Context, id string) (*utils.Conversation, e
 	return &conversation, nil
 }
 
-func UpdateConversationMetadata(ctx context.Context, id primitive.ObjectID, title string) error {
+func UpdateConversationMetadata(ctx context.Context, id primitive.ObjectID, title string, image string) error {
   client := GetClient()
   collection := client.Database("plurality").Collection("conversations")
   userID, ok := ctx.Value("userID").(string)
@@ -185,14 +185,19 @@ func UpdateConversationMetadata(ctx context.Context, id primitive.ObjectID, titl
     return errors.New("user ID not found in request context")
   }
 
+  toSet := bson.M{}
+  if title != "" {
+    toSet["title"] = title
+  }
+  if image != "" {
+    toSet["icon"] = image
+  }
 
   res, err := collection.UpdateOne(ctx, bson.M{
     "_id": id,
     "user_id": userID,
   }, bson.M{
-    "$set": bson.M{
-      "title": title,
-    },
+    "$set": toSet,
   })
 
   if err != nil {

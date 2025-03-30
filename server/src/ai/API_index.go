@@ -200,7 +200,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	if len(payload.Messages) > 0 {
 		messageToProcess = payload.Messages[0]
 	} else {
-		model = payload.ModelSelected.Text
+		model = *payload.ModelSelected.Text
 	}
 
 	// Check plan
@@ -460,7 +460,6 @@ func API_HandleConversation(w http.ResponseWriter, r *http.Request) {
   }
 }
 
-// Get first two messages of a conversation and return the title
 func API_HandleTitleGeneration(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
@@ -503,18 +502,85 @@ func API_HandleTitleGeneration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = db.UpdateConversationMetadata(r.Context(), conv.ID, title)
+	// Generate an icon for the conversation using the schnell model
+	iconPrompt := "Simple illustration with low details and no text, for chat about: " + title
+	iconData, err := GenerateIconForConversation(iconPrompt)
+	if err != nil {
+		utils.Error("[API_HandleTitleGeneration] Error generating icon", err)
+		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	err = db.UpdateConversationMetadata(r.Context(), conv.ID, title, iconData)
+
 	if err != nil {
 		utils.Error("[API_HandleTitleGeneration] Error updating conversation metadata", err)
 		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	utils.Log("[API_HandleTitleGeneration] Title generated and saved to DB")
+	utils.Log("[API_HandleTitleGeneration] Title and icon generated and saved to DB")
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(title))
+	response := map[string]string{
+		"title": title,
+		"icon":  iconData,
+	}
+
+	_, _ = db.RemoveCredits(r.Context(), 100, utils.UserAction{
+		Type: TITLE,
+		Provider: NONE,
+		Model: utils.Model{},
+	})
+
+	responseJSON, err := json.Marshal(response)
+	if err != nil {
+		utils.Error("[API_HandleTitleGeneration] Error marshaling response", err)
+		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Write(responseJSON)
 }
+
+// GenerateIconForConversation generates a 256x256 icon using the schnell model
+func GenerateIconForConversation(prompt string) (string, error) {
+	// Create image generation request
+	request := ImageGenerationRequest{
+		Model:          "black-forest-labs/FLUX.1-schnell",
+		Prompt:         prompt,
+		Width:          128,
+		Height:         128,
+		Steps:          4,
+		N:              1,
+		ResponseFormat: "b64_json",
+	}
+
+	// Generate the image
+	response, err := GenerateImage(request)
+	if err != nil {
+		return "", err
+	}
+
+	// Parse response
+	type JsonResponse struct {
+		Data []struct {
+			B64Json string `json:"b64_json"`
+		} `json:"data"`
+	}
+
+	var jsonResponse JsonResponse
+	if err := json.Unmarshal(response, &jsonResponse); err != nil {
+		return "", err
+	}
+
+	// Return the base64 encoded image data
+	if len(jsonResponse.Data) > 0 {
+		return jsonResponse.Data[0].B64Json, nil
+	}
+	
+	return "", fmt.Errorf("no image data returned")
+}
+
 
 func API_GetUserBalance(w http.ResponseWriter, r *http.Request) {
 	balance, err := db.GetUserBalance(r.Context())
@@ -608,7 +674,7 @@ func API_UpdateConversationTitle(w http.ResponseWriter, r *http.Request) {
 			utils.SendHTTPError(w, "Invalid conversation ID", http.StatusBadRequest)
 			return
 		}
-    err = db.UpdateConversationMetadata(r.Context(), oid, request.Title)
+    err = db.UpdateConversationMetadata(r.Context(), oid, request.Title, "")
 		if err != nil {
 			utils.Error("[API_UpdateConversationTitle] Error updating conversation title", err)
 			utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)

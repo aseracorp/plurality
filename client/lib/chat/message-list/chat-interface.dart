@@ -21,10 +21,12 @@ import 'image.dart';
 import 'image-gen.dart';
 import 'input.dart';
 import 'model-picker.dart';
+import '../../utils/index.dart';
 import '../../utils/file-types.dart';
 import '../../api/stt.dart';
 import 'minimap.dart';
 import '../miniapps.dart';
+import './MiniAppForm.dart';
 import 'middle-click.dart';
 import 'package:super_sliver_list/super_sliver_list.dart';
 import 'toolcall-badge.dart';
@@ -80,10 +82,14 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
   MiniApp? _miniAppSelected;
 
+  String _miniAppPrePrompt = '';
+
   @override
   void initState() {
     super.initState();
     _mainScrollController.addListener(_scrollListener);
+
+    _miniAppPrePrompt = '';
 
     final preferencesNotifier = ref.read(preferencesProvider.notifier);
     preferencesNotifier.loadAllPreferences().then((_) {
@@ -101,9 +107,19 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     }
   }
 
+  String get miniAppName {
+    if (_miniAppSelected != null) {
+      return _miniAppSelected!.name;
+    } else {
+      return '';
+    }
+  }
+
   @override
   void didUpdateWidget(ChatInterface oldWidget) {
     super.didUpdateWidget(oldWidget);
+
+    _miniAppPrePrompt = '';
 
     // Check if the conversationId has changed
     if (oldWidget.conversationId != widget.conversationId) {
@@ -189,13 +205,16 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     String conversationId,
   ) async {
     // call api.generateTitle and save it to the conversation
-    var title = await _apiService.generateTitle(widget.conversationId);
+    var result = await _apiService.generateTitle(widget.conversationId);
+    var title = result['title'] ?? null;
+    var icon = result['icon'] ?? null;
 
     // save
     if (title != null) {
       conversationsNotifier.updateConversationMetaData(
         conversationId: widget.conversationId,
         title: title,
+        icon: icon,
       );
 
       widget.updateMainTitle();
@@ -348,8 +367,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
   Future<void> _handleSubmit(BuildContext context) async {
     if (_formKey.currentState!.validate()) {
-      final userMessage = _messageController.text;
+      final userMessage = _miniAppPrePrompt + _messageController.text;
+      print('User message: $userMessage');
       _messageController.clear();
+      _miniAppPrePrompt = '';
       await sendMessage(context, userMessage, null);
     }
   }
@@ -369,7 +390,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
             ? Message(
               role: "user",
               content: [
-                MessageContent.text(userMessage ?? ''),
+                MessageContent.text((userMessage ?? '')),
                 ...attachments
                     .map(
                       (a) =>
@@ -588,12 +609,12 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         }
 
         var alignMess =
-            message.text != ""
+            sanitizeMessages(message.text) != ""
                 ? AnimatedMessageBox(
                   iconURL: _miniAppSelected?.iconURL,
                   mini: mini, // Use mini parameter
                   message: message,
-                  text: message.text,
+                  text: sanitizeMessages(message.text),
                   isBot: message.isBot,
                   isLoading:
                       _isLoading &&
@@ -672,6 +693,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         );
       },
     );
+
     return ScrollConfiguration(
       behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
       child:
@@ -753,191 +775,224 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       ),
     );
 
+    Widget newMessageScreen = Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        if (widget.conversationId.isEmpty && _miniAppSelected == null)
+          Center(
+            child: Text(
+              'Start a new conversation',
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
+          ),
+
+        if (_miniAppSelected != null && widget.conversationId.isEmpty)
+          Center(
+            child: Column(
+              children: [
+                SizedBox(height: 16),
+                Container(
+                  width: 250,
+                  height: 250,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(1000.0),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 23,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Image.memory(
+                    base64Decode(_miniAppSelected!.iconURL),
+                    width: 250,
+                    height: 250,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+                SizedBox(height: 24),
+                Container(
+                  margin: const EdgeInsets.symmetric(
+                    horizontal: 24.0,
+                    vertical: 12.0,
+                  ),
+                  padding: const EdgeInsets.all(16.0),
+                  decoration: BoxDecoration(
+                    border: Border(
+                      left: BorderSide(
+                        color: Theme.of(context).colorScheme.primary,
+                        width: 4.0,
+                      ),
+                    ),
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.surface.withOpacity(0.5),
+                  ),
+                  child: RichText(
+                    text: TextSpan(
+                      style: Theme.of(context).textTheme.headlineSmall,
+                      children: [
+                        TextSpan(
+                          text: '"',
+                          style: TextStyle(
+                            fontSize: 20,
+                            color: Theme.of(context).colorScheme.primary,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        TextSpan(
+                          style: Theme.of(context).textTheme.headlineSmall
+                              ?.copyWith(fontSize: 20)
+                              ?.copyWith(fontStyle: FontStyle.italic),
+                          text:
+                              _miniAppSelected!.InitialMessage?['en'] ??
+                              'What can I help you with?',
+                        ),
+                        TextSpan(
+                          text: '"',
+                          style: TextStyle(
+                            fontSize: 20,
+                            color: Theme.of(context).colorScheme.primary,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                SizedBox(height: 24),
+              ],
+            ),
+          ),
+
+        if (_miniAppSelected != null && widget.conversationId.isEmpty)
+          Container(
+            child: MiniAppForm(
+              app: _miniAppSelected!,
+              onChanged: (message) {
+                setState(() {
+                  _miniAppPrePrompt = message;
+                });
+              },
+            ),
+          ),
+
+        if (_miniAppSelected != null && widget.conversationId.isEmpty)
+          SizedBox(height: 24),
+
+        if (widget.conversationId.isNotEmpty) Expanded(child: chatContent),
+
+        // Input Container
+        Container(
+          margin: const EdgeInsets.symmetric(horizontal: 16.0),
+          padding:
+              widget.conversationId.isNotEmpty
+                  ? const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0)
+                  : const EdgeInsets.symmetric(
+                    horizontal: 32.0,
+                    vertical: 12.0,
+                  ),
+          decoration:
+              widget.conversationId.isNotEmpty
+                  ? BoxDecoration(
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 4,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                    color:
+                        isDarkMode
+                            ? Color.fromARGB(15, 255, 255, 255)
+                            : Colors.white,
+                    borderRadius: BorderRadius.only(
+                      topLeft: Radius.circular(8.0),
+                      topRight: Radius.circular(8.0),
+                    ),
+                    border: Border(
+                      top: BorderSide(
+                        color: isDarkMode ? Color(0x010101) : Color(0xFFEEEEEE),
+                      ),
+                      left: BorderSide(
+                        color: isDarkMode ? Color(0x010101) : Color(0xFFEEEEEE),
+                      ),
+                      right: BorderSide(
+                        color: isDarkMode ? Color(0x010101) : Color(0xFFEEEEEE),
+                      ),
+                    ),
+                  )
+                  : null,
+          child: Form(
+            key: _formKey,
+            child: InputBox(
+              isMobile: widget.isMobile,
+              messageController: _messageController,
+              addAttachment: _addAttachment,
+              onSend: _handleSubmit,
+              isLoading: _isLoading,
+              handleStop: _handleStop,
+              pickImage: _pickImage,
+              pickFile: _pickFile,
+              inputFocusNode: _inputFocusNode,
+              removeAttachment: _removeAttachment,
+              setSelectedModel: _setSelectedModel,
+              selectedModel: _modelSelected,
+              allowEmptyMessage: _miniAppPrePrompt != "",
+              attachments: attachments,
+              conversationId: widget.conversationId,
+              submitButton:
+                  _miniAppSelected != null && widget.conversationId.isEmpty,
+              placeholder:
+                  (_miniAppSelected != null &&
+                          widget.conversationId.isEmpty &&
+                          _miniAppSelected!.placeholder != "")
+                      ? _miniAppSelected!.placeholder
+                      : 'Your message...',
+            ),
+          ),
+        ),
+
+        if (widget.conversationId.isEmpty && _miniAppSelected == null)
+          SizedBox(height: 32),
+
+        if (widget.conversationId.isEmpty && _miniAppSelected == null)
+          MiniAppsBrowser(
+            isMobile: widget.isMobile,
+            onStartMiniApp: (miniapp) {
+              setState(() {
+                _miniAppSelected = miniapp;
+
+                if (miniapp.modelSelected != null) {
+                  print(miniapp.modelSelected!.toJson());
+                  _modelSelected = ModelSelected(
+                    text: miniapp.modelSelected!.text ?? _modelSelected.text,
+                    vision:
+                        miniapp.modelSelected!.vision ?? _modelSelected.vision,
+                    imageGen:
+                        miniapp.modelSelected!.imageGen ??
+                        _modelSelected.imageGen,
+                  );
+                }
+              });
+            },
+          ),
+      ],
+    );
+
     return Stack(
       children: [
-        Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            if (widget.conversationId.isEmpty && _miniAppSelected == null)
-              Center(
-                child: Text(
-                  'Start a new conversation',
-                  style: Theme.of(context).textTheme.headlineSmall,
-                ),
-              ),
-
-            if (_miniAppSelected != null && widget.conversationId.isEmpty)
-              Center(
-                child: Column(
-                  children: [
-                    SizedBox(height: 16),
-                    Container(
-                      width: 250,
-                      height: 150,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(1000.0),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.1),
-                            blurRadius: 23,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      clipBehavior: Clip.antiAlias,
-                      child: Image.memory(
-                        base64Decode(_miniAppSelected!.iconURL),
-                        width: 150,
-                        height: 150,
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-                    SizedBox(height: 16),
-                    Container(
-                      margin: const EdgeInsets.symmetric(
-                        horizontal: 24.0,
-                        vertical: 12.0,
-                      ),
-                      padding: const EdgeInsets.all(16.0),
-                      decoration: BoxDecoration(
-                        border: Border(
-                          left: BorderSide(
-                            color: Theme.of(context).colorScheme.primary,
-                            width: 4.0,
-                          ),
-                        ),
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.surface.withOpacity(0.5),
-                      ),
-                      child: RichText(
-                        text: TextSpan(
-                          style: Theme.of(context).textTheme.headlineSmall,
-                          children: [
-                            TextSpan(
-                              text: '"',
-                              style: TextStyle(
-                                fontSize: 20,
-                                color: Theme.of(context).colorScheme.primary,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            TextSpan(
-                              style: Theme.of(context).textTheme.headlineSmall
-                                  ?.copyWith(fontSize: 20)
-                                  ?.copyWith(fontStyle: FontStyle.italic),
-                              text:
-                                  _miniAppSelected!.InitialMessage?['en'] ??
-                                  'What can I help you with?',
-                            ),
-                            TextSpan(
-                              text: '"',
-                              style: TextStyle(
-                                fontSize: 20,
-                                color: Theme.of(context).colorScheme.primary,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-
-                    SizedBox(height: 24),
-                  ],
-                ),
-              ),
-
-            if (widget.conversationId.isNotEmpty) Expanded(child: chatContent),
-
-            // Input Container
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 16.0),
-              padding:
-                  widget.conversationId.isNotEmpty
-                      ? const EdgeInsets.symmetric(
-                        horizontal: 12.0,
-                        vertical: 8.0,
-                      )
-                      : const EdgeInsets.symmetric(
-                        horizontal: 32.0,
-                        vertical: 12.0,
-                      ),
-              decoration:
-                  widget.conversationId.isNotEmpty
-                      ? BoxDecoration(
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.1),
-                            blurRadius: 4,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                        color:
-                            isDarkMode
-                                ? Color.fromARGB(15, 255, 255, 255)
-                                : Colors.white,
-                        borderRadius: BorderRadius.only(
-                          topLeft: Radius.circular(8.0),
-                          topRight: Radius.circular(8.0),
-                        ),
-                        border: Border(
-                          top: BorderSide(
-                            color:
-                                isDarkMode
-                                    ? Color(0x010101)
-                                    : Color(0xFFEEEEEE),
-                          ),
-                          left: BorderSide(
-                            color:
-                                isDarkMode
-                                    ? Color(0x010101)
-                                    : Color(0xFFEEEEEE),
-                          ),
-                          right: BorderSide(
-                            color:
-                                isDarkMode
-                                    ? Color(0x010101)
-                                    : Color(0xFFEEEEEE),
-                          ),
-                        ),
-                      )
-                      : null,
-              child: Form(
-                key: _formKey,
-                child: InputBox(
-                  isMobile: widget.isMobile,
-                  messageController: _messageController,
-                  addAttachment: _addAttachment,
-                  onSend: _handleSubmit,
-                  isLoading: _isLoading,
-                  handleStop: _handleStop,
-                  pickImage: _pickImage,
-                  pickFile: _pickFile,
-                  inputFocusNode: _inputFocusNode,
-                  removeAttachment: _removeAttachment,
-                  setSelectedModel: _setSelectedModel,
-                  selectedModel: _modelSelected,
-                  attachments: attachments,
-                  conversationId: widget.conversationId,
-                ),
-              ),
-            ),
-
-            if (widget.conversationId.isEmpty && _miniAppSelected == null)
-              SizedBox(height: 32),
-
-            if (widget.conversationId.isEmpty && _miniAppSelected == null)
-              MiniAppsBrowser(
-                isMobile: widget.isMobile,
-                onStartMiniApp: (miniapp) {
-                  setState(() {
-                    _miniAppSelected = miniapp;
-                  });
-                },
-              ),
-          ],
+        Positioned.fill(
+          child:
+              widget.conversationId.isEmpty && _miniAppSelected != null
+                  ? Center(
+                    child: SingleChildScrollView(child: newMessageScreen),
+                  )
+                  : newMessageScreen,
         ),
 
         // if last message of messages has message.TokenPrice > 1000
@@ -986,6 +1041,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
               onPressed: () {
                 setState(() {
                   _miniAppSelected = null;
+                  _updateSelectedModel();
                 });
               },
               iconSize: 32,

@@ -403,12 +403,12 @@ func SelectModel(modelSelected utils.ModelSelected, messages []utils.Message) ut
 		for _, content := range message.Content {
 			if content.Type == "image_url" && !utils.ContainsString(ValidVisionModels, modelSelected.Text.Name) {
 				utils.Log("Vision model selected: ", modelSelected.Vision.Name)
-				return modelSelected.Vision
+				return *modelSelected.Vision
 			}
 		}
 	}
 
-	return modelSelected.Text
+	return *modelSelected.Text
 }
 
 func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, payload utils.Conversation, systemPrompt string) (io.ReadCloser, int, error) {

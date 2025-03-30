@@ -16,6 +16,8 @@ const (
 	IMAGE_GEN = 3
 	TOOL_USE = 4
 	TRANSCRIBE = 5
+	TTS = 6
+	TITLE = 7
 )
 
 // providers

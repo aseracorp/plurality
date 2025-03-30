@@ -20,7 +20,7 @@ var SearchTool = utils.AITool{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
 			Name:        "search_web",
-			Description: "Search on the internet via Google",
+			Description: "Search on the internet via Google informations that are not in the knowledge base if you really need to.",
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{

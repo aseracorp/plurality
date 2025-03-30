@@ -388,27 +388,10 @@ class _MiniAppDetailsModal extends StatelessWidget {
             style: Theme.of(context).textTheme.bodyMedium,
           ),
           const SizedBox(height: 24),
-          if (miniApp.models.length > 1)
-            if (miniApp.models.isNotEmpty) ...[
-              Text('Models', style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children:
-                    miniApp.models
-                        .map(
-                          (model) => Chip(
-                            label: Text(model.name),
-                            backgroundColor:
-                                Theme.of(context).colorScheme.surfaceVariant,
-                          ),
-                        )
-                        .toList(),
-              ),
-              const SizedBox(height: 24),
-            ],
-          if (miniApp.inputs.isNotEmpty) ...[
+          /*        if (miniApp.modelSelected != null)
+            Text(miniApp.modelSelected!.toJson().toString()),
+*/
+          /*if (miniApp.inputs.isNotEmpty) ...[
             Text('Input Types', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
             Expanded(
@@ -426,7 +409,7 @@ class _MiniAppDetailsModal extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 16),
-          ],
+          ],*/
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(

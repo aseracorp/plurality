@@ -205,6 +205,9 @@ class Conversation extends HiveObject {
   @HiveField(8)
   String? folder;
 
+  @HiveField(9)
+  String? icon;
+
   Conversation({
     required this.id,
     required this.title,
@@ -214,6 +217,7 @@ class Conversation extends HiveObject {
     required this.messages,
     this.miniApp,
     this.folder,
+    this.icon,
   }) : createdAt = createdAt ?? DateTime.now();
 
   Map<String, dynamic> toJson() => {
@@ -225,6 +229,7 @@ class Conversation extends HiveObject {
     'model_selected': modelSelected.toJson(),
     'mini_app': miniApp?.toJson(),
     'folder': folder,
+    'icon': icon,
   };
 
   Map<String, dynamic> toAPI() => {
@@ -235,14 +240,12 @@ class Conversation extends HiveObject {
     'model_selected': modelSelected.toJson(),
     'mini_app': miniApp?.toJson(),
     'folder': folder,
+    'icon': icon,
   };
 
   factory Conversation.fromJson(Map<String, dynamic> json) {
-    // if (json['mini_app'] != null) print("CACA: " + json['mini_app']);
-
     var miniapp =
         json['mini_app'] != null ? MiniApp.fromJson(json['mini_app']) : null;
-    // if (miniapp?.id == null || miniapp?.id == "") miniapp = null;
 
     return Conversation(
       id: json['id'] ?? json['_id'] ?? '',
@@ -267,6 +270,7 @@ class Conversation extends HiveObject {
           json['model_selected'] != null
               ? ModelSelected.fromJson(json['model_selected'])
               : ModelSelected(),
+      icon: json['icon'],
     );
   }
 }
@@ -367,15 +371,15 @@ class ModelSelected {
   });
 
   Map<String, dynamic> toJson() => {
-    'text': text!.toJson(),
-    'vision': vision!.toJson(),
-    'image_gen': imageGen!.toJson(),
-    'audio_gen': audioGen!.toJson(),
-    'voice_gen': voiceGen!.toJson(),
-    'audio_transcribe': audioTranscribe!.toJson(),
-    'video_gen': videoGen!.toJson(),
-    'video_vision': videoVision!.toJson(),
-    'code': code!.toJson(),
+    'text': text?.toJson(),
+    'vision': vision?.toJson(),
+    'image_gen': imageGen?.toJson(),
+    'audio_gen': audioGen?.toJson(),
+    'voice_gen': voiceGen?.toJson(),
+    'audio_transcribe': audioTranscribe?.toJson(),
+    'video_gen': videoGen?.toJson(),
+    'video_vision': videoVision?.toJson(),
+    'code': code?.toJson(),
   };
 
   factory ModelSelected.fromJson(Map<String, dynamic> json) {
@@ -502,7 +506,7 @@ class MiniApp {
   final String? author;
 
   @HiveField(5)
-  final List<Model> models;
+  final ModelSelected? modelSelected;
 
   @HiveField(6)
   final List<MiniAppInput> inputs;
@@ -510,37 +514,49 @@ class MiniApp {
   @HiveField(7)
   Map<String, String>? InitialMessage;
 
+  @HiveField(8)
+  final String form;
+
+  @HiveField(9)
+  final String placeholder;
+
   MiniApp({
     required this.id,
     required this.name,
     required this.description,
     required this.iconURL,
     required this.author,
-    required this.models,
+    this.modelSelected,
     required this.inputs,
     this.InitialMessage,
+    required this.form,
+    this.placeholder = '',
   });
 
   factory MiniApp.fromJson(Map<String, dynamic> json) {
+    print(
+      json['model_selected'] != null
+          ? ModelSelected.fromJson(json['model_selected']).toJson().toString()
+          : null,
+    );
     var r = MiniApp(
       id: json['id'],
       name: json['name'],
       description: json['description'],
       iconURL: json['icon_url'],
       author: json['author'],
-      models:
-          json['models'] != null
-              ? (json['models'] as List)
-                  .map((model) => Model.fromJson(model))
-                  .toList()
-              : [],
+      modelSelected:
+          json['model_selected'] != null
+              ? ModelSelected.fromJson(json['model_selected'])
+              : null,
       inputs:
           json['inputs'] != null
               ? (json['inputs'] as List)
                   .map((input) => MiniAppInput.fromJson(input))
                   .toList()
               : [],
-      // InitialMessage: json['initial_message'],
+      form: json['form'] ?? '',
+      placeholder: json['placeholder'] ?? '',
     );
 
     try {
@@ -565,9 +581,11 @@ class MiniApp {
       'description': description,
       'icon_url': iconURL,
       'author': author,
-      'models': models.map((model) => model.toJson()).toList(),
+      'model_selected': modelSelected?.toJson(),
       'inputs': inputs.map((input) => input.toJson()).toList(),
       'InitialMessage': InitialMessage,
+      'form': form,
+      'placeholder': placeholder,
     };
   }
 }

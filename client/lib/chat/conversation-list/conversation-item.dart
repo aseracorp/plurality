@@ -10,6 +10,7 @@ import '../../utils/types.dart';
 import '../../auth/account.dart';
 import '../budget.dart';
 import 'conversation-list.dart';
+import 'dart:convert';
 
 class ConversationItem extends StatelessWidget {
   final Conversation conversation;
@@ -18,6 +19,7 @@ class ConversationItem extends StatelessWidget {
   final WidgetRef ref;
   final Function() onTitleUpdate;
   final Function() onDelete;
+  final bool menuOnly;
 
   const ConversationItem({
     Key? key,
@@ -27,10 +29,81 @@ class ConversationItem extends StatelessWidget {
     required this.ref,
     required this.onTitleUpdate,
     required this.onDelete,
+    this.menuOnly = false,
   }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
+    var popupMenu = PopupMenuButton<String>(
+      icon: Icon(Icons.more_vert),
+      onSelected: (value) async {
+        if (value == 'rename') {
+          await _handleRename(context);
+        } else if (value == 'move') {
+          await _handleMove(context);
+        } else if (value == 'delete') {
+          _handleDelete();
+        } else if (value == 'pin') {
+          ref
+              .read(conversationsProvider.notifier)
+              .updateConversationFolder(conversation.id, 'Pinned');
+        } else if (value == 'unpin') {
+          ref
+              .read(conversationsProvider.notifier)
+              .updateConversationFolder(conversation.id, '');
+        }
+      },
+      itemBuilder:
+          (context) => [
+            PopupMenuItem<String>(
+              value: 'rename',
+              child: Row(
+                children: [
+                  Icon(Icons.edit, size: 20),
+                  SizedBox(width: 8),
+                  Text('Rename'),
+                ],
+              ),
+            ),
+            PopupMenuItem<String>(
+              value: conversation.folder == 'Pinned' ? 'unpin' : 'pin',
+              child: Row(
+                children: [
+                  conversation.folder == 'Pinned'
+                      ? Icon(Icons.push_pin, size: 20)
+                      : Icon(Icons.push_pin_outlined, size: 20),
+                  SizedBox(width: 8),
+                  conversation.folder == 'Pinned' ? Text('Unpin') : Text('Pin'),
+                ],
+              ),
+            ),
+            PopupMenuItem<String>(
+              value: 'move',
+              child: Row(
+                children: [
+                  Icon(Icons.folder, size: 20),
+                  SizedBox(width: 8),
+                  Text('Move to Folder'),
+                ],
+              ),
+            ),
+            PopupMenuItem<String>(
+              value: 'delete',
+              child: Row(
+                children: [
+                  Icon(Icons.delete, size: 20, color: Colors.red),
+                  SizedBox(width: 8),
+                  Text('Delete', style: TextStyle(color: Colors.red)),
+                ],
+              ),
+            ),
+          ],
+    );
+
+    if (menuOnly) {
+      return popupMenu;
+    }
+
     return ListTile(
       key: ValueKey(conversation.id),
       title: Text(
@@ -46,75 +119,31 @@ class ConversationItem extends StatelessWidget {
         conversation.lastMessageAt.toString().substring(0, 16),
         style: TextStyle(fontSize: 11),
       ),
-      trailing: PopupMenuButton<String>(
-        icon: Icon(Icons.more_vert),
-        onSelected: (value) async {
-          if (value == 'rename') {
-            await _handleRename(context);
-          } else if (value == 'move') {
-            await _handleMove(context);
-          } else if (value == 'delete') {
-            _handleDelete();
-          } else if (value == 'pin') {
-            ref
-                .read(conversationsProvider.notifier)
-                .updateConversationFolder(conversation.id, 'Pinned');
-          } else if (value == 'unpin') {
-            ref
-                .read(conversationsProvider.notifier)
-                .updateConversationFolder(conversation.id, '');
-          }
-        },
-        itemBuilder:
-            (context) => [
-              PopupMenuItem<String>(
-                value: 'rename',
-                child: Row(
-                  children: [
-                    Icon(Icons.edit, size: 20),
-                    SizedBox(width: 8),
-                    Text('Rename'),
-                  ],
-                ),
-              ),
-              PopupMenuItem<String>(
-                value: conversation.folder == 'Pinned' ? 'unpin' : 'pin',
-                child: Row(
-                  children: [
-                    conversation.folder == 'Pinned'
-                        ? Icon(Icons.push_pin, size: 20)
-                        : Icon(Icons.push_pin_outlined, size: 20),
-                    SizedBox(width: 8),
-                    conversation.folder == 'Pinned'
-                        ? Text('Unpin')
-                        : Text('Pin'),
-                  ],
-                ),
-              ),
-              PopupMenuItem<String>(
-                value: 'move',
-                child: Row(
-                  children: [
-                    Icon(Icons.folder, size: 20),
-                    SizedBox(width: 8),
-                    Text('Move to Folder'),
-                  ],
-                ),
-              ),
-              PopupMenuItem<String>(
-                value: 'delete',
-                child: Row(
-                  children: [
-                    Icon(Icons.delete, size: 20, color: Colors.red),
-                    SizedBox(width: 8),
-                    Text('Delete', style: TextStyle(color: Colors.red)),
-                  ],
-                ),
-              ),
-            ],
-      ),
+      trailing: popupMenu,
       selected: isSelected,
       onTap: () => onSelect(conversation.id),
+      leading: CircleAvatar(
+        backgroundColor:
+            conversation.icon != null && conversation.icon!.isNotEmpty
+                ? Colors.transparent
+                : Colors.primaries[Random().nextInt(Colors.primaries.length)],
+        child:
+            conversation.icon != null && conversation.icon!.isNotEmpty
+                ? ClipOval(
+                  child: Image.memory(
+                    base64Decode(conversation.icon!),
+                    width: 250,
+                    height: 250,
+                    fit: BoxFit.cover,
+                  ),
+                )
+                : Text(
+                  conversation.title.isNotEmpty
+                      ? conversation.title[0].toUpperCase()
+                      : '?',
+                  style: TextStyle(color: Colors.white),
+                ),
+      ),
     );
   }
 

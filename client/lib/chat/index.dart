@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:plurality/chat/conversation-list/conversation-item.dart';
 import 'package:plurality/chat/message-list/chat-interface.dart';
 import '../api/service.dart';
 import '../api/api.dart';
+import '../utils/types.dart';
 import '../auth/account.dart';
 import './budget.dart';
 import 'conversation-list/conversation-list.dart';
+import 'dart:convert';
+import 'dart:math';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final bool isMobile;
@@ -21,6 +25,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   String? _selectedConversationId;
   String convTitle = '';
   final ApiService _apiService = ApiService();
+  Conversation? selectedConv;
 
   // Extract the model selection logic to a separate method
   void _updateTitle() {
@@ -32,6 +37,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     if (matches.isNotEmpty) {
       setState(() {
+        selectedConv = matches[0];
         convTitle = matches[0].title;
       });
     }
@@ -157,7 +163,43 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   ? AppBar(
                     title:
                         _selectedConversationId != null
-                            ? Text(buildTitle(convTitle) ?? '')
+                            ? Row(
+                              children: [
+                                if (selectedConv != null)
+                                  CircleAvatar(
+                                    backgroundColor:
+                                        selectedConv!.icon != null &&
+                                                selectedConv!.icon!.isNotEmpty
+                                            ? Colors.transparent
+                                            : Colors.primaries[Random().nextInt(
+                                              Colors.primaries.length,
+                                            )],
+                                    child:
+                                        selectedConv!.icon != null &&
+                                                selectedConv!.icon!.isNotEmpty
+                                            ? ClipOval(
+                                              child: Image.memory(
+                                                base64Decode(
+                                                  selectedConv!.icon!,
+                                                ),
+                                                width: 250,
+                                                height: 250,
+                                                fit: BoxFit.cover,
+                                              ),
+                                            )
+                                            : Text(
+                                              convTitle.isNotEmpty
+                                                  ? convTitle[0].toUpperCase()
+                                                  : '?',
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                              ),
+                                            ),
+                                  ),
+                                if (selectedConv != null) SizedBox(width: 24),
+                                Text(buildTitle(convTitle) ?? ''),
+                              ],
+                            )
                             : Text('Plurality Chat'),
                     leading: IconButton(
                       icon: Icon(Icons.arrow_back),
@@ -167,6 +209,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         });
                       },
                     ),
+                    actions: [
+                      if (selectedConv != null)
+                        ConversationItem(
+                          conversation: selectedConv!,
+                          isSelected: false,
+                          onSelect: (t) {},
+                          ref: ref,
+                          menuOnly: true,
+                          onTitleUpdate: _updateTitle,
+                          onDelete: () {
+                            setState(() {
+                              _selectedConversationId = null;
+                            });
+                          },
+                        ),
+                    ],
                   )
                   : null,
           body: destinations[_selectedIndex]['content'] as Widget,

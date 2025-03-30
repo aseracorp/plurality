@@ -117,15 +117,26 @@ class _ConversationListState extends ConsumerState<ConversationList> {
           SizedBox(height: 20),
         SizedBox(height: 8),
 
-        // new conversation button
+        // new conversation button and refresh button
         if (!widget.isMobile)
           Padding(
             padding: const EdgeInsets.all(8.0),
-            child: ElevatedButton(
-              onPressed: () {
-                widget.onDelete();
-              },
-              child: Text('New conversation'),
+            child: Row(
+              children: [
+                ElevatedButton(
+                  onPressed: () {
+                    widget.onDelete();
+                  },
+                  child: Text('New conversation'),
+                ),
+                SizedBox(width: 12),
+                IconButton(
+                  onPressed: () {
+                    ref.read(conversationsProvider.notifier).refresh();
+                  },
+                  icon: Icon(Icons.refresh),
+                ),
+              ],
             ),
           ),
 
@@ -145,8 +156,15 @@ class _ConversationListState extends ConsumerState<ConversationList> {
           ),
         ),
 
-        // Single flat list for folders and conversations
-        Expanded(child: SuperListView(shrinkWrap: true, children: allItems)),
+        // Single flat list for folders and conversations with pull to refresh
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: () async {
+              ref.read(conversationsProvider.notifier).refresh();
+            },
+            child: SuperListView(shrinkWrap: true, children: allItems),
+          ),
+        ),
       ],
     );
   }

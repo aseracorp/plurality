@@ -129,11 +129,13 @@ class ConversationsNotifier extends StateNotifier<ConversationState> {
   Future<void> updateConversationMetaData({
     required String conversationId,
     String? title,
+    String? icon,
     ModelSelected? modelSelected,
   }) async {
     final updated = await ConversationStorage.updateConversationMetaData(
       conversationId: conversationId,
       title: title,
+      icon: icon,
       modelSelected: modelSelected,
     );
 

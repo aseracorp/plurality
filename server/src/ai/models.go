@@ -37,6 +37,7 @@ var ValidModels = []string{
 
 	// Audio
 	"whisper-v3-turbo",
+	"cartesia/sonic",
 }
 
 var ValidFreeModels = []string{
@@ -46,6 +47,7 @@ var ValidFreeModels = []string{
 	"black-forest-labs/FLUX.1-schnell",
 	"Gemini/gemini-2.0-flash",
 	"whisper-v3-turbo",
+	"cartesia/sonic",
 }
 
 var ValidVisionModels = []string{

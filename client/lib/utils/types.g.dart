@@ -341,16 +341,18 @@ class MiniAppAdapter extends TypeAdapter<MiniApp> {
       description: fields[2] as String,
       iconURL: fields[3] as String,
       author: fields[4] as String?,
-      models: (fields[5] as List).cast<Model>(),
+      modelSelected: fields[5] as ModelSelected?,
       inputs: (fields[6] as List).cast<MiniAppInput>(),
       InitialMessage: (fields[7] as Map?)?.cast<String, String>(),
+      form: fields[8] as String,
+      placeholder: fields[9] as String,
     );
   }
 
   @override
   void write(BinaryWriter writer, MiniApp obj) {
     writer
-      ..writeByte(8)
+      ..writeByte(10)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -362,11 +364,15 @@ class MiniAppAdapter extends TypeAdapter<MiniApp> {
       ..writeByte(4)
       ..write(obj.author)
       ..writeByte(5)
-      ..write(obj.models)
+      ..write(obj.modelSelected)
       ..writeByte(6)
       ..write(obj.inputs)
       ..writeByte(7)
-      ..write(obj.InitialMessage);
+      ..write(obj.InitialMessage)
+      ..writeByte(8)
+      ..write(obj.form)
+      ..writeByte(9)
+      ..write(obj.placeholder);
   }
 
   @override

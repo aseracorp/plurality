@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/azukaar/plurality/src/utils"
 	"go.mongodb.org/mongo-driver/bson"
@@ -12,6 +13,7 @@ import (
 
 // GetAllMiniApps retrieves all available mini-apps from the database
 func GetAllMiniApps(ctx context.Context) ([]utils.MiniApp, error) {
+	start := time.Now() // Start timing
 	client := GetClient()
 	collection := client.Database("plurality").Collection("miniapps")
 
@@ -34,7 +36,8 @@ func GetAllMiniApps(ctx context.Context) ([]utils.MiniApp, error) {
 		return nil, err
 	}
 
-	utils.Debug("Retrieved %d mini-apps", len(miniApps))
+	elapsed := time.Since(start) // Calculate elapsed time
+	utils.Debug("Retrieved %d mini-apps in %s", len(miniApps), elapsed)
 	return miniApps, nil
 }
 

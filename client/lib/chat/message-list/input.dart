@@ -28,7 +28,7 @@ class InputBox extends StatefulWidget {
   final Future<void> Function() pickFile;
   final List<Attachment> attachments;
   final String conversationId;
-  final String hintText;
+  final String placeholder;
   final FormFieldValidator<String>? validator;
   final FocusNode inputFocusNode;
   final void Function(Attachment? attachment) removeAttachment;
@@ -36,6 +36,8 @@ class InputBox extends StatefulWidget {
   final void Function() handleStop;
   final bool isMobile;
   final ModelSelected selectedModel;
+  final bool submitButton;
+  final bool allowEmptyMessage;
 
   const InputBox({
     Key? key,
@@ -52,9 +54,11 @@ class InputBox extends StatefulWidget {
     required this.attachments,
     required this.addAttachment,
     this.conversationId = '',
-    this.hintText = 'Message...',
+    this.placeholder = 'Message...',
     required this.removeAttachment,
     required this.inputFocusNode,
+    required this.submitButton,
+    required this.allowEmptyMessage,
     this.validator,
   }) : super(key: key);
 
@@ -776,7 +780,7 @@ class _InputBoxState extends State<InputBox> {
                               hintText:
                                   _isDragging
                                       ? 'Drop files here...'
-                                      : 'Your message...',
+                                      : widget.placeholder,
                               border: null, // OutlineInputBorder(),
                             ),
                             maxLines: null,
@@ -786,6 +790,8 @@ class _InputBoxState extends State<InputBox> {
                             keyboardType: TextInputType.multiline,
                             textInputAction: TextInputAction.newline,
                             validator: (value) {
+                              if (widget.allowEmptyMessage) return null;
+
                               if ((value == null || value.trim().isEmpty) &&
                                   widget.attachments.isEmpty) {
                                 return 'Please enter a message or add an attachment';
@@ -814,31 +820,56 @@ class _InputBoxState extends State<InputBox> {
                   //   tooltip: 'Paste from clipboard',
                   // ),
                   // Send or Stop button
-                  IconButton(
-                    onPressed:
-                        widget.isLoading
-                            ? widget.handleStop
-                            : () => _handleSubmit(context),
-                    icon:
-                        widget.isLoading
-                            ? Stack(
-                              alignment: Alignment.center,
-                              children: [
-                                SizedBox(
-                                  width: 24,
-                                  height: 24,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    valueColor: AlwaysStoppedAnimation<Color>(
-                                      primaryColor!,
+                  widget.submitButton
+                      ? FilledButton.icon(
+                        onPressed:
+                            widget.isLoading
+                                ? widget.handleStop
+                                : () => _handleSubmit(context),
+                        icon:
+                            widget.isLoading
+                                ? Stack(
+                                  alignment: Alignment.center,
+                                  children: [
+                                    SizedBox(
+                                      width: 24,
+                                      height: 24,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
                                     ),
-                                  ),
-                                ),
-                                Icon(Icons.stop, color: primaryColor),
-                              ],
-                            )
-                            : Icon(Icons.send, color: primaryColor),
-                  ),
+                                    Icon(Icons.stop),
+                                  ],
+                                )
+                                : Icon(Icons.send),
+                        label: Text(widget.isLoading ? 'Stop' : 'Go !'),
+                      )
+                      : IconButton(
+                        onPressed:
+                            widget.isLoading
+                                ? widget.handleStop
+                                : () => _handleSubmit(context),
+                        icon:
+                            widget.isLoading
+                                ? Stack(
+                                  alignment: Alignment.center,
+                                  children: [
+                                    SizedBox(
+                                      width: 24,
+                                      height: 24,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        valueColor:
+                                            AlwaysStoppedAnimation<Color>(
+                                              primaryColor!,
+                                            ),
+                                      ),
+                                    ),
+                                    Icon(Icons.stop, color: primaryColor),
+                                  ],
+                                )
+                                : Icon(Icons.send, color: primaryColor),
+                      ),
                 ],
               ),
             ),
