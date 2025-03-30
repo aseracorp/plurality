@@ -368,7 +368,6 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   Future<void> _handleSubmit(BuildContext context) async {
     if (_formKey.currentState!.validate()) {
       final userMessage = _miniAppPrePrompt + _messageController.text;
-      print('User message: $userMessage');
       _messageController.clear();
       _miniAppPrePrompt = '';
       await sendMessage(context, userMessage, null);
@@ -520,7 +519,6 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       var stt = SpeechRecognitionService();
       var tts = TTSService();
       if (stt.isCall) {
-        print('isCall: ${_currentStreamedResponse}');
         tts.speak(_currentStreamedResponse, () {
           if (stt.isCall) {
             stt.startRecording(context, autoStop: true, call: true);
@@ -968,7 +966,6 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                 _miniAppSelected = miniapp;
 
                 if (miniapp.modelSelected != null) {
-                  print(miniapp.modelSelected!.toJson());
                   _modelSelected = ModelSelected(
                     text: miniapp.modelSelected!.text ?? _modelSelected.text,
                     vision:
@@ -986,14 +983,13 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
     return Stack(
       children: [
-        Positioned.fill(
-          child:
-              widget.conversationId.isEmpty && _miniAppSelected != null
-                  ? Center(
-                    child: SingleChildScrollView(child: newMessageScreen),
-                  )
-                  : newMessageScreen,
-        ),
+        widget.conversationId.isEmpty && _miniAppSelected != null
+            ? Positioned.fill(
+              child: Center(
+                child: SingleChildScrollView(child: newMessageScreen),
+              ),
+            )
+            : newMessageScreen,
 
         // if last message of messages has message.TokenPrice > 1000
         if (!_closeMessageWarning &&
