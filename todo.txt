@@ -1,5 +1,6 @@
 # Road to relese 
   - BLOCK RELEASE IF BUILD DIDNT WORK
+	- Add "quizz" and  "More" in mini apps
   - test plans stuff more?
 	- cache web page (https://github.com/flutter/flutter/issues/63500)
   - Login / Register

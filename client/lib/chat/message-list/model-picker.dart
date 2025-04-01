@@ -30,6 +30,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     'llama-v3p1-405b-instruct',
     'deepseek-r1',
     'deepseek-v3',
+    'deepseek-v3-0324',
     'qwen2p5-72b-instruct',
     'ChatGPT/gpt-4o-mini',
     'ChatGPT/gpt-4o',
@@ -39,6 +40,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     "Gemini/gemini-1.5-pro",
     "Gemini/gemini-1.5-flash-latest",
     "Gemini/gemini-2.0-flash",
+    "Gemini/gemini-2.5-pro-exp-03-25",
   ];
 
   final List<String> _visionModelOptions = [
@@ -115,7 +117,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     ),
     'Smart': ModelSelected(
       text: Model(
-        name: 'deepseek-v3',
+        name: 'deepseek-v3-0324',
         params: null,
         tools: ['search_web', 'place_search', 'visit_link'],
       ),
