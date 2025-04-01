@@ -78,13 +78,13 @@ func GetUserBalance(ctx context.Context) (*UserBalance, error) {
 	// if LastManualPlan was last Month, set Balance to plan's allowance
 	if balance.LastManualPlan.Month() != time.Now().Month() && balance.PlanName != "" {
 		utils.Log("LastManualPlan was last Month, setting Balance to plan's allowance for user %s", userID)
-		planAllowance = 500000
+		planAllowance := 500000.00
 		if balance.PlanName == "Basic" {
-			planAllowance = 5000000
+			planAllowance = 5000000.00
 		} else if balance.PlanName == "Advanced" {
-			planAllowance = 12000000
+			planAllowance = 12000000.00
 		} else if balance.PlanName == "Pro" {
-			planAllowance = 24000000
+			planAllowance = 24000000.00
 		}
 		balance.Balance = max(planAllowance, balance.Balance)
 		balance.LastManualPlan = time.Now()
