@@ -56,10 +56,9 @@ func GetUserBalance(ctx context.Context) (*UserBalance, error) {
 		balance = UserBalance{
 			UserID:    userID,
 			PlanName: "Free",
-			// TODO : DOWNGRADE TO 100k
-			Balance:   100000,
-			Plan:   100000,
-			ManualPlan:   100000,
+			Balance:   500000,
+			Plan:   500000,
+			ManualPlan:   500000,
 			UpdatedAt: time.Now(),
 			LastManualPlan: time.Now(),
 		}
@@ -76,13 +75,45 @@ func GetUserBalance(ctx context.Context) (*UserBalance, error) {
 		return &balance, nil
 	}
 
-	// if LastManualPlan was last Month, set Balance to ManualPlan
+	// if LastManualPlan was last Month, set Balance to plan's allowance
 	if balance.LastManualPlan.Month() != time.Now().Month() && balance.PlanName != "" {
+		utils.Log("LastManualPlan was last Month, setting Balance to plan's allowance for user %s", userID)
+		planAllowance = 500000
+		if balance.PlanName == "Basic" {
+			planAllowance = 5000000
+		} else if balance.PlanName == "Advanced" {
+			planAllowance = 12000000
+		} else if balance.PlanName == "Pro" {
+			planAllowance = 24000000
+		}
+		balance.Balance = max(planAllowance, balance.Balance)
+		balance.LastManualPlan = time.Now()
+		_, err :=
+			collection.UpdateOne(ctx, bson.M{"user_id": userID}, bson.M{"$set": bson.M{"balance": balance.ManualPlan, "last_manual_plan": time.Now()}})
+		if err != nil {
+			utils.Error("Error updating balance: %v", err)
+		}
+	}
+
+	// if LastManualPlan was last Month, set Balance to ManualPlan
+	if balance.LastManualPlan.Month() != time.Now().Month() && balance.ManualPlan != 0 {
 		utils.Log("LastManualPlan was last Month, setting Balance to ManualPlan for user %s", userID)
 		balance.Balance = max(balance.ManualPlan, balance.Balance)
 		balance.LastManualPlan = time.Now()
 		_, err :=
 			collection.UpdateOne(ctx, bson.M{"user_id": userID}, bson.M{"$set": bson.M{"balance": balance.ManualPlan, "last_manual_plan": time.Now()}})
+		if err != nil {
+			utils.Error("Error updating balance: %v", err)
+		}
+	}
+	
+	// if LastManualPlan was yesterday, and balance is negative, set to 0
+	if balance.LastManualPlan.Day() != time.Now().Day() && balance.PlanName != "" && balance.PlanName != "Free" && balance.Balance < 0 {
+		utils.Log("LastManualPlan was yesterday, setting Balance to 0 for user %s", userID)
+		balance.Balance = 0
+		balance.LastManualPlan = time.Now()
+		_, err :=
+			collection.UpdateOne(ctx, bson.M{"user_id": userID}, bson.M{"$set": bson.M{"balance": 0, "last_manual_plan": time.Now()}})
 		if err != nil {
 			utils.Error("Error updating balance: %v", err)
 		}
@@ -236,7 +267,21 @@ func CheckSufficientCredits(ctx context.Context, requiredAmount float64) (bool, 
 		return false, err
 	}
 
-	return balance.Balance >= requiredAmount, nil
+	if balance.Balance >= requiredAmount {
+		return true, nil
+	}
+
+	if balance.PlanName == "Basic" && balance.Balance >= -200000 && requiredAmount <= 10000 {
+		return true, nil
+	}
+	if balance.PlanName == "Advanced" && balance.Balance >= -300000 && requiredAmount <= 20000 {
+		return true, nil
+	}
+	if balance.PlanName == "Pro" && balance.Balance >= -500000 && requiredAmount <= 30000 {
+		return true, nil
+	}
+
+	return false, nil
 }
 
 // Delete balnce

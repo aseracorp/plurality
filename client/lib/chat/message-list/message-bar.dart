@@ -44,7 +44,7 @@ class MessageToolbar extends StatelessWidget {
       if (ttsCallback != null) // Only show TTS button if callback is provided
         TTSButton(onPressed: ttsCallback!, isSpeaking: isSpeaking),
       // Add the info button
-      InfoButton(message: message),
+      if (isBot) InfoButton(message: message),
     ];
 
     // Toolbar icons
@@ -68,7 +68,8 @@ class MessageToolbar extends StatelessWidget {
       builder: (context, constraints) {
         return Column(
           mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment:
+              isBot ? CrossAxisAlignment.start : CrossAxisAlignment.end,
           children: [
             if (iconURL != null && isBot)
               Container(
@@ -107,10 +108,8 @@ class MessageToolbar extends StatelessWidget {
               constraints: BoxConstraints(maxWidth: constraints.maxWidth),
               child: child,
             ),
-            if (isBot)
-              const SizedBox(height: 4), // Spacing between content and toolbar
-            if (isBot)
-              Row(mainAxisSize: MainAxisSize.min, children: toolbarIcons),
+            const SizedBox(height: 4), // Spacing between content and toolbar
+            Row(mainAxisSize: MainAxisSize.min, children: toolbarIcons),
           ],
         );
       },

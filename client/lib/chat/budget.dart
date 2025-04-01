@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/balance.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter/services.dart';
+import 'dart:math';
 
 // Extracted Budget Screen Widget
 class BudgetScreen extends ConsumerWidget {
@@ -136,7 +137,7 @@ class BudgetScreen extends ConsumerWidget {
                       style: TextStyle(fontSize: 16, color: boxTextColor),
                     ),
                     Text(
-                      formatter.format(balance.balance),
+                      formatter.format(max(balance.balance, 0)),
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
@@ -170,73 +171,224 @@ class BudgetScreen extends ConsumerWidget {
 
           const SizedBox(height: 16),
 
-          // Balance and Plan Details
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: boxColor,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Column(
-              children: [
-                Text(
-                  'Estimation of your remaining budget based on the balanced AI preset',
-                  style: TextStyle(fontSize: 16, color: boxTextColor),
+          if (balance.balance < 0)
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.red.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: Colors.red.withOpacity(0.5),
+                  width: 1,
                 ),
-
-                const SizedBox(height: 16),
-
-                // estimated usage in term of number of message sent
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Messages',
-                      style: TextStyle(fontSize: 14, color: boxTextColor),
-                    ),
-                    Text(
-                      NumberFormat.decimalPattern().format(
-                            (balance.balance / 1250).toInt(),
-                          ) +
-                          ' - ' +
-                          NumberFormat.decimalPattern().format(
-                            (balance.balance / 750).toInt(),
-                          ),
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: color,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.warning_amber_rounded,
+                        color: Colors.red,
+                        size: 20,
                       ),
-                    ),
-                  ],
-                ),
-                // estimated usage in term of number of message sent
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Images Generation',
-                      style: TextStyle(fontSize: 14, color: boxTextColor),
-                    ),
-                    Text(
-                      NumberFormat.decimalPattern().format(
-                            (balance.balance / 4000).toInt(),
-                          ) +
-                          ' - ' +
-                          NumberFormat.decimalPattern().format(
-                            (balance.balance / 3500).toInt(),
-                          ),
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: color,
+                      const SizedBox(width: 8),
+                      Text(
+                        'Emergency Token Usage',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.red,
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-              ],
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'You are currently using your daily emergency tokens.',
+                    style: TextStyle(fontSize: 14, color: boxTextColor),
+                  ),
+                  const SizedBox(height: 8),
+
+                  // Display emergency token info based on plan
+                  Builder(
+                    builder: (context) {
+                      int emergencyAllowance = 0;
+                      int maxRequestSize = 0;
+
+                      // Set allowance and max request size based on plan
+                      switch (balance.planName) {
+                        case "Basic":
+                          emergencyAllowance = 200000;
+                          maxRequestSize = 10000;
+                          break;
+                        case "Advanced":
+                          emergencyAllowance = 300000;
+                          maxRequestSize = 20000;
+                          break;
+                        case "Pro":
+                          emergencyAllowance = 500000;
+                          maxRequestSize = 30000;
+                          break;
+                        default:
+                          emergencyAllowance = 200000; // Default to Basic
+                          maxRequestSize = 10000;
+                      }
+
+                      // Calculate remaining emergency tokens
+                      double tokensUsed = balance.balance.abs();
+                      double tokensRemaining = emergencyAllowance - tokensUsed;
+
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                'Remaining Emergency Tokens:',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: boxTextColor,
+                                ),
+                              ),
+                              Text(
+                                formatter.format(tokensRemaining),
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  color:
+                                      tokensRemaining < emergencyAllowance * 0.2
+                                          ? Colors.red
+                                          : Colors.orange,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                'Emergency Allowance:',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: boxTextColor,
+                                ),
+                              ),
+                              Text(
+                                formatter.format(emergencyAllowance),
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          /*Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                'Max Request Size:',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: boxTextColor,
+                                ),
+                              ),
+                              Text(
+                                formatter.format(maxRequestSize) + ' tokens',
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),*/
+                          Text(
+                            'Note: Your emergency tokens will reset every day to your allowance. Your regular token will reset on the first day of the month.',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontStyle: FontStyle.italic,
+                              color: boxTextColor?.withOpacity(0.8),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ],
+              ),
             ),
-          ),
+
+          if (balance.balance > 0)
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: boxColor,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(
+                children: [
+                  Text(
+                    'Estimation of your remaining budget based on the balanced AI preset',
+                    style: TextStyle(fontSize: 16, color: boxTextColor),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  // estimated usage in term of number of message sent
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Messages',
+                        style: TextStyle(fontSize: 14, color: boxTextColor),
+                      ),
+                      Text(
+                        NumberFormat.decimalPattern().format(
+                              (balance.balance / 1250).toInt(),
+                            ) +
+                            ' - ' +
+                            NumberFormat.decimalPattern().format(
+                              (balance.balance / 750).toInt(),
+                            ),
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: color,
+                        ),
+                      ),
+                    ],
+                  ),
+                  // estimated usage in term of number of message sent
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Images Generation',
+                        style: TextStyle(fontSize: 14, color: boxTextColor),
+                      ),
+                      Text(
+                        NumberFormat.decimalPattern().format(
+                              (balance.balance / 4000).toInt(),
+                            ) +
+                            ' - ' +
+                            NumberFormat.decimalPattern().format(
+                              (balance.balance / 3500).toInt(),
+                            ),
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: color,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
 
           const SizedBox(height: 16),
 
