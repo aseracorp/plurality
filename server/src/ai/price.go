@@ -54,7 +54,7 @@ func GetPriceFromTokenUsage(reqType int, provider int, model utils.Model, usage 
 				price = usage * 3.00
 			}
 		} else if provider == GOOGLE {
-			if model.Name == "Gemini/gemini-1.5-pro" {
+			if model.Name == "Gemini/gemini-1.5-pro" || model.Name == "Gemini/gemini-2.5-pro-exp-03-25" {
 				// cost 1.25$ per 1M tokens
 				price = usage * 1.25
 			} else if model.Name == "Gemini/gemini-1.5-flash-latest" {
@@ -87,7 +87,7 @@ func GetPriceFromTokenUsage(reqType int, provider int, model utils.Model, usage 
 				price = usage * 15.00
 			}
 		} else if provider == GOOGLE {
-			if model.Name == "Gemini/gemini-1.5-pro" {
+			if model.Name == "Gemini/gemini-1.5-pro" || model.Name == "Gemini/gemini-2.5-pro-exp-03-25" {
 				// cost 10.00$ per 1M tokens
 				price = usage * 10.00
 			} else if model.Name == "Gemini/gemini-1.5-flash-latest" {
@@ -131,7 +131,7 @@ func GetPriceFromTokenUsage(reqType int, provider int, model utils.Model, usage 
 				// cost 8.00 per 1M tokens
 				price = usage * 8.00
 			}
-		} else if model.Name == "deepseek-v3" {
+		} else if model.Name == "deepseek-v3" || model.Name == "deepseek-v3-0324" {
 			// cost 0.90 per 1M tokens
 			price = usage * 0.90
 		} else if model.Name == "qwen2p5-72b-instruct" {
