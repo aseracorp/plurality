@@ -22,7 +22,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     setState(() => loading = true);
     try {
       await _authService.signInWithEmailPassword(email, password);
-      Navigator.pushReplacementNamed(context, '/home');
+      Navigator.pushReplacementNamed(context, '/');
     } on FirebaseAuthException catch (e) {
       setState(() {
         error = 'Failed to sign in, check your password: ' + (e.message ?? "");
@@ -97,7 +97,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     setState(() => loading = true);
     try {
       await _authService.registerWithEmailPassword(email, password);
-      Navigator.pushReplacementNamed(context, '/home');
+      Navigator.pushReplacementNamed(context, '/');
     } on FirebaseAuthException catch (e) {
       setState(() {
         error = 'Failed to register: ' + (e.message ?? "");
