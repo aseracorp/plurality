@@ -59,7 +59,10 @@ var ValidVisionModels = []string{
 	"Claude/claude-3-7-sonnet",
 	"ChatGPT/gpt-4o-mini",
 	"ChatGPT/gpt-4o",
-	// "Gemini/gemini-2.5-pro-exp-03-25",
+	
+	"Gemini/gemini-1.5-flash-latest",
+	"Gemini/gemini-2.0-flash",
+	"Gemini/gemini-2.5-pro-exp-03-25",
 }
 	
 

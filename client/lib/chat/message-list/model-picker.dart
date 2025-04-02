@@ -3,6 +3,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../api/balance.dart';
 import '../../utils/types.dart';
 
+final List<String> VisionModelOptions = [
+  'llama-v3p2-11b-vision-instruct',
+  'llama-v3p2-90b-vision-instruct',
+  'ChatGPT/gpt-4o',
+  'ChatGPT/gpt-4o-mini',
+  'Claude/claude-3-haiku',
+  'Claude/claude-3-7-sonnet',
+  "Gemini/gemini-1.5-flash-latest",
+  "Gemini/gemini-2.0-flash",
+  "Gemini/gemini-2.5-pro-exp-03-25",
+];
+
 class ModelSelectionModal extends ConsumerStatefulWidget {
   final Function(ModelSelected) onModelSelected;
   final ModelSelected selectedModel;
@@ -41,15 +53,6 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     "Gemini/gemini-1.5-flash-latest",
     "Gemini/gemini-2.0-flash",
     "Gemini/gemini-2.5-pro-exp-03-25",
-  ];
-
-  final List<String> _visionModelOptions = [
-    'llama-v3p2-11b-vision-instruct',
-    'llama-v3p2-90b-vision-instruct',
-    'ChatGPT/gpt-4o',
-    'ChatGPT/gpt-4o-mini',
-    'Claude/claude-3-haiku',
-    'Claude/claude-3-7-sonnet',
   ];
 
   final List<String> _imageGenModelOptions = [
@@ -143,7 +146,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
 
     _selectedModel = widget.selectedModel.text?.name ?? _modelOptions.first;
     _selectedVisionModel =
-        widget.selectedModel.vision?.name ?? _visionModelOptions.first;
+        widget.selectedModel.vision?.name ?? VisionModelOptions.first;
     _selectedImageGenModel =
         widget.selectedModel.imageGen?.name ?? _imageGenModelOptions.first;
 
@@ -217,9 +220,9 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
         _selectedModel = _modelOptions.first;
       });
     }
-    if (!_visionModelOptions.contains(_selectedVisionModel)) {
+    if (!VisionModelOptions.contains(_selectedVisionModel)) {
       setState(() {
-        _selectedVisionModel = _visionModelOptions.first;
+        _selectedVisionModel = VisionModelOptions.first;
       });
     }
     if (!_imageGenModelOptions.contains(_selectedImageGenModel)) {
@@ -528,7 +531,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
         _buildDropdown(
           label: 'Vision Model',
           value: _selectedVisionModel,
-          items: _visionModelOptions,
+          items: VisionModelOptions,
           onChanged:
               isFree
                   ? (value) {}

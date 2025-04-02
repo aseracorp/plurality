@@ -534,11 +534,6 @@ class MiniApp {
   });
 
   factory MiniApp.fromJson(Map<String, dynamic> json) {
-    print(
-      json['model_selected'] != null
-          ? ModelSelected.fromJson(json['model_selected']).toJson().toString()
-          : null,
-    );
     var r = MiniApp(
       id: json['id'],
       name: json['name'],

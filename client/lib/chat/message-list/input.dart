@@ -16,6 +16,7 @@ import 'package:pasteboard/pasteboard.dart';
 import '../../utils/types.dart';
 import '../../utils/file-types.dart';
 import '../../api/stt.dart';
+import './model-picker.dart';
 
 class InputBox extends StatefulWidget {
   // Required parameters
@@ -229,14 +230,7 @@ class _InputBoxState extends State<InputBox> {
   }
 
   String SummarizeSelectedModel(ModelSelected selectedModel) {
-    var ValidVisionModels = [
-      "llama-v3p2-11b-vision-instruct",
-      "llama-v3p2-90b-vision-instruct",
-      "Claude/claude-3-haiku",
-      "Claude/claude-3-7-sonnet",
-      "ChatGPT/gpt-4o-mini",
-      "ChatGPT/gpt-4o",
-    ];
+    var ValidVisionModels = VisionModelOptions;
 
     String res = "";
     if (selectedModel.text != null) {

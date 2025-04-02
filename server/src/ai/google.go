@@ -140,7 +140,7 @@ func SendChatCompletionGoogle(ctx context.Context, model utils.Model, payload ut
 					parts = append(parts, GeminiPart{Text: content.Text})
 				}
 			case "image_url":
-/*				// Fetch image, determine mime type, base64 encode
+				// Fetch image, determine mime type, base64 encode
 				mimeType, b64Data, err := getImageBase64(content.ImageURL.URL)
 				if err != nil {
 					utils.Error("Failed to process image URL for Gemini", err, content.ImageURL.URL)
@@ -157,7 +157,7 @@ func SendChatCompletionGoogle(ctx context.Context, model utils.Model, payload ut
 				// Add estimated image cost (check Gemini pricing for specifics)
 				// Placeholder cost - adjust based on actual Gemini pricing
 				basePrice += GetPriceFromTokenUsage(IMAGE_VISION, GOOGLE, model, 0) // Assuming a fixed cost or token equivalent
-*/
+
 			case "tool_use":
                  // This represents a function call the *assistant* made previously
                  // Need to marshal args back to map[string]any if they are stored as string
