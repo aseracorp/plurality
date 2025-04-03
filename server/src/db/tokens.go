@@ -58,7 +58,6 @@ func GetUserBalance(ctx context.Context) (*UserBalance, error) {
 			PlanName: "Free",
 			Balance:   500000,
 			Plan:   500000,
-			ManualPlan:   500000,
 			UpdatedAt: time.Now(),
 			LastManualPlan: time.Now(),
 		}
@@ -76,16 +75,9 @@ func GetUserBalance(ctx context.Context) (*UserBalance, error) {
 	}
 
 	// if LastManualPlan was last Month, set Balance to plan's allowance
-	if balance.LastManualPlan.Month() != time.Now().Month() && balance.PlanName != "" {
+	if balance.LastManualPlan.Month() != time.Now().Month() && balance.PlanName != "" && balance.Plan != 0 {
 		utils.Log("LastManualPlan was last Month, setting Balance to plan's allowance for user %s", userID)
-		planAllowance := 500000.00
-		if balance.PlanName == "Basic" {
-			planAllowance = 5000000.00
-		} else if balance.PlanName == "Advanced" {
-			planAllowance = 12000000.00
-		} else if balance.PlanName == "Pro" {
-			planAllowance = 24000000.00
-		}
+		planAllowance := balance.Plan
 		balance.Balance = max(planAllowance, balance.Balance)
 		balance.LastManualPlan = time.Now()
 		_, err :=

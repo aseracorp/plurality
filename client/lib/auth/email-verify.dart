@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import './auth-service.dart';
+import 'dart:html' as html;
+import 'package:flutter/foundation.dart';
 
 class EmailVerificationPage extends StatefulWidget {
   const EmailVerificationPage({Key? key}) : super(key: key);
@@ -119,6 +121,10 @@ class _EmailVerificationPageState extends State<EmailVerificationPage> {
                 onPressed: () async {
                   await _authService.forceRefresh();
                   Navigator.pushNamed(context, "/");
+                  // if web, reload the page
+                  if (kIsWeb) {
+                    html.window.location.reload();
+                  }
                 },
                 child: const Text('I am verified. Continue'),
               ),

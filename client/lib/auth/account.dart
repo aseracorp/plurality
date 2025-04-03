@@ -305,6 +305,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             color: Colors.orange,
                           ),
 
+                          // divider
+                          const Divider(height: 32, thickness: 1),
+
                           // Delete account button
                           SettingsButton(
                             icon: Icons.delete_forever,
