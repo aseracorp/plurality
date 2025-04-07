@@ -15,6 +15,14 @@ jobs:
       - setup_remote_docker:
           docker_layer_caching: true
 
+      - run:
+          name: Generate Version Info
+          # Using the short Git commit hash
+          command: |
+            GIT_HASH=$(git rev-parse --short HEAD)
+            echo "{\"version\": \"$GIT_HASH\"}" > version.json
+            echo "Generated version.json with version: $GIT_HASH"
+            
       # Build the Docker image
       - run:
           name: Build Docker image

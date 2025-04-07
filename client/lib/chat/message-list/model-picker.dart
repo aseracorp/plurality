@@ -4,8 +4,8 @@ import '../../api/balance.dart';
 import '../../utils/types.dart';
 
 final List<String> VisionModelOptions = [
-  'llama-v3p2-11b-vision-instruct',
-  'llama-v3p2-90b-vision-instruct',
+  "llama4-scout-instruct-basic",
+  "llama4-maverick-instruct-basic",
   'ChatGPT/gpt-4o',
   'ChatGPT/gpt-4o-mini',
   'Claude/claude-3-haiku',
@@ -34,8 +34,8 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     with SingleTickerProviderStateMixin {
   // Available options for each dropdown
   final List<String> _modelOptions = [
-    'llama-v3p2-11b-vision-instruct',
-    'llama-v3p2-90b-vision-instruct',
+    "llama4-scout-instruct-basic",
+    "llama4-maverick-instruct-basic",
     'llama-v3p1-8b-instruct',
     'llama-v3p2-3b',
     'llama-v3p1-70b-instruct',
@@ -99,7 +99,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     'Fast': ModelSelected(
       text: Model(name: 'llama-v3p1-8b-instruct', params: null, tools: []),
       vision: Model(
-        name: 'llama-v3p2-11b-vision-instruct',
+        name: 'llama4-scout-instruct-basic',
         params: null,
         tools: [],
       ),
@@ -112,9 +112,9 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
         tools: ['search_web', 'place_search', 'visit_link'],
       ),
       vision: Model(
-        name: 'llama-v3p2-90b-vision-instruct',
+        name: 'llama4-maverick-instruct-basic',
         params: null,
-        tools: ['search_web', 'place_search', 'visit_link'],
+        tools: [],
       ),
       imageGen: Model(name: 'black-forest-labs/FLUX.1-schnell', params: null),
     ),
@@ -125,9 +125,9 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
         tools: ['search_web', 'place_search', 'visit_link'],
       ),
       vision: Model(
-        name: 'llama-v3p2-90b-vision-instruct',
+        name: 'llama4-maverick-instruct-basic',
         params: null,
-        tools: ['search_web', 'place_search', 'visit_link'],
+        tools: [],
       ),
       imageGen: Model(name: 'black-forest-labs/FLUX.1-dev', params: null),
     ),

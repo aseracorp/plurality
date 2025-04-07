@@ -15,14 +15,15 @@ var ValidModels = []string{
 	"Claude/claude-3-7-sonnet",
 	
 	// Firefly models
-	"llama-v3p2-11b-vision-instruct",
-	"llama-v3p2-90b-vision-instruct",
+	"llama4-scout-instruct-basic",
+	"llama4-maverick-instruct-basic",
 	"llama-v3p2-3b",
 	"llama-v3p1-8b-instruct",
 	"llama-v3p1-70b-instruct",
 	"llama-v3p3-70b-instruct",
 	"llama-v3p1-405b-instruct",
 	"deepseek-r1",
+	"deepseek-r1-basic",
 	"deepseek-v3",
 	"deepseek-v3-0324",
 	"qwen2p5-72b-instruct",
@@ -43,7 +44,7 @@ var ValidModels = []string{
 }
 
 var ValidFreeModels = []string{
-	"llama-v3p2-11b-vision-instruct",
+	"llama4-scout-instruct-basic",
 	"llama-v3p1-8b-instruct",
 	"llama-v3p2-3b",
 	"black-forest-labs/FLUX.1-schnell",
@@ -53,8 +54,8 @@ var ValidFreeModels = []string{
 }
 
 var ValidVisionModels = []string{
-	"llama-v3p2-11b-vision-instruct",
-	"llama-v3p2-90b-vision-instruct",
+	// "llama4-scout-instruct-basic",
+	// "llama4-maverick-instruct-basic",
 	"Claude/claude-3-haiku",
 	"Claude/claude-3-7-sonnet",
 	"ChatGPT/gpt-4o-mini",
@@ -74,15 +75,18 @@ var ValidActionModels = []string{
 	// Claude models
 	"Claude/claude-3-7-sonnet",
 	
-	// Together models
+	// Firefly models
 	"llama-v3p1-70b-instruct",
 	"llama-v3p3-70b-instruct",
 	"llama-v3p1-405b-instruct",
 	"deepseek-r1",
+	"deepseek-r1-basic",
 	"deepseek-v3",
 	"deepseek-v3-0324",
 	"qwen2p5-72b-instruct",
-	
+	"llama4-scout-instruct-basic",
+	"llama4-maverick-instruct-basic",
+
 	// Gemini
 	"Gemini/gemini-1.5-pro",
 	"Gemini/gemini-2.5-pro-exp-03-25",

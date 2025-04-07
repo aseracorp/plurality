@@ -18,6 +18,7 @@ WORKDIR /app
 COPY client/ ./client/
 WORKDIR /app/client
 
+
 # Build the Flutter web app
 RUN flutter pub get
 RUN flutter build web --release

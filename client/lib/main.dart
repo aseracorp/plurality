@@ -18,6 +18,14 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:google_sign_in_dartio/google_sign_in_dartio.dart';
 import 'dart:io' show Platform;
 import 'package:flutter/rendering.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import './api/shared_preferences_service.dart';
+import 'package:flutter/services.dart' show rootBundle;
+import '../api/stub_reload_helper.dart'
+    // If dart.library.html is available (meaning we are compiling for web),
+    // import the web-specific implementation instead.
+    if (dart.library.html) '../api/web_reload_helper.dart';
 
 // Create an auth state provider
 
@@ -25,11 +33,44 @@ final authStateProvider = StreamProvider<User?>((ref) {
   return FirebaseAuth.instance.authStateChanges();
 });
 
+void checkVersion() async {
+  final uri = Uri.parse(
+    '/version.json?cacheBust=${DateTime.now().millisecondsSinceEpoch}',
+  );
+  print('Fetching version info from: $uri');
+
+  final response = await http.get(uri);
+
+  if (response.statusCode == 200) {
+    final data = json.decode(response.body);
+    final latestVersion = data['version'] as String?;
+
+    // store value in shared preferences
+
+    final String cvJsonString = await rootBundle.loadString('version.json');
+    final cvJson = json.decode(cvJsonString);
+    final currentVersion = cvJson['version'] as String?;
+    print('Current version: $currentVersion');
+    print('Latest version: $latestVersion');
+
+    if (currentVersion == "" || currentVersion != latestVersion) {
+      print('New version available: $latestVersion');
+      if (kIsWeb) {
+        platformSpecificReload();
+      }
+    } else {
+      print('No new version available');
+    }
+  }
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await ConversationStorage.init();
   debugPaintSizeEnabled = false;
+
+  checkVersion();
 
   var isDesktop =
       !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);

@@ -14,7 +14,7 @@ class ApiService {
   final String _baseUrl =
       kReleaseMode
           ? 'https://app.plurality-ai.com'
-          : 'http://192.168.1.225:8090';
+          : 'http://192.168.1.102:8090';
 
   // Factory constructor to return the same instance every time
   factory ApiService() {
