@@ -48,6 +48,7 @@ Future<bool> checkVersion() async {
     // store value in shared preferences
 
     final String cvJsonString = await rootBundle.loadString('version.json');
+    print('version.json : ' + cvJsonString);
     final cvJson = json.decode(cvJsonString);
     final currentVersion = cvJson['version'] as String?;
     print('Current version: $currentVersion');
@@ -72,6 +73,8 @@ void main() async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await ConversationStorage.init();
   debugPaintSizeEnabled = false;
+
+  checkVersion();
 
   var isDesktop =
       !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
