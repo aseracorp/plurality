@@ -360,7 +360,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		utils.Error("[HandleChat] Error sending chat completion", err)
 		el := err.Error()
 		el = strings.ToLower(el)
-		if strings.Contains(el, "insufficient credits" || strings.Contains(el, "invalid model")) {
+		if strings.Contains(el, "insufficient credits") || strings.Contains(el, "invalid model") {
 			http.Error(w, err.Error(), http.StatusPaymentRequired)
 		} else {
 			utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
