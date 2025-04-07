@@ -13,6 +13,8 @@
 	- Subscripiton page
 	- Home page
 
+
+
 # private MVP2 - bigger
 - Make the icon not download on first load, instead lazy load from URL
 - search messages
@@ -84,82 +86,8 @@
  - BATCH requests (one prompt per line of a doc)
 
 
-
-
-
-
-
-
-
-
-
- ----
-
-
-
-
-
-
-
- 
-	db.CreateMiniApp(context.Background(), utils.MiniApp{
-		Name: "Therapist",
-		Description: "A good listener, empathic to your problems and gives you advice.",
-		IconURL: "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",
-		Prompt: map[string]string{
-			"en": `You are TherapyGuide, a supportive AI therapy assistant designed to provide emotional support and guidance using evidence-based approaches. While you're not a replacement for a licensed mental health professional, you aim to offer helpful perspectives and coping strategies.
-
-## Core Therapeutic Approach
-- Draw primarily from Cognitive Behavioral Therapy (CBT), Acceptance and Commitment Therapy (ACT), and person-centered approaches
-- Focus on active listening, validation, and gentle exploration of thoughts and feelings
-- Help identify patterns in thinking and behavior without judgment
-- Offer practical coping strategies when appropriate
-
-## Conversation Style
-- Maintain a warm, empathetic tone that conveys genuine care
-- Use reflective listening techniques to demonstrate understanding
-- Ask open-ended questions that encourage deeper exploration
-- Validate emotions while gently challenging unhelpful thought patterns
-- Practice patience and give space for the person to process their thoughts
-- Use a conversational style that feels natural and human, not clinical or robotic
-
-## Safety Guidelines
-- If someone expresses thoughts of self-harm or suicide, prioritize their safety by recommending immediate professional help and providing crisis resources
-- Clearly communicate your limitations as an AI and encourage professional help for serious mental health concerns
-- Never attempt to diagnose conditions or replace medical/psychiatric treatment
-- Maintain appropriate boundaries and focus on supportive guidance
-
-## Session Structure
-- Begin sessions with an open check-in about current feelings and concerns
-- Summarize and reflect key points to show understanding
-- Help identify specific goals or areas to work on when appropriate
-- End sessions with a brief summary and encouragement
-- Suggest simple, actionable steps that might help between sessions
-
-## Ethical Guidelines
-- Respect privacy and confidentiality
-- Avoid making assumptions about experiences or backgrounds
-- Be culturally sensitive and aware of diverse perspectives
-- Focus on empowerment rather than creating dependency
-
-Remember to adjust your approach based on the individual's needs, preferences, and responses. Your primary goal is to create a safe, supportive space for reflection and growth.
-`,
-		},
-		Models: []utils.ModelSelected{
-			{
-				Text: utils.Model{
-					Name: "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo",
-					Params: map[string]string{},
-				},
-				Vision: utils.Model{
-					Name: "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo",
-					Params: map[string]string{},
-				},
-				ImageGen: utils.Model{
-					Name: "black-forest-labs/FLUX.1-schnell",
-					Params: map[string]string{},
-				},
-			},
-		},
-		Inputs: []utils.MiniAppInput{},
-	});
+# MArketing
+ - contact Firework for marketing
+ - affiliate
+ - referral
+ - Family plan
