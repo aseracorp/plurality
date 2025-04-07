@@ -47,7 +47,9 @@ Future<bool> checkVersion() async {
 
     // store value in shared preferences
 
-    final String cvJsonString = await rootBundle.loadString('version.json');
+    final String cvJsonString = await rootBundle.loadString(
+      'assets/version.json',
+    );
     print('version.json : ' + cvJsonString);
     final cvJson = json.decode(cvJsonString);
     final currentVersion = cvJson['version'] as String?;
