@@ -177,7 +177,7 @@ func SendHTTPError(w http.ResponseWriter,  message string, code int) {
 	} else {
 		userError := GenerateRandomString(8)
 		Error("User error", nil, userError, ":", message)
-		http.Error(w, "An unexpected error happened (Code: " + userError + ")", http.StatusInternalServerError)
+		http.Error(w, "An unexpected error happened (Code: " + userError + ") \n Try refreshing the page / update the app. \n You can also try re-selecting your tools/models.", http.StatusInternalServerError)
 	}
 }
 

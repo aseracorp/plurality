@@ -33,7 +33,7 @@ final authStateProvider = StreamProvider<User?>((ref) {
   return FirebaseAuth.instance.authStateChanges();
 });
 
-void checkVersion() async {
+Future<bool> checkVersion() async {
   final uri = Uri.parse(
     '/version.json?cacheBust=${DateTime.now().millisecondsSinceEpoch}',
   );
@@ -58,10 +58,13 @@ void checkVersion() async {
       if (kIsWeb) {
         platformSpecificReload();
       }
+      return true;
     } else {
       print('No new version available');
     }
   }
+
+  return false;
 }
 
 void main() async {
@@ -69,8 +72,6 @@ void main() async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await ConversationStorage.init();
   debugPaintSizeEnabled = false;
-
-  checkVersion();
 
   var isDesktop =
       !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
@@ -99,9 +100,7 @@ final ThemeData darkTheme = ThemeData(
 class MyApp extends ConsumerWidget {
   const MyApp({super.key});
 
-  Widget renderHome(Ref ref) {
-    return Text('Hello');
-  }
+  static bool newVersionAvailable = false;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -142,7 +141,10 @@ class MyApp extends ConsumerWidget {
             if (!user.emailVerified) {
               return EmailVerificationPage();
             }
-            return ChatScreen(isMobile: isMobile);
+            return ChatScreen(
+              isMobile: isMobile,
+              // newVersion: true /*checkVersion()*/,
+            );
           }
         },
         loading: () => LoadingScreen(),
