@@ -111,6 +111,22 @@ func GetPriceFromTokenUsage(reqType int, provider int, model utils.Model, usage 
 		} else if model.Name == "llama-v3p1-8b-instruct" {
 			// cost 0.20 per 1M tokens
 			price = usage * 0.20
+		} else if model.Name == "llama4-scout-instruct-basic" {
+			if reqType == TEXT_INPUT {
+				// cost 0.15 per 1M tokens
+				price = usage * 0.15
+			} else if reqType == TEXT_OUTPUT {
+				// cost 0.60 per 1M tokens
+				price = usage * 0.60
+			}
+		} else if model.Name == "llama4-maverick-instruct-basic" {
+			if reqType == TEXT_INPUT {
+				// cost 0.22 per 1M tokens
+				price = usage * 0.22
+			} else if reqType == TEXT_OUTPUT {
+				// cost 0.88 per 1M tokens
+				price = usage * 0.88
+			}
 		} else if model.Name == "llama-v3p1-70b-instruct" {
 			// cost 0.90 per 1M tokens
 			price = usage * 0.90

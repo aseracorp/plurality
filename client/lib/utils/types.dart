@@ -346,12 +346,12 @@ class ModelSelected {
 
   const ModelSelected({
     this.text = const Model(
-      name: 'llama-v3p1-70b-instruct',
+      name: 'llama-v3p1-8b-instruct',
       params: {},
       tools: ['search_web', 'place_search', 'visit_link'],
     ),
     this.vision = const Model(
-      name: 'llama-v3p2-90b-vision-instruct',
+      name: 'llama4-scout-instruct-basic',
       params: {},
       tools: ['search_web', 'place_search', 'visit_link'],
     ),

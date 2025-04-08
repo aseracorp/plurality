@@ -37,7 +37,6 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     "llama4-scout-instruct-basic",
     "llama4-maverick-instruct-basic",
     'llama-v3p1-8b-instruct',
-    'llama-v3p2-3b',
     'llama-v3p1-70b-instruct',
     'llama-v3p1-405b-instruct',
     'deepseek-r1',
@@ -190,7 +189,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     final isFree = balance?.planName == 'Free';
 
     if (isFree) {
-      final defaultVisionModel = 'llama-v3p2-11b-vision-instruct';
+      final defaultVisionModel = 'llama4-scout-instruct-basic';
       final defaultImageGenModel = 'black-forest-labs/FLUX.1-schnell';
       final defaultTextModel = 'llama-v3p1-8b-instruct';
 
