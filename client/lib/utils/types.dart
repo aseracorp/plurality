@@ -1,6 +1,7 @@
 // Step 1: Add Hive annotations to your existing models (minimal changes)
 import 'package:hive/hive.dart';
 import 'package:plurality/api/mini-apps.dart';
+import 'package:plurality/chat/message-list/model-picker.dart';
 part 'types.g.dart';
 
 @HiveType(typeId: 1)
@@ -345,17 +346,9 @@ class ModelSelected {
   final Model? code;
 
   const ModelSelected({
-    this.text = const Model(
-      name: 'llama-v3p1-8b-instruct',
-      params: {},
-      tools: ['search_web', 'place_search', 'visit_link'],
-    ),
-    this.vision = const Model(
-      name: 'llama4-scout-instruct-basic',
-      params: {},
-      tools: ['search_web', 'place_search', 'visit_link'],
-    ),
-    this.imageGen = const Model(name: 'flux-1-schnell', params: {}),
+    this.text = modelPresentFastText,
+    this.vision = modelPresentFastVision,
+    this.imageGen = modelPresentFastImageGen,
     this.audioGen = const Model(
       name: 'cartesia/sonic',
       params: {"voice": "sweet lady"},

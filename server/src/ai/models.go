@@ -47,6 +47,7 @@ var ValidFreeModels = []string{
 	"llama4-scout-instruct-basic",
 	"llama-v3p1-8b-instruct",
 	"llama-v3p2-3b",
+	"llama-v3p1-70b-instruct",
 	"black-forest-labs/FLUX.1-schnell",
 	"Gemini/gemini-2.0-flash",
 	"whisper-v3-turbo",

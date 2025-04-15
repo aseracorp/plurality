@@ -8,7 +8,7 @@ REM Build for Windows
 echo Building for Windows...
 set GOOS=windows
 set GOARCH=amd64
-go build -o build\Plurality.exe src\index.go
+go build -o build\Plurality.exe src\index.go src\stripe.go
 
 if errorlevel 1 goto :error
 

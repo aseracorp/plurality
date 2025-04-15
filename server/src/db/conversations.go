@@ -45,7 +45,7 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
       conversation.ID = oid
     }
 
-    utils.Log("Created new conversation ID: ", conversation.ID, " for user ID: ", userID)
+    utils.Log("Created new conversation ID: %s for user ID: %s", conversation.ID.Hex(), userID)
    
     return conversation, true, nil
   } else {
@@ -53,7 +53,7 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
     // Options to return the document after update
     opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
 
-    utils.Debug("Pushing message to conversation ID: ", conversation.ID, " for user ID: ", userID)
+    utils.Debug("Pushing message to conversation ID:  %s for user ID: %s", conversation.ID.Hex(), userID)
 
     // Perform FindOneAndUpdate to get the updated document
     var updatedConversation utils.Conversation
@@ -86,7 +86,7 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
       return utils.Conversation{}, false, err
     }
 
-    utils.Debug("Updated conversation: ", updatedConversation.UserID, updatedConversation.LastMessageAt)
+    utils.Debug("Updated conversation: %s for user ID: %s", updatedConversation.ID.Hex(), userID)
    
     return updatedConversation, false, nil
   }

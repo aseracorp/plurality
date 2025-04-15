@@ -6,7 +6,7 @@ rm -rf build/*
 
 # Build for Linux
 echo "Building for Linux..."
-GOOS=linux GOARCH=amd64 go build -o build/Plurality src/index.go
+GOOS=linux GOARCH=amd64 go build -o build/Plurality src\index.go src\stripe.go
 
 # Build for Windows
 # echo "Building for Windows..."

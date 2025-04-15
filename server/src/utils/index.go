@@ -26,6 +26,19 @@ type FirebaseTokenPayload struct {
 	// Add other fields you might need
 }
 
+
+// getIdFromEmail get the customerId from Firebase using the email
+func GetIdFromEmail(email string) string {
+	// Get user by email
+	user, err := FirebaseAuth.GetUserByEmail(context.Background(), email)
+	if err != nil {
+		Error("Error getting user by email", err)
+		return ""
+	}
+
+	return user.UID
+}
+
 // CheckEmailVerified decodes a Firebase JWT token and checks if the email is verified
 func CheckEmailVerified(idToken string) (bool, string, error) {
 	// Split the token into parts

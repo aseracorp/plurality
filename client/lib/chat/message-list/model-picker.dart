@@ -15,6 +15,52 @@ final List<String> VisionModelOptions = [
   "Gemini/gemini-2.5-pro-exp-03-25",
 ];
 
+const modelPresentFastText = Model(
+  name: 'llama-v3p1-70b-instruct',
+  params: null,
+  tools: ['search_web', 'place_search', 'visit_link'],
+);
+const modelPresentFastVision = Model(
+  name: 'llama4-scout-instruct-basic',
+  params: null,
+  tools: [],
+);
+const modelPresentFastImageGen = Model(
+  name: 'black-forest-labs/FLUX.1-schnell',
+  params: null,
+);
+
+// Preset configurations
+final Map<String, ModelSelected> modelPresets = {
+  'Fast': ModelSelected(
+    text: modelPresentFastText,
+    vision: modelPresentFastVision,
+    imageGen: modelPresentFastImageGen,
+  ),
+  'Balanced': ModelSelected(
+    text: Model(
+      name: 'llama-v3p1-405b-instruct',
+      params: null,
+      tools: ['search_web', 'place_search', 'visit_link'],
+    ),
+    vision: Model(
+      name: 'llama4-maverick-instruct-basic',
+      params: null,
+      tools: [],
+    ),
+    imageGen: Model(name: 'black-forest-labs/FLUX.1-schnell', params: null),
+  ),
+  'Smart': ModelSelected(
+    text: Model(
+      name: 'Claude/claude-3-7-sonnet',
+      params: null,
+      tools: ['search_web', 'place_search', 'visit_link'],
+    ),
+    vision: Model(name: 'Claude/claude-3-7-sonnet', params: null, tools: []),
+    imageGen: Model(name: 'black-forest-labs/FLUX.1-dev', params: null),
+  ),
+};
+
 class ModelSelectionModal extends ConsumerStatefulWidget {
   final Function(ModelSelected) onModelSelected;
   final ModelSelected selectedModel;
@@ -93,46 +139,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
   late TabController _tabController;
   int _currentTabIndex = 0;
 
-  // Preset configurations
-  static Map<String, ModelSelected> presets = {
-    'Fast': ModelSelected(
-      text: Model(name: 'llama-v3p1-8b-instruct', params: null, tools: []),
-      vision: Model(
-        name: 'llama4-scout-instruct-basic',
-        params: null,
-        tools: [],
-      ),
-      imageGen: Model(name: 'black-forest-labs/FLUX.1-schnell', params: null),
-    ),
-    'Balanced': ModelSelected(
-      text: Model(
-        name: 'llama-v3p1-70b-instruct',
-        params: null,
-        tools: ['search_web', 'place_search', 'visit_link'],
-      ),
-      vision: Model(
-        name: 'llama4-maverick-instruct-basic',
-        params: null,
-        tools: [],
-      ),
-      imageGen: Model(name: 'black-forest-labs/FLUX.1-schnell', params: null),
-    ),
-    'Smart': ModelSelected(
-      text: Model(
-        name: 'deepseek-v3-0324',
-        params: null,
-        tools: ['search_web', 'place_search', 'visit_link'],
-      ),
-      vision: Model(
-        name: 'llama4-maverick-instruct-basic',
-        params: null,
-        tools: [],
-      ),
-      imageGen: Model(name: 'black-forest-labs/FLUX.1-dev', params: null),
-    ),
-  };
-
-  static getFastPreset() => presets['Fast']!;
+  static getFastPreset() => modelPresets['Fast']!;
 
   @override
   void initState() {
@@ -165,7 +172,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
 
   String _getSelectedPresetName() {
     // Find which preset matches the current selection
-    for (var entry in presets.entries) {
+    for (var entry in modelPresets.entries) {
       if (entry.value.text?.name == _selectedModel &&
           entry.value.vision?.name == _selectedVisionModel &&
           entry.value.imageGen?.name == _selectedImageGenModel) {
@@ -450,14 +457,14 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
               : () {
                 setState(() {
                   // Set the models based on the preset
-                  final preset = presets[title]!;
+                  final preset = modelPresets[title]!;
                   _selectedModel = preset.text!.name;
                   _selectedVisionModel = preset.vision!.name;
                   _selectedImageGenModel = preset.imageGen!.name;
                 });
 
                 // Apply the preset immediately
-                widget.onModelSelected(presets[title]!);
+                widget.onModelSelected(modelPresets[title]!);
                 Navigator.pop(context);
               },
       child: Container(
@@ -581,7 +588,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
 
   ModelSelected _getSelectedPreset() {
     // Find which preset matches the current selection
-    for (var entry in presets.entries) {
+    for (var entry in modelPresets.entries) {
       if (entry.value.text?.name == _selectedModel &&
           entry.value.vision?.name == _selectedVisionModel &&
           entry.value.imageGen?.name == _selectedImageGenModel) {
@@ -590,7 +597,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     }
 
     // Default to Balanced if no match
-    return presets['Balanced']!;
+    return modelPresets['Balanced']!;
   }
 
   Widget _buildDropdown({

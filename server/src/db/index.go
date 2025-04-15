@@ -41,3 +41,8 @@ func GetClient() *mongo.Client {
 	}
 	return client
 }
+
+func SetClient(c *mongo.Client) {
+	utils.Log("[SetClient] Setting MongoDB client to %v ", c)
+	client = c
+}

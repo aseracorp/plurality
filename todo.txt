@@ -1,6 +1,7 @@
 # Road to relese
   - Fix tool_use for gpt/firework
   - /Image (with maj) broken
+  - Send confirmation email page broken (email not sending until you clickbutton)
 	- redirect to / does not work on web? 
   - BLOCK RELEASE IF BUILD DIDNT WORK
 	- Deepseek tool calls?
@@ -12,6 +13,7 @@
 	- publish app
 	- Subscripiton page
 	- Home page
+  - CHECK CLAUDE VISION
 
 
 # private MVP2 - bigger
@@ -83,6 +85,9 @@
 # Ideas
  - CRON jobs
  - BATCH requests (one prompt per line of a doc)
+ - BATCH (for ex. subtitles)
+ - Agents (background jobs)
+ - Shorctuts (ex. press F9 to translate screenshot)
 
 
 # MArketing

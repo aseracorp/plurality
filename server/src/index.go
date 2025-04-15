@@ -47,6 +47,8 @@ func main() {
 	r.HandleFunc("/miniapps/{id}/pin", utils.AuthMiddleware(miniapps.API_PinMiniApp)).Methods("POST")
 	r.HandleFunc("/miniapps/{id}/unpin", utils.AuthMiddleware(miniapps.API_UnpinMiniApp)).Methods("POST")
 	// r.HandleFunc("/miniapps/{id}/use", utils.AuthMiddleware(miniapps.API_UseMiniApp)).Methods("POST")
+
+	r.HandleFunc("/stripe-webhook", HandleStripeWebhook).Methods("POST")
 		
 	r.HandleFunc("/check", utils.AuthMiddleware(
 		func(w http.ResponseWriter, r *http.Request) {
