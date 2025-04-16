@@ -6,7 +6,7 @@ rm -rf build/*
 
 # Build for Linux
 echo "Building for Linux..."
-if ! GOOS=linux GOARCH=amd64 go build -o build/Plurality src/index.go src/stsripe.go; then
+if ! GOOS=linux GOARCH=amd64 go build -o build/Plurality src/index.go src/stripe.go; then
   echo "Linux build failed. Exiting..."
   exit 1
 fi
