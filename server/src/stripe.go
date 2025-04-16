@@ -141,11 +141,11 @@ func handleInvoiceSucceeded(w http.ResponseWriter, event stripe.Event) {
 
 	planAllowance := 0.0
 	if strings.Contains(productName, "Plurality Basic") {
-		planAllowance = 4000000
+		planAllowance = 5000000
 	} else if strings.Contains(productName, "Plurality Advanced") {
-		planAllowance = 12000000
+		planAllowance = 10000000
 	} else if strings.Contains(productName, "Plurality Expert") {
-		planAllowance = 24000000
+		planAllowance = 22000000
 	}
 
 	// Update user plan

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../api/balance.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter/services.dart';
@@ -218,15 +219,15 @@ class BudgetScreen extends ConsumerWidget {
 
                       // Set allowance and max request size based on plan
                       switch (balance.planName) {
-                        case "Basic":
+                        case "Plurality Basic":
                           emergencyAllowance = 200000;
                           maxRequestSize = 10000;
                           break;
-                        case "Advanced":
+                        case "Plurality Advanced":
                           emergencyAllowance = 300000;
                           maxRequestSize = 20000;
                           break;
-                        case "Pro":
+                        case "Plurality Expert":
                           emergencyAllowance = 500000;
                           maxRequestSize = 30000;
                           break;
@@ -403,24 +404,50 @@ class BudgetScreen extends ConsumerWidget {
           ),
 
           const SizedBox(height: 20),
-
-          // Close button for dialog mode
-          if (Navigator.of(context).canPop())
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              style: TextButton.styleFrom(
-                foregroundColor: Colors.white,
-                backgroundColor: Theme.of(context).primaryColor,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 30,
-                  vertical: 10,
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              TextButton(
+                // open site plurality.ai
+                onPressed:
+                    () => launchUrl(
+                      Uri.parse('https://plurality-ai.com/pricing'),
+                    ),
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  backgroundColor: Theme.of(context).primaryColor,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 30,
+                    vertical: 10,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                  ),
                 ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20),
-                ),
+                child: const Text('Upgrade Plan'),
               ),
-              child: const Text('Close'),
-            ),
+
+              const SizedBox(width: 20),
+
+              // Close button for dialog mode
+              if (Navigator.of(context).canPop())
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    backgroundColor: Theme.of(context).primaryColor,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 30,
+                      vertical: 10,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                  ),
+                  child: const Text('Close'),
+                ),
+            ],
+          ),
         ],
       ),
     );

@@ -32,12 +32,12 @@ type UserBalance struct {
 
 	Balance   float64            `json:"balance" bson:"balance"`
 	Plan 		  float64            `json:"plan" bson:"plan,omitempty"`
-	PlanName 		  string      `json:"plan_name" bson:"plan_name,omitempty"`
-	PlanEnd  		  int64      `json:"plan_end" bson:"plan_end,omitempty"`
-	PlanNextRenewal 		  time.Time      `json:"plan_next_renewal" bson:"plan_next_renewal,omitempty"`
+	PlanName 		  string         `json:"plan_name" bson:"plan_name,omitempty"`
+	PlanEnd  		  int64          `json:"plan_end" bson:"plan_end,omitempty"`
+	PlanNextRenewal time.Time    `json:"plan_next_renewal" bson:"plan_next_renewal,omitempty"`
 
 	ManualPlan 		  float64      `json:"manual_plan" bson:"manual_plan,omitempty"`
-	LastPlanApplied 		  time.Time      `json:"last_plan_applied" bson:"last_plan_applied,omitempty"`
+	LastPlanApplied time.Time    `json:"last_plan_applied" bson:"last_plan_applied,omitempty"`
 }
 
 func InitUserIfNotFound(userId string) error {
