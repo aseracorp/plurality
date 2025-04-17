@@ -981,15 +981,6 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                   icon: Icon(Icons.reddit),
                 ),
               ),
-              Container(
-                margin: const EdgeInsets.only(left: 16.0),
-                child: IconButton(
-                  onPressed:
-                      () =>
-                          launchUrlString('mailto:beyond.cloud.ltd@gmail.com'),
-                  icon: Icon(Icons.mail),
-                ),
-              ),
               SizedBox(width: 16),
             ],
           ),
