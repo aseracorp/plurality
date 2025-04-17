@@ -228,8 +228,6 @@ func GetUserBalance(ctx context.Context) (*UserBalance, error) {
 	// if planNextRenewal is not 0 and planEnd is not 0, and planEnd is less than now, apply the plan if it wasnt applied yet
 	if !balance.PlanNextRenewal.IsZero() && balance.PlanEnd != 0 && checkPeriodEnd(balance.PlanEnd) && balance.LastPlanApplied.Month() != time.Now().Month() {
 		utils.Log("PlanNextRenewal is not 0 and planEnd is not 0, and planEnd is less than now, applying the plan for user %s", userID)
-		balance.Balance = max(balance.Plan, balance.Balance)
-		balance.LastPlanApplied = time.Now()
 
 		if balance.PlanEnd > time.Now().AddDate(0, 1, 0).Unix() {
 			utils.Log("PlanEnd is more than a month and a day, setting planNextRenewal to the same date next month for user %s", userID)
@@ -239,10 +237,13 @@ func GetUserBalance(ctx context.Context) (*UserBalance, error) {
 			balance.PlanNextRenewal = time.Time{}
 		}
 
-		balance.UpdatedAt = time.Now()
-
 		_, err :=
-			collection.UpdateOne(ctx, bson.M{"user_id": userID}, bson.M{"$set": bson.M{"balance": balance.Plan, "last_plan_applied": time.Now()}})
+			collection.UpdateOne(ctx, bson.M{"user_id": userID}, bson.M{"$set": bson.M{
+				"balance": max(balance.Plan, balance.Balance),
+				"last_plan_applied": time.Now(),
+				"plan_next_renewal": balance.PlanNextRenewal,
+				"updated_at": time.Now(),
+			}})
 		if err != nil {
 			utils.Error("Error updating balance: %v", err)
 		}
