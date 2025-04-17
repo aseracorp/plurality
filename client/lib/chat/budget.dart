@@ -407,27 +407,47 @@ class BudgetScreen extends ConsumerWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              TextButton(
-                // open site plurality.ai
-                onPressed:
-                    () => launchUrl(
-                      Uri.parse('https://plurality-ai.com/pricing'),
+              (balance.plan == "" || balance.plan == "Free")
+                  ? TextButton(
+                    onPressed:
+                        () => launchUrl(
+                          Uri.parse('https://plurality-ai.com/pricing'),
+                        ),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      backgroundColor: Theme.of(context).primaryColor,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 30,
+                        vertical: 10,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
                     ),
-                style: TextButton.styleFrom(
-                  foregroundColor: Colors.white,
-                  backgroundColor: Theme.of(context).primaryColor,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 30,
-                    vertical: 10,
+                    child: const Text('Upgrade Plan'),
+                  )
+                  : TextButton(
+                    onPressed:
+                        () => launchUrl(
+                          Uri.parse(
+                            'https://billing.stripe.com/p/login/cN2g1zcMV3Bl0M0fYY',
+                          ),
+                        ),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      backgroundColor: Theme.of(context).primaryColor,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 30,
+                        vertical: 10,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                    ),
+                    child: const Text('Manage Plan'),
                   ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                ),
-                child: const Text('Upgrade Plan'),
-              ),
 
-              const SizedBox(width: 20),
+              if (Navigator.of(context).canPop()) const SizedBox(width: 20),
 
               // Close button for dialog mode
               if (Navigator.of(context).canPop())

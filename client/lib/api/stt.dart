@@ -177,7 +177,7 @@ class SpeechRecognitionService {
 
   // Add a method to check if current amplitude is silence
   bool isCurrentlySilent() {
-    // print('Latest amplitude: $latestAmplitude');
+    print('Latest amplitude: $latestAmplitude');
     return _thresholdCalculated && latestAmplitude <= _silenceThreshold + 2.0;
   }
 
@@ -193,6 +193,7 @@ class SpeechRecognitionService {
 
     var attackBuffer = <int>[];
 
+    print(11);
     // Start recording
     var voiceStream = await _record.startStream(
       const RecordConfig(
@@ -216,8 +217,8 @@ class SpeechRecognitionService {
         } else {
           attackBuffer.addAll(data);
           // only keep the last 1000 bytes in the attack buffer
-          if (attackBuffer.length > 2000) {
-            attackBuffer.removeRange(0, attackBuffer.length - 2000);
+          if (attackBuffer.length > 4000) {
+            attackBuffer.removeRange(0, attackBuffer.length - 4000);
           }
         }
       },
@@ -237,7 +238,7 @@ class SpeechRecognitionService {
     _startAmplitudeMonitoring(autoStop: autoStop);
 
     // Show modal
-    _showRecordingModal(context);
+    showRecordingModal(context);
   }
 
   // Stop recording and transcribe
@@ -283,7 +284,7 @@ class SpeechRecognitionService {
       _isRecording = false;
       _recordingStateController.add(false);
       _listeningController.add(false);
-      if (!isCall) _dismissModal();
+      if (!isCall) dismissModal();
     }
   }
 
@@ -304,11 +305,11 @@ class SpeechRecognitionService {
 
     TTSService().stop();
 
-    _dismissModal();
+    dismissModal();
   }
 
   // Show the recording modal
-  void _showRecordingModal(BuildContext context) {
+  void showRecordingModal(BuildContext context) {
     if (_modalContext == null) {
       showDialog(
         context: context,
@@ -334,9 +335,9 @@ class SpeechRecognitionService {
   }
 
   // Dismiss the modal if it's showing
-  void _dismissModal() {
+  void dismissModal() {
     if (_modalContext != null) {
-      Navigator.of(_modalContext!, rootNavigator: true).pop();
+      Navigator.of(_modalContext!).pop();
       _modalContext = null;
     }
   }
@@ -389,10 +390,13 @@ class _RecordingModalState extends State<_RecordingModal>
   bool isSilent = false;
   double silenceThreshold = -35.0; // Track silence threshold
   bool isListening = true;
+  bool voiceInit = false; // Track if voice is initialized
 
   @override
   void initState() {
     super.initState();
+
+    voiceInit = false; // Initialize voiceInit to false
 
     // Set up animation for the "Listening..." text
     _animationController = AnimationController(
@@ -416,6 +420,11 @@ class _RecordingModalState extends State<_RecordingModal>
 
     // Listen to amplitude updates
     widget.amplitudeStream.listen((amplitude) {
+      if (!voiceInit) {
+        setState(() {
+          voiceInit = true;
+        });
+      }
       if (mounted) {
         final speechService = SpeechRecognitionService();
         setState(() {
@@ -544,7 +553,9 @@ class _RecordingModalState extends State<_RecordingModal>
           FadeTransition(
             opacity: _opacityAnimation,
             child: Text(
-              isListening ? "Listening..." : "Speaking...",
+              isListening
+                  ? (voiceInit ? "Listening..." : "Initializing...")
+                  : "Speaking...",
               style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
             ),
           ),
@@ -556,7 +567,7 @@ class _RecordingModalState extends State<_RecordingModal>
                 style: TextStyle(fontSize: 14),
               ),
             ),
-          if (isListening)
+          if (isListening && widget.isCall)
             FadeTransition(
               opacity: _opacityAnimation,
               child: Text(

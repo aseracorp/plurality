@@ -83,7 +83,6 @@ class _InputBoxState extends State<InputBox> {
     _speech = stt.SpeechToText();
     widget.messageController.addListener(_onTextChanged);
     if (SpeechRecognitionService().isCall) {
-      print('123');
       _call(resuming: true);
     }
   }
@@ -126,6 +125,8 @@ class _InputBoxState extends State<InputBox> {
     final speechService = SpeechRecognitionService();
     if (!resuming)
       await speechService.startRecording(context, autoStop: true, call: true);
+    else
+      speechService.showRecordingModal(context);
 
     if (_subscription != null) {
       _subscription!.cancel();
@@ -151,7 +152,6 @@ class _InputBoxState extends State<InputBox> {
             widget.onSend(context);
           });
         } else if (speechService.isCall) {
-          print('3445');
           _call();
         }
       }

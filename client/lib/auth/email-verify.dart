@@ -115,7 +115,7 @@ class _EmailVerificationPageState extends State<EmailVerificationPage> {
               ),
               const SizedBox(height: 16),
               const Text(
-                'We\'ve sent a verification email to your address. Please check your inbox and click the verification link to activate your account.',
+                'Click the button to receive a verification email. Please check your inbox and click the verification link to activate your account.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 16,
@@ -147,18 +147,10 @@ class _EmailVerificationPageState extends State<EmailVerificationPage> {
                           ),
                         )
                         : const Icon(Icons.send),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Theme.of(context).colorScheme.primary,
-                  foregroundColor: Theme.of(context).colorScheme.onPrimary,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 32,
-                    vertical: 12,
-                  ),
-                ),
                 // Disable button only when resending, not based on the static flag
                 onPressed: _isResending ? null : _resendVerificationEmail,
                 label: Text(
-                  _isResending ? 'Sending...' : 'Resend Verification Email',
+                  _isResending ? 'Sending...' : 'Send Verification Email',
                 ),
               ),
               const SizedBox(height: 24),

@@ -1,25 +1,18 @@
 # Road to relese
-  
-  - Send confirmation email page broken (email not sending until you clickbutton)
-  - Voice input modal broken
-
-  - Fix tool_use for gpt/firework
-  - /Image (with maj) broken
-	- redirect to / does not work on web? 
-  - BLOCK RELEASE IF BUILD DIDNT WORK
-	- Deepseek tool calls?
-	- Add "quizz" and  "More" in mini apps
-  - test plans stuff more?
   - Login / Register
 		- apple
 		- may be facebook
 	- publish app
 	- Subscripiton page
 	- Home page
-  - CHECK CLAUDE VISION
 
 
 # private MVP2 - bigger
+- Fix tool_use for gpt/firework
+- /Image (with maj) broken
+- Add "quizz" and  "More" in mini apps
+- Allow people to switch their plans (need to support paying without the invoice paid, in case of downgrade)
+
 - Make the icon not download on first load, instead lazy load from URL
 - search messages
 - if oral transcription too long it will be a snippet!

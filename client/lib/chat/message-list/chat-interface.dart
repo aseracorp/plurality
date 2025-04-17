@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:plurality/chat/message-list/attachments.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:url_launcher/url_launcher_string.dart';
 import '../snackbar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -521,6 +523,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       if (stt.isCall) {
         tts.speak(_currentStreamedResponse, () {
           if (stt.isCall) {
+            if (isNewConversation) stt.dismissModal();
             stt.startRecording(context, autoStop: true, call: true);
           }
         }, queue: true);
@@ -954,6 +957,42 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
             ),
           ),
         ),
+
+        if (widget.conversationId.isEmpty && _miniAppSelected == null)
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(left: 16.0),
+                child: IconButton(
+                  onPressed:
+                      () => launchUrlString('https://discord.gg/qHMS7rvNjE'),
+                  icon: Icon(Icons.discord),
+                ),
+              ),
+              Container(
+                margin: const EdgeInsets.only(left: 16.0),
+                child: IconButton(
+                  onPressed:
+                      () => launchUrlString(
+                        'https://www.reddit.com/r/PluralityAI/',
+                      ),
+                  icon: Icon(Icons.reddit),
+                ),
+              ),
+              Container(
+                margin: const EdgeInsets.only(left: 16.0),
+                child: IconButton(
+                  onPressed:
+                      () =>
+                          launchUrlString('mailto:beyond.cloud.ltd@gmail.com'),
+                  icon: Icon(Icons.mail),
+                ),
+              ),
+              SizedBox(width: 16),
+            ],
+          ),
 
         if (widget.conversationId.isEmpty && _miniAppSelected == null)
           SizedBox(height: 32),

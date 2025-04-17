@@ -143,9 +143,9 @@ func TranscribeAudio(audioData []byte, model string, language string, temperatur
 	}
 
 	// Write audio data to file for debug 
-	// err = os.WriteFile("audio.wav", wavBuffer.Bytes(), 0644)
-	// if err != nil {
-	// 		return "", fmt.Errorf("error writing audio data to file: %v", err)
+	// err1 := os.WriteFile("audio.wav", wavBuffer.Bytes(), 0644)
+	// if err1 != nil {
+	// 		return "", fmt.Errorf("error writing audio data to file: %v", err1)
 	// }
 	
 	// Create a new multipart writer
