@@ -232,10 +232,14 @@ func GetUserBalance(ctx context.Context) (*UserBalance, error) {
 		balance.LastPlanApplied = time.Now()
 
 		if balance.PlanEnd > time.Now().AddDate(0, 1, 0).Unix() {
+			utils.Log("PlanEnd is more than a month and a day, setting planNextRenewal to the same date next month for user %s", userID)
 			balance.PlanNextRenewal = time.Now().AddDate(0, 1, 0)
 		} else {
+			utils.Log("PlanEnd is less than a month and a day, setting planNextRenewal to 0 for user %s", userID)
 			balance.PlanNextRenewal = time.Time{}
 		}
+
+		balance.UpdatedAt = time.Now()
 
 		_, err :=
 			collection.UpdateOne(ctx, bson.M{"user_id": userID}, bson.M{"$set": bson.M{"balance": balance.Plan, "last_plan_applied": time.Now()}})
