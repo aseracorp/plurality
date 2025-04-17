@@ -95,7 +95,7 @@ func UpdateUserPlan(userId string, planName string, plan float64, planEnd int64)
 
 	planNextRenewal := time.Time{}
 	// if yearly plan (plan end is in more than a month and a day), set planNextRenewal to the same date next month
-	if planEnd > time.Now().AddDate(0, 1, 0).Unix() {
+	if checkNextPeriodEnd(planEnd) {
 		utils.Log("PlanEnd is more than a month and a day, setting planNextRenewal to the same date next month for user %s", userId)
 		planNextRenewal = time.Now().AddDate(0, 1, 0)
 	}
@@ -149,6 +149,17 @@ func UpdateUserPlan(userId string, planName string, plan float64, planEnd int64)
 func checkPeriodEnd(periodEnd int64) bool {
 	currentTime := time.Now().Unix()
 	return periodEnd > currentTime
+}
+
+func checkNextPeriodEnd(periodEnd int64) bool {
+	currentTime := time.Now().AddDate(0, 1, 0)
+	periodEndTime := time.Unix(periodEnd, 0)
+	
+	// set both hours / minutes / seconds to 0
+	periodEndTime = time.Date(periodEndTime.Year(), periodEndTime.Month(), periodEndTime.Day(), 0, 0, 0, 0, periodEndTime.Location())
+	currentTime = time.Date(currentTime.Year(), currentTime.Month(), currentTime.Day(), 0, 0, 0, 0, currentTime.Location())
+
+	return periodEndTime.After(currentTime)
 }
 
 // GetUserBalance retrieves the current balance for a user
@@ -229,12 +240,13 @@ func GetUserBalance(ctx context.Context) (*UserBalance, error) {
 	if !balance.PlanNextRenewal.IsZero() && balance.PlanEnd != 0 && checkPeriodEnd(balance.PlanEnd) && balance.LastPlanApplied.Month() != time.Now().Month() {
 		utils.Log("PlanNextRenewal is not 0 and planEnd is not 0, and planEnd is less than now, applying the plan for user %s", userID)
 
-		if balance.PlanEnd > time.Now().AddDate(0, 1, 0).Unix() {
+		if checkNextPeriodEnd(balance.PlanEnd) {
 			utils.Log("PlanEnd is more than a month and a day, setting planNextRenewal to the same date next month for user %s", userID)
 			balance.PlanNextRenewal = time.Now().AddDate(0, 1, 0)
 		} else {
 			utils.Log("PlanEnd is less than a month and a day, setting planNextRenewal to 0 for user %s", userID)
 			balance.PlanNextRenewal = time.Time{}
+			balance.PlanEnd = 0
 		}
 
 		_, err :=
@@ -243,6 +255,7 @@ func GetUserBalance(ctx context.Context) (*UserBalance, error) {
 				"last_plan_applied": time.Now(),
 				"plan_next_renewal": balance.PlanNextRenewal,
 				"updated_at": time.Now(),
+				"plan_end": balance.PlanEnd,
 			}})
 		if err != nil {
 			utils.Error("Error updating balance: %v", err)
