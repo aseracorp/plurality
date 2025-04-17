@@ -79,7 +79,7 @@ func HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Process the event based on its type
-	if event.Type == "invoice.payment_succeeded" {
+	if event.Type == "invoice.paid" {
 		handleInvoiceSucceeded(w, event)
 	} else {
 		// For other event types, just acknowledge receipt

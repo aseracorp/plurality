@@ -1,7 +1,10 @@
 # Road to relese
+  
+  - Send confirmation email page broken (email not sending until you clickbutton)
+  - Voice input modal broken
+
   - Fix tool_use for gpt/firework
   - /Image (with maj) broken
-  - Send confirmation email page broken (email not sending until you clickbutton)
 	- redirect to / does not work on web? 
   - BLOCK RELEASE IF BUILD DIDNT WORK
 	- Deepseek tool calls?

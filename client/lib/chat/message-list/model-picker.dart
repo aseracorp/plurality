@@ -196,25 +196,21 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     final isFree = balance?.planName == 'Free';
 
     if (isFree) {
-      final defaultVisionModel = 'llama4-scout-instruct-basic';
-      final defaultImageGenModel = 'black-forest-labs/FLUX.1-schnell';
-      final defaultTextModel = 'llama-v3p1-8b-instruct';
-
-      if (_selectedVisionModel != defaultVisionModel ||
-          _selectedImageGenModel != defaultImageGenModel ||
-          _selectedModel != defaultTextModel) {
+      if (_selectedVisionModel != modelPresentFastVision.name ||
+          _selectedImageGenModel != modelPresentFastImageGen.name ||
+          _selectedModel != modelPresentFastText.name) {
         setState(() {
-          _selectedVisionModel = defaultVisionModel;
-          _selectedImageGenModel = defaultImageGenModel;
-          _selectedModel = defaultTextModel;
+          _selectedModel = modelPresentFastText.name;
+          _selectedVisionModel = modelPresentFastVision.name;
+          _selectedImageGenModel = modelPresentFastImageGen.name;
         });
 
         // Call setModel to update the selected models
         widget.onModelSelected(
           ModelSelected(
-            text: Model(name: _selectedModel, params: null),
-            vision: Model(name: _selectedVisionModel, params: null),
-            imageGen: Model(name: _selectedImageGenModel, params: null),
+            text: modelPresentFastText,
+            vision: modelPresentFastVision,
+            imageGen: modelPresentFastImageGen,
           ),
         );
       }
