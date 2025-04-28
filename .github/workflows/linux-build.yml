@@ -34,7 +34,7 @@ jobs:
           cp client/build/linux/x64/release/bundle/plurality.AppImage downloads/linux/plurality-linux-latest.AppImage
       
       - name: Upload Linux artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: linux-artifact
           path: downloads/linux/

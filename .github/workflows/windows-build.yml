@@ -35,7 +35,7 @@ jobs:
           cp client/plurality-installer.exe downloads/windows/plurality-windows-latest.exe
       
       - name: Upload Windows artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: windows-artifact
           path: downloads/windows/
