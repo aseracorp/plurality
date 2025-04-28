@@ -2,6 +2,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:plurality/api/MCP.dart';
 import 'package:plurality/auth/email-verify.dart';
 import './firebase_options.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -12,63 +13,20 @@ import './auth/login.dart';
 import './api/storage.dart';
 import './api/service.dart';
 import './api/stt.dart';
+import './utils/index.dart';
 import './api/preferences_provider.dart';
 import 'chat/index.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:google_sign_in_dartio/google_sign_in_dartio.dart';
 import 'dart:io' show Platform;
 import 'package:flutter/rendering.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
 import './api/shared_preferences_service.dart';
-import 'package:flutter/services.dart' show rootBundle;
-import '../api/stub_reload_helper.dart'
-    // If dart.library.html is available (meaning we are compiling for web),
-    // import the web-specific implementation instead.
-    if (dart.library.html) '../api/web_reload_helper.dart';
 
 // Create an auth state provider
 
 final authStateProvider = StreamProvider<User?>((ref) {
   return FirebaseAuth.instance.authStateChanges();
 });
-
-Future<bool> checkVersion() async {
-  final uri = Uri.parse(
-    '/version.json?cacheBust=${DateTime.now().millisecondsSinceEpoch}',
-  );
-  print('Fetching version info from: $uri');
-
-  final response = await http.get(uri);
-
-  if (response.statusCode == 200) {
-    final data = json.decode(response.body);
-    final latestVersion = data['version'] as String?;
-
-    // store value in shared preferences
-
-    final String cvJsonString = await rootBundle.loadString(
-      'assets/version.json',
-    );
-    print('version.json : ' + cvJsonString);
-    final cvJson = json.decode(cvJsonString);
-    final currentVersion = cvJson['version'] as String?;
-    print('Current version: $currentVersion');
-    print('Latest version: $latestVersion');
-
-    if (currentVersion == "" || currentVersion != latestVersion) {
-      print('New version available: $latestVersion');
-      if (kIsWeb) {
-        platformSpecificReload();
-      }
-      return true;
-    } else {
-      print('No new version available');
-    }
-  }
-
-  return false;
-}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -87,6 +45,8 @@ void main() async {
           "986982379072-g44aaifpc7nqilq672frk1p16j0o7a0a.apps.googleusercontent.com",
     );
   }
+
+  MCPService().initMCP();
 
   runApp(ProviderScope(child: MyApp()));
 }

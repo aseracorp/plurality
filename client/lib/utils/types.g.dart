@@ -55,13 +55,14 @@ class MessageContentAdapter extends TypeAdapter<MessageContent> {
       text: fields[1] as String?,
       imageUrl: fields[2] as MessageContentURL?,
       toolCall: fields[3] as ToolCall?,
+      toolUseId: fields[4] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, MessageContent obj) {
     writer
-      ..writeByte(4)
+      ..writeByte(5)
       ..writeByte(0)
       ..write(obj.type)
       ..writeByte(1)
@@ -69,7 +70,9 @@ class MessageContentAdapter extends TypeAdapter<MessageContent> {
       ..writeByte(2)
       ..write(obj.imageUrl)
       ..writeByte(3)
-      ..write(obj.toolCall);
+      ..write(obj.toolCall)
+      ..writeByte(4)
+      ..write(obj.toolUseId);
   }
 
   @override
@@ -148,13 +151,14 @@ class ConversationAdapter extends TypeAdapter<Conversation> {
       messages: (fields[5] as List).cast<Message>(),
       miniApp: fields[7] as MiniApp?,
       folder: fields[8] as String?,
+      icon: fields[9] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, Conversation obj) {
     writer
-      ..writeByte(8)
+      ..writeByte(9)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(2)
@@ -170,7 +174,9 @@ class ConversationAdapter extends TypeAdapter<Conversation> {
       ..writeByte(7)
       ..write(obj.miniApp)
       ..writeByte(8)
-      ..write(obj.folder);
+      ..write(obj.folder)
+      ..writeByte(9)
+      ..write(obj.icon);
   }
 
   @override

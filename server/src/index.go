@@ -48,6 +48,24 @@ func main() {
 	r.HandleFunc("/miniapps/{id}/unpin", utils.AuthMiddleware(miniapps.API_UnpinMiniApp)).Methods("POST")
 	// r.HandleFunc("/miniapps/{id}/use", utils.AuthMiddleware(miniapps.API_UseMiniApp)).Methods("POST")
 
+
+	r.HandleFunc("/download/{file}", 
+		func(w http.ResponseWriter, r *http.Request) {
+			// if the file is windows-latest.ext, or linux-latest.ext, or macos-latest.ext, then return the file as a download
+			vars := mux.Vars(r)
+			file := vars["file"]
+			if file == "windows-latest.exe" || file == "linux-latest.zip" || file == "macos-latest.dmg" {
+				// Set the content type to application/octet-stream
+				w.Header().Set("Content-Type", "application/octet-stream")
+				// Set the content disposition to attachment
+				w.Header().Set("Content-Disposition", "attachment; filename="+file)
+				// Serve the file
+				http.ServeFile(w, r, filepath.Join("web", file))
+			} else {
+				http.NotFound(w, r)
+			}
+		}).Methods("GET")
+
 	r.HandleFunc("/stripe-webhook", HandleStripeWebhook).Methods("POST")
 		
 	r.HandleFunc("/check", utils.AuthMiddleware(

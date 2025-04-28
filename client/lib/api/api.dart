@@ -2,11 +2,14 @@ import 'dart:convert';
 import 'package:code_highlight_view/themes/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
+import 'package:plurality/api/MCP.dart';
 import '../auth/auth-service.dart';
 import '../utils/types.dart';
 import './balance.dart';
+import 'package:path_provider/path_provider.dart';
 import './stt.dart';
 import 'package:flutter/material.dart';
+import 'dart:io';
 
 class ApiService {
   static final ApiService _instance = ApiService._internal();
@@ -82,7 +85,7 @@ class ApiService {
     MiniApp? miniAppID,
     String conversationID,
     ModelSelected modelSelected,
-    Message? message,
+    List<Message>? messages,
     Function setMetaData,
     Function setMessageMetaData,
     Function attachToolUse,
@@ -92,11 +95,12 @@ class ApiService {
     request.headers['Authorization'] =
         'Bearer ${await _authService.getCurrentUserToken()}';
     request.body = jsonEncode({
-      'messages': message != null ? [message] : null,
+      'messages': messages,
       'conversation_id': conversationID,
       "model_selected": modelSelected,
       "mini_app": miniAppID?.toJson(),
       "is_call": SpeechRecognitionService().isCall,
+      "client_side_tools": MCPService().getToolList(),
     });
 
     final streamedResponse = await request.send();

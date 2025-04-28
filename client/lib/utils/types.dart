@@ -1,4 +1,5 @@
 // Step 1: Add Hive annotations to your existing models (minimal changes)
+import 'dart:convert';
 import 'package:hive/hive.dart';
 import 'package:plurality/api/mini-apps.dart';
 import 'package:plurality/chat/message-list/model-picker.dart';
@@ -32,7 +33,16 @@ class MessageContent {
   @HiveField(3)
   ToolCall? toolCall;
 
-  MessageContent({required this.type, this.text, this.imageUrl, this.toolCall});
+  @HiveField(4)
+  String? toolUseId;
+
+  MessageContent({
+    required this.type,
+    this.text,
+    this.imageUrl,
+    this.toolCall,
+    this.toolUseId,
+  });
 
   Map<String, dynamic> toJson() {
     final Map<String, dynamic> data = {'type': type};
@@ -47,6 +57,10 @@ class MessageContent {
 
     if (toolCall != null) {
       data['tool_call'] = toolCall!.toJson();
+    }
+
+    if (toolUseId != null) {
+      data['tool_use_id'] = toolUseId;
     }
 
     return data;
@@ -64,6 +78,7 @@ class MessageContent {
           json['image_url'] != null
               ? MessageContentURL.fromJson(json['image_url'])
               : null,
+      toolUseId: json['tool_use_id'],
     );
   }
 
@@ -80,13 +95,108 @@ class MessageContent {
 
   factory MessageContent.tool(ToolCall tool) {
     if (tool.result != null) {
-      return MessageContent(
-        type: 'tool_result',
-        toolCall: tool,
-        text: tool.result,
-      );
+      // Check if the result is a JSON string that needs parsing
+      try {
+        // Try to parse the result as JSON
+        final Map<String, dynamic> jsonResult = jsonDecode(tool.result!);
+
+        // If it has a 'content' key and it's an array of MessageContent
+        if (jsonResult.containsKey('content') &&
+            jsonResult['content'] is List) {
+          // Create a text message with the content from the first item in the array
+          List contentList = jsonResult['content'];
+          if (contentList.isNotEmpty) {
+            return MessageContent(
+              toolUseId: tool.id,
+              type: 'tool_result',
+              toolCall: tool,
+              text: contentList[0]['text'],
+            );
+          }
+        }
+
+        // If JSON parsing succeeded but it's not in the expected format,
+        // fall back to using the original string
+        return MessageContent(
+          toolUseId: tool.id,
+          type: 'tool_result',
+          toolCall: tool,
+          text: tool.result,
+        );
+      } catch (e) {
+        // If it's not valid JSON, use it as a plain string
+        return MessageContent(
+          toolUseId: tool.id,
+          type: 'tool_result',
+          toolCall: tool,
+          text: tool.result,
+        );
+      }
     } else {
       return MessageContent(type: 'tool_use', toolCall: tool);
+    }
+  }
+
+  static List<MessageContent> complexTools(ToolCall tool) {
+    if (tool.result != null) {
+      // Check if the result is a JSON string that needs parsing
+      try {
+        // Try to parse the result as JSON
+        final Map<String, dynamic> jsonResult = jsonDecode(tool.result!);
+
+        // If it has a 'content' key and it's an array of MessageContent
+        if (jsonResult.containsKey('content') &&
+            jsonResult['content'] is List) {
+          // Create a list of MessageContent from the array
+          List contentList = jsonResult['content'];
+          if (contentList.isNotEmpty) {
+            return contentList.map((item) {
+              if (item['type'] == 'image') {
+                var mc = MessageContent(
+                  type: 'tool_result',
+                  toolUseId: tool.id,
+                  imageUrl: MessageContentURL(url: item['data']),
+                );
+
+                return mc;
+              } else {
+                return MessageContent(
+                  toolUseId: tool.id,
+                  type: 'tool_result',
+                  toolCall: tool,
+                  text: item['text'],
+                );
+              }
+            }).toList();
+          }
+        }
+
+        // If JSON parsing succeeded but it's not in the expected format,
+        // fall back to using the original string
+        return [
+          MessageContent(
+            toolUseId: tool.id,
+            type: 'tool_result',
+            toolCall: tool,
+            text: tool.result,
+          ),
+        ];
+      } catch (e, stackTrace) {
+        print("NON ON ONO NON OO NON ON ");
+        print(e);
+        print(stackTrace);
+        // If it's not valid JSON, use it as a plain string
+        return [
+          MessageContent(
+            toolUseId: tool.id,
+            type: 'tool_result',
+            toolCall: tool,
+            text: tool.result,
+          ),
+        ];
+      }
+    } else {
+      return [MessageContent(type: 'tool_use', toolCall: tool)];
     }
   }
 }

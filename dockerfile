@@ -10,8 +10,6 @@ RUN apt-get update && apt-get install -y curl git unzip xz-utils zip libglu1-mes
 RUN git clone https://github.com/flutter/flutter.git /flutter && \
   git -C /flutter checkout stable
 ENV PATH="/flutter/bin:${PATH}"
-RUN flutter doctor
-RUN flutter config --enable-web
 
 # Copy the Flutter app source
 WORKDIR /app

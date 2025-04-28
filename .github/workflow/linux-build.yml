@@ -1,0 +1,41 @@
+name: Linux Build
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'client/**'
+      - '.github/workflows/linux-build.yml'
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.19.0'
+          channel: 'stable'
+      
+      - name: Build Linux app
+        run: |
+          cd client
+          flutter pub get
+          flutter build linux --release
+          
+      - name: Create Linux package
+        run: |
+          # Package creation steps (deb, AppImage, etc.)
+          # ...
+          mkdir -p downloads/linux
+          cp client/build/linux/x64/release/bundle/plurality.AppImage downloads/linux/plurality-linux-latest.AppImage
+      
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: linux-artifact
+          path: downloads/linux/
+          retention-days: 1

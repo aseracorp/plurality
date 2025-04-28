@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:plurality/chat/conversation-list/conversation-item.dart';
 import 'package:plurality/chat/message-list/chat-interface.dart';
+import 'package:plurality/utils/index.dart';
 import '../api/service.dart';
 import '../api/api.dart';
 import '../utils/types.dart';
@@ -26,6 +27,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   String convTitle = '';
   final ApiService _apiService = ApiService();
   Conversation? selectedConv;
+  bool hasUpdate = false;
 
   // Extract the model selection logic to a separate method
   void _updateTitle() {
@@ -49,6 +51,30 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _apiService.CheckVerifyEmail(
       () => {Navigator.pushNamed(context, '/verify-email')},
     );
+
+    checkVersion().then((value) {
+      if (value) {
+        showDialog(
+          context: context,
+          builder: (context) {
+            return AlertDialog(
+              title: Text('Update Available'),
+              content: Text(
+                'A new version of the app is available. Please update to the latest version.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                  },
+                  child: Text('OK'),
+                ),
+              ],
+            );
+          },
+        );
+      }
+    });
   }
 
   @override

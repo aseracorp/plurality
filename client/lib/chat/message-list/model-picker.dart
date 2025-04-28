@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:plurality/api/MCP.dart';
 import '../../api/balance.dart';
 import '../../utils/types.dart';
 
@@ -105,7 +108,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     'black-forest-labs/FLUX.1-dev',
   ];
 
-  final List<Map<String, dynamic>> _functions = [
+  final List<Map<String, dynamic>> _baseFunctions = [
     {
       'key': 'search_web',
       'label': 'Search Web',
@@ -132,6 +135,52 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     },
   ];
 
+  List<Map<String, dynamic>> _functions = [];
+
+  initFunctions() {
+    List<Map<String, dynamic>> finalList = [];
+    finalList.addAll(_baseFunctions);
+
+    var clientSide = MCPService().getToolList();
+
+    if (clientSide.isEmpty) {
+      return finalList;
+    }
+
+    for (var i = 0; i < clientSide.length; i++) {
+      var tool = clientSide[i];
+      var serverName = MCPService().getToolServerName(tool['name']);
+      if (serverName.isEmpty) {
+        continue;
+      }
+      var description = tool['description'] ?? 'No description available';
+      if (description.length > 100) {
+        description = description.substring(0, 100) + '...';
+      }
+      // only keep first line of description
+      if (description.contains('\n')) {
+        description = description.split('\n')[0];
+      }
+
+      if (finalList.any((element) => element['key'] == serverName)) {
+        // If the server already exists, add the tool to its tools list
+        finalList
+            .firstWhere((element) => element['key'] == serverName)['tools']
+            .add(tool['name']);
+      } else {
+        finalList.add({
+          'key': serverName,
+          'label': serverName,
+          'description': description,
+          'enabled': true,
+          'tools': [tool['name']],
+        });
+      }
+    }
+
+    return finalList;
+  }
+
   String _selectedModel = '';
   String _selectedVisionModel = '';
   String _selectedImageGenModel = '';
@@ -150,6 +199,8 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     ); // Change length to 3
     _tabController.addListener(_handleTabChange);
 
+    _functions = initFunctions();
+
     _selectedModel = widget.selectedModel.text?.name ?? _modelOptions.first;
     _selectedVisionModel =
         widget.selectedModel.vision?.name ?? VisionModelOptions.first;
@@ -158,9 +209,21 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
 
     if (widget.selectedModel.text?.tools != null) {
       for (var function in _functions) {
-        function['enabled'] = widget.selectedModel.text!.tools!.contains(
-          function['key'],
-        );
+        if (function['tools'] == null) {
+          function['enabled'] = widget.selectedModel.text!.tools!.contains(
+            function['key'],
+          );
+        } else {
+          // check each tool in the list is enabled
+          for (var tool in function['tools']) {
+            if (widget.selectedModel.text!.tools!.contains(tool)) {
+              function['enabled'] = true;
+            } else {
+              function['enabled'] = false;
+              break;
+            }
+          }
+        }
       }
     }
 
@@ -288,7 +351,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
               tabs: const [
                 Tab(text: 'Presets'),
                 Tab(text: 'Custom'),
-                Tab(text: 'Functions'), // Add the third tab
+                Tab(text: 'Functions'),
               ],
               labelColor: Theme.of(context).colorScheme.primary,
               unselectedLabelColor: isDarkMode ? Colors.white : Colors.black,
@@ -339,6 +402,22 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
+                if (Platform.isWindows || Platform.isLinux || Platform.isMacOS)
+                  TextButton(
+                    onPressed: () async {
+                      // Open the MCP file in the default editor
+                      final appDocumentDirectory =
+                          (await MCPService().getMCPPath()).path;
+                      if (Platform.isWindows) {
+                        Process.run('explorer', [appDocumentDirectory]);
+                      } else if (Platform.isMacOS) {
+                        Process.run('open', [appDocumentDirectory]);
+                      } else if (Platform.isLinux) {
+                        Process.run('xdg-open', [appDocumentDirectory]);
+                      }
+                    },
+                    child: const Text('Edit MCP File (BETA)'),
+                  ),
                 TextButton(
                   onPressed: () {
                     Navigator.pop(context);
@@ -356,9 +435,18 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
                               final enabledTools =
                                   _functions
                                       .where((function) => function['enabled'])
-                                      .map(
-                                        (function) => function['key'] as String,
-                                      )
+                                      .map((function) {
+                                        final tools = function['tools'];
+                                        if (tools != null && tools is List) {
+                                          return tools
+                                              .map((tool) => tool as String)
+                                              .toList();
+                                        } else {
+                                          return [function['key'] as String];
+                                        }
+                                      })
+                                      .expand((tool) => tool)
+                                      .toSet() // Remove duplicates
                                       .toList();
 
                               // Return the selected models and tools to the parent widget
@@ -569,7 +657,12 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
       itemBuilder: (context, index) {
         final function = _functions[index];
         return SwitchListTile(
-          title: Text(function['label']),
+          title: Text(
+            function['label'] +
+                ((function['tools'] != null && function['tools'].length > 1)
+                    ? ' (${function['tools'].length} tools) '
+                    : ''),
+          ),
           subtitle: Text(function['description']),
           value: function['enabled'],
           onChanged: (value) {

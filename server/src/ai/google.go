@@ -79,7 +79,7 @@ type GeminiChatResponseStream struct {
 
 // --- SendChatCompletionGoogle ---
 
-func SendChatCompletionGoogle(ctx context.Context, model utils.Model, payload utils.Conversation, systemPrompt string) (io.ReadCloser, int, error) {
+func SendChatCompletionGoogle(ctx context.Context, model utils.Model, conv utils.Conversation, systemPrompt string, payload ChatPayload) (io.ReadCloser, int, error) {
 	apiKey := os.Getenv("GOOGLE_API_KEY")
 	if apiKey == "" {
 		return nil, 0, fmt.Errorf("GOOGLE_API_KEY is not set")
@@ -97,7 +97,7 @@ func SendChatCompletionGoogle(ctx context.Context, model utils.Model, payload ut
 	apiURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent?key=%s&alt=sse", modelName, apiKey)
 
 	// --- Build Gemini Request ---
-	geminiContents := make([]GeminiContent, 0, len(payload.Messages))
+	geminiContents := make([]GeminiContent, 0, len(conv.Messages))
 	basePrice := 0.0 // For potential image costs
 
 	// 1. System Prompt
@@ -118,7 +118,7 @@ func SendChatCompletionGoogle(ctx context.Context, model utils.Model, payload ut
 	}
 
 	// 2. Map Conversation Messages
-	for _, msg := range payload.Messages {
+	for _, msg := range conv.Messages {
 		geminiRole := ""
 		switch msg.Role {
 		case "user":
@@ -247,7 +247,7 @@ func SendChatCompletionGoogle(ctx context.Context, model utils.Model, payload ut
 	// --- Tools ---
 	var geminiTools []GeminiTool
 	if CheckActionModel(model.Name) {
-		registeredTools := ai_tools.GetRequests(model) // Assuming this returns your internal tool format
+		registeredTools := ai_tools.GetRequests(model, payload.ClientSideTools)
 		if len(registeredTools) > 0 {
 			utils.Log("Found registered tools for Gemini chat request")
 			declarations := make([]GeminiFunctionDeclaration, 0, len(registeredTools))

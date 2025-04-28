@@ -1,0 +1,41 @@
+name: macOS Build
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'client/**'
+      - '.github/workflows/macos-build.yml'
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.19.0'
+          channel: 'stable'
+      
+      - name: Build macOS app
+        run: |
+          cd client
+          flutter pub get
+          flutter build macos --release
+          
+      - name: Create macOS package
+        run: |
+          # Package creation steps
+          # ...
+          mkdir -p downloads/macos
+          cp client/build/macos/Build/Products/Release/plurality.dmg downloads/macos/plurality-macos-latest.dmg
+      
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: macos-artifact
+          path: downloads/macos/
+          retention-days: 1

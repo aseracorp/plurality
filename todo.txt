@@ -8,6 +8,10 @@
 
 
 # private MVP2 - bigger
+- MCP: tool call output is not always text!!
+- MCP: MCP should enable/disable the entire MCP instead of individual tools
+- MCP: implement MCP for other providers 
+- MCP: the "dynamic" arguments break because you cant mix strings and numbers
 - Fix tool_use for gpt/firework
 - /Image (with maj) broken
 - Add "quizz" and  "More" in mini apps

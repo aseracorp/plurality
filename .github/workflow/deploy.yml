@@ -1,0 +1,95 @@
+name: Deploy to GitHub Pages
+
+on:
+  workflow_run:
+    workflows: ['Windows Build', 'macOS Build', 'Linux Build']
+    types:
+      - completed
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Pages
+        uses: actions/configure-pages@v3
+      
+      - name: Create deployment structure
+        run: |
+          mkdir -p gh-pages/downloads/windows
+          mkdir -p gh-pages/downloads/macos
+          mkdir -p gh-pages/downloads/linux
+      
+      # Download Windows artifacts
+      - name: Download Windows artifacts
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          workflow: windows-build.yml
+          name: windows-artifact
+          path: gh-pages/downloads/windows
+          
+      # Download macOS artifacts
+      - name: Download macOS artifacts
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          workflow: macos-build.yml
+          name: macos-artifact
+          path: gh-pages/downloads/macos
+          
+      # Download Linux artifacts
+      - name: Download Linux artifacts
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          workflow: linux-build.yml
+          name: linux-artifact
+          path: gh-pages/downloads/linux
+      
+      # Create index page with download links
+      - name: Create index page
+        run: |
+          cat > gh-pages/index.html << 'EOL'
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>Plurality App Downloads</title>
+            <style>
+              body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+              .platform { margin-bottom: 30px; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+              h1 { color: #333; }
+              a.button { display: inline-block; padding: 10px 15px; background: #4285f4; color: white; 
+                        text-decoration: none; border-radius: 4px; font-weight: bold; }
+              a.button:hover { background: #3367d6; }
+            </style>
+          </head>
+          <body>
+            <h1>Plurality App</h1>
+            <p>Download the latest version for your platform:</p>
+            
+            <div class="platform">
+              <h2>Windows</h2>
+              <a class="button" href="./downloads/windows/plurality-windows-latest.exe">Download for Windows</a>
+            </div>
+            
+            <div class="platform">
+              <h2>macOS</h2>
+              <a class="button" href="./downloads/macos/plurality-macos-latest.dmg">Download for macOS</a>
+            </div>
+            
+            <div class="platform">
+              <h2>Linux</h2>
+              <a class="button" href="./downloads/linux/plurality-linux-latest.AppImage">Download for Linux</a>
+            </div>
+          </body>
+          </html>
+          EOL
+      
+      # Deploy to GitHub Pages
+      - name: Deploy to GitHub Pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: gh-pages
+          branch: gh-pages

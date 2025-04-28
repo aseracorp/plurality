@@ -1,0 +1,42 @@
+name: Windows Build
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'client/**'
+      - '.github/workflows/windows-build.yml'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.19.0'
+          channel: 'stable'
+      
+      - name: Build Windows app
+        run: |
+          cd client
+          flutter pub get
+          flutter build windows --release
+          
+      - name: Create Windows installer
+        run: |
+          choco install nsis -y
+          # NSIS script creation and build steps
+          # ...
+          mkdir -p downloads/windows
+          cp client/plurality-installer.exe downloads/windows/plurality-windows-latest.exe
+      
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: windows-artifact
+          path: downloads/windows/
+          retention-days: 1

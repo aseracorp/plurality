@@ -326,11 +326,11 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		if len(toolUseMessageResult.Content) == 0 {
+		/*if len(toolUseMessageResult.Content) == 0 {
 			utils.Error("[HandleChat] Tool use message found", nil)
 			utils.SendHTTPError(w, "Tool use message found", http.StatusBadRequest)
 			return
-		}
+		}*/
 
 		messageToProcess = toolUseMessageResult
 	}
@@ -355,7 +355,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Transfer-Encoding", "chunked")
 	
 	// Get the response from the model's API
-	response, inputPriceToken, err := SendChatCompletion(r.Context(), model, conv, payload.MiniApp.ID, payload.IsCall)
+	response, inputPriceToken, err := SendChatCompletion(r.Context(), model, conv, payload)
 	if err != nil {
 		utils.Error("[HandleChat] Error sending chat completion", err)
 		el := err.Error()

@@ -19,7 +19,7 @@ import (
 )
 
 
-func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload utils.Conversation, systemPrompt string) (io.ReadCloser, int, error) {
+func SendChatCompletionClaude(ctx context.Context, model utils.Model, conv utils.Conversation, systemPrompt string, payload ChatPayload) (io.ReadCloser, int, error) {
 	var SystemPrompt = systemPrompt +
 		time.Now().String() +
 		" on " +
@@ -34,7 +34,7 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 		return nil, 0, fmt.Errorf("CLAUDE_API_KEY is not set")
 	}
 
-	utils.Debug("Payload: ", payload)
+	utils.Debug("conv: ", conv)
 	
 	if model.Name == "" {
 		model.Name = "Claude/claude-3-haiku-20240307" // Default model
@@ -48,7 +48,7 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 
 	// Claude API expects a different message format compared to OpenAI
 	// Convert our messages to Claude's format
-	msgList := payload.Messages
+	msgList := conv.Messages
 	claudeMessages := make([]ClaudeMessageReq, 0, len(msgList))
 	
 	for _, msg := range msgList {
@@ -177,8 +177,9 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, payload ut
 		System:      SystemPrompt,
 	}
 	
-	if CheckActionModel(model.Name) && len(ai_tools.GetClaudeRequests(model)) > 0 {
-		requestData.Tools = ai_tools.GetClaudeRequests(model)
+	aitools := ai_tools.GetClaudeRequests(model, payload.ClientSideTools)
+	if CheckActionModel(model.Name) && len(aitools) > 0 {
+		requestData.Tools = aitools
 	}
 
 	// Check balance

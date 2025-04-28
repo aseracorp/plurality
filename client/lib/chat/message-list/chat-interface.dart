@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:plurality/api/MCP.dart';
 import 'package:plurality/chat/message-list/attachments.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:url_launcher/url_launcher_string.dart';
@@ -384,6 +385,8 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     final conversationsNotifier = ref.read(conversationsProvider.notifier);
     final balanceNotifier = ref.read(balanceProvider.notifier);
 
+    print("Sending message: $userMessage");
+
     // Create new message object
     final newMessage =
         (userMessage != null && userMessage.isNotEmpty) ||
@@ -403,6 +406,53 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
               ],
             )
             : null;
+
+    List<Message> allToolResults = [];
+
+    if (newMessage == null) {
+      // check if last messages are tool_results
+      final conversationsState = ref.read(conversationsProvider);
+      final matches =
+          conversationsState.conversations
+              .where((conv) => conv.id == widget.conversationId)
+              .toList();
+
+      if (matches.isNotEmpty) {
+        final currentConversation = matches.first;
+        if (currentConversation.messages.isNotEmpty) {
+          // Start from the last message and work backwards
+          List<Message> toolResultChain = [];
+
+          // Iterate backwards through messages
+          for (int i = currentConversation.messages.length - 1; i >= 0; i--) {
+            final message = currentConversation.messages[i];
+
+            // Check if this message contains ONLY tool_results and nothing else
+            bool containsOnlyToolResults =
+                message.content.isNotEmpty &&
+                message.content.every((c) => c.type == "tool_result");
+
+            if (containsOnlyToolResults) {
+              // Add this message to our chain
+              toolResultChain.add(message);
+            } else {
+              // Chain is broken, stop iterating
+              break;
+            }
+          }
+
+          // Reverse the list to get chronological order if needed
+          // toolResultChain = toolResultChain.reversed.toList();
+
+          if (toolResultChain.isNotEmpty) {
+            // Extract all tool calls from the chain
+            for (var message in toolResultChain) {
+              allToolResults.add(message);
+            }
+          }
+        }
+      }
+    }
 
     setState(() {
       _isLoading = true;
@@ -433,7 +483,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         _miniAppSelected,
         currentConversationID,
         _modelSelected,
-        newMessage,
+        newMessage != null ? [newMessage] : allToolResults,
         ({newConversationID, newConversationTitle}) {
           if (cachedTitle != newConversationTitle &&
               newConversationTitle != null) {
@@ -552,7 +602,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         _isLoading = false;
       });
 
-      if (toolHaveBeenUsed) {
+      if (toolHaveBeenUsed && await processToolRequests()) {
         await sendMessage(context, "", currentConversationID);
       }
 
@@ -583,6 +633,153 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       }
       setState(() => _isLoading = false);
     }
+  }
+
+  Future<bool> processToolRequests() async {
+    // Get the conversation state
+    final conversationsNotifier = ref.read(conversationsProvider.notifier);
+    final conversationsState = ref.read(conversationsProvider);
+    final matches =
+        conversationsState.conversations
+            .where((conv) => conv.id == widget.conversationId)
+            .toList();
+
+    if (matches.isEmpty) return false;
+    final currentConversation = matches.first;
+
+    if (currentConversation.messages.isEmpty) return false;
+
+    // Get the last message (should be the assistant's response)
+    final lastMessage = currentConversation.messages.last;
+
+    // Check if there are any tool_use content items
+    final toolUses =
+        lastMessage.content.where((c) => c.type == "tool_use").toList();
+    if (toolUses.isEmpty) return false;
+
+    // Find tool uses that haven't been processed yet (no matching tool_result)
+    final unprocessedTools =
+        toolUses.where((toolUse) {
+          return !currentConversation.messages.any(
+            (message) => message.content.any(
+              (content) =>
+                  content.type == "tool_result" &&
+                  content.toolCall?.id == toolUse.toolCall?.id,
+            ),
+          );
+        }).toList();
+
+    if (unprocessedTools.isEmpty) return false;
+
+    // Process MCP client-side tools
+    bool hasServerTools = false;
+
+    for (final toolUse in unprocessedTools) {
+      final toolCall = toolUse.toolCall;
+      if (toolCall == null) continue;
+
+      // Check if this is an MCP tool
+      final mcpService = MCPService();
+      final tools = mcpService.getToolList();
+
+      final matchingTool = tools.firstWhere(
+        (tool) => tool['name'] == toolCall.name,
+        orElse: () => null,
+      );
+
+      if (matchingTool != null) {
+        print("[MCP] Found MCP tool: ${toolCall.name}");
+        // This is an MCP tool, process it
+        try {
+          // Parse arguments
+          final args = jsonDecode(
+            toolCall.arguments == "" ? "{}" : toolCall.arguments,
+          );
+
+          // Find the server name from the tool
+          final serverName = MCPService().getToolServerName(toolCall.name);
+
+          if (serverName != null) {
+            // Execute the tool call
+            await mcpService.serverManager
+                .sendRequest(serverName, 'tools/call', {
+                  'name': toolCall.name,
+                  'arguments': args,
+                })
+                .then((response) {
+                  // Create a tool result
+                  final toolResult = ToolCall(
+                    id: toolCall.id,
+                    name: toolCall.name,
+                    arguments: toolCall.arguments,
+                    result: jsonEncode(response),
+                  );
+
+                  print("[MCP] Tool result: ${toolResult.result}");
+
+                  // Update the last message to include the tool result
+                  // final updatedContents = [...lastMessage.content, content];
+                  final newMessage = Message(
+                    role: "user",
+                    content: MessageContent.complexTools(toolResult),
+                    totalTokens: 0,
+                  );
+
+                  // Update the message in the conversation
+                  conversationsNotifier.addMessage(
+                    conversationId: widget.conversationId,
+                    message: newMessage,
+                  );
+
+                  hasServerTools = true;
+                })
+                .catchError((error) {
+                  // Handle error
+                  final toolResult = ToolCall(
+                    id: toolCall.id,
+                    name: toolCall.name,
+                    arguments: toolCall.arguments,
+                    result: "Error: ${error.toString()}",
+                  );
+
+                  final content = MessageContent.tool(toolResult);
+
+                  // Update the last message to include the tool result
+                  // final updatedContents = [...lastMessage.content, content];
+                  final newMessage = Message(
+                    role: "user",
+                    content: [content],
+                    totalTokens: 0,
+                  );
+
+                  // Update the message in the conversation
+                  conversationsNotifier.addMessage(
+                    conversationId: widget.conversationId,
+                    message: newMessage,
+                  );
+
+                  hasServerTools = true;
+                });
+          }
+        } catch (e) {
+          print('Error processing MCP tool: $e');
+        }
+      } else {
+        print("[MCP] Server tool: ${toolCall.name}");
+        // Not an MCP tool, must be a server-side tool
+        hasServerTools = true;
+      }
+    }
+
+    print(
+      "[MCP] Processed ${unprocessedTools.length} tool requests. " +
+          (hasServerTools
+              ? "Server tools detected."
+              : "No server tools detected."),
+    );
+
+    // Return true if there are any server-side tools that need processing
+    return hasServerTools;
   }
 
   // Function to build a message list

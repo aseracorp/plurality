@@ -76,6 +76,7 @@ type ChatPayload struct {
 	Messages 				[]utils.Message `json:"messages"`
 	MiniApp         utils.MiniApp         `json:"mini_app"`
 	IsCall 					bool                `json:"is_call"`
+	ClientSideTools []utils.FunctionToolsRequest `json:"client_side_tools"`
 }
 
 type AIChunk struct {

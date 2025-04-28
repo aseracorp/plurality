@@ -81,7 +81,7 @@ class ToolCallBadge extends StatelessWidget {
 
             // Tool Name
             Text(
-              loadingString,
+              loadingString == "" ? toolCall.name : loadingString,
               // toolCall.id,
               style: TextStyle(
                 color: Theme.of(context).colorScheme.onSurfaceVariant,

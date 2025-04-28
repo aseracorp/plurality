@@ -25,14 +25,25 @@ func GetTool(toolID string) (utils.AITool, bool) {
 	return tool, ok
 }
 
-func GetRequests(model utils.Model) []utils.ToolsRequest {
+func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest) []utils.ToolsRequest {
 	var requests []utils.ToolsRequest 
 	var selected = model.Tools
+
 	for _, tool := range Registry {
 		if utils.ContainsString(selected, tool.ToolID) {
 			requests = append(requests, tool.ToolRequest)
 		}
 	}
+
+	for _, tool := range ClientSideTools {
+		if utils.ContainsString(selected, tool.Name) {
+			requests = append(requests, utils.ToolsRequest{
+				Type: "function",
+				Function: tool,
+			})
+		}
+	}
+	
 	return requests
 }
 
@@ -50,13 +61,30 @@ func GetClaudeSchema(toolID string) utils.FunctionToolsRequest {
 	return toolRequest
 }
 
-func GetClaudeRequests(model utils.Model) []utils.FunctionToolsRequest {
-	var requests []utils.FunctionToolsRequest 
+func ConvertToClaudeSchema(requests utils.FunctionToolsRequest) utils.FunctionToolsRequest {
+	toolRequest := requests
+	toolRequest.InputSchema = toolRequest.Parameters
+	toolRequest.Parameters = nil
+
+	return toolRequest
+}
+
+
+func GetClaudeRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest) []utils.FunctionToolsRequest {
+	var requests = []utils.FunctionToolsRequest{}
 	var selected = model.Tools
+
 	for _, tool := range Registry {
 		if utils.ContainsString(selected, tool.ToolID) {
 			requests = append(requests, GetClaudeSchema(tool.ToolID))
 		}
 	}
+
+	for _, tool := range ClientSideTools {
+		if utils.ContainsString(selected, tool.Name) {
+			requests = append(requests, ConvertToClaudeSchema(tool))
+		}
+	}
+	
 	return requests
 }
