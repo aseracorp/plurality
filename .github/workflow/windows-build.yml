@@ -2,7 +2,7 @@ name: Windows Build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
     paths:
       - 'client/**'
       - '.github/workflows/windows-build.yml'

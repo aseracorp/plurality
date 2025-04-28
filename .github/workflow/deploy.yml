@@ -5,7 +5,7 @@ on:
     workflows: ['Windows Build', 'macOS Build', 'Linux Build']
     types:
       - completed
-    branches: [main]
+    branches: [master]
 
 jobs:
   deploy:

@@ -2,7 +2,7 @@ name: Linux Build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
     paths:
       - 'client/**'
       - '.github/workflows/linux-build.yml'
