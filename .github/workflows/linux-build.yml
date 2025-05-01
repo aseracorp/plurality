@@ -33,11 +33,29 @@ jobs:
           
       - name: Create Linux ZIP package
         run: |
-          cd client/build/linux/x64/release/bundle
-          zip -r linux-build.zip *
-          mkdir -p downloads/linux
-          mv linux-build.zip downloads/linux/linux-build.zip
-          echo "Linux build package created at downloads/linux/linux-build.zip"
+          # Define the source and target directories using workspace root
+          SOURCE_DIR="${{ github.workspace }}/client/build/linux/x64/release/bundle"
+          TARGET_DIR="${{ github.workspace }}/downloads/linux"
+          ZIP_FILE_NAME="linux-build.zip"
+          
+          # Go into the source directory
+          cd "$SOURCE_DIR"
+          
+          # Create the zip file containing everything in the source directory
+          echo "Zipping contents of $SOURCE_DIR..."
+          zip -r "$ZIP_FILE_NAME" *
+          
+          # Create the target directory at the workspace root if it doesn't exist
+          echo "Creating target directory $TARGET_DIR..."
+          mkdir -p "$TARGET_DIR"
+          
+          # Move the zip file from the source directory to the target directory
+          echo "Moving $ZIP_FILE_NAME to $TARGET_DIR..."
+          mv "$ZIP_FILE_NAME" "$TARGET_DIR/$ZIP_FILE_NAME"
+          
+          echo "✅ Linux build package created at $TARGET_DIR/$ZIP_FILE_NAME"
+        shell: bash 
+
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
