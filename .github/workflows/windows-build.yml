@@ -46,7 +46,7 @@ jobs:
           # Assumes the script is at client/windows/plurality-installer.exe
           # The script's OutFile directive creates plurality-installer.exe in the script's directory
           echo "Compiling NSIS script..."
-          makensis client/windows/plurality-installer.exe
+          makensis client/windows/installer.nsi
 
           # Check if the installer was created successfully (optional but good practice)
           if (-not (Test-Path client/windows/${{ env.INSTALLER_FILENAME }})) {
