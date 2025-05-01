@@ -15,9 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       
-      - name: Setup Pages
-        uses: actions/configure-pages@v3
-      
       - name: Create deployment structure
         run: |
           mkdir -p gh-pages/downloads/windows
