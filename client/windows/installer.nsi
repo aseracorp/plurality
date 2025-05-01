@@ -43,8 +43,8 @@ VIAddVersionKey "LegalCopyright" "Copyright © ${COMPANYNAME}" ; <-- Adjust if n
 ; Modern UI Interface Settings
 ;--------------------------------
 !define MUI_ABORTWARNING ; Warn if the user tries to cancel during installation
-define MUI_ICON "./runner/resources/app_icon.ico" ; <-- !!! Optional: Path to your app icon (.ico file) relative to script
-define MUI_UNICON "./runner/resources/app_icon.ico" ; <-- !!! Optional: Path to your uninstall icon (.ico file) relative to script
+!define MUI_ICON "./runner/resources/app_icon.ico" ; <-- !!! Optional: Path to your app icon (.ico file) relative to script
+!define MUI_UNICON "./runner/resources/app_icon.ico" ; <-- !!! Optional: Path to your uninstall icon (.ico file) relative to script
 
 ;--------------------------------
 ; Pages
