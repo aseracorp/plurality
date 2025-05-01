@@ -9,6 +9,9 @@ jobs:
   build-windows:
     runs-on: windows-latest
     
+    env: # Define environment variables for the job
+      INSTALLER_FILENAME: plurality-windows-build.exe # <-- Set your desired installer name here
+
     steps:
       - name: Setup Visual Studio
         uses: microsoft/setup-msbuild@v1.1
@@ -36,55 +39,28 @@ jobs:
           
       - name: Create Windows installer
         run: |
+          # Ensure NSIS is installed
           choco install nsis -y
-          
-          # Create NSIS script
-          @"
-          !include "MUI2.nsh"
-          
-          Name "Windows Build"
-          OutFile "plurality-installer.exe"
-          
-          InstallDir "$PROGRAMFILES\Windows Build"
-          
-          !insertmacro MUI_PAGE_WELCOME
-          !insertmacro MUI_PAGE_DIRECTORY
-          !insertmacro MUI_PAGE_INSTFILES
-          !insertmacro MUI_PAGE_FINISH
-          
-          !insertmacro MUI_UNPAGE_CONFIRM
-          !insertmacro MUI_UNPAGE_INSTFILES
-          
-          !insertmacro MUI_LANGUAGE "English"
-          
-          Section "Install"
-            SetOutPath "$INSTDIR"
-            File /r "client\build\windows\x64\runner\Release\*.*"
-            
-            CreateDirectory "$SMPROGRAMS\Windows Build"
-            CreateShortcut "$SMPROGRAMS\Windows Build\Windows Build.lnk" "$INSTDIR\plurality.exe"
-            CreateShortcut "$DESKTOP\Windows Build.lnk" "$INSTDIR\plurality.exe"
-            
-            WriteUninstaller "$INSTDIR\uninstall.exe"
-            
-            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WindowsBuild" "DisplayName" "Windows Build"
-            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WindowsBuild" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
-          SectionEnd
-          
-          Section "Uninstall"
-            RMDir /r "$INSTDIR"
-            RMDir /r "$SMPROGRAMS\Windows Build"
-            Delete "$DESKTOP\Windows Build.lnk"
-            
-            DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WindowsBuild"
-          SectionEnd
-          "@ | Out-File -FilePath nsis-script.nsi -Encoding utf8
-          
-          # Build the installer
-          makensis nsis-script.nsi
-          
+
+          # Compile the NSIS script
+          # Assumes the script is at client/windows/installer.nsi
+          # The script's OutFile directive creates plurality-installer.exe in the script's directory
+          echo "Compiling NSIS script..."
+          makensis client/windows/installer.nsi
+
+          # Check if the installer was created successfully (optional but good practice)
+          if (-not (Test-Path client/windows/${{ env.INSTALLER_FILENAME }})) {
+              echo "Installer file (client/windows/${{ env.INSTALLER_FILENAME }}) not found after running makensis!"
+              exit 1
+          }
+
+          # Create the downloads directory
           mkdir -p downloads/windows
-          cp plurality-installer.exe downloads/windows/plurality-windows-latest.exe
+
+          # Copy the compiled installer from the script's output location to the downloads directory
+          # Adjust the path as necessary based on your NSIS script's OutFile directive
+          # This assumes the installer is created in client/windows/${{ env.INSTALLER_FILENAME }}
+          cp client/windows/${{ env.INSTALLER_FILENAME }} downloads/windows/${{ env.INSTALLER_FILENAME }}
       
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
