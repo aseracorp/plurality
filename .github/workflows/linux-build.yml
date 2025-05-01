@@ -31,13 +31,14 @@ jobs:
           flutter pub get
           flutter build linux --release
           
-      - name: Create Linux package
+      - name: Create Linux ZIP package
         run: |
-          # Package creation steps (deb, AppImage, etc.)
-          # ...
+          cd client/build/linux/x64/release/bundle
+          zip -r linux-build.zip *
           mkdir -p downloads/linux
-          cp client/build/linux/x64/release/bundle/plurality.AppImage downloads/linux/plurality-linux-latest.AppImage
-      
+          mv linux-build.zip downloads/linux/linux-build.zip
+          echo "Linux build package created at downloads/linux/linux-build.zip"
+
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:

@@ -59,7 +59,7 @@ jobs:
           
           Section "Install"
             SetOutPath "$INSTDIR"
-            File /r "client\build\windows\runner\Release\*.*"
+            File /r "client\build\windows\x64\runner\Release\*.*"
             
             CreateDirectory "$SMPROGRAMS\Windows Build"
             CreateShortcut "$SMPROGRAMS\Windows Build\Windows Build.lnk" "$INSTDIR\plurality.exe"
