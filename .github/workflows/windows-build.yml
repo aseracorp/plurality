@@ -1,5 +1,3 @@
-name: Windows Build
-
 on:
   push:
     branches: [ master ]
@@ -20,42 +18,8 @@ jobs:
       - name: Install Windows SDK
         uses: GuillaumeFalourd/setup-windows10-sdk-action@v1
         with:
-          sdk-version: 22621   # Windows 10 SDK version 10.0.19041.0
-
-      # - name:  Install Visual Studio components
-      #   run: |
-      #     Set-Location "C:\Program Files (x86)\Microsoft Visual Studio\Installer\"
-      #     $InstallPath = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
-      #     $componentsToRemove= @(
-      #       "Microsoft.VisualStudio.Component.Windows10SDK.19041"
-      #       "Microsoft.VisualStudio.Component.Windows10SDK.20348"
-      #       "Microsoft.VisualStudio.Component.Windows10SDK.22000"
-      #       "Microsoft.VisualStudio.Component.Windows10SDK"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.ARM"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.ARM.Spectre"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.ARM64"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.ARM64.Spectre"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.x86.x64"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.x86.x64.Spectre"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.ATL"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.ATL.Spectre"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.ATL.ARM"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.ATL.ARM.Spectre"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.ATL.ARM64"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.ATL.ARM64.Spectre"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.MFC"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.MFC.Spectre"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.MFC.ARM"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.MFC.ARM.Spectre"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.MFC.ARM64"
-      #       "Microsoft.VisualStudio.Component.VC.14.37.17.7.MFC.ARM64.Spectre"
-      #     )
-      #     [string]$workloadArgs = $componentsToRemove | ForEach-Object {" --remove " +  $_}
-      #     $Arguments = ('/c', "vs_installer.exe", 'modify', '--installPath', "`"$InstallPath`"",$workloadArgs, '--quiet', '--norestart', '--nocache')
-      #     # should be run twice
-      #     $process = Start-Process -FilePath cmd.exe -ArgumentList $Arguments -Wait -PassThru -WindowStyle Hidden
-      #     $process = Start-Process -FilePath cmd.exe -ArgumentList $Arguments -Wait -PassThru -WindowStyle Hidden
-      
+          sdk-version: 22621
+          
       - uses: actions/checkout@v3
       
       - name: Set up Flutter
@@ -73,10 +37,54 @@ jobs:
       - name: Create Windows installer
         run: |
           choco install nsis -y
-          # NSIS script creation and build steps
-          # ...
+          
+          # Create NSIS script
+          @"
+          !include "MUI2.nsh"
+          
+          Name "Windows Build"
+          OutFile "plurality-installer.exe"
+          
+          InstallDir "$PROGRAMFILES\Windows Build"
+          
+          !insertmacro MUI_PAGE_WELCOME
+          !insertmacro MUI_PAGE_DIRECTORY
+          !insertmacro MUI_PAGE_INSTFILES
+          !insertmacro MUI_PAGE_FINISH
+          
+          !insertmacro MUI_UNPAGE_CONFIRM
+          !insertmacro MUI_UNPAGE_INSTFILES
+          
+          !insertmacro MUI_LANGUAGE "English"
+          
+          Section "Install"
+            SetOutPath "$INSTDIR"
+            File /r "client\build\windows\runner\Release\*.*"
+            
+            CreateDirectory "$SMPROGRAMS\Windows Build"
+            CreateShortcut "$SMPROGRAMS\Windows Build\Windows Build.lnk" "$INSTDIR\plurality.exe"
+            CreateShortcut "$DESKTOP\Windows Build.lnk" "$INSTDIR\plurality.exe"
+            
+            WriteUninstaller "$INSTDIR\uninstall.exe"
+            
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WindowsBuild" "DisplayName" "Windows Build"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WindowsBuild" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
+          SectionEnd
+          
+          Section "Uninstall"
+            RMDir /r "$INSTDIR"
+            RMDir /r "$SMPROGRAMS\Windows Build"
+            Delete "$DESKTOP\Windows Build.lnk"
+            
+            DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WindowsBuild"
+          SectionEnd
+          "@ | Out-File -FilePath nsis-script.nsi -Encoding utf8
+          
+          # Build the installer
+          makensis nsis-script.nsi
+          
           mkdir -p downloads/windows
-          cp client/plurality-installer.exe downloads/windows/plurality-windows-latest.exe
+          cp plurality-installer.exe downloads/windows/plurality-windows-latest.exe
       
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
