@@ -12,7 +12,7 @@
 !define COMPANYNAME "Beyond Cloud ltd" ; <-- !!! Change this to your company/developer name
 !define DESCRIPTION "Plurality Application"
 !define VERSION "1.0.0" ; <-- !!! Update this with your actual app version (maybe dynamically later)
-!define INSTALLER_OUTPUT_FILENAME "plurality-installer.exe" ; Output name (matches workflow 'cp' source)
+!define INSTALLER_OUTPUT_FILENAME "plurality-windows-latest.exe" ; Output name (matches workflow 'cp' source)
 !define MAIN_EXECUTABLE "Plurality.exe" ; <-- !!! Verify this is the name of your built Flutter executable
 !define BUILD_OUTPUT_PATH "..\build\windows\x64\runner\Release" ; Relative path from the script location to the built app
 !define INSTALL_DIR_REGKEY "Software\${COMPANYNAME}\${APPNAME}"

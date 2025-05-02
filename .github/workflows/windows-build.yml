@@ -10,7 +10,7 @@ jobs:
     runs-on: windows-latest
     
     env: # Define environment variables for the job
-      INSTALLER_FILENAME: plurality-windows-build.exe # <-- Set your desired installer name here
+      INSTALLER_FILENAME: plurality-windows-latest.exe # <-- Set your desired installer name here
 
     steps:
       - name: Setup Visual Studio
