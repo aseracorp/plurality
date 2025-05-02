@@ -85,8 +85,15 @@ jobs:
           EOL
       
       # Deploy to GitHub Pages
+      # - name: Deploy to GitHub Pages
+      #   uses: JamesIves/github-pages-deploy-action@v4
+      #   with:
+      #     folder: gh-pages
+      #     branch: gh-pages
+
+
       - name: Deploy to GitHub Pages
-        uses: JamesIves/github-pages-deploy-action@v4
+        id: deployment
+        uses: actions/deploy-pages@v4
         with:
-          folder: gh-pages
-          branch: gh-pages
+          publish_dir: gh-pages
