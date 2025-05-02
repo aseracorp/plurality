@@ -78,22 +78,15 @@ jobs:
             
             <div class="platform">
               <h2>Linux</h2>
-              <a class="button" href="./downloads/linux/plurality-linux-latest.AppImage">Download for Linux</a>
+              <a class="button" href="./downloads/linux/linux-build.zip">Download for Linux</a>
             </div>
           </body>
           </html>
           EOL
       
       # Deploy to GitHub Pages
-      # - name: Deploy to GitHub Pages
-      #   uses: JamesIves/github-pages-deploy-action@v4
-      #   with:
-      #     folder: gh-pages
-      #     branch: gh-pages
-
-
       - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+        uses: JamesIves/github-pages-deploy-action@v4
         with:
-          publish_dir: gh-pages
+          folder: gh-pages
+          branch: gh-pages
