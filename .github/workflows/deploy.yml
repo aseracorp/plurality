@@ -30,12 +30,12 @@ jobs:
           path: gh-pages/downloads/windows
           
       # Download macOS artifacts
-      - name: Download macOS artifacts
-        uses: dawidd6/action-download-artifact@v2
-        with:
-          workflow: macos-build.yml
-          name: macos-artifact
-          path: gh-pages/downloads/macos
+      # - name: Download macOS artifacts
+      #   uses: dawidd6/action-download-artifact@v2
+      #   with:
+      #     workflow: macos-build.yml
+      #     name: macos-artifact
+      #     path: gh-pages/downloads/macos
           
       # Download Linux artifacts
       - name: Download Linux artifacts
