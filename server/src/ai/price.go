@@ -34,68 +34,78 @@ func GetPriceFromTokenUsage(reqType int, provider int, model utils.Model, usage 
 
 	if(reqType == TEXT_INPUT) {
 		if(provider == OPENAI) {
-			if model.Name == "ChatGPT/gpt-4.5" {
-				// cost 75$ per 1M tokens
-				price = usage * 75.00
-			}
-			if model.Name == "ChatGPT/gpt-4o-mini" {
-				// cost 0.150 per 1M tokens
-				price = usage * 0.150
-			} else if model.Name == "ChatGPT/gpt-4o" {
-				// cost 2.5$ per 1M tokens
-				price = usage * 2.50
-			}
-		} else if(provider == CLAUDE) {
-			if model.Name == "Claude/claude-3-haiku" {
-				// cost 0.80$ per 1M tokens
-				price = usage * 0.80
-			} else if model.Name == "Claude/claude-3-7-sonnet" {
-				// cost 3$ per 1M tokens
-				price = usage * 3.00
-			}
-		} else if provider == GOOGLE {
-			if model.Name == "Gemini/gemini-1.5-pro" || model.Name == "Gemini/gemini-2.5-pro-exp-03-25" {
-				// cost 1.25$ per 1M tokens
-				price = usage * 1.25
-			} else if model.Name == "Gemini/gemini-1.5-flash-latest" {
-				// cost 0.75$ per 1M tokens
-				price = usage * 0.75
-			} else if model.Name == "Gemini/gemini-2.0-flash" {
+			// GPT-5 family + GPT-4.1
+			if model.Name == "ChatGPT/gpt-5.2" || model.Name == "ChatGPT/gpt-5" || model.Name == "ChatGPT/gpt-4.1" {
+				// cost 2.00$ per 1M tokens
+				price = usage * 2.00
+			} else if model.Name == "ChatGPT/gpt-5-mini" || model.Name == "ChatGPT/gpt-4.1-mini" {
+				// cost 0.40$ per 1M tokens
+				price = usage * 0.40
+			} else if model.Name == "ChatGPT/gpt-5-nano" || model.Name == "ChatGPT/gpt-4.1-nano" {
 				// cost 0.10$ per 1M tokens
 				price = usage * 0.10
+			}
+		} else if(provider == CLAUDE) {
+			// Claude 4.5 family
+			if model.Name == "Claude/claude-haiku-4-5" {
+				// cost 0.80$ per 1M tokens
+				price = usage * 0.80
+			} else if model.Name == "Claude/claude-sonnet-4-5" {
+				// cost 3.00$ per 1M tokens
+				price = usage * 3.00
+			} else if model.Name == "Claude/claude-opus-4-5" {
+				// cost 15.00$ per 1M tokens
+				price = usage * 15.00
+			}
+		} else if provider == GOOGLE {
+			// Gemini 2.5 family
+			if model.Name == "Gemini/gemini-2.5-pro" {
+				// cost 1.25$ per 1M tokens
+				price = usage * 1.25
+			} else if model.Name == "Gemini/gemini-2.5-flash" {
+				// cost 0.15$ per 1M tokens
+				price = usage * 0.15
+			} else if model.Name == "Gemini/gemini-2.5-flash-lite" {
+				// cost 0.075$ per 1M tokens
+				price = usage * 0.075
 			}
 		}
 	} else if(reqType == TEXT_OUTPUT) {
 		if(provider == OPENAI) {
-			if model.Name == "ChatGPT/gpt-4.5" {
-				// cost 150$ per 1M tokens
-				price = usage * 150.00
-			}
-			if model.Name == "ChatGPT/gpt-4o-mini" {
-				// cost 0.6 per 1M tokens
-				price = usage * 0.60
-			} else if model.Name == "ChatGPT/gpt-4o" {
-				// cost 10.00$ per 1M tokens
-				price = usage * 10.00
-			}
-		} else if(provider == CLAUDE) {
-			if model.Name == "Claude/claude-3-haiku" {
-				// cost 4$ per 1M tokens
-				price = usage * 4.0
-			} else if model.Name == "Claude/claude-3-7-sonnet" {
-				// cost 15 $ per 1M tokens
-				price = usage * 15.00
-			}
-		} else if provider == GOOGLE {
-			if model.Name == "Gemini/gemini-1.5-pro" || model.Name == "Gemini/gemini-2.5-pro-exp-03-25" {
-				// cost 10.00$ per 1M tokens
-				price = usage * 10.00
-			} else if model.Name == "Gemini/gemini-1.5-flash-latest" {
-				// cost 0.15$ per 1M tokens
-				price = usage * 0.15
-			} else if model.Name == "Gemini/gemini-2.0-flash" {
+			// GPT-5 family + GPT-4.1
+			if model.Name == "ChatGPT/gpt-5.2" || model.Name == "ChatGPT/gpt-5" || model.Name == "ChatGPT/gpt-4.1" {
+				// cost 8.00$ per 1M tokens
+				price = usage * 8.00
+			} else if model.Name == "ChatGPT/gpt-5-mini" || model.Name == "ChatGPT/gpt-4.1-mini" {
+				// cost 1.60$ per 1M tokens
+				price = usage * 1.60
+			} else if model.Name == "ChatGPT/gpt-5-nano" || model.Name == "ChatGPT/gpt-4.1-nano" {
 				// cost 0.40$ per 1M tokens
 				price = usage * 0.40
+			}
+		} else if(provider == CLAUDE) {
+			// Claude 4.5 family
+			if model.Name == "Claude/claude-haiku-4-5" {
+				// cost 4.00$ per 1M tokens
+				price = usage * 4.00
+			} else if model.Name == "Claude/claude-sonnet-4-5" {
+				// cost 15.00$ per 1M tokens
+				price = usage * 15.00
+			} else if model.Name == "Claude/claude-opus-4-5" {
+				// cost 75.00$ per 1M tokens
+				price = usage * 75.00
+			}
+		} else if provider == GOOGLE {
+			// Gemini 2.5 family
+			if model.Name == "Gemini/gemini-2.5-pro" {
+				// cost 10.00$ per 1M tokens
+				price = usage * 10.00
+			} else if model.Name == "Gemini/gemini-2.5-flash" {
+				// cost 0.60$ per 1M tokens
+				price = usage * 0.60
+			} else if model.Name == "Gemini/gemini-2.5-flash-lite" {
+				// cost 0.30$ per 1M tokens
+				price = usage * 0.30
 			}
 		}
 	}
@@ -105,13 +115,8 @@ func GetPriceFromTokenUsage(reqType int, provider int, model utils.Model, usage 
 	}
 
 	if(provider == TOGETHER && (reqType == TEXT_INPUT || reqType == TEXT_OUTPUT || reqType == IMAGE_VISION)) {
-		if model.Name == "llama-v3p2-11b-vision-instruct" {
-			// cost 0.20 per 1M tokens
-			price = usage * 0.20
-		} else if model.Name == "llama-v3p1-8b-instruct" {
-			// cost 0.20 per 1M tokens
-			price = usage * 0.20
-		} else if model.Name == "llama4-scout-instruct-basic" {
+		// Llama 4 models
+		if model.Name == "llama4-scout-instruct-basic" {
 			if reqType == TEXT_INPUT {
 				// cost 0.15 per 1M tokens
 				price = usage * 0.15
@@ -127,19 +132,8 @@ func GetPriceFromTokenUsage(reqType int, provider int, model utils.Model, usage 
 				// cost 0.88 per 1M tokens
 				price = usage * 0.88
 			}
-		} else if model.Name == "llama-v3p1-70b-instruct" {
-			// cost 0.90 per 1M tokens
-			price = usage * 0.90
-		} else if model.Name == "llama-v3p3-70b-instruct" {
-			// cost 0.90 per 1M tokens
-			price = usage * 0.90
-		} else if model.Name == "llama-v3p2-90b-vision-instruct" {
-			// cost 0.90 per 1M tokens
-			price = usage * 0.90
-		} else if model.Name == "llama-v3p1-405b-instruct" {
-			// cost 3.00 per 1M tokens
-			price = usage * 3.00
-		} else if model.Name == "deepseek-r1" {
+		// DeepSeek models
+		} else if model.Name == "deepseek-r1" || model.Name == "deepseek-r1-basic" {
 			if reqType == TEXT_INPUT {
 				// cost 3.00 per 1M tokens
 				price = usage * 3.00
@@ -147,12 +141,54 @@ func GetPriceFromTokenUsage(reqType int, provider int, model utils.Model, usage 
 				// cost 8.00 per 1M tokens
 				price = usage * 8.00
 			}
+		} else if model.Name == "deepseek-r1-0528" {
+			if reqType == TEXT_INPUT {
+				// cost 1.35 per 1M tokens
+				price = usage * 1.35
+			} else if reqType == TEXT_OUTPUT {
+				// cost 5.40 per 1M tokens
+				price = usage * 5.40
+			}
 		} else if model.Name == "deepseek-v3" || model.Name == "deepseek-v3-0324" {
 			// cost 0.90 per 1M tokens
 			price = usage * 0.90
-		} else if model.Name == "qwen2p5-72b-instruct" {
-			// cost 0.90 per 1M tokens
+		} else if model.Name == "deepseek-v3p2" {
+			if reqType == TEXT_INPUT {
+				// cost 0.56 per 1M tokens
+				price = usage * 0.56
+			} else if reqType == TEXT_OUTPUT {
+				// cost 1.68 per 1M tokens
+				price = usage * 1.68
+			}
+		// Qwen models
+		} else if model.Name == "qwen3-coder-480b-a35b-instruct" {
+			if reqType == TEXT_INPUT {
+				// cost 0.45 per 1M tokens
+				price = usage * 0.45
+			} else if reqType == TEXT_OUTPUT {
+				// cost 1.80 per 1M tokens
+				price = usage * 1.80
+			}
+		} else if model.Name == "qwen3-30b-a3b-instruct-2507" {
+			// cost 0.90 per 1M tokens (same for input/output)
 			price = usage * 0.90
+		} else if model.Name == "qwen3-vl-235b-a22b-instruct" {
+			if reqType == TEXT_INPUT {
+				// cost 0.22 per 1M tokens
+				price = usage * 0.22
+			} else if reqType == TEXT_OUTPUT {
+				// cost 0.88 per 1M tokens
+				price = usage * 0.88
+			}
+		// Kimi model
+		} else if model.Name == "kimi-k2-instruct" {
+			if reqType == TEXT_INPUT {
+				// cost 0.60 per 1M tokens
+				price = usage * 0.60
+			} else if reqType == TEXT_OUTPUT {
+				// cost 2.50 per 1M tokens
+				price = usage * 2.50
+			}
 		}
 	}
 

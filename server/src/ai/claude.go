@@ -37,7 +37,7 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, conv utils
 	utils.Debug("conv: ", conv)
 	
 	if model.Name == "" {
-		model.Name = "Claude/claude-3-haiku-20240307" // Default model
+		model.Name = "Claude/claude-haiku-4-5" // Default model
 	}
 
 
@@ -139,13 +139,7 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, conv utils
 		modelName = strings.TrimPrefix(model.Name, "Claude/")
 	}
 	
-	if modelName == "claude-3-haiku" {
-		modelName = "claude-3-haiku-20240307"
-	}
-
-	if modelName == "claude-3-7-sonnet" {
-		modelName = "claude-3-7-sonnet-20250219"
-	}
+	// Claude 4.5 models use direct API names (claude-haiku-4-5, claude-sonnet-4-5, claude-opus-4-5)
 	
 	if model.Params == nil {
 		model.Params = make(map[string]string)

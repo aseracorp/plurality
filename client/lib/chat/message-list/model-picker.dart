@@ -7,26 +7,39 @@ import '../../api/balance.dart';
 import '../../utils/types.dart';
 
 final List<String> VisionModelOptions = [
-  "llama4-scout-instruct-basic",
+  // Fireworks Vision
   "llama4-maverick-instruct-basic",
-  'ChatGPT/gpt-4o',
-  'ChatGPT/gpt-4o-mini',
-  'Claude/claude-3-haiku',
-  'Claude/claude-3-7-sonnet',
-  "Gemini/gemini-1.5-flash-latest",
-  "Gemini/gemini-2.0-flash",
-  "Gemini/gemini-2.5-pro-exp-03-25",
+  "qwen3-vl-235b-a22b-instruct",
+  // OpenAI GPT-5 + GPT-4.1
+  'ChatGPT/gpt-5.2',
+  'ChatGPT/gpt-5.2-pro',
+  'ChatGPT/gpt-5',
+  'ChatGPT/gpt-5-mini',
+  'ChatGPT/gpt-4.1',
+  'ChatGPT/gpt-4.1-mini',
+  // Claude 4.5
+  'Claude/claude-haiku-4-5',
+  'Claude/claude-sonnet-4-5',
+  'Claude/claude-opus-4-5',
+  // Gemini 2.5 + 3
+  "Gemini/gemini-2.5-flash",
+  "Gemini/gemini-2.5-flash-lite",
+  "Gemini/gemini-2.5-pro",
+  "Gemini/gemini-3-flash",
+  "Gemini/gemini-3-pro",
 ];
 
+// TODO find a better one...
+
 const modelPresentFastText = Model(
-  name: 'llama-v3p1-70b-instruct',
+  name: 'qwen3-vl-235b-a22b-instruct',
   params: null,
   tools: ['search_web', 'place_search', 'visit_link'],
 );
 const modelPresentFastVision = Model(
-  name: 'llama4-scout-instruct-basic',
+  name: 'qwen3-vl-235b-a22b-instruct',
   params: null,
-  tools: [],
+  tools: ['search_web', 'place_search', 'visit_link'],
 );
 const modelPresentFastImageGen = Model(
   name: 'black-forest-labs/FLUX.1-schnell',
@@ -42,24 +55,24 @@ final Map<String, ModelSelected> modelPresets = {
   ),
   'Balanced': ModelSelected(
     text: Model(
-      name: 'llama-v3p1-405b-instruct',
+      name: 'qwen3-vl-235b-a22b-instruct',
       params: null,
       tools: ['search_web', 'place_search', 'visit_link'],
     ),
     vision: Model(
-      name: 'llama4-maverick-instruct-basic',
+      name: 'qwen3-vl-235b-a22b-instruct',
       params: null,
-      tools: [],
+      tools: ['search_web', 'place_search', 'visit_link'],
     ),
     imageGen: Model(name: 'black-forest-labs/FLUX.1-schnell', params: null),
   ),
   'Smart': ModelSelected(
     text: Model(
-      name: 'Claude/claude-3-7-sonnet',
+      name: 'Claude/claude-sonnet-4-5',
       params: null,
       tools: ['search_web', 'place_search', 'visit_link'],
     ),
-    vision: Model(name: 'Claude/claude-3-7-sonnet', params: null, tools: []),
+    vision: Model(name: 'Claude/claude-sonnet-4-5', params: null, tools: []),
     imageGen: Model(name: 'black-forest-labs/FLUX.1-dev', params: null),
   ),
 };
@@ -83,24 +96,38 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     with SingleTickerProviderStateMixin {
   // Available options for each dropdown
   final List<String> _modelOptions = [
-    "llama4-scout-instruct-basic",
+    // Fireworks - Llama 4
     "llama4-maverick-instruct-basic",
-    'llama-v3p1-8b-instruct',
-    'llama-v3p1-70b-instruct',
-    'llama-v3p1-405b-instruct',
+    // Fireworks - DeepSeek
     'deepseek-r1',
+    'deepseek-r1-basic',
+    'deepseek-r1-0528',
     'deepseek-v3',
     'deepseek-v3-0324',
-    'qwen2p5-72b-instruct',
-    'ChatGPT/gpt-4o-mini',
-    'ChatGPT/gpt-4o',
-    'ChatGPT/o3-mini',
-    'Claude/claude-3-haiku',
-    'Claude/claude-3-7-sonnet',
-    "Gemini/gemini-1.5-pro",
-    "Gemini/gemini-1.5-flash-latest",
-    "Gemini/gemini-2.0-flash",
-    "Gemini/gemini-2.5-pro-exp-03-25",
+    'deepseek-v3p2',
+    // Fireworks - Qwen & Kimi
+    "qwen3-vl-235b-a22b-instruct",
+    'qwen3-coder-480b-a35b-instruct',
+    'kimi-k2-instruct',
+    // OpenAI GPT-5 + GPT-4.1
+    'ChatGPT/gpt-5.2',
+    'ChatGPT/gpt-5.2-pro',
+    'ChatGPT/gpt-5',
+    'ChatGPT/gpt-5-mini',
+    'ChatGPT/gpt-5-nano',
+    'ChatGPT/gpt-4.1',
+    'ChatGPT/gpt-4.1-mini',
+    'ChatGPT/gpt-4.1-nano',
+    // Claude 4.5
+    'Claude/claude-haiku-4-5',
+    'Claude/claude-sonnet-4-5',
+    'Claude/claude-opus-4-5',
+    // Gemini 2.5 + 3
+    "Gemini/gemini-2.5-flash",
+    "Gemini/gemini-2.5-flash-lite",
+    "Gemini/gemini-2.5-pro",
+    "Gemini/gemini-3-flash",
+    "Gemini/gemini-3-pro",
   ];
 
   final List<String> _imageGenModelOptions = [

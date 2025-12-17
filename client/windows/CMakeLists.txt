@@ -59,6 +59,11 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# Fix flutter_tts WinRT linking issue
+if(TARGET flutter_tts_plugin)
+  target_link_libraries(flutter_tts_plugin PRIVATE RuntimeObject.lib)
+endif()
+
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can

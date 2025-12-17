@@ -2,41 +2,42 @@ package ai
 
 // ValidModels is an array containing all valid model names extracted from the code
 var ValidModels = []string{
-	// OpenAI models
-	"ChatGPT/gpt-4.5",
-	"ChatGPT/gpt-3.5-turbo",
-	"ChatGPT/gpt-3.5-turbo-mini",
-	"ChatGPT/gpt-4o-mini",
-	"ChatGPT/gpt-4o",
-	"ChatGPT/o3-mini",
+	// OpenAI models (GPT-5 + GPT-4.1 families)
+	"ChatGPT/gpt-5.2",
+	"ChatGPT/gpt-5",
+	"ChatGPT/gpt-5-mini",
+	"ChatGPT/gpt-5-nano",
+	"ChatGPT/gpt-4.1",
+	"ChatGPT/gpt-4.1-mini",
+	"ChatGPT/gpt-4.1-nano",
 
-	// Claude models
-	"Claude/claude-3-haiku",
-	"Claude/claude-3-7-sonnet",
-	
-	// Firefly models
+	// Claude models (4.5 versions)
+	"Claude/claude-haiku-4-5",
+	"Claude/claude-sonnet-4-5",
+	"Claude/claude-opus-4-5",
+
+	// Fireworks models
 	"llama4-scout-instruct-basic",
 	"llama4-maverick-instruct-basic",
-	"llama-v3p2-3b",
-	"llama-v3p1-8b-instruct",
-	"llama-v3p1-70b-instruct",
-	"llama-v3p3-70b-instruct",
-	"llama-v3p1-405b-instruct",
 	"deepseek-r1",
 	"deepseek-r1-basic",
+	"deepseek-r1-0528",
 	"deepseek-v3",
 	"deepseek-v3-0324",
-	"qwen2p5-72b-instruct",
-	
+	"deepseek-v3p2",
+	"qwen3-coder-480b-a35b-instruct",
+	"kimi-k2-instruct",
+	"qwen3-30b-a3b-instruct-2507",
+	"qwen3-vl-235b-a22b-instruct",
+
 	// Image generation models
 	"black-forest-labs/FLUX.1-schnell",
 	"black-forest-labs/FLUX.1-dev",
 
 	// Gemini
-	"Gemini/gemini-1.5-pro",
-	"Gemini/gemini-1.5-flash-latest",
-	"Gemini/gemini-2.0-flash",
-	"Gemini/gemini-2.5-pro-exp-03-25",
+	"Gemini/gemini-2.5-flash",
+	"Gemini/gemini-2.5-flash-lite",
+	"Gemini/gemini-2.5-pro",
 
 	// Audio
 	"whisper-v3-turbo",
@@ -45,52 +46,64 @@ var ValidModels = []string{
 
 var ValidFreeModels = []string{
 	"llama4-scout-instruct-basic",
-	"llama-v3p1-8b-instruct",
-	"llama-v3p2-3b",
-	"llama-v3p1-70b-instruct",
+	"Gemini/gemini-2.5-flash-lite",
 	"black-forest-labs/FLUX.1-schnell",
-	"Gemini/gemini-2.0-flash",
 	"whisper-v3-turbo",
 	"cartesia/sonic",
 }
 
 var ValidVisionModels = []string{
-	// "llama4-scout-instruct-basic",
-	// "llama4-maverick-instruct-basic",
-	"Claude/claude-3-haiku",
-	"Claude/claude-3-7-sonnet",
-	"ChatGPT/gpt-4o-mini",
-	"ChatGPT/gpt-4o",
-	
-	"Gemini/gemini-1.5-flash-latest",
-	"Gemini/gemini-2.0-flash",
-	"Gemini/gemini-2.5-pro-exp-03-25",
+	// Claude
+	"Claude/claude-haiku-4-5",
+	"Claude/claude-sonnet-4-5",
+	"Claude/claude-opus-4-5",
+
+	// OpenAI
+	"ChatGPT/gpt-5.2",
+	"ChatGPT/gpt-5",
+	"ChatGPT/gpt-5-mini",
+	"ChatGPT/gpt-4.1",
+	"ChatGPT/gpt-4.1-mini",
+
+	// Gemini
+	"Gemini/gemini-2.5-flash",
+	"Gemini/gemini-2.5-flash-lite",
+	"Gemini/gemini-2.5-pro",
+
+	// Fireworks Vision
+	"llama4-scout-instruct-basic",
+	"llama4-maverick-instruct-basic",
+	"qwen3-30b-a3b-instruct-2507",
+	"qwen3-vl-235b-a22b-instruct",
 }
-	
+
 
 var ValidActionModels = []string{
 	// OpenAI models
-	"ChatGPT/gpt-4.5",
-	"ChatGPT/gpt-4o",
-	
+	"ChatGPT/gpt-5.2",
+	"ChatGPT/gpt-5",
+	"ChatGPT/gpt-5-mini",
+	"ChatGPT/gpt-4.1",
+	"ChatGPT/gpt-4.1-mini",
+
 	// Claude models
-	"Claude/claude-3-7-sonnet",
-	
-	// Firefly models
-	"llama-v3p1-70b-instruct",
-	"llama-v3p3-70b-instruct",
-	"llama-v3p1-405b-instruct",
+	"Claude/claude-haiku-4-5",
+	"Claude/claude-sonnet-4-5",
+	"Claude/claude-opus-4-5",
+
+	// Fireworks models
+	"llama4-scout-instruct-basic",
+	"llama4-maverick-instruct-basic",
 	"deepseek-r1",
 	"deepseek-r1-basic",
 	"deepseek-v3",
 	"deepseek-v3-0324",
-	"qwen2p5-72b-instruct",
-	"llama4-scout-instruct-basic",
-	"llama4-maverick-instruct-basic",
+	"deepseek-v3p2",
+	"qwen3-coder-480b-a35b-instruct",
+	"kimi-k2-instruct",
 
 	// Gemini
-	"Gemini/gemini-1.5-pro",
-	"Gemini/gemini-2.5-pro-exp-03-25",
+	"Gemini/gemini-2.5-pro",
 }
 
 func CheckActionModel(modelName string) bool {
