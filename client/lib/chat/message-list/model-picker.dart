@@ -1,5 +1,6 @@
-import 'dart:io';
+import 'dart:io' show Platform, Process;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:plurality/api/MCP.dart';
@@ -429,7 +430,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                if (Platform.isWindows || Platform.isLinux || Platform.isMacOS)
+                if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS))
                   TextButton(
                     onPressed: () async {
                       // Open the MCP file in the default editor
