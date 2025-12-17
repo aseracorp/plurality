@@ -8,7 +8,7 @@ part of 'types.dart';
 
 class MessageContentURLAdapter extends TypeAdapter<MessageContentURL> {
   @override
-  final int typeId = 1;
+  final typeId = 1;
 
   @override
   MessageContentURL read(BinaryReader reader) {
@@ -16,9 +16,7 @@ class MessageContentURLAdapter extends TypeAdapter<MessageContentURL> {
     final fields = <int, dynamic>{
       for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
     };
-    return MessageContentURL(
-      url: fields[0] as String,
-    );
+    return MessageContentURL(url: fields[0] as String);
   }
 
   @override
@@ -42,7 +40,7 @@ class MessageContentURLAdapter extends TypeAdapter<MessageContentURL> {
 
 class MessageContentAdapter extends TypeAdapter<MessageContent> {
   @override
-  final int typeId = 2;
+  final typeId = 2;
 
   @override
   MessageContent read(BinaryReader reader) {
@@ -88,7 +86,7 @@ class MessageContentAdapter extends TypeAdapter<MessageContent> {
 
 class MessageAdapter extends TypeAdapter<Message> {
   @override
-  final int typeId = 3;
+  final typeId = 3;
 
   @override
   Message read(BinaryReader reader) {
@@ -100,7 +98,7 @@ class MessageAdapter extends TypeAdapter<Message> {
       role: fields[0] as String,
       content: (fields[1] as List).cast<MessageContent>(),
       timestamp: fields[2] as DateTime?,
-      totalTokens: fields[3] as int?,
+      totalTokens: (fields[3] as num?)?.toInt(),
       model: fields[4] as Model?,
     );
   }
@@ -134,7 +132,7 @@ class MessageAdapter extends TypeAdapter<Message> {
 
 class ConversationAdapter extends TypeAdapter<Conversation> {
   @override
-  final int typeId = 4;
+  final typeId = 4;
 
   @override
   Conversation read(BinaryReader reader) {
@@ -192,7 +190,7 @@ class ConversationAdapter extends TypeAdapter<Conversation> {
 
 class AttachmentAdapter extends TypeAdapter<Attachment> {
   @override
-  final int typeId = 5;
+  final typeId = 5;
 
   @override
   Attachment read(BinaryReader reader) {
@@ -235,7 +233,7 @@ class AttachmentAdapter extends TypeAdapter<Attachment> {
 
 class ModelSelectedAdapter extends TypeAdapter<ModelSelected> {
   @override
-  final int typeId = 6;
+  final typeId = 6;
 
   @override
   ModelSelected read(BinaryReader reader) {
@@ -244,15 +242,40 @@ class ModelSelectedAdapter extends TypeAdapter<ModelSelected> {
       for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
     };
     return ModelSelected(
-      text: fields[0] as Model?,
-      vision: fields[1] as Model?,
-      imageGen: fields[2] as Model?,
-      audioGen: fields[5] as Model?,
-      voiceGen: fields[4] as Model?,
-      audioTranscribe: fields[3] as Model?,
-      videoGen: fields[6] as Model?,
-      videoVision: fields[7] as Model?,
-      code: fields[8] as Model?,
+      text: fields[0] == null ? modelPresentFastText : fields[0] as Model?,
+      vision: fields[1] == null ? modelPresentFastVision : fields[1] as Model?,
+      imageGen:
+          fields[2] == null ? modelPresentFastImageGen : fields[2] as Model?,
+      audioGen:
+          fields[5] == null
+              ? const Model(
+                name: 'cartesia/sonic',
+                params: {"voice": "sweet lady"},
+              )
+              : fields[5] as Model?,
+      voiceGen:
+          fields[4] == null
+              ? const Model(name: '', params: {})
+              : fields[4] as Model?,
+      audioTranscribe:
+          fields[3] == null
+              ? const Model(name: '', params: {})
+              : fields[3] as Model?,
+      videoGen:
+          fields[6] == null
+              ? const Model(name: '', params: {})
+              : fields[6] as Model?,
+      videoVision:
+          fields[7] == null
+              ? const Model(name: '', params: {})
+              : fields[7] as Model?,
+      code:
+          fields[8] == null
+              ? const Model(
+                name: 'codellama/CodeLlama-34b-Instruct-hf',
+                params: {},
+              )
+              : fields[8] as Model?,
     );
   }
 
@@ -293,7 +316,7 @@ class ModelSelectedAdapter extends TypeAdapter<ModelSelected> {
 
 class ModelAdapter extends TypeAdapter<Model> {
   @override
-  final int typeId = 7;
+  final typeId = 7;
 
   @override
   Model read(BinaryReader reader) {
@@ -304,7 +327,7 @@ class ModelAdapter extends TypeAdapter<Model> {
     return Model(
       name: fields[0] as String,
       params: (fields[1] as Map?)?.cast<String, String>(),
-      tools: (fields[2] as List).cast<String>(),
+      tools: fields[2] == null ? const [] : (fields[2] as List).cast<String>(),
     );
   }
 
@@ -333,7 +356,7 @@ class ModelAdapter extends TypeAdapter<Model> {
 
 class MiniAppAdapter extends TypeAdapter<MiniApp> {
   @override
-  final int typeId = 8;
+  final typeId = 8;
 
   @override
   MiniApp read(BinaryReader reader) {
@@ -351,7 +374,7 @@ class MiniAppAdapter extends TypeAdapter<MiniApp> {
       inputs: (fields[6] as List).cast<MiniAppInput>(),
       InitialMessage: (fields[7] as Map?)?.cast<String, String>(),
       form: fields[8] as String,
-      placeholder: fields[9] as String,
+      placeholder: fields[9] == null ? '' : fields[9] as String,
     );
   }
 
@@ -394,7 +417,7 @@ class MiniAppAdapter extends TypeAdapter<MiniApp> {
 
 class MiniAppInputAdapter extends TypeAdapter<MiniAppInput> {
   @override
-  final int typeId = 9;
+  final typeId = 9;
 
   @override
   MiniAppInput read(BinaryReader reader) {
@@ -437,7 +460,7 @@ class MiniAppInputAdapter extends TypeAdapter<MiniAppInput> {
 
 class ToolCallAdapter extends TypeAdapter<ToolCall> {
   @override
-  final int typeId = 10;
+  final typeId = 10;
 
   @override
   ToolCall read(BinaryReader reader) {
@@ -449,8 +472,8 @@ class ToolCallAdapter extends TypeAdapter<ToolCall> {
       id: fields[0] as String,
       name: fields[1] as String,
       arguments: fields[2] as String,
-      loading: fields[3] as String,
-      iconURL: fields[4] as String,
+      loading: fields[3] == null ? '' : fields[3] as String,
+      iconURL: fields[4] == null ? '' : fields[4] as String,
       result: fields[5] as String?,
     );
   }

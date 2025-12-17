@@ -1,5 +1,5 @@
-import 'package:hive/hive.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce/hive.dart';
+import 'package:hive_ce_flutter/hive_flutter.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import 'package:path_provider/path_provider.dart';

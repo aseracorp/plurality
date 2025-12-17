@@ -1,6 +1,6 @@
 // Step 1: Add Hive annotations to your existing models (minimal changes)
 import 'dart:convert';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive.dart';
 import 'package:plurality/api/mini-apps.dart';
 import 'package:plurality/chat/message-list/model-picker.dart';
 part 'types.g.dart';
