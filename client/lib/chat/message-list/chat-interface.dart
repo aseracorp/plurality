@@ -1208,6 +1208,13 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       ],
     );
 
+    newMessageScreen = Center(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: 1200),
+        child: newMessageScreen,
+      ),
+    );
+
     return Stack(
       children: [
         widget.conversationId.isEmpty && _miniAppSelected != null
