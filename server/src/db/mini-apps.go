@@ -191,26 +191,26 @@ func GetMiniAppByID(ctx context.Context, miniAppID string) (*utils.MiniApp, erro
 func CreateMiniApp(ctx context.Context, miniApp utils.MiniApp) (*utils.MiniApp, error) {
 	client := GetClient()
 	collection := client.Database("plurality").Collection("miniapps")
-	
+
 	// Ensure new ID if not provided
 	if miniApp.ID == primitive.NilObjectID {
 		miniApp.ID = primitive.NewObjectID()
 	}
-	
+
 	// Set author from context if available and not already set
 	if miniApp.Author == "" {
 		if userID, ok := ctx.Value("userID").(string); ok {
 			miniApp.Author = userID
 		}
 	}
-	
+
 	// Insert the new mini-app
 	_, err := collection.InsertOne(ctx, miniApp)
 	if err != nil {
 		utils.Error("[CreateMiniApp] Error creating mini-app", err)
 		return nil, err
 	}
-	
+
 	utils.Debug("Created new mini-app with ID %s", miniApp.ID.Hex())
 	return &miniApp, nil
 }
@@ -230,13 +230,13 @@ func UpdateMiniApp(ctx context.Context, miniAppID string, updates utils.MiniApp)
 	if err != nil {
 		return nil, errors.New("invalid mini-app ID format")
 	}
-	
+
 	// Ensure ID matches in the update
 	updates.ID = id
-	
+
 	// Options to return the updated document
 	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
-	
+
 	// Update the mini-app (only if user is the author or an admin)
 	var updatedMiniApp utils.MiniApp
 	err = collection.FindOneAndUpdate(
@@ -251,12 +251,12 @@ func UpdateMiniApp(ctx context.Context, miniAppID string, updates utils.MiniApp)
 		bson.M{"$set": updates},
 		opts,
 	).Decode(&updatedMiniApp)
-	
+
 	if err != nil {
 		utils.Error("[UpdateMiniApp] Error updating mini-app", err)
 		return nil, err
 	}
-	
+
 	utils.Debug("Updated mini-app with ID %s", miniAppID)
 	return &updatedMiniApp, nil
 }
@@ -276,7 +276,7 @@ func DeleteMiniApp(ctx context.Context, miniAppID string) error {
 	if err != nil {
 		return errors.New("invalid mini-app ID format")
 	}
-	
+
 	// Delete the mini-app (only if user is the author or an admin)
 	result, err := collection.DeleteOne(
 		ctx,
@@ -288,16 +288,16 @@ func DeleteMiniApp(ctx context.Context, miniAppID string) error {
 			},
 		},
 	)
-	
+
 	if err != nil {
 		utils.Error("[DeleteMiniApp] Error deleting mini-app", err)
 		return err
 	}
-	
+
 	if result.DeletedCount == 0 {
 		return errors.New("mini-app not found or you don't have permission to delete it")
 	}
-	
+
 	utils.Debug("Deleted mini-app with ID %s", miniAppID)
 	return nil
 }

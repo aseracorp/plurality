@@ -4,7 +4,9 @@
       "WebSearch",
       "WebFetch(domain:docs.fireworks.ai)",
       "WebFetch(domain:fireworks.ai)",
-      "WebFetch(domain:readme.fireworks.ai)"
+      "WebFetch(domain:readme.fireworks.ai)",
+      "Bash(go build:*)",
+      "Bash(go vet:*)"
     ]
   }
 }

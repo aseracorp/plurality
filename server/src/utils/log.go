@@ -8,7 +8,7 @@ import (
 
 var (
 	Reset    = "\033[0m"
-	Bold		 = "\033[1m"
+	Bold     = "\033[1m"
 	nRed     = "\033[31m"
 	nGreen   = "\033[32m"
 	nYellow  = "\033[33m"
@@ -42,10 +42,10 @@ const (
 )
 
 var LoggingLevelLabels = map[LoggingLevel]LogLevel{
-	"DEBUG": DEBUG,
-	"INFO": INFO,
+	"DEBUG":   DEBUG,
+	"INFO":    INFO,
 	"WARNING": WARNING,
-	"ERROR": ERROR,
+	"ERROR":   ERROR,
 }
 
 var (
@@ -61,7 +61,7 @@ func RawLogMessage(level LogLevel, prefix, prefixColor, color, message string) {
 
 	if ll <= level {
 		logString := prefixColor + Bold + prefix + Reset + " " + color + message + Reset
-		
+
 		log.Println(logString)
 	}
 }

@@ -12,9 +12,9 @@ var ValidModels = []string{
 	"ChatGPT/gpt-4.1-nano",
 
 	// Claude models (4.5 versions)
-	"Claude/claude-haiku-4-5",
-	"Claude/claude-sonnet-4-5",
-	"Claude/claude-opus-4-5",
+	"Claude/claude-haiku-4-6",
+	"Claude/claude-sonnet-4-6",
+	"Claude/claude-opus-4-6",
 
 	// Fireworks models
 	"llama4-scout-instruct-basic",
@@ -25,14 +25,16 @@ var ValidModels = []string{
 	"deepseek-v3",
 	"deepseek-v3-0324",
 	"deepseek-v3p2",
-	"qwen3-coder-480b-a35b-instruct",
-	"kimi-k2-instruct",
+	"qwen3p6-plus",
+	"kimi-k2p5",
+	"glm-5p1",
+	"minimax-m2p5",
 	"qwen3-30b-a3b-instruct-2507",
-	"qwen3-vl-235b-a22b-instruct",
+	"qwen3p5-397b-a17b",
 
 	// Image generation models
-	"black-forest-labs/FLUX.1-schnell",
-	"black-forest-labs/FLUX.1-dev",
+	"black-forest-labs/FLUX.2-dev",
+	"black-forest-labs/FLUX.2-pro",
 
 	// Gemini
 	"Gemini/gemini-2.5-flash",
@@ -47,16 +49,16 @@ var ValidModels = []string{
 var ValidFreeModels = []string{
 	"llama4-scout-instruct-basic",
 	"Gemini/gemini-2.5-flash-lite",
-	"black-forest-labs/FLUX.1-schnell",
+	"black-forest-labs/FLUX.2-dev",
 	"whisper-v3-turbo",
 	"cartesia/sonic",
 }
 
 var ValidVisionModels = []string{
 	// Claude
-	"Claude/claude-haiku-4-5",
-	"Claude/claude-sonnet-4-5",
-	"Claude/claude-opus-4-5",
+	"Claude/claude-haiku-4-6",
+	"Claude/claude-sonnet-4-6",
+	"Claude/claude-opus-4-6",
 
 	// OpenAI
 	"ChatGPT/gpt-5.2",
@@ -73,10 +75,10 @@ var ValidVisionModels = []string{
 	// Fireworks Vision
 	"llama4-scout-instruct-basic",
 	"llama4-maverick-instruct-basic",
-	"qwen3-30b-a3b-instruct-2507",
-	"qwen3-vl-235b-a22b-instruct",
+	"qwen3p6-plus",
+	"kimi-k2p5",
+	"qwen3p5-397b-a17b",
 }
-
 
 var ValidActionModels = []string{
 	// OpenAI models
@@ -87,9 +89,9 @@ var ValidActionModels = []string{
 	"ChatGPT/gpt-4.1-mini",
 
 	// Claude models
-	"Claude/claude-haiku-4-5",
-	"Claude/claude-sonnet-4-5",
-	"Claude/claude-opus-4-5",
+	"Claude/claude-haiku-4-6",
+	"Claude/claude-sonnet-4-6",
+	"Claude/claude-opus-4-6",
 
 	// Fireworks models
 	"llama4-scout-instruct-basic",
@@ -99,11 +101,15 @@ var ValidActionModels = []string{
 	"deepseek-v3",
 	"deepseek-v3-0324",
 	"deepseek-v3p2",
-	"qwen3-coder-480b-a35b-instruct",
-	"kimi-k2-instruct",
+	"qwen3p5-397b-a17b",
+	"kimi-k2p5",
+	"glm-5p1",
+	"minimax-m2p5",
 
 	// Gemini
 	"Gemini/gemini-2.5-pro",
+	"Gemini/gemini-2.5-flash",
+	"Gemini/gemini-2.5-flash-lite",
 }
 
 func CheckActionModel(modelName string) bool {

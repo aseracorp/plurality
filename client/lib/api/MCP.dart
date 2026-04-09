@@ -196,12 +196,12 @@ class MCPService {
     }
   }
 
-  getToolList() {
-    return toolLists;
+  List<Map<String, dynamic>> getToolList() {
+    return List<Map<String, dynamic>>.from(toolLists);
   }
 
-  getToolServerName(String toolName) {
-    return toolServerNames[toolName] ?? "";
+  String? getToolServerName(String toolName) {
+    return toolServerNames[toolName];
   }
 
   getToolsForServer(String serverName) {

@@ -1,213 +1,148 @@
-// Step 1: Add Hive annotations to your existing models (minimal changes)
 import 'dart:convert';
 import 'package:hive_ce/hive.dart';
 import 'package:plurality/api/mini-apps.dart';
 import 'package:plurality/chat/message-list/model-picker.dart';
 part 'types.g.dart';
 
+// --- OpenAI-Compatible Message Types ---
+
 @HiveType(typeId: 1)
-class MessageContentURL {
+class ContentImageURL {
   @HiveField(0)
   final String url;
 
-  MessageContentURL({required this.url});
+  ContentImageURL({required this.url});
 
   Map<String, dynamic> toJson() => {'url': url};
 
-  factory MessageContentURL.fromJson(Map<String, dynamic> json) {
-    return MessageContentURL(url: json['url']);
+  factory ContentImageURL.fromJson(Map<String, dynamic> json) {
+    return ContentImageURL(url: json['url'] ?? '');
   }
 }
 
 @HiveType(typeId: 2)
-class MessageContent {
+class ContentPart {
   @HiveField(0)
-  final String type;
+  final String type; // "text" or "image_url"
 
   @HiveField(1)
-  String? text;
+  final String? text;
 
   @HiveField(2)
-  MessageContentURL? imageUrl;
+  final ContentImageURL? imageUrl;
 
-  @HiveField(3)
-  ToolCall? toolCall;
-
-  @HiveField(4)
-  String? toolUseId;
-
-  MessageContent({
-    required this.type,
-    this.text,
-    this.imageUrl,
-    this.toolCall,
-    this.toolUseId,
-  });
+  ContentPart({required this.type, this.text, this.imageUrl});
 
   Map<String, dynamic> toJson() {
-    final Map<String, dynamic> data = {'type': type};
-
-    if (text != null) {
-      data['text'] = text;
-    }
-
-    if (imageUrl != null) {
+    final data = <String, dynamic>{'type': type};
+    if (type == 'text' && text != null) data['text'] = text;
+    if (type == 'image_url' && imageUrl != null) {
       data['image_url'] = imageUrl!.toJson();
     }
-
-    if (toolCall != null) {
-      data['tool_call'] = toolCall!.toJson();
-    }
-
-    if (toolUseId != null) {
-      data['tool_use_id'] = toolUseId;
-    }
-
     return data;
   }
 
-  factory MessageContent.fromJson(Map<String, dynamic> json) {
-    return MessageContent(
-      type: json['type'],
+  factory ContentPart.fromJson(Map<String, dynamic> json) {
+    return ContentPart(
+      type: json['type'] ?? 'text',
       text: json['text'],
-      toolCall:
-          json['tool_call'] != null
-              ? ToolCall.fromJson(json['tool_call'])
-              : null,
       imageUrl:
           json['image_url'] != null
-              ? MessageContentURL.fromJson(json['image_url'])
+              ? ContentImageURL.fromJson(json['image_url'])
               : null,
-      toolUseId: json['tool_use_id'],
     );
-  }
-
-  factory MessageContent.text(String text) {
-    return MessageContent(type: 'text', text: text);
-  }
-
-  factory MessageContent.image(String imageUrl) {
-    return MessageContent(
-      type: 'image_url',
-      imageUrl: MessageContentURL(url: imageUrl),
-    );
-  }
-
-  factory MessageContent.tool(ToolCall tool) {
-    if (tool.result != null) {
-      // Check if the result is a JSON string that needs parsing
-      try {
-        // Try to parse the result as JSON
-        final Map<String, dynamic> jsonResult = jsonDecode(tool.result!);
-
-        // If it has a 'content' key and it's an array of MessageContent
-        if (jsonResult.containsKey('content') &&
-            jsonResult['content'] is List) {
-          // Create a text message with the content from the first item in the array
-          List contentList = jsonResult['content'];
-          if (contentList.isNotEmpty) {
-            return MessageContent(
-              toolUseId: tool.id,
-              type: 'tool_result',
-              toolCall: tool,
-              text: contentList[0]['text'],
-            );
-          }
-        }
-
-        // If JSON parsing succeeded but it's not in the expected format,
-        // fall back to using the original string
-        return MessageContent(
-          toolUseId: tool.id,
-          type: 'tool_result',
-          toolCall: tool,
-          text: tool.result,
-        );
-      } catch (e) {
-        // If it's not valid JSON, use it as a plain string
-        return MessageContent(
-          toolUseId: tool.id,
-          type: 'tool_result',
-          toolCall: tool,
-          text: tool.result,
-        );
-      }
-    } else {
-      return MessageContent(type: 'tool_use', toolCall: tool);
-    }
-  }
-
-  static List<MessageContent> complexTools(ToolCall tool) {
-    if (tool.result != null) {
-      // Check if the result is a JSON string that needs parsing
-      try {
-        // Try to parse the result as JSON
-        final Map<String, dynamic> jsonResult = jsonDecode(tool.result!);
-
-        // If it has a 'content' key and it's an array of MessageContent
-        if (jsonResult.containsKey('content') &&
-            jsonResult['content'] is List) {
-          // Create a list of MessageContent from the array
-          List contentList = jsonResult['content'];
-          if (contentList.isNotEmpty) {
-            return contentList.map((item) {
-              if (item['type'] == 'image') {
-                var mc = MessageContent(
-                  type: 'tool_result',
-                  toolUseId: tool.id,
-                  imageUrl: MessageContentURL(url: item['data']),
-                );
-
-                return mc;
-              } else {
-                return MessageContent(
-                  toolUseId: tool.id,
-                  type: 'tool_result',
-                  toolCall: tool,
-                  text: item['text'],
-                );
-              }
-            }).toList();
-          }
-        }
-
-        // If JSON parsing succeeded but it's not in the expected format,
-        // fall back to using the original string
-        return [
-          MessageContent(
-            toolUseId: tool.id,
-            type: 'tool_result',
-            toolCall: tool,
-            text: tool.result,
-          ),
-        ];
-      } catch (e, stackTrace) {
-        print("NON ON ONO NON OO NON ON ");
-        print(e);
-        print(stackTrace);
-        // If it's not valid JSON, use it as a plain string
-        return [
-          MessageContent(
-            toolUseId: tool.id,
-            type: 'tool_result',
-            toolCall: tool,
-            text: tool.result,
-          ),
-        ];
-      }
-    } else {
-      return [MessageContent(type: 'tool_use', toolCall: tool)];
-    }
   }
 }
+
+@HiveType(typeId: 11)
+class FunctionCallData {
+  @HiveField(0)
+  final String name;
+
+  @HiveField(1)
+  final String arguments;
+
+  FunctionCallData({required this.name, required this.arguments});
+
+  Map<String, dynamic> toJson() => {'name': name, 'arguments': arguments};
+
+  factory FunctionCallData.fromJson(Map<String, dynamic> json) {
+    return FunctionCallData(
+      name: json['name'] ?? '',
+      arguments: json['arguments'] ?? '',
+    );
+  }
+}
+
+@HiveType(typeId: 10)
+class ToolCall {
+  @HiveField(0)
+  final String id;
+
+  @HiveField(1)
+  final String type; // "function"
+
+  @HiveField(2)
+  final FunctionCallData function;
+
+  @HiveField(3)
+  final String loading;  // display template, e.g. "Search for \"{{query}}\""
+
+  @HiveField(4)
+  final String iconURL;  // base64 icon
+
+  ToolCall({
+    required this.id,
+    this.type = 'function',
+    required this.function,
+    this.loading = '',
+    this.iconURL = '',
+  });
+
+  Map<String, dynamic> toJson() {
+    final data = <String, dynamic>{
+      'id': id,
+      'type': type,
+      'function': function.toJson(),
+    };
+    if (loading.isNotEmpty) data['loading'] = loading;
+    if (iconURL.isNotEmpty) data['icon_url'] = iconURL;
+    return data;
+  }
+
+  factory ToolCall.fromJson(Map<String, dynamic> json) {
+    if (json.containsKey('function')) {
+      return ToolCall(
+        id: json['id'] ?? '',
+        type: json['type'] ?? 'function',
+        function: FunctionCallData.fromJson(json['function']),
+        loading: json['loading'] ?? '',
+        iconURL: json['icon_url'] ?? '',
+      );
+    }
+    // Legacy fallback
+    return ToolCall(
+      id: json['id'] ?? json['tool_use_id'] ?? '',
+      type: 'function',
+      function: FunctionCallData(
+        name: json['name'] ?? '',
+        arguments: json['arguments'] ?? '',
+      ),
+      loading: json['loading'] ?? '',
+      iconURL: json['icon_url'] ?? '',
+    );
+  }
+}
+
+// --- Message ---
 
 @HiveType(typeId: 3)
 class Message {
   @HiveField(0)
-  final String role;
+  final String role; // "user", "assistant", "tool"
 
   @HiveField(1)
-  final List<MessageContent> content;
+  final List<ContentPart> content; // Internally always a list
 
   @HiveField(2)
   DateTime timestamp;
@@ -218,77 +153,173 @@ class Message {
   @HiveField(4)
   Model? model;
 
+  @HiveField(5)
+  List<ToolCall>? toolCalls; // Assistant messages only
+
+  @HiveField(6)
+  String? toolCallId; // Tool messages only
+
+  @HiveField(7)
+  String? name; // Tool messages only
+
   Message({
     required this.role,
     required this.content,
     DateTime? timestamp,
-    int? this.totalTokens,
-    Model? this.model,
+    this.totalTokens,
+    this.model,
+    this.toolCalls,
+    this.toolCallId,
+    this.name,
   }) : timestamp = timestamp ?? DateTime.now();
 
   bool get isBot => role == 'assistant';
+  bool get isToolResult => role == 'tool';
+  bool get hasToolCalls =>
+      toolCalls != null && toolCalls!.isNotEmpty;
 
-  factory Message.text({required String text, required String role}) {
-    return Message(role: role, content: [MessageContent.text(text)]);
+  /// Extract the first text content from the message.
+  String get textContent {
+    for (final part in content) {
+      if (part.type == 'text' && part.text != null && part.text!.isNotEmpty) {
+        return part.text!;
+      }
+    }
+    return '';
   }
 
-  factory Message.withImage({
+  /// Check if the message contains any images.
+  bool get hasImages => content.any((p) => p.type == 'image_url');
+
+  /// Get all image URLs from the message.
+  List<String> get imageUrls => content
+      .where((p) => p.type == 'image_url' && p.imageUrl != null)
+      .map((p) => p.imageUrl!.url)
+      .toList();
+
+  // --- Constructors ---
+
+  factory Message.text({required String text, required String role}) {
+    return Message(
+      role: role,
+      content: [ContentPart(type: 'text', text: text)],
+    );
+  }
+
+  factory Message.withImages({
     required String text,
     required String role,
-    required String imageUrl,
+    required List<String> imageUrls,
   }) {
     return Message(
       role: role,
-      content: [MessageContent.image(imageUrl), MessageContent.text(text)],
+      content: [
+        ...imageUrls.map(
+          (url) => ContentPart(
+            type: 'image_url',
+            imageUrl: ContentImageURL(url: url),
+          ),
+        ),
+        ContentPart(type: 'text', text: text),
+      ],
     );
   }
 
-  Map<String, dynamic> toJson() => {
-    'role': role,
-    'timestamp': timestamp.toIso8601String(),
-    'content': content.map((c) => c.toJson()).toList(),
-    'total_tokens': totalTokens,
-    'model': model?.toJson(),
-  };
+  factory Message.toolResult({
+    required String toolCallId,
+    required String name,
+    required String result,
+  }) {
+    return Message(
+      role: 'tool',
+      toolCallId: toolCallId,
+      name: name,
+      content: [ContentPart(type: 'text', text: result)],
+    );
+  }
 
-  Map<String, dynamic> toAPI() => {
-    'role': role,
-    'content': content.map((c) => c.toJson()).toList(),
-  };
+  // --- Serialization ---
+
+  /// Serialize for the server API (OpenAI format).
+  /// Content is a string if it's simple text, array otherwise.
+  Map<String, dynamic> toJson() {
+    final data = <String, dynamic>{'role': role};
+
+    // Content: string for simple text, array for multi-part
+    if (content.length == 1 && content[0].type == 'text') {
+      data['content'] = content[0].text ?? '';
+    } else if (content.isNotEmpty) {
+      data['content'] = content.map((c) => c.toJson()).toList();
+    }
+
+    if (toolCalls != null && toolCalls!.isNotEmpty) {
+      data['tool_calls'] = toolCalls!.map((t) => t.toJson()).toList();
+    }
+    if (toolCallId != null) data['tool_call_id'] = toolCallId;
+    if (name != null) data['name'] = name;
+    if (totalTokens != null) data['total_tokens'] = totalTokens;
+    if (model != null) data['model'] = model!.toJson();
+    data['timestamp'] = timestamp.toIso8601String();
+
+    return data;
+  }
 
   factory Message.fromJson(Map<String, dynamic> json) {
+    // Parse content: can be string, array, or null
+    List<ContentPart> parsedContent = [];
+    final rawContent = json['content'];
+    if (rawContent is String) {
+      if (rawContent.isNotEmpty) {
+        parsedContent = [ContentPart(type: 'text', text: rawContent)];
+      }
+    } else if (rawContent is List) {
+      parsedContent =
+          rawContent
+              .map((c) => ContentPart.fromJson(c as Map<String, dynamic>))
+              .toList();
+    }
+
+    // Parse tool_calls
+    List<ToolCall>? toolCalls;
+    if (json['tool_calls'] != null) {
+      toolCalls =
+          (json['tool_calls'] as List)
+              .map((t) => ToolCall.fromJson(t as Map<String, dynamic>))
+              .toList();
+    }
+
     return Message(
-      role: json['role'],
+      role: json['role'] ?? 'user',
+      content: parsedContent,
+      toolCalls: toolCalls,
+      toolCallId: json['tool_call_id'],
+      name: json['name'],
       totalTokens: json['total_tokens'],
       model: json['model'] != null ? Model.fromJson(json['model']) : null,
       timestamp:
-          json['timestamp'] != null ? DateTime.parse(json['timestamp']) : null,
-      content:
-          (json['content'] as List)
-              .map((c) => MessageContent.fromJson(c as Map<String, dynamic>))
-              .toList(),
+          json['timestamp'] != null
+              ? DateTime.parse(json['timestamp'])
+              : null,
     );
-  }
-
-  String get text {
-    final textContent = content.firstWhere(
-      (element) => element.type == 'text',
-      orElse: () => MessageContent.text(''),
-    );
-    return textContent.text ?? '';
-  }
-
-  String get imageUrl {
-    try {
-      final imageContent = content.firstWhere(
-        (element) => element.type == 'image_url',
-      );
-      return imageContent.imageUrl?.url ?? '';
-    } catch (_) {
-      return '';
-    }
   }
 }
+
+// --- Conversation State ---
+
+enum ConversationState { idle, processing, waitingForTool }
+
+ConversationState conversationStateFromString(String? state) {
+  switch (state) {
+    case 'processing':
+      return ConversationState.processing;
+    case 'waiting_for_tool':
+      return ConversationState.waitingForTool;
+    default:
+      return ConversationState.idle;
+  }
+}
+
+// --- Conversation ---
 
 @HiveType(typeId: 4)
 class Conversation extends HiveObject {
@@ -319,6 +350,12 @@ class Conversation extends HiveObject {
   @HiveField(9)
   String? icon;
 
+  @HiveField(10)
+  String stateString;
+
+  ConversationState get state => conversationStateFromString(stateString);
+  set state(ConversationState value) => stateString = value.name;
+
   Conversation({
     required this.id,
     required this.title,
@@ -329,7 +366,9 @@ class Conversation extends HiveObject {
     this.miniApp,
     this.folder,
     this.icon,
-  }) : createdAt = createdAt ?? DateTime.now();
+    String? stateString,
+  }) : createdAt = createdAt ?? DateTime.now(),
+       stateString = stateString ?? 'idle';
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -341,27 +380,15 @@ class Conversation extends HiveObject {
     'mini_app': miniApp?.toJson(),
     'folder': folder,
     'icon': icon,
-  };
-
-  Map<String, dynamic> toAPI() => {
-    'id': id,
-    'title': title,
-    'last_message_at': lastMessageAt.toIso8601String(),
-    'messages': messages.map((m) => m.toAPI()).toList(),
-    'model_selected': modelSelected.toJson(),
-    'mini_app': miniApp?.toJson(),
-    'folder': folder,
-    'icon': icon,
+    'state': state.name,
   };
 
   factory Conversation.fromJson(Map<String, dynamic> json) {
-    var miniapp =
-        json['mini_app'] != null ? MiniApp.fromJson(json['mini_app']) : null;
-
     return Conversation(
       id: json['id'] ?? json['_id'] ?? '',
       title: json['title'] ?? 'Untitled',
-      miniApp: miniapp,
+      miniApp:
+          json['mini_app'] != null ? MiniApp.fromJson(json['mini_app']) : null,
       folder: json['folder'],
       createdAt:
           json['created_at'] != null
@@ -382,9 +409,12 @@ class Conversation extends HiveObject {
               ? ModelSelected.fromJson(json['model_selected'])
               : ModelSelected(),
       icon: json['icon'],
+      stateString: json['state'] as String?,
     );
   }
 }
+
+// --- Exceptions ---
 
 class APIException implements Exception {
   final String message;
@@ -395,6 +425,8 @@ class APIException implements Exception {
   @override
   String toString() => message;
 }
+
+// --- Attachments (for input UI) ---
 
 @HiveType(typeId: 5)
 class Attachment {
@@ -433,6 +465,8 @@ class Attachment {
     );
   }
 }
+
+// --- Model Configuration ---
 
 @HiveType(typeId: 6)
 class ModelSelected {
@@ -521,11 +555,7 @@ class Model {
   @HiveField(2)
   final List<String> tools;
 
-  const Model({
-    required this.name,
-    required this.params,
-    this.tools = const [],
-  });
+  const Model({required this.name, required this.params, this.tools = const []});
 
   Map<String, dynamic> toJson() => {
     'name': name,
@@ -535,17 +565,12 @@ class Model {
 
   factory Model.fromJson(Map<String, dynamic> json) {
     Map<String, String>? params;
-
     try {
       if (json['params'] != null) {
-        // Get the original params map
         final rawParams = json['params'] as Map<String, dynamic>;
-
-        // Convert all values to strings
         params = rawParams.map((key, value) => MapEntry(key, value.toString()));
       }
-    } catch (e) {
-      print('Error parsing params: $e');
+    } catch (_) {
       params = null;
     }
 
@@ -554,22 +579,19 @@ class Model {
       if (json['tools'] != null) {
         tools = List<String>.from(json['tools']);
       }
-    } catch (e) {
-      print('Error parsing tools: $e');
+    } catch (_) {
       tools = [];
     }
 
-    return Model(
-      name: (json['name'] ?? '') as String,
-      params: params,
-      tools: tools,
-    );
+    return Model(name: (json['name'] ?? '') as String, params: params, tools: tools);
   }
 }
 
+// --- App Preferences ---
+
 class AppPreferences {
   final ModelSelected selectedModel;
-  final int darkMode; // 0 = light, 1 = dark, 2 = system
+  final int darkMode;
   final bool useMiniMap;
 
   const AppPreferences({
@@ -590,6 +612,8 @@ class AppPreferences {
     );
   }
 }
+
+// --- MiniApps ---
 
 @HiveType(typeId: 8)
 class MiniApp {
@@ -615,7 +639,7 @@ class MiniApp {
   final List<MiniAppInput> inputs;
 
   @HiveField(7)
-  Map<String, String>? InitialMessage;
+  Map<String, String>? initialMessage;
 
   @HiveField(8)
   final String form;
@@ -631,13 +655,13 @@ class MiniApp {
     required this.author,
     this.modelSelected,
     required this.inputs,
-    this.InitialMessage,
+    this.initialMessage,
     required this.form,
     this.placeholder = '',
   });
 
   factory MiniApp.fromJson(Map<String, dynamic> json) {
-    var r = MiniApp(
+    var result = MiniApp(
       id: json['id'],
       name: json['name'],
       description: json['description'],
@@ -660,32 +684,29 @@ class MiniApp {
     try {
       if (json['initial_message'] != null) {
         final rawParams = json['initial_message'] as Map<String, dynamic>;
-        r.InitialMessage = rawParams.map(
+        result.initialMessage = rawParams.map(
           (key, value) => MapEntry(key, value.toString()),
         );
       }
-    } catch (e) {
-      print('Error parsing InitialMessage: $e');
-      r.InitialMessage = null;
+    } catch (_) {
+      result.initialMessage = null;
     }
 
-    return r;
+    return result;
   }
 
-  Map<String, dynamic> toJson() {
-    return {
-      'id': id,
-      'name': name,
-      'description': description,
-      'icon_url': iconURL,
-      'author': author,
-      'model_selected': modelSelected?.toJson(),
-      'inputs': inputs.map((input) => input.toJson()).toList(),
-      'InitialMessage': InitialMessage,
-      'form': form,
-      'placeholder': placeholder,
-    };
-  }
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'description': description,
+    'icon_url': iconURL,
+    'author': author,
+    'model_selected': modelSelected?.toJson(),
+    'inputs': inputs.map((input) => input.toJson()).toList(),
+    'initial_message': initialMessage,
+    'form': form,
+    'placeholder': placeholder,
+  };
 }
 
 @HiveType(typeId: 9)
@@ -718,62 +739,10 @@ class MiniAppInput {
     );
   }
 
-  Map<String, dynamic> toJson() {
-    return {
-      'name': name,
-      'description': description,
-      'type': type,
-      'options': options,
-    };
-  }
-}
-
-@HiveType(typeId: 10)
-class ToolCall {
-  @HiveField(0)
-  final String id;
-
-  @HiveField(1)
-  final String name;
-
-  @HiveField(2)
-  final String arguments;
-
-  @HiveField(3)
-  final String loading;
-
-  @HiveField(4)
-  final String iconURL;
-
-  @HiveField(5)
-  final String? result;
-
-  ToolCall({
-    required this.id,
-    required this.name,
-    required this.arguments,
-    this.loading = '',
-    this.iconURL = '',
-    this.result,
-  });
-
   Map<String, dynamic> toJson() => {
-    'id': id,
     'name': name,
-    'arguments': arguments,
-    'loading': loading,
-    'icon_url': iconURL,
-    'result': result,
+    'description': description,
+    'type': type,
+    'options': options,
   };
-
-  factory ToolCall.fromJson(Map<String, dynamic> json) {
-    return ToolCall(
-      id: json['id'] ?? json['tool_use_id'] ?? '',
-      name: json['name'] ?? '',
-      arguments: json['arguments'] ?? '',
-      loading: json['loading'] ?? '',
-      iconURL: json['icon_url'] ?? '',
-      result: json['result'],
-    );
-  }
 }

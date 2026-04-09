@@ -1,18 +1,18 @@
 package ai
 
 import (
+	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
-	"io"
-	"fmt"
-	"bytes"
-	"time"
-	"context"
-	"bufio"
 	"strings"
+	"time"
 	// "encoding/base64"
-	
+
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/utils"
 )
@@ -25,10 +25,10 @@ func HandleGenerateAudio(w http.ResponseWriter, r *http.Request) {
 
 	// Define a struct for the TTS request
 	type GenerateAudioRequest struct {
-		Input          string  `json:"input"`          // Text to convert to speech
-		Model          string  `json:"model"`          // Optional, defaults to "cartesia/sonic"
-		Voice          string  `json:"voice"`          // Voice model to use
-		ResponseFormat string  `json:"responseFormat"` // Optional, defaults to "wav"
+		Input          string `json:"input"`          // Text to convert to speech
+		Model          string `json:"model"`          // Optional, defaults to "cartesia/sonic"
+		Voice          string `json:"voice"`          // Voice model to use
+		ResponseFormat string `json:"responseFormat"` // Optional, defaults to "wav"
 		Speed          string `json:"speed"`          // Optional, speech speed multiplier
 	}
 
@@ -126,7 +126,7 @@ func HandleGenerateAudio(w http.ResponseWriter, r *http.Request) {
 
 	// Create a streaming context
 	ctx := r.Context()
-	
+
 	// Stream the audio generation
 	err = StreamGenerateAudio(ctx, w, request.Input, request.Model, request.Voice, request.ResponseFormat, request.Speed)
 	if err != nil {
@@ -205,54 +205,54 @@ func StreamGenerateAudio(ctx context.Context, w http.ResponseWriter, input strin
 
 	// Use a scanner to read the SSE events line by line
 	scanner := bufio.NewScanner(resp.Body)
-	
+
 	// Buffer for accumulating audio data
 	// var audioBuffer bytes.Buffer
-	
+
 	for scanner.Scan() {
 		line := scanner.Text()
-		
+
 		// Skip empty lines
 		if line == "" {
 			continue
 		}
-		
+
 		// SSE messages start with "data:"
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
-		
+
 		// Extract the JSON part
 		jsonData := strings.TrimPrefix(line, "data:")
-		
+
 		// Parse the JSON
 		var chunk AudioChunk
 		if err := json.Unmarshal([]byte(jsonData), &chunk); err != nil {
 			return fmt.Errorf("error parsing JSON chunk: %v", err)
 		}
-		
+
 		// Decode the Base64 data
 		// audioData, err := base64.StdEncoding.DecodeString(chunk.B64)
 		// if err != nil {
 		// 	return fmt.Errorf("error decoding base64 data: %v", err)
 		// }
-		
+
 		// Write to the response and debug file
 		_, writeErr := w.Write(([]byte)(chunk.B64))
 		if writeErr != nil {
 			return fmt.Errorf("error writing to response: %v", writeErr)
 		}
-		
+
 		_, writeErr = debugFile.Write(([]byte)(chunk.B64))
 		if writeErr != nil {
 			return fmt.Errorf("error writing to debug file: %v", writeErr)
 		}
-		
+
 		// Flush to ensure streaming
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
-		
+
 		// Check if context is done
 		select {
 		case <-ctx.Done():
@@ -261,7 +261,7 @@ func StreamGenerateAudio(ctx context.Context, w http.ResponseWriter, input strin
 			// Continue processing
 		}
 	}
-	
+
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("error reading SSE stream: %v", err)
 	}

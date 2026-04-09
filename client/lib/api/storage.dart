@@ -27,8 +27,10 @@ class ConversationStorage {
     }
 
     // Register adapters
-    Hive.registerAdapter(MessageContentURLAdapter());
-    Hive.registerAdapter(MessageContentAdapter());
+    Hive.registerAdapter(ContentImageURLAdapter());
+    Hive.registerAdapter(ContentPartAdapter());
+    Hive.registerAdapter(FunctionCallDataAdapter());
+    Hive.registerAdapter(ToolCallAdapter());
     Hive.registerAdapter(MessageAdapter());
     Hive.registerAdapter(ConversationAdapter());
     Hive.registerAdapter(AttachmentAdapter());
@@ -36,7 +38,6 @@ class ConversationStorage {
     Hive.registerAdapter(ModelAdapter());
     Hive.registerAdapter(MiniAppAdapter());
     Hive.registerAdapter(MiniAppInputAdapter());
-    Hive.registerAdapter(ToolCallAdapter());
 
     // Open box
     if (!kIsWeb) {

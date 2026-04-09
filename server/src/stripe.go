@@ -5,16 +5,16 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"strings"
 	"os"
+	"strings"
 
 	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/customer"
-	"github.com/stripe/stripe-go/v82/webhook"
 	"github.com/stripe/stripe-go/v82/product"
+	"github.com/stripe/stripe-go/v82/webhook"
 
-	"github.com/azukaar/plurality/src/utils"
 	"github.com/azukaar/plurality/src/db"
+	"github.com/azukaar/plurality/src/utils"
 )
 
 // PaymentInfo stores the extracted payment information
@@ -25,17 +25,17 @@ type PaymentInfo struct {
 	Currency      string `json:"currency"`
 	PaymentStatus string `json:"payment_status"`
 	PeriodEnd     int64  `json:"period_end"`
-	UserId 		    string `json:"user_id"`
+	UserId        string `json:"user_id"`
 }
 
 // HandleStripeWebhook processes Stripe webhook events
 func HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	if stripe.Key == "" {
-			stripe.Key = os.Getenv("STRIPE_SECRET_KEY")
-			if stripe.Key == "" {
-					log.Println("Error: Stripe secret key not set")
-					http.Error(w, "Unexpected Error", http.StatusInternalServerError)
-			}
+		stripe.Key = os.Getenv("STRIPE_SECRET_KEY")
+		if stripe.Key == "" {
+			log.Println("Error: Stripe secret key not set")
+			http.Error(w, "Unexpected Error", http.StatusInternalServerError)
+		}
 	}
 
 	// Get webhook secret from environment
@@ -124,7 +124,7 @@ func handleInvoiceSucceeded(w http.ResponseWriter, event stripe.Event) {
 		http.Error(w, "Customer ID not found", http.StatusBadRequest)
 		return
 	}
-	
+
 	// Create payment info
 	paymentInfo := PaymentInfo{
 		CustomerEmail: customerEmail,
@@ -132,8 +132,8 @@ func handleInvoiceSucceeded(w http.ResponseWriter, event stripe.Event) {
 		Amount:        paymentIntent.AmountPaid,
 		Currency:      string(paymentIntent.Currency),
 		PaymentStatus: string(paymentIntent.Status),
-		PeriodEnd: periodEnd,
-		UserId: customerId,
+		PeriodEnd:     periodEnd,
+		UserId:        customerId,
 	}
 
 	// Log the payment info
@@ -199,30 +199,28 @@ func extractCustomerEmail(paymentIntent *stripe.Invoice) string {
 
 	// If we have a customer ID, fetch the customer details from Stripe
 	if paymentIntent.Customer != nil && paymentIntent.Customer.ID != "" {
-			// If the email is already available in the customer object
-			if paymentIntent.Customer.Email != "" {
-					return paymentIntent.Customer.Email
-			}
-			
-			// Otherwise fetch the customer details from Stripe API
-			customerID := paymentIntent.Customer.ID
-			customerParams := &stripe.CustomerParams{}
-			customer, err := customer.Get(customerID, customerParams)
-			
-			if err != nil {
-					log.Printf("Error fetching customer details: %v", err)
-			} else if customer.Email != "" {
-					return customer.Email
-			}
-			
-			// If we couldn't get the email, at least return the customer ID
-			return ""
+		// If the email is already available in the customer object
+		if paymentIntent.Customer.Email != "" {
+			return paymentIntent.Customer.Email
+		}
+
+		// Otherwise fetch the customer details from Stripe API
+		customerID := paymentIntent.Customer.ID
+		customerParams := &stripe.CustomerParams{}
+		customer, err := customer.Get(customerID, customerParams)
+
+		if err != nil {
+			log.Printf("Error fetching customer details: %v", err)
+		} else if customer.Email != "" {
+			return customer.Email
+		}
+
+		// If we couldn't get the email, at least return the customer ID
+		return ""
 	}
 
 	return ""
 }
-
-
 
 // respondWithJSON sends a JSON response
 func respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
@@ -232,7 +230,7 @@ func respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
 		http.Error(w, "Error creating JSON response", http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	w.Write(response)

@@ -81,6 +81,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Widget build(BuildContext context) {
     final conversations = ref.watch(conversationsProvider).conversations;
 
+    // Update title reactively when provider changes (e.g. async title generation)
+    ref.listen(conversationsProvider, (previous, next) {
+      if (_selectedConversationId != null) {
+        _updateTitle();
+      }
+    });
+
     // Navigation destinations
     var destinations = [
       {
@@ -411,7 +418,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         children: [
           // Conversations list (second rail)
           Container(
-            width: 250,
+            width: 252,
             child: ConversationList(
               isMobile: isMobile,
               onDelete: () {

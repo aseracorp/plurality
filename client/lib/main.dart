@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:plurality/api/MCP.dart';
+import 'package:plurality/api/chat_service.dart';
 import 'package:plurality/auth/email-verify.dart';
 import './firebase_options.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -106,6 +107,8 @@ class MyApp extends ConsumerWidget {
             if (!user.emailVerified) {
               return EmailVerificationPage();
             }
+            // Connect status stream once (ChatService is a singleton, idempotent check inside)
+            ChatService().ensureConnected();
             return ChatScreen(
               isMobile: isMobile,
               // newVersion: true /*checkVersion()*/,

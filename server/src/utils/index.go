@@ -2,13 +2,13 @@ package utils
 
 import (
 	"context"
-	"net/http"
-	"strings"
-	"os"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net/http"
+	"os"
+	"strings"
 
 	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/auth"
@@ -18,14 +18,12 @@ import (
 // Firebase auth client
 var FirebaseAuth *auth.Client
 
-
 // FirebaseTokenPayload represents the payload section of a Firebase JWT
 type FirebaseTokenPayload struct {
 	EmailVerified bool   `json:"email_verified"`
 	Email         string `json:"email"`
 	// Add other fields you might need
 }
-
 
 // getIdFromEmail get the customerId from Firebase using the email
 func GetIdFromEmail(email string) string {
@@ -76,34 +74,32 @@ func CheckEmailVerified(idToken string) (bool, string, error) {
 	return payload.EmailVerified, payload.Email, nil
 }
 
-
-
 func InitFirebase() {
 	var app *firebase.App
 	var err error
-	
+
 	// Check if credentials are provided via environment variable
 	if credentials := os.Getenv("FIREBASE_CREDENTIALS"); credentials != "" {
-			// Use credentials from environment variable
-			opt := option.WithCredentialsJSON([]byte(credentials))
-			app, err = firebase.NewApp(context.Background(), nil, opt)
+		// Use credentials from environment variable
+		opt := option.WithCredentialsJSON([]byte(credentials))
+		app, err = firebase.NewApp(context.Background(), nil, opt)
 	} else if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
-			// Use application default credentials path
-			app, err = firebase.NewApp(context.Background(), nil)
+		// Use application default credentials path
+		app, err = firebase.NewApp(context.Background(), nil)
 	} else {
-			// Fallback to file if it exists
-			opt := option.WithCredentialsFile("firebase.json")
-			app, err = firebase.NewApp(context.Background(), nil, opt)
+		// Fallback to file if it exists
+		opt := option.WithCredentialsFile("firebase.json")
+		app, err = firebase.NewApp(context.Background(), nil, opt)
 	}
-	
+
 	if err != nil {
-			Fatal("Error initializing Firebase app", err)
+		Fatal("Error initializing Firebase app", err)
 	}
-	
+
 	// Initialize Firebase Auth client
 	FirebaseAuth, err = app.Auth(context.Background())
 	if err != nil {
-			Fatal("Error initializing Firebase Auth client", err)
+		Fatal("Error initializing Firebase Auth client", err)
 	}
 }
 
@@ -133,9 +129,7 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "Invalid token: "+err.Error(), http.StatusUnauthorized)
 			return
 		}
-
-		Debug("Token verified: ", token.UID)
-
+		
 		// Check if the email is verified
 		emailVerified, _, err := CheckEmailVerified(idToken)
 		if err != nil {
@@ -149,19 +143,19 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "Email is not verified", 412)
 			return
 		}
-		
-		/*
-		claims := map[string]interface{}{
-				"test-claim": true,
-		}
-		err = FirebaseAuth.SetCustomUserClaims(context.Background(), token.UID, claims)
-		if err != nil {
-				Error("Error setting custom claims", err)
-				http.Error(w, "Error setting custom claims: "+err.Error(), http.StatusInternalServerError)
-				return
-		}
 
-		Log("Custom claims set for user: ", token)*/
+		/*
+			claims := map[string]interface{}{
+					"test-claim": true,
+			}
+			err = FirebaseAuth.SetCustomUserClaims(context.Background(), token.UID, claims)
+			if err != nil {
+					Error("Error setting custom claims", err)
+					http.Error(w, "Error setting custom claims: "+err.Error(), http.StatusInternalServerError)
+					return
+			}
+
+			Log("Custom claims set for user: ", token)*/
 
 		// display the token's decoded claims
 		// Log("Claims: ", token.Claims)
@@ -184,13 +178,13 @@ func GenerateRandomString(n int) string {
 	return string(b)
 }
 
-func SendHTTPError(w http.ResponseWriter,  message string, code int) {
+func SendHTTPError(w http.ResponseWriter, message string, code int) {
 	if os.Getenv("LOG_LEVEL") == "DEBUG" {
 		http.Error(w, message, code)
 	} else {
 		userError := GenerateRandomString(8)
 		Error("User error", nil, userError, ":", message)
-		http.Error(w, "An unexpected error happened (Code: " + userError + ") \n Try refreshing the page / update the app. \n You can also try re-selecting your tools/models.", http.StatusInternalServerError)
+		http.Error(w, "An unexpected error happened (Code: "+userError+") \n Try refreshing the page / update the app. \n You can also try re-selecting your tools/models.", http.StatusInternalServerError)
 	}
 }
 
@@ -203,7 +197,7 @@ func SPAHandler(targetFolder string) http.Handler {
 		// if file does not exist or is a directory, serve index.html
 		if stat, err := os.Stat(targetFolder + r.URL.Path); os.IsNotExist(err) || stat.IsDir() {
 			Debug("Serving SPA index.html")
-			http.ServeFile(w, r, targetFolder + "/index.html")
+			http.ServeFile(w, r, targetFolder+"/index.html")
 		} else {
 			Debug("Serving SPA from " + targetFolder + r.URL.Path)
 			fs.ServeHTTP(w, r)
@@ -211,13 +205,13 @@ func SPAHandler(targetFolder string) http.Handler {
 	})
 }
 
-func ParseJson(jsonStr string) map[string]interface{}  {
+func ParseJson(jsonStr string) map[string]interface{} {
 	var result map[string]interface{}
 	json.Unmarshal([]byte(jsonStr), &result)
 	return result
 }
 
-func ParseJsonString(jsonStr string) map[string]string  {
+func ParseJsonString(jsonStr string) map[string]string {
 	var result map[string]string
 	json.Unmarshal([]byte(jsonStr), &result)
 	return result
@@ -235,7 +229,7 @@ func ContainsString(arr []string, str string) bool {
 func ByteSliceToIntSlice(byteSlice []byte) []int {
 	intSlice := make([]int, len(byteSlice))
 	for i, b := range byteSlice {
-			intSlice[i] = int(b)
+		intSlice[i] = int(b)
 	}
 	return intSlice
 }

@@ -292,96 +292,85 @@ class _MiniMapState extends State<MiniMap> with WidgetsBindingObserver {
       return widget.child;
     }
 
-    // Using LayoutBuilder to get the available height
-    return Row(
-      children: [
-        // Main content area
-        Expanded(child: widget.child),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Update minimap height when layout changes
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_miniMapHeight != constraints.maxHeight) {
+            _updateMiniMapSize();
+            _updateOverlayPosition();
+          }
+        });
 
-        // MiniMap sidebar
-        LayoutBuilder(
-          builder: (context, constraints) {
-            // Update minimap height when layout changes
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (_miniMapHeight != constraints.maxHeight) {
-                _updateMiniMapSize();
-                _updateOverlayPosition();
-              }
-            });
-
-            return SizedBox(
-              width: widget.miniMapWidth,
-              key: _miniMapKey,
-              child: Stack(
-                children: [
-                  // MiniMap content
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).scaffoldBackgroundColor,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.15),
-                          blurRadius: 3,
-                          offset: const Offset(-4, 0),
-                        ),
-                      ],
+        return SizedBox(
+          key: _miniMapKey,
+          child: Stack(
+            children: [
+              // MiniMap content
+              Container(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).scaffoldBackgroundColor,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.15),
+                      blurRadius: 3,
+                      offset: const Offset(-4, 0),
                     ),
-                    child: ScrollConfiguration(
-                      behavior: ScrollConfiguration.of(context).copyWith(
-                        scrollbars: false, // Hide scrollbar
-                      ),
-                      child: widget.miniMapContent,
-                    ),
+                  ],
+                ),
+                child: ScrollConfiguration(
+                  behavior: ScrollConfiguration.of(context).copyWith(
+                    scrollbars: false, // Hide scrollbar
                   ),
-
-                  // Transparent overlay for background interaction
-                  Positioned.fill(
-                    child: GestureDetector(
-                      onTapDown: _handleMiniMapTap,
-                      onVerticalDragUpdate:
-                          _isDraggingOverlay ? null : _handleMiniMapDragUpdate,
-                      behavior: HitTestBehavior.translucent,
-                      child: Container(color: Colors.transparent),
-                    ),
-                  ),
-
-                  // Viewport indicator overlay - draggable
-                  Positioned(
-                    left: 4,
-                    right: 4,
-                    top: _overlayPosition,
-                    height: widget.overlayHeight,
-                    child: GestureDetector(
-                      onVerticalDragStart: _handleOverlayDragStart,
-                      onVerticalDragUpdate: _handleOverlayDragUpdate,
-                      onVerticalDragEnd: _handleOverlayDragEnd,
-                      behavior: HitTestBehavior.opaque,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: widget.overlayColor.withOpacity(0.2),
-                          border: Border.all(
-                            color: widget.overlayColor,
-                            width: 2,
-                          ),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        // Optional: Add a handle or icon to indicate draggability
-                        child: Center(
-                          child: Icon(
-                            Icons.drag_handle,
-                            color: widget.overlayColor.withOpacity(0.6),
-                            size: 20,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
+                  child: widget.miniMapContent,
+                ),
               ),
-            );
-          },
-        ),
-      ],
+
+              // Transparent overlay for background interaction
+              Positioned.fill(
+                child: GestureDetector(
+                  onTapDown: _handleMiniMapTap,
+                  onVerticalDragUpdate:
+                      _isDraggingOverlay ? null : _handleMiniMapDragUpdate,
+                  behavior: HitTestBehavior.translucent,
+                  child: Container(color: Colors.transparent),
+                ),
+              ),
+
+              // Viewport indicator overlay - draggable
+              Positioned(
+                left: 4,
+                right: 4,
+                top: _overlayPosition,
+                height: widget.overlayHeight,
+                child: GestureDetector(
+                  onVerticalDragStart: _handleOverlayDragStart,
+                  onVerticalDragUpdate: _handleOverlayDragUpdate,
+                  onVerticalDragEnd: _handleOverlayDragEnd,
+                  behavior: HitTestBehavior.opaque,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: widget.overlayColor.withOpacity(0.2),
+                      border: Border.all(
+                        color: widget.overlayColor,
+                        width: 2,
+                      ),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Center(
+                      child: Icon(
+                        Icons.drag_handle,
+                        color: widget.overlayColor.withOpacity(0.6),
+                        size: 20,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

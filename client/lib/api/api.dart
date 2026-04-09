@@ -1,14 +1,10 @@
 import 'dart:convert';
-import 'package:code_highlight_view/themes/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
-import 'package:plurality/api/MCP.dart';
 import '../auth/auth-service.dart';
 import '../utils/types.dart';
 import './balance.dart';
-import 'package:path_provider/path_provider.dart';
-import './stt.dart';
-import 'package:flutter/material.dart';
+import './sse_event.dart';
 import 'dart:io';
 
 class ApiService {
@@ -80,100 +76,128 @@ class ApiService {
     }
   }
 
-  // Specific method for chat functionality
-  Future<Stream<String>> sendChatMessage(
-    MiniApp? miniAppID,
-    String conversationID,
-    ModelSelected modelSelected,
+  // --- Chat API Methods ---
+
+  /// Parse an SSE response stream into a stream of SSEEvent objects.
+  Stream<SSEEvent> _parseSSEStream(http.StreamedResponse response) {
+    return response.stream
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .where((line) => line.startsWith('data: '))
+        .map((line) => line.substring(6))
+        .where((data) => data != '[DONE]')
+        .map((data) {
+          try {
+            return SSEEvent.fromJson(jsonDecode(data));
+          } catch (e) {
+            throw APIException('JSON parsing error: $e');
+          }
+        });
+  }
+
+  /// Send a chat message or tool results. Returns a stream of SSE events.
+  Future<Stream<SSEEvent>> postChat({
+    required String conversationId,
+    required ModelSelected modelSelected,
     List<Message>? messages,
-    Function setMetaData,
-    Function setMessageMetaData,
-    Function attachToolUse,
-  ) async {
-    final request = http.Request('POST', Uri.parse(_baseUrl + '/chat'));
+    List<Message>? toolResults,
+    MiniApp? miniApp,
+    bool isCall = false,
+    List<Map<String, dynamic>>? clientSideTools,
+  }) async {
+    final request = http.Request('POST', Uri.parse('$_baseUrl/chat'));
     request.headers['Content-Type'] = 'application/json';
     request.headers['Authorization'] =
         'Bearer ${await _authService.getCurrentUserToken()}';
-    request.body = jsonEncode({
-      'messages': messages,
-      'conversation_id': conversationID,
-      "model_selected": modelSelected,
-      "mini_app": miniAppID?.toJson(),
-      "is_call": SpeechRecognitionService().isCall,
-      "client_side_tools": MCPService().getToolList(),
-    });
 
-    final streamedResponse = await request.send();
+    final body = <String, dynamic>{
+      'conversation_id': conversationId,
+      'model_selected': modelSelected.toJson(),
+      'is_call': isCall,
+    };
+    if (messages != null) {
+      body['messages'] = messages.map((m) => m.toJson()).toList();
+    }
+    if (toolResults != null) {
+      body['tool_results'] = toolResults.map((m) => m.toJson()).toList();
+    }
+    if (miniApp != null) body['mini_app'] = miniApp.toJson();
+    if (clientSideTools != null) body['client_side_tools'] = clientSideTools;
 
-    if (streamedResponse.statusCode != 200) {
-      // Read the error message from the response
-      final errorBody = await streamedResponse.stream.bytesToString();
-      String errorMessage;
-      try {
-        final errorJson = jsonDecode(errorBody);
-        errorMessage = errorJson['error'] ?? 'Unknown error occurred';
-      } catch (e) {
-        errorMessage =
-            errorBody.isNotEmpty ? errorBody : 'Failed to send message';
-      }
-      throw APIException(errorMessage, statusCode: streamedResponse.statusCode);
+    request.body = jsonEncode(body);
+
+    final response = await request.send();
+    if (response.statusCode != 200) {
+      final errorBody = await response.stream.bytesToString();
+      throw APIException(
+        errorBody.isNotEmpty ? errorBody : 'Chat request failed',
+        statusCode: response.statusCode,
+      );
     }
 
-    return streamedResponse.stream
+    return _parseSSEStream(response);
+  }
+
+  /// Reconnect to an active conversation's SSE stream.
+  Future<Stream<SSEEvent>> connectStream(String conversationId) async {
+    final request = http.Request(
+      'GET',
+      Uri.parse('$_baseUrl/chat/stream/$conversationId'),
+    );
+    request.headers['Authorization'] =
+        'Bearer ${await _authService.getCurrentUserToken()}';
+
+    final response = await request.send();
+    if (response.statusCode != 200) {
+      throw APIException(
+        'No active stream for conversation',
+        statusCode: response.statusCode,
+      );
+    }
+
+    return _parseSSEStream(response);
+  }
+
+  /// Cancel an active chat request.
+  Future<void> cancelChat(String conversationId) async {
+    final token = await _authService.getCurrentUserToken();
+    await http.post(
+      Uri.parse('$_baseUrl/chat/cancel/$conversationId'),
+      headers: {'Authorization': 'Bearer $token'},
+    );
+  }
+
+  /// Fetch server-side tool metadata (icons, loading strings).
+  Future<List<Map<String, dynamic>>> getServerTools() async {
+    final token = await _authService.getCurrentUserToken();
+    final response = await http.get(
+      Uri.parse('$_baseUrl/v1/tools'),
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    if (response.statusCode == 200) {
+      return List<Map<String, dynamic>>.from(jsonDecode(response.body));
+    }
+    return [];
+  }
+
+  /// Connect to the global status stream (SSE). Returns lightweight StatusEvents
+  /// for all active conversations — no content, just state changes.
+  Future<Stream<Map<String, dynamic>>> connectStatusStream() async {
+    final request = http.Request('GET', Uri.parse('$_baseUrl/status/stream'));
+    request.headers['Authorization'] =
+        'Bearer ${await _authService.getCurrentUserToken()}';
+
+    final response = await request.send();
+    if (response.statusCode != 200) {
+      throw APIException('Failed to connect status stream', statusCode: response.statusCode);
+    }
+
+    return response.stream
         .transform(utf8.decoder)
-        .handleError((error) {
-          throw APIException('Stream error: ${error.toString()}');
-        })
         .transform(const LineSplitter())
-        .handleError((error) {
-          throw APIException('Line splitting error: ${error.toString()}');
-        })
-        .where(
-          (line) =>
-              line.startsWith('data: ') && !line.startsWith('data: [DONE]'),
-        )
+        .where((line) => line.startsWith('data: '))
         .map((line) => line.substring(6))
-        .map((line) {
-          try {
-            return jsonDecode(line);
-          } catch (e) {
-            throw APIException('JSON parsing error: ${e.toString()}');
-          }
-        })
-        .map((json) {
-          if (json['conversationID'] != null) {
-            setMetaData(
-              newConversationID: json['conversationID'] as String?,
-              newConversationTitle: json['conversationTitle'] as String?,
-            );
-          }
-
-          if (json['totalTokens'] != null &&
-              (json['totalTokens'] as int) != 0) {
-            setMessageMetaData(
-              newTokenPrice: json['totalTokens'] as int,
-              newModel:
-                  json['model'] != null ? Model.fromJson(json['model']) : null,
-            );
-          }
-
-          if (json['type'] == 'text') {
-            final content = json['content'] as String?;
-
-            if (content == null) {
-              return '';
-            }
-
-            return content;
-          } else if (json['type'] == 'tool_use') {
-            attachToolUse(toolUsed: ToolCall.fromJson(json));
-          } else if (json['type'] == 'tool_result') {
-            // attachToolUse(toolUsed: ToolCall.fromJson(json));
-            attachToolUse(toolResult: ToolCall.fromJson(json));
-          }
-
-          return '';
-        });
+        .map((data) => jsonDecode(data) as Map<String, dynamic>);
   }
 
   Future<List<Conversation>> getConversations() async {
@@ -246,67 +270,6 @@ class ApiService {
     } catch (e) {
       if (e is APIException) rethrow;
       throw APIException('API request failed: $e');
-    }
-  }
-
-  Future<Message> generateImage(
-    String convId,
-    String model,
-    String prompt,
-  ) async {
-    final request = http.Request('POST', Uri.parse('$_baseUrl/generate-image'));
-    request.headers['Content-Type'] = 'application/json';
-    request.headers['Authorization'] =
-        'Bearer ${await _authService.getCurrentUserToken()}';
-
-    var steps = 30;
-
-    if (model.contains("FLUX.1-schnell")) {
-      steps = 6;
-    }
-
-    request.body = jsonEncode({
-      'conversation_id': convId,
-      'model': model,
-      'prompt': prompt,
-      'width': 1024,
-      'height': 768,
-      'steps': steps,
-      'n': 1,
-      'response_format': 'b64_json',
-    });
-
-    final response = await request.send();
-    if (response.statusCode != 200) {
-      final errorBody = await response.stream.bytesToString();
-      String errorMessage;
-      try {
-        final errorJson = jsonDecode(errorBody);
-        errorMessage = errorJson['error'] ?? 'Failed to generate image';
-      } catch (e) {
-        errorMessage =
-            errorBody.isNotEmpty ? errorBody : 'Failed to generate image';
-      }
-      throw APIException(errorMessage, statusCode: response.statusCode);
-    }
-
-    try {
-      // final responseData = await response.stream.bytesToString();
-      // final jsonResponse = jsonDecode(responseData);
-      // if (jsonResponse['data']?.isEmpty ?? true) {
-      //   throw APIException('No image data received');
-      // }
-      // var image64 = jsonResponse['data'][0]['b64_json'];
-      // var time = jsonResponse['data'][0]['timings']['inference'];
-      // time = (time * 1000).round() / 1000;
-      // return ImageResult(image64, time);
-
-      final responseData = await response.stream.bytesToString();
-      final jsonResponse = jsonDecode(responseData);
-
-      return Message.fromJson(jsonResponse);
-    } catch (e) {
-      throw APIException('Error processing image response: ${e.toString()}');
     }
   }
 

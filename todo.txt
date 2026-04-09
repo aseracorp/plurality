@@ -1,3 +1,11 @@
+- Test client tools 
+  - what happens if 2+ clients opened? 
+
+- Agents (sub conversations as conversatiosn)
+- tools / MCP : Yes/no/Ask 
+- notifs? 
+- tools bundle (ex: code has grep etc...)
+
 # Road to relese
   - Login / Register
 		- apple

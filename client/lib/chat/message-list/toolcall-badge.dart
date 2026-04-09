@@ -6,7 +6,7 @@ class ToolCallBadge extends StatelessWidget {
   final ToolCall toolCall;
   final VoidCallback? onTap;
   final bool isLoading;
-  final MessageContent? result;
+  final ContentPart? result;
 
   const ToolCallBadge({
     Key? key,
@@ -18,25 +18,24 @@ class ToolCallBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    String loadingString = toolCall?.loading ?? "Loading...";
+    String loadingString = toolCall.loading.isNotEmpty
+        ? toolCall.loading
+        : toolCall.function.name;
 
+    // Substitute {{placeholders}} with actual argument values
     try {
-      // toolCall.arguments as map of key value pairs
-      var args = Map<String, dynamic>.from(jsonDecode(toolCall.arguments));
-      // Search loadingString for {{placeholders}} and rplace them with the actual values
+      var args = Map<String, dynamic>.from(jsonDecode(toolCall.function.arguments));
       args.forEach((key, value) {
-        if (!(value is String)) value = value.toString();
-
-        loadingString = loadingString.replaceAll("{{" + key + "}}", value);
+        if (value is! String) value = value.toString();
+        loadingString = loadingString.replaceAll('{{$key}}', value);
       });
-    } catch (e) {
-      print("Error parsing toolCall.arguments: $e");
-    }
+    } catch (_) {}
 
-    // Remove any remaining {{placeholders}} that were not replaced
+    // Remove any remaining unresolved {{placeholders}}
     loadingString = loadingString
-        .replaceAll(RegExp(r"{{.*}}"), "")
-        .replaceAll("  ", " ");
+        .replaceAll(RegExp(r'\{\{.*?\}\}'), '')
+        .replaceAll('  ', ' ')
+        .trim();
 
     return GestureDetector(
       onTap: () => _showPreviewModal(context),
@@ -44,16 +43,16 @@ class ToolCallBadge extends StatelessWidget {
         margin: const EdgeInsets.only(bottom: 8),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceVariant,
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: Theme.of(context).colorScheme.outline.withOpacity(0.5),
+            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5),
           ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Icon
+            // Icon — from base64 if available, else fallback
             if (toolCall.iconURL.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(right: 8),
@@ -79,14 +78,17 @@ class ToolCallBadge extends StatelessWidget {
                 ),
               ),
 
-            // Tool Name
-            Text(
-              loadingString == "" ? toolCall.name : loadingString,
-              // toolCall.id,
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                fontWeight: FontWeight.w500,
-                fontSize: 14,
+            // Tool display text
+            Flexible(
+              child: Text(
+                loadingString.isEmpty ? toolCall.function.name : loadingString,
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w500,
+                  fontSize: 14,
+                ),
               ),
             ),
 
@@ -143,11 +145,11 @@ class ToolCallBadge extends StatelessWidget {
                       constraints: const BoxConstraints(),
                       iconSize: 20,
                     ),
-                    const Text(
-                      'Tool Details',
-                      style: TextStyle(fontWeight: FontWeight.bold),
+                    Text(
+                      toolCall.function.name,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
-                    SizedBox(height: 8),
+                    const SizedBox(width: 28),
                   ],
                 ),
               ),
@@ -165,14 +167,10 @@ class ToolCallBadge extends StatelessWidget {
                 padding: const EdgeInsets.all(16.0),
                 child: SingleChildScrollView(
                   child: SelectableText(
-                    "Tool ID: " +
-                        toolCall.name +
-                        "\n" +
-                        "Tool Arguments: " +
-                        toolCall.arguments +
-                        "\n" +
-                        "------------------\n" +
-                        (result?.text ?? ""),
+                    "Tool: ${toolCall.function.name}\n"
+                    "Arguments: ${toolCall.function.arguments}\n"
+                    "------------------\n"
+                    "${result?.text ?? '(pending...)'}",
                     style: TextStyle(
                       fontSize: 14.0,
                       color: isDarkMode ? Colors.white : Colors.black,

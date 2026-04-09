@@ -16,7 +16,7 @@ var WebTool = utils.AITool{
 	Name:        "Web",
 	Description: "Visit a link to a website",
 	ToolID:      "visit_link",
-	Cost: 200,
+	Cost:        200,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
@@ -84,15 +84,15 @@ var WebTool = utils.AITool{
 
 		// Extract main content
 		content := extractMainContent(doc, url)
-		
+
 		// Format the result
 		result := fmt.Sprintf("## Content from %s\n\n", url)
 		result += content
-		
+
 		// Add metadata
 		result += fmt.Sprintf("\n\n---\n**Source:** [%s](%s)\n", url, url)
 		result += fmt.Sprintf("**Retrieved:** %s\n", time.Now().Format("2006-01-02 15:04:05"))
-		
+
 		return result
 	},
 }
@@ -100,39 +100,38 @@ var WebTool = utils.AITool{
 // extractMainContent tries to intelligently extract the main content from a webpage
 func extractMainContent(doc *goquery.Document, url string) string {
 	var content strings.Builder
-	
+
 	// Try to get the title
 	title := doc.Find("title").Text()
 	if title != "" {
 		content.WriteString(fmt.Sprintf("# %s\n\n", title))
 	}
-	
+
 	// Try to extract main content based on common patterns
 	/*mainContent := doc.Find("article, main, #content, .content, .post, .article, .main")
-	
+
 	if mainContent.Length() > 0 {
 		// Found main content container
 		processContentNode(&content, mainContent)
 	} else {*/
-		// Fallback: try to get body content more intelligently
-		body := doc.Find("body")
-		
-		// Remove navigation, sidebars, footers, etc.
-		body.Find("footer, aside, .ads, .advertisement, script, style").Remove()
-		
-		// Get the remaining content
-		processContentNode(&content, body)
+	// Fallback: try to get body content more intelligently
+	body := doc.Find("body")
+
+	// Remove navigation, sidebars, footers, etc.
+	body.Find("footer, aside, .ads, .advertisement, script, style").Remove()
+
+	// Get the remaining content
+	processContentNode(&content, body)
 	//}
-	
+
 	result := content.String()
 
-	
 	// If the result is too long, truncate it
 	const maxLength = 8000
 	if len(result) > maxLength {
 		result = result[:maxLength] + "...\n\n[Content truncated due to length]"
 	}
-	
+
 	// search for all links
 	result += "\n\n## Links\n\n"
 	links := doc.Find("a")
@@ -143,7 +142,7 @@ func extractMainContent(doc *goquery.Document, url string) string {
 			result += fmt.Sprintf("[%s](%s)\n", href, href)
 		}
 	})
-	
+
 	return result
 }
 
@@ -156,7 +155,7 @@ func processContentNode(builder *strings.Builder, selection *goquery.Selection) 
 			prefix := strings.Repeat("#", int(level))
 			builder.WriteString(fmt.Sprintf("\n%s %s\n\n", prefix, strings.TrimSpace(h.Text())))
 		})
-		
+
 		// Process paragraphs
 		s.Find("p").Each(func(i int, p *goquery.Selection) {
 			text := strings.TrimSpace(p.Text())
@@ -164,7 +163,7 @@ func processContentNode(builder *strings.Builder, selection *goquery.Selection) 
 				builder.WriteString(text + "\n\n")
 			}
 		})
-		
+
 		// Process lists
 		s.Find("ul, ol").Each(func(i int, list *goquery.Selection) {
 			builder.WriteString("\n")
@@ -177,7 +176,7 @@ func processContentNode(builder *strings.Builder, selection *goquery.Selection) 
 			})
 			builder.WriteString("\n")
 		})
-		
+
 		// Process links
 		s.Find("a").Each(func(i int, a *goquery.Selection) {
 			href, exists := a.Attr("href")

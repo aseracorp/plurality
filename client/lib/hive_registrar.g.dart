@@ -8,10 +8,11 @@ import 'package:plurality/utils/types.dart';
 extension HiveRegistrar on HiveInterface {
   void registerAdapters() {
     registerAdapter(AttachmentAdapter());
+    registerAdapter(ContentImageURLAdapter());
+    registerAdapter(ContentPartAdapter());
     registerAdapter(ConversationAdapter());
+    registerAdapter(FunctionCallDataAdapter());
     registerAdapter(MessageAdapter());
-    registerAdapter(MessageContentAdapter());
-    registerAdapter(MessageContentURLAdapter());
     registerAdapter(MiniAppAdapter());
     registerAdapter(MiniAppInputAdapter());
     registerAdapter(ModelAdapter());
@@ -23,10 +24,11 @@ extension HiveRegistrar on HiveInterface {
 extension IsolatedHiveRegistrar on IsolatedHiveInterface {
   void registerAdapters() {
     registerAdapter(AttachmentAdapter());
+    registerAdapter(ContentImageURLAdapter());
+    registerAdapter(ContentPartAdapter());
     registerAdapter(ConversationAdapter());
+    registerAdapter(FunctionCallDataAdapter());
     registerAdapter(MessageAdapter());
-    registerAdapter(MessageContentAdapter());
-    registerAdapter(MessageContentURLAdapter());
     registerAdapter(MiniAppAdapter());
     registerAdapter(MiniAppInputAdapter());
     registerAdapter(ModelAdapter());

@@ -21,7 +21,7 @@ type CreditTransaction struct {
 	Description string             `bson:"description"`
 	PaymentID   string             `bson:"payment_id,omitempty"`
 	CreatedAt   time.Time          `bson:"created_at"`
-	Action      utils.UserAction				 `bson:"action"`
+	Action      utils.UserAction   `bson:"action"`
 }
 
 // UserBalance represents the current balance of a user
@@ -30,29 +30,29 @@ type UserBalance struct {
 	UserID    string             `json:"_" bson:"user_id"`
 	UpdatedAt time.Time          `json:"updated_at" bson:"updated_at"`
 
-	Balance   float64            `json:"balance" bson:"balance"`
-	Plan 		  float64            `json:"plan" bson:"plan,omitempty"`
-	PlanName 		  string         `json:"plan_name" bson:"plan_name,omitempty"`
-	PlanEnd  		  int64          `json:"plan_end" bson:"plan_end,omitempty"`
-	PlanNextRenewal time.Time    `json:"plan_next_renewal" bson:"plan_next_renewal,omitempty"`
+	Balance         float64   `json:"balance" bson:"balance"`
+	Plan            float64   `json:"plan" bson:"plan,omitempty"`
+	PlanName        string    `json:"plan_name" bson:"plan_name,omitempty"`
+	PlanEnd         int64     `json:"plan_end" bson:"plan_end,omitempty"`
+	PlanNextRenewal time.Time `json:"plan_next_renewal" bson:"plan_next_renewal,omitempty"`
 
-	ManualPlan 		  float64      `json:"manual_plan" bson:"manual_plan,omitempty"`
-	LastPlanApplied time.Time    `json:"last_plan_applied" bson:"last_plan_applied,omitempty"`
+	ManualPlan      float64   `json:"manual_plan" bson:"manual_plan,omitempty"`
+	LastPlanApplied time.Time `json:"last_plan_applied" bson:"last_plan_applied,omitempty"`
 }
 
 func InitUserIfNotFound(userId string) error {
 	client := GetClient()
 	collection := client.Database("plurality").Collection("balances")
-	
+
 	err := collection.FindOne(context.Background(), bson.M{"user_id": userId}).Err()
 	if err == mongo.ErrNoDocuments {
 		utils.Log("No balance record found for user %s, creating new record", userId)
 		balance := UserBalance{
-			UserID:    userId,
-			PlanName: "Free",
-			Balance:   500000,
-			Plan:   500000,
-			UpdatedAt: time.Now(),
+			UserID:          userId,
+			PlanName:        "Free",
+			Balance:         500000,
+			Plan:            500000,
+			UpdatedAt:       time.Now(),
 			LastPlanApplied: time.Now(),
 		}
 		_, err := collection.InsertOne(context.Background(), balance)
@@ -69,7 +69,7 @@ func InitUserIfNotFound(userId string) error {
 
 func UpdateUserPlan(userId string, planName string, plan float64, planEnd int64) error {
 	utils.Log("Updating user %s plan to %s with plan %f", userId, planName, plan)
-	
+
 	client := GetClient()
 	collection := client.Database("plurality").Collection("balances")
 
@@ -99,43 +99,42 @@ func UpdateUserPlan(userId string, planName string, plan float64, planEnd int64)
 		utils.Log("PlanEnd is more than a month and a day, setting planNextRenewal to the same date next month for user %s", userId)
 		planNextRenewal = time.Now().AddDate(0, 1, 0)
 	}
-	
 
 	// If plan did not change, do not update the plan's allowance
 	if balance.PlanName == planName {
 		utils.Log("Plan did not change for user %s, updating only the balance", userId)
 		_, err = collection.UpdateOne(
-			context.Background(), 
+			context.Background(),
 			bson.M{"user_id": userId},
 			bson.M{"$set": bson.M{
-				"plan_name": planName,
-				"plan_end": planEnd,
-				"updated_at": time.Now(),
-				"balance": finalBalance,
-				"manual_plan": 0,
+				"plan_name":         planName,
+				"plan_end":          planEnd,
+				"updated_at":        time.Now(),
+				"balance":           finalBalance,
+				"manual_plan":       0,
 				"last_plan_applied": time.Now(),
 				"plan_next_renewal": planNextRenewal,
-		}})
-	
+			}})
+
 		if err != nil {
 			return err
 		}
 	} else {
 		utils.Log("Plan changed for user %s, updating the plan's allowance", userId)
 		_, err = collection.UpdateOne(
-			context.Background(), 
+			context.Background(),
 			bson.M{"user_id": userId},
 			bson.M{"$set": bson.M{
-				"plan_name": planName,
-				"plan": plan,
-				"balance": finalBalance,
-				"plan_end": planEnd,
-				"updated_at": time.Now(),
-				"manual_plan": 0,
+				"plan_name":         planName,
+				"plan":              plan,
+				"balance":           finalBalance,
+				"plan_end":          planEnd,
+				"updated_at":        time.Now(),
+				"manual_plan":       0,
 				"last_plan_applied": time.Now(),
 				"plan_next_renewal": planNextRenewal,
-		}})
-	
+			}})
+
 		if err != nil {
 			return err
 		}
@@ -154,7 +153,7 @@ func checkPeriodEnd(periodEnd int64) bool {
 func checkNextPeriodEnd(periodEnd int64) bool {
 	currentTime := time.Now().AddDate(0, 1, 0)
 	periodEndTime := time.Unix(periodEnd, 0)
-	
+
 	// set both hours / minutes / seconds to 0
 	periodEndTime = time.Date(periodEndTime.Year(), periodEndTime.Month(), periodEndTime.Day(), 0, 0, 0, 0, periodEndTime.Location())
 	currentTime = time.Date(currentTime.Year(), currentTime.Month(), currentTime.Day(), 0, 0, 0, 0, currentTime.Location())
@@ -180,11 +179,11 @@ func GetUserBalance(ctx context.Context) (*UserBalance, error) {
 		utils.Log("No balance record found for user %s, creating new record", userID)
 
 		balance = UserBalance{
-			UserID:    userID,
-			PlanName: "Free",
-			Balance:   500000,
-			Plan:   500000,
-			UpdatedAt: time.Now(),
+			UserID:          userID,
+			PlanName:        "Free",
+			Balance:         500000,
+			Plan:            500000,
+			UpdatedAt:       time.Now(),
 			LastPlanApplied: time.Now(),
 		}
 
@@ -221,8 +220,8 @@ func GetUserBalance(ctx context.Context) (*UserBalance, error) {
 		if err != nil {
 			utils.Error("Error updating balance: %v", err)
 		}
-	} 
-	
+	}
+
 	// if LastPlanApplied was yesterday, and balance is negative, set to 0
 	if balance.LastPlanApplied.Day() != time.Now().Day() && balance.PlanName != "" && balance.PlanName != "Free" && balance.Balance < 0 && checkPeriodEnd(balance.PlanEnd) {
 		utils.Log("LastPlanApplied was yesterday, setting Balance to 0 for user %s", userID)
@@ -251,11 +250,11 @@ func GetUserBalance(ctx context.Context) (*UserBalance, error) {
 
 		_, err :=
 			collection.UpdateOne(ctx, bson.M{"user_id": userID}, bson.M{"$set": bson.M{
-				"balance": max(balance.Plan, balance.Balance),
+				"balance":           max(balance.Plan, balance.Balance),
 				"last_plan_applied": time.Now(),
 				"plan_next_renewal": balance.PlanNextRenewal,
-				"updated_at": time.Now(),
-				"plan_end": balance.PlanEnd,
+				"updated_at":        time.Now(),
+				"plan_end":          balance.PlanEnd,
 			}})
 		if err != nil {
 			utils.Error("Error updating balance: %v", err)
@@ -346,7 +345,7 @@ func updateCredits(ctx context.Context, amount float64, description string, paym
 		// }
 
 		updatedBalance = &result
-		
+
 		// Commit transaction
 		return session.CommitTransaction(sessionContext)
 	})
@@ -401,7 +400,7 @@ func DeleteBalance(ctx context.Context) error {
 
 	c, err := collection.DeleteOne(ctx, bson.M{"user_id": userID})
 
-	// count 
+	// count
 	if c.DeletedCount == 0 {
 		return errors.New("balance not found")
 	}

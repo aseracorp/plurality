@@ -5,12 +5,23 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:plurality/chat/message-list/chat-interface.dart';
 import '../../auth/auth-service.dart';
 import '../../api/service.dart';
+import '../../api/chat_service.dart';
 import '../../api/tts.dart';
 import '../../utils/types.dart';
 import '../../auth/account.dart';
 import '../budget.dart';
 import 'conversation-list.dart';
 import 'dart:convert';
+
+String _getToolDisplayName(String toolName) {
+  if (toolName.isEmpty) return 'Using tool...';
+  final meta = ChatService().getToolMetadata(toolName);
+  if (meta != null && meta['loading'] != null && meta['loading']!.isNotEmpty) {
+    // Strip {{placeholders}} since we don't have args here
+    return meta['loading']!.replaceAll(RegExp(r'\{\{.*?\}\}'), '...').replaceAll('  ', ' ').trim();
+  }
+  return toolName;
+}
 
 class ConversationItem extends StatelessWidget {
   final Conversation conversation;
@@ -104,46 +115,99 @@ class ConversationItem extends StatelessWidget {
       return popupMenu;
     }
 
-    return ListTile(
-      key: ValueKey(conversation.id),
-      title: Text(
-        conversation.title,
-        maxLines: 2,
-        style: TextStyle(
-          fontWeight: FontWeight.bold,
-          overflow: TextOverflow.ellipsis,
-          fontSize: 14,
-        ),
-      ),
-      subtitle: Text(
-        conversation.lastMessageAt.toString().substring(0, 16),
-        style: TextStyle(fontSize: 11),
-      ),
-      trailing: popupMenu,
-      selected: isSelected,
-      onTap: () => onSelect(conversation.id),
-      leading: CircleAvatar(
-        backgroundColor:
-            conversation.icon != null && conversation.icon!.isNotEmpty
-                ? Colors.transparent
-                : Colors.primaries[Random().nextInt(Colors.primaries.length)],
-        child:
-            conversation.icon != null && conversation.icon!.isNotEmpty
-                ? ClipOval(
-                  child: Image.memory(
-                    base64Decode(conversation.icon!),
-                    width: 250,
-                    height: 250,
-                    fit: BoxFit.cover,
+    return ValueListenableBuilder<Map<String, ConversationStatus>>(
+      valueListenable: ChatService().conversationStatuses,
+      builder: (context, statuses, _) {
+        final status = statuses[conversation.id];
+        final isActive = status != null && status.isProcessing;
+
+        // Subtitle: live status with icon, or date with tick
+        Widget subtitle;
+        if (status != null && status.isUsingTool) {
+          subtitle = Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(width: 10, height: 10, child: CircularProgressIndicator(strokeWidth: 1.5, color: Theme.of(context).colorScheme.primary)),
+              const SizedBox(width: 6),
+              Flexible(child: Text(
+                _getToolDisplayName(status.toolName),
+                style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.primary),
+                overflow: TextOverflow.ellipsis,
+              )),
+            ],
+          );
+        } else if (status != null && status.isTyping) {
+          subtitle = Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(width: 10, height: 10, child: CircularProgressIndicator(strokeWidth: 1.5, color: Theme.of(context).colorScheme.primary)),
+              const SizedBox(width: 6),
+              Text(
+                'Assistant is typing...',
+                style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.primary),
+              ),
+            ],
+          );
+        } else {
+          subtitle = Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.done_all, size: 14, color: Colors.grey[500]),
+              const SizedBox(width: 4),
+              Text(
+                conversation.lastMessageAt.toString().substring(0, 16),
+                style: TextStyle(fontSize: 11),
+              ),
+            ],
+          );
+        }
+
+        // Avatar: animated border when active
+        Widget avatar = CircleAvatar(
+          backgroundColor:
+              conversation.icon != null && conversation.icon!.isNotEmpty
+                  ? Colors.transparent
+                  : Colors.primaries[conversation.title.hashCode.abs() % Colors.primaries.length],
+          child:
+              conversation.icon != null && conversation.icon!.isNotEmpty
+                  ? ClipOval(
+                    child: Image.memory(
+                      base64Decode(conversation.icon!),
+                      width: 250,
+                      height: 250,
+                      fit: BoxFit.cover,
+                    ),
+                  )
+                  : Text(
+                    conversation.title.isNotEmpty
+                        ? conversation.title[0].toUpperCase()
+                        : '?',
+                    style: TextStyle(color: Colors.white),
                   ),
-                )
-                : Text(
-                  conversation.title.isNotEmpty
-                      ? conversation.title[0].toUpperCase()
-                      : '?',
-                  style: TextStyle(color: Colors.white),
-                ),
-      ),
+        );
+
+        if (isActive) {
+          avatar = _AnimatedBorderAvatar(child: avatar);
+        }
+
+        return ListTile(
+          key: ValueKey(conversation.id),
+          title: Text(
+            conversation.title,
+            maxLines: 2,
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              overflow: TextOverflow.ellipsis,
+              fontSize: 14,
+            ),
+          ),
+          subtitle: subtitle,
+          trailing: popupMenu,
+          selected: isSelected,
+          onTap: () => onSelect(conversation.id),
+          leading: avatar,
+        );
+      },
     );
   }
 
@@ -316,5 +380,73 @@ class ConversationItem extends StatelessWidget {
         .read(conversationsProvider.notifier)
         .deleteConversation(conversation.id);
     onDelete();
+  }
+}
+
+/// Wraps a child widget with an animated rotating gradient border.
+class _AnimatedBorderAvatar extends StatefulWidget {
+  final Widget child;
+  const _AnimatedBorderAvatar({required this.child});
+
+  @override
+  State<_AnimatedBorderAvatar> createState() => _AnimatedBorderAvatarState();
+}
+
+class _AnimatedBorderAvatarState extends State<_AnimatedBorderAvatar>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.primary;
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return Transform.rotate(
+          angle: _controller.value * 6.2832, // full rotation
+          child: Container(
+            padding: const EdgeInsets.all(2.5),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: SweepGradient(
+                colors: [
+                  color,
+                  color.withValues(alpha: 0.6),
+                  color.withValues(alpha: 0.1),
+                  Colors.transparent,
+                  color.withValues(alpha: 0.1),
+                  color.withValues(alpha: 0.6),
+                  color,
+                ],
+              ),
+            ),
+            child: Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Theme.of(context).scaffoldBackgroundColor,
+              ),
+              padding: const EdgeInsets.all(1),
+              child: child,
+            ),
+          ),
+        );
+      },
+      child: widget.child,
+    );
   }
 }

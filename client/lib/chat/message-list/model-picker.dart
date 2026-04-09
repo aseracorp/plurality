@@ -10,7 +10,9 @@ import '../../utils/types.dart';
 final List<String> VisionModelOptions = [
   // Fireworks Vision
   "llama4-maverick-instruct-basic",
-  "qwen3-vl-235b-a22b-instruct",
+  "qwen3p5-397b-a17b",
+  "qwen3p6-plus",
+  "kimi-k2p5",
   // OpenAI GPT-5 + GPT-4.1
   'ChatGPT/gpt-5.2',
   'ChatGPT/gpt-5.2-pro',
@@ -19,31 +21,31 @@ final List<String> VisionModelOptions = [
   'ChatGPT/gpt-4.1',
   'ChatGPT/gpt-4.1-mini',
   // Claude 4.5
-  'Claude/claude-haiku-4-5',
-  'Claude/claude-sonnet-4-5',
-  'Claude/claude-opus-4-5',
+  'Claude/claude-haiku-4-6',
+  'Claude/claude-sonnet-4-6',
+  'Claude/claude-opus-4-6',
   // Gemini 2.5 + 3
   "Gemini/gemini-2.5-flash",
   "Gemini/gemini-2.5-flash-lite",
   "Gemini/gemini-2.5-pro",
-  "Gemini/gemini-3-flash",
-  "Gemini/gemini-3-pro",
+  // "Gemini/gemini-3-flash",
+  // "Gemini/gemini-3-pro", // not working
 ];
 
 // TODO find a better one...
 
 const modelPresentFastText = Model(
-  name: 'qwen3-vl-235b-a22b-instruct',
+  name: 'Gemini/gemini-2.5-flash',
   params: null,
-  tools: ['search_web', 'place_search', 'visit_link'],
+  tools: ['search_web', 'place_search', 'visit_link', 'generate_image'],
 );
 const modelPresentFastVision = Model(
-  name: 'qwen3-vl-235b-a22b-instruct',
+  name: 'Gemini/gemini-2.5-flash',
   params: null,
-  tools: ['search_web', 'place_search', 'visit_link'],
+  tools: ['search_web', 'place_search', 'visit_link', 'generate_image'],
 );
 const modelPresentFastImageGen = Model(
-  name: 'black-forest-labs/FLUX.1-schnell',
+  name: 'black-forest-labs/FLUX.2-dev',
   params: null,
 );
 
@@ -56,25 +58,25 @@ final Map<String, ModelSelected> modelPresets = {
   ),
   'Balanced': ModelSelected(
     text: Model(
-      name: 'qwen3-vl-235b-a22b-instruct',
+      name: 'qwen3p6-plus',
       params: null,
-      tools: ['search_web', 'place_search', 'visit_link'],
+      tools: ['search_web', 'place_search', 'visit_link', 'generate_image'],
     ),
     vision: Model(
-      name: 'qwen3-vl-235b-a22b-instruct',
+      name: 'qwen3p6-plus',
       params: null,
-      tools: ['search_web', 'place_search', 'visit_link'],
+      tools: ['search_web', 'place_search', 'visit_link', 'generate_image'],
     ),
-    imageGen: Model(name: 'black-forest-labs/FLUX.1-schnell', params: null),
+    imageGen: Model(name: 'black-forest-labs/FLUX.2-dev', params: null),
   ),
   'Smart': ModelSelected(
     text: Model(
-      name: 'Claude/claude-sonnet-4-5',
+      name: 'Claude/claude-sonnet-4-6',
       params: null,
-      tools: ['search_web', 'place_search', 'visit_link'],
+      tools: ['search_web', 'place_search', 'visit_link', 'generate_image'],
     ),
-    vision: Model(name: 'Claude/claude-sonnet-4-5', params: null, tools: []),
-    imageGen: Model(name: 'black-forest-labs/FLUX.1-dev', params: null),
+    vision: Model(name: 'Claude/claude-sonnet-4-6', params: null, tools: ['generate_image']),
+    imageGen: Model(name: 'black-forest-labs/FLUX.2-pro', params: null),
   ),
 };
 
@@ -107,9 +109,11 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     'deepseek-v3-0324',
     'deepseek-v3p2',
     // Fireworks - Qwen & Kimi
-    "qwen3-vl-235b-a22b-instruct",
-    'qwen3-coder-480b-a35b-instruct',
-    'kimi-k2-instruct',
+    // "qwen3p5-397b-a17b",
+    'qwen3p6-plus',
+    'kimi-k2p5',
+    'glm-5p1',
+    'minimax-m2p5',
     // OpenAI GPT-5 + GPT-4.1
     'ChatGPT/gpt-5.2',
     'ChatGPT/gpt-5.2-pro',
@@ -120,20 +124,20 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     'ChatGPT/gpt-4.1-mini',
     'ChatGPT/gpt-4.1-nano',
     // Claude 4.5
-    'Claude/claude-haiku-4-5',
-    'Claude/claude-sonnet-4-5',
-    'Claude/claude-opus-4-5',
+    'Claude/claude-haiku-4-6',
+    'Claude/claude-sonnet-4-6',
+    'Claude/claude-opus-4-6',
     // Gemini 2.5 + 3
     "Gemini/gemini-2.5-flash",
     "Gemini/gemini-2.5-flash-lite",
     "Gemini/gemini-2.5-pro",
-    "Gemini/gemini-3-flash",
-    "Gemini/gemini-3-pro",
+    // "Gemini/gemini-3-flash",
+    // "Gemini/gemini-3-pro",
   ];
 
   final List<String> _imageGenModelOptions = [
-    'black-forest-labs/FLUX.1-schnell',
-    'black-forest-labs/FLUX.1-dev',
+    'black-forest-labs/FLUX.2-dev',
+    'black-forest-labs/FLUX.2-pro',
   ];
 
   final List<Map<String, dynamic>> _baseFunctions = [
@@ -161,6 +165,12 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
       'description': 'Well... rolls a dice',
       'enabled': true,
     },
+    {
+      'key': 'generate_image',
+      'label': 'Image Generation',
+      'description': 'Generate images from text descriptions',
+      'enabled': true,
+    },
   ];
 
   List<Map<String, dynamic>> _functions = [];
@@ -178,7 +188,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     for (var i = 0; i < clientSide.length; i++) {
       var tool = clientSide[i];
       var serverName = MCPService().getToolServerName(tool['name']);
-      if (serverName.isEmpty) {
+      if (serverName == null || serverName.isEmpty) {
         continue;
       }
       var description = tool['description'] ?? 'No description available';

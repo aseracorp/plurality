@@ -1,10 +1,10 @@
 package miniapps
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"context"
 	"strings"
 
 	"github.com/gorilla/mux"
@@ -274,7 +274,7 @@ func processMiniAppPrompt(ctx context.Context, miniApp utils.MiniApp, formInputs
 	processedPrompt := basePrompt
 	for key, value := range formInputs {
 		placeholder := "{{" + key + "}}"
-		
+
 		// Convert value to string based on type
 		var stringValue string
 		switch v := value.(type) {
@@ -292,7 +292,7 @@ func processMiniAppPrompt(ctx context.Context, miniApp utils.MiniApp, formInputs
 			}
 			stringValue = string(jsonBytes)
 		}
-		
+
 		processedPrompt = strings.Replace(processedPrompt, placeholder, stringValue, -1)
 	}
 

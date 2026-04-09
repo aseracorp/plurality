@@ -3,14 +3,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import './storage.dart';
 import './api.dart';
+import './chat_service.dart';
 import '../utils/types.dart';
 import '../auth/auth-service.dart';
 
-class ConversationState {
+class ConversationsState {
   final List<Conversation> conversations;
   final Map<String, List<Conversation>> folderMap;
 
-  ConversationState({required this.conversations, required this.folderMap});
+  ConversationsState({required this.conversations, required this.folderMap});
 }
 
 class FolderData {
@@ -21,7 +22,7 @@ class FolderData {
 }
 
 // In service.dart, modify the ConversationsNotifier class
-class ConversationsNotifier extends StateNotifier<ConversationState> {
+class ConversationsNotifier extends StateNotifier<ConversationsState> {
   final AuthService _authService = AuthService();
   StreamSubscription? _authSubscription;
   final apiService = ApiService();
@@ -29,7 +30,7 @@ class ConversationsNotifier extends StateNotifier<ConversationState> {
   static bool _isInitialized = false;
 
   ConversationsNotifier()
-    : super(ConversationState(conversations: [], folderMap: {})) {
+    : super(ConversationsState(conversations: [], folderMap: {})) {
     // Load initial local data
     _loadConversations();
 
@@ -48,6 +49,8 @@ class ConversationsNotifier extends StateNotifier<ConversationState> {
   // Refresh data
   Future<void> refresh() async {
     await _loadConversationsFromServer();
+    // Also refresh tool metadata cache
+    ChatService().refreshToolMetadata();
     return Future.value();
   }
 
@@ -72,7 +75,7 @@ class ConversationsNotifier extends StateNotifier<ConversationState> {
 
   void _loadConversations() async {
     final conversations = await ConversationStorage.getAllConversations();
-    state = ConversationState(
+    state = ConversationsState(
       conversations: conversations,
       folderMap: _organizeFolders(conversations),
     );
@@ -118,7 +121,7 @@ class ConversationsNotifier extends StateNotifier<ConversationState> {
             return conv;
           }).toList();
 
-      state = ConversationState(
+      state = ConversationsState(
         conversations: updatedConversations,
         folderMap: _organizeFolders(updatedConversations),
       );
@@ -148,7 +151,7 @@ class ConversationsNotifier extends StateNotifier<ConversationState> {
             return conv;
           }).toList();
 
-      state = ConversationState(
+      state = ConversationsState(
         conversations: updatedConversations,
         folderMap: _organizeFolders(updatedConversations),
       );
@@ -170,7 +173,7 @@ class ConversationsNotifier extends StateNotifier<ConversationState> {
             return conv;
           }).toList();
 
-      state = ConversationState(
+      state = ConversationsState(
         conversations: updatedConversations,
         folderMap: _organizeFolders(updatedConversations),
       );
@@ -195,7 +198,7 @@ class ConversationsNotifier extends StateNotifier<ConversationState> {
             return conv;
           }).toList();
 
-      state = ConversationState(
+      state = ConversationsState(
         conversations: updatedConversations,
         folderMap: _organizeFolders(updatedConversations),
       );
@@ -209,7 +212,7 @@ class ConversationsNotifier extends StateNotifier<ConversationState> {
     final updatedConversations =
         state.conversations.where((conv) => conv.id != id).toList();
 
-    state = ConversationState(
+    state = ConversationsState(
       conversations: updatedConversations,
       folderMap: _organizeFolders(updatedConversations),
     );
@@ -222,7 +225,7 @@ class ConversationsNotifier extends StateNotifier<ConversationState> {
     _isInitialized = false;
     await ConversationStorage.deleteAllConversations();
 
-    state = ConversationState(conversations: [], folderMap: {});
+    state = ConversationsState(conversations: [], folderMap: {});
   }
 
   // create a new conversation
@@ -244,7 +247,7 @@ class ConversationsNotifier extends StateNotifier<ConversationState> {
 
     final updatedConversations = [newConv, ...state.conversations];
 
-    state = ConversationState(
+    state = ConversationsState(
       conversations: updatedConversations,
       folderMap: _organizeFolders(updatedConversations),
     );
@@ -314,6 +317,6 @@ final sortedFoldersProvider =
     });
 
 final conversationsProvider =
-    StateNotifierProvider<ConversationsNotifier, ConversationState>((ref) {
+    StateNotifierProvider<ConversationsNotifier, ConversationsState>((ref) {
       return ConversationsNotifier();
     });

@@ -1,9 +1,9 @@
 package db
 
 import (
+	"context"
 	"os"
 	"time"
-	"context"
 
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -20,11 +20,11 @@ func InitDB() {
 	mongoURL := os.Getenv("MONGODB")
 
 	opts := options.Client().
-	  SetConnectTimeout(7 * time.Second).
+		SetConnectTimeout(7 * time.Second).
 		ApplyURI(mongoURL).
 		SetRetryWrites(true).
 		SetWriteConcern(writeconcern.New(writeconcern.WMajority()))
-		
+
 	var err error
 	client, err = mongo.Connect(context.TODO(), opts)
 

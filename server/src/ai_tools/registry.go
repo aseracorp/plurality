@@ -1,19 +1,21 @@
-package ai_tools 
+package ai_tools
 
 import (
+	"strings"
+
 	"github.com/azukaar/plurality/src/utils"
 
 	"log"
 )
 
-
 var Registry = map[string]utils.AITool{
 	// WeatherTool.ToolID: WeatherTool,
 	// NewsSearchTool.ToolID: NewsSearchTool,
-	DiceRollTool.ToolID: DiceRollTool,
-	WebTool.ToolID: WebTool,
-	SearchTool.ToolID: SearchTool,
+	DiceRollTool.ToolID:    DiceRollTool,
+	WebTool.ToolID:         WebTool,
+	SearchTool.ToolID:      SearchTool,
 	PlaceSearchTool.ToolID: PlaceSearchTool,
+	ImageGenTool.ToolID:    ImageGenTool,
 }
 
 func RegisterTool(tool utils.AITool) {
@@ -25,8 +27,12 @@ func GetTool(toolID string) (utils.AITool, bool) {
 	return tool, ok
 }
 
+func ShouldStripResponse(content string) bool {
+	return strings.Contains(content, "base64,")
+}
+
 func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest) []utils.ToolsRequest {
-	var requests []utils.ToolsRequest 
+	var requests []utils.ToolsRequest
 	var selected = model.Tools
 
 	for _, tool := range Registry {
@@ -38,12 +44,12 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 	for _, tool := range ClientSideTools {
 		if utils.ContainsString(selected, tool.Name) {
 			requests = append(requests, utils.ToolsRequest{
-				Type: "function",
+				Type:     "function",
 				Function: tool,
 			})
 		}
 	}
-	
+
 	return requests
 }
 
@@ -69,7 +75,6 @@ func ConvertToClaudeSchema(requests utils.FunctionToolsRequest) utils.FunctionTo
 	return toolRequest
 }
 
-
 func GetClaudeRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest) []utils.FunctionToolsRequest {
 	var requests = []utils.FunctionToolsRequest{}
 	var selected = model.Tools
@@ -85,6 +90,6 @@ func GetClaudeRequests(model utils.Model, ClientSideTools []utils.FunctionToolsR
 			requests = append(requests, ConvertToClaudeSchema(tool))
 		}
 	}
-	
+
 	return requests
 }

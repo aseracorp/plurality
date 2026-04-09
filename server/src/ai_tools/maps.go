@@ -77,12 +77,12 @@ var PlaceSearchTool = utils.AITool{
 		requestPayload := map[string]interface{}{
 			"textQuery": textQuery,
 		}
-		
+
 		// Add type if provided
 		if placeType != "" {
 			requestPayload["includedType"] = placeType
 		}
-		
+
 		// Marshal the request payload
 		requestBody, err := json.Marshal(requestPayload)
 		if err != nil {
@@ -152,7 +152,7 @@ func formatPlaceSearchResults(results map[string]interface{}, query string) stri
 		}
 
 		placeData := place.(map[string]interface{})
-		
+
 		// Get name
 		name := "Unnamed Location"
 		if displayName, exists := placeData["displayName"].(map[string]interface{}); exists {
@@ -160,19 +160,19 @@ func formatPlaceSearchResults(results map[string]interface{}, query string) stri
 				name = text
 			}
 		}
-		
+
 		// Get address
 		address := "Address not available"
 		if formattedAddress, exists := placeData["formattedAddress"].(string); exists {
 			address = formattedAddress
 		}
-		
+
 		// Get rating if available
 		ratingStr := "N/A"
 		if rating, exists := placeData["rating"]; exists {
 			ratingStr = fmt.Sprintf("%.1f", rating)
 		}
-		
+
 		// Get place types
 		types := ""
 		if typesList, exists := placeData["types"].([]interface{}); exists && len(typesList) > 0 {
@@ -229,7 +229,7 @@ func formatPlaceSearchResults(results map[string]interface{}, query string) stri
 
 		// Create Google Maps links
 		var mapsURL string
-		
+
 		// Link using place ID (most reliable)
 		if placeID, exists := placeData["id"].(string); exists {
 			mapsURL = fmt.Sprintf("https://www.google.com/maps/place/?q=place_id:%s", placeID)
@@ -243,27 +243,27 @@ func formatPlaceSearchResults(results map[string]interface{}, query string) stri
 		// Format the result
 		formattedResults += fmt.Sprintf("**%s**\n", name)
 		formattedResults += fmt.Sprintf("📍 %s\n", address)
-		
+
 		if ratingStr != "N/A" {
 			formattedResults += fmt.Sprintf("⭐ Rating: %s\n", ratingStr)
 		}
-		
+
 		if types != "" {
 			formattedResults += fmt.Sprintf("🏷️ %s\n", types)
 		}
-		
+
 		if priceLevel != "" {
 			formattedResults += fmt.Sprintf("💰 %s\n", priceLevel)
 		}
-				
+
 		if mapsURL != "" {
 			formattedResults += fmt.Sprintf("📌 [View on Google Map](%s) \n", mapsURL)
 		}
-				
+
 		if website != "" {
 			formattedResults += fmt.Sprintf("🌐 [Visit Website](%s)\n\n", website)
 		}
-		
+
 		formattedResults += "\n"
 	}
 

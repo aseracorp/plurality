@@ -61,8 +61,8 @@ func newAudioIntBuffer(r io.Reader) (*audio.IntBuffer, error) {
 	}
 }
 
-// newAudioIntBuffer from another buffer 
-func NewAudioIntBufferFromBuffer(buf []byte) (*audio.IntBuffer) {
+// newAudioIntBuffer from another buffer
+func NewAudioIntBufferFromBuffer(buf []byte) *audio.IntBuffer {
 	audioBuf := &audio.IntBuffer{
 		Format: &audio.Format{
 			NumChannels: 1,

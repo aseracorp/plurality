@@ -15,7 +15,7 @@ var SearchTool = utils.AITool{
 	Name:        "Search",
 	Description: "Search on the internet via Google",
 	ToolID:      "search_web",
-	Cost: 100,
+	Cost:        100,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
