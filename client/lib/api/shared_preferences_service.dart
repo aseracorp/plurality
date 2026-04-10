@@ -6,6 +6,7 @@ class SharedPreferencesService {
   static const String _selectedModelKey = 'selected_model';
   static const String _darkModeKey = 'dark_mode';
   static const String _useMiniMapKey = 'use_mini_map';
+  static const String _zoomFactorKey = 'zoom_factor';
 
   // Singleton pattern
   static final SharedPreferencesService _instance =
@@ -63,5 +64,17 @@ class SharedPreferencesService {
   Future<bool> getUseMiniMap() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getBool(_useMiniMapKey) ?? true; // Default to true
+  }
+
+  // Save zoom factor
+  Future<bool> saveZoomFactor(double value) async {
+    final prefs = await SharedPreferences.getInstance();
+    return await prefs.setDouble(_zoomFactorKey, value);
+  }
+
+  // Get zoom factor
+  Future<double> getZoomFactor() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getDouble(_zoomFactorKey) ?? -1; // -1 means use platform default
   }
 }

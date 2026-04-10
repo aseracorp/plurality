@@ -171,7 +171,10 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
                   top: 4.0,
                   bottom: 4.0,
                 ),
-                padding: EdgeInsets.all(widget.mini ? 1.0 : 16.0),
+                padding: EdgeInsets.symmetric(
+                  vertical: widget.mini ? 1.0 : (MediaQuery.of(context).size.width >= 600 ? 16.0 : 16.0),
+                  horizontal: widget.mini ? 1.0 : (MediaQuery.of(context).size.width >= 600 ? 24.0 : 16.0),
+                ),
                 decoration: BoxDecoration(
                   color: widget.isBot ? botBG : userBG,
                   borderRadius:

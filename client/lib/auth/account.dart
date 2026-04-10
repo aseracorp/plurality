@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -5,6 +6,7 @@ import '../auth/auth-service.dart';
 import '../api/api.dart';
 import '../api/preferences_provider.dart';
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({Key? key}) : super(key: key);
@@ -258,6 +260,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             ),
                           ),
 
+                          const SizedBox(height: 12),
+
+                          // Zoom factor
+                          _buildZoomFactorCard(colorScheme),
+
                           const SizedBox(height: 24),
 
                           // Security section
@@ -377,6 +384,78 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 color: isSelected ? theme.colorScheme.primary : Colors.grey,
                 fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  double _defaultZoomFactor() {
+    final isDesktop =
+        !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+    return isDesktop ? 1.1 : 1.0;
+  }
+
+  Widget _buildZoomFactorCard(ColorScheme colorScheme) {
+    final preferences = ref.watch(preferencesProvider);
+    final zoomFactor = preferences.zoomFactor < 0
+        ? _defaultZoomFactor()
+        : preferences.zoomFactor;
+    final zoomPercent = (zoomFactor * 100).round();
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.zoom_in, color: colorScheme.primary),
+                const SizedBox(width: 16),
+                Text('Text Size', style: TextStyle(fontSize: 16)),
+                const Spacer(),
+                Text(
+                  '$zoomPercent%',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: colorScheme.primary,
+                  ),
+                ),
+              ],
+            ),
+            Slider(
+              value: zoomFactor,
+              min: 0.8,
+              max: 2.0,
+              divisions: 24,
+              label: '$zoomPercent%',
+              onChanged: (value) {
+                final preferencesNotifier =
+                    ref.read(preferencesProvider.notifier);
+                preferencesNotifier.setZoomFactor(value);
+              },
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('80%', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                TextButton(
+                  onPressed: () {
+                    final preferencesNotifier =
+                        ref.read(preferencesProvider.notifier);
+                    preferencesNotifier.setZoomFactor(_defaultZoomFactor());
+                  },
+                  child: Text('Reset to default'),
+                ),
+                Text(
+                  '200%',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ],
             ),
           ],
         ),

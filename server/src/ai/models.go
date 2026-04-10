@@ -102,6 +102,7 @@ var ValidActionModels = []string{
 	"deepseek-v3-0324",
 	"deepseek-v3p2",
 	"qwen3p5-397b-a17b",
+	"qwen3p6-plus",
 	"kimi-k2p5",
 	"glm-5p1",
 	"minimax-m2p5",

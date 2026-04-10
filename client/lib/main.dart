@@ -73,6 +73,11 @@ class MyApp extends ConsumerWidget {
     final isMobile = MediaQuery.of(context).size.width < 820;
     final preferences = ref.watch(preferencesProvider);
     final darkModeValue = preferences.darkMode;
+    final isDesktop =
+        !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+    final defaultZoom = isDesktop ? 1.1 : 1.0;
+    final zoomFactor =
+        preferences.zoomFactor < 0 ? defaultZoom : preferences.zoomFactor;
 
     // Determine the theme mode based on user preference
     ThemeMode themeMode;
@@ -98,6 +103,14 @@ class MyApp extends ConsumerWidget {
       theme: lightTheme,
       darkTheme: darkTheme,
       themeMode: themeMode,
+      builder: (context, child) {
+        return MediaQuery(
+          data: MediaQuery.of(context).copyWith(
+            textScaler: TextScaler.linear(zoomFactor),
+          ),
+          child: child!,
+        );
+      },
       home: authState.when(
         data: (user) {
           // redirect users to the correct screen

@@ -593,22 +593,26 @@ class AppPreferences {
   final ModelSelected selectedModel;
   final int darkMode;
   final bool useMiniMap;
+  final double zoomFactor;
 
   const AppPreferences({
     this.selectedModel = const ModelSelected(),
     this.darkMode = 0,
     this.useMiniMap = true,
+    this.zoomFactor = 1.0,
   });
 
   AppPreferences copyWith({
     ModelSelected? selectedModel,
     int? darkMode,
     bool? useMiniMap,
+    double? zoomFactor,
   }) {
     return AppPreferences(
       selectedModel: selectedModel ?? this.selectedModel,
       darkMode: darkMode ?? this.darkMode,
       useMiniMap: useMiniMap ?? this.useMiniMap,
+      zoomFactor: zoomFactor ?? this.zoomFactor,
     );
   }
 }

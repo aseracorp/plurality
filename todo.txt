@@ -1,10 +1,17 @@
 - Test client tools 
   - what happens if 2+ clients opened? 
+- ZOOM ?
+- When streaming, scroll so that the user message is at the top rather than scrolling on eachchunk
+- !!! Refreshing conversation loses opened conversation completely
+- When status says "open conversations has an udpate" (from a different client potentially) refresh the conversation ? (without over refreshing if current client)
 
 - Agents (sub conversations as conversatiosn)
 - tools / MCP : Yes/no/Ask 
 - notifs? 
 - tools bundle (ex: code has grep etc...)
+
+- mobile: scrolling issues with images 
+- mobile: margin around screen ?  Fullscreen? 
 
 # Road to relese
   - Login / Register
@@ -14,6 +21,7 @@
 	- Subscripiton page
 	- Home page
 
+- forget old function calls to save tokens
 
 # private MVP2 - bigger
 - MCP: tool call output is not always text!!

@@ -25,11 +25,13 @@ class PreferencesNotifier extends StateNotifier<AppPreferences> {
     final selectedModel = await _prefsService.getSelectedModel();
     final darkMode = await _prefsService.getDarkMode();
     final useMiniMap = await _prefsService.getUseMiniMap();
+    final zoomFactor = await _prefsService.getZoomFactor();
 
     state = AppPreferences(
       selectedModel: selectedModel,
       darkMode: darkMode,
       useMiniMap: useMiniMap,
+      zoomFactor: zoomFactor,
     );
   }
 
@@ -49,5 +51,11 @@ class PreferencesNotifier extends StateNotifier<AppPreferences> {
   Future<void> setUseMiniMap(bool use) async {
     await _prefsService.saveUseMiniMap(use);
     state = state.copyWith(useMiniMap: use);
+  }
+
+  // Update zoom factor
+  Future<void> setZoomFactor(double factor) async {
+    await _prefsService.saveZoomFactor(factor);
+    state = state.copyWith(zoomFactor: factor);
   }
 }

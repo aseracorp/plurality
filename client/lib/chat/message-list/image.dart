@@ -26,12 +26,15 @@ class ImagePreviewComponent extends StatelessWidget {
         child: ClipRRect(
           borderRadius:
               mini ? BorderRadius.circular(2.0) : BorderRadius.circular(8.0),
-          child: Image.memory(
-            base64Decode(imageData),
-            width: mini ? 20 : 200,
-            fit: BoxFit.cover,
-            cacheWidth: 200,
-            gaplessPlayback: true,
+          child: SizedBox(
+            height: mini ? 20 : 200,
+            child: Image.memory(
+              base64Decode(imageData),
+              height: mini ? 20 : 200,
+              fit: BoxFit.cover,
+              cacheWidth: 200,
+              gaplessPlayback: true,
+            ),
           ),
         ),
       ),

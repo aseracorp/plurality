@@ -66,11 +66,17 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   // MiniMap scroll controller
   final ScrollController _miniMapScrollController = ScrollController();
 
+  // List controllers for item-level scrolling (super_sliver_list)
+  final ListController _listController = ListController();
+  final ListController _miniMapListController = ListController();
+
   final ImagePicker _imagePicker = ImagePicker();
 
   final List<Attachment> attachments = [];
 
-  bool _shouldAutoScroll = true;
+  bool _isNearBottom = true;
+  bool _hasScrolledToUserMessage = false;
+  bool _needsBottomMargin = false;
   bool _closeMessageWarning = false;
 
   ModelSelected _modelSelected = ModelSelected();
@@ -144,7 +150,8 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       _loadConversation(widget.conversationId);
 
       setState(() {
-        _shouldAutoScroll = true;
+        _hasScrolledToUserMessage = false;
+        _needsBottomMargin = false;
         _closeMessageWarning = false;
       });
     }
@@ -162,6 +169,41 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         Overlay.of(context),
         PrettySnackbar(message: state.error!, type: SnackbarType.error),
       );
+    }
+
+    // One-time: when streaming starts, scroll user message to top and enable bottom margin
+    if (state.state == ConversationState.processing && !_hasScrolledToUserMessage) {
+      _hasScrolledToUserMessage = true;
+      _needsBottomMargin = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_listController.isAttached || !_mainScrollController.hasClients) return;
+
+        final conversationsState = ref.read(conversationsProvider);
+        final currentConversation = conversationsState.conversations.firstWhere(
+          (conv) => conv.id == widget.conversationId,
+          orElse: () => Conversation(
+            id: widget.conversationId, title: '', messages: [],
+            lastMessageAt: DateTime.now(), modelSelected: _modelSelected,
+          ),
+        );
+        final visibleMessages = currentConversation.messages.where((m) => m.role != 'tool').toList();
+        final lastUserIndex = visibleMessages.lastIndexWhere((m) => m.role == 'user');
+        if (lastUserIndex < 0) return;
+
+        _listController.jumpToItem(
+          index: lastUserIndex,
+          scrollController: _mainScrollController,
+          alignment: 0.0,
+        );
+      });
+    }
+
+    // Reset when streaming ends and focus the input
+    if (state.state != ConversationState.processing) {
+      _hasScrolledToUserMessage = false;
+      Future.delayed(Duration(milliseconds: 150), () {
+        if (mounted) _inputFocusNode.requestFocus();
+      });
     }
 
     setState(() {});
@@ -230,9 +272,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   }
 
   @override
-  @override
   void dispose() {
     _session.removeListener(_onSessionChanged);
+    _listController.dispose();
+    _miniMapListController.dispose();
     _mainScrollController.dispose();
     _miniMapScrollController.dispose();
     _inputFocusNode.dispose();
@@ -242,33 +285,15 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   }
 
   void _scrollListener() {
+    if (!_mainScrollController.hasClients) return;
     final isNearBottom =
         _mainScrollController.position.pixels >=
         _mainScrollController.position.maxScrollExtent - 200;
-
-    if (isNearBottom != _shouldAutoScroll) {
+    if (isNearBottom != _isNearBottom) {
       setState(() {
-        _shouldAutoScroll = isNearBottom;
+        _isNearBottom = isNearBottom;
       });
     }
-  }
-
-  void _scrollToBottom({bool force = false}) {
-    final isProcessing =
-        _session.value.state == ConversationState.processing;
-    Future.delayed(Duration(milliseconds: 160), () {
-      if ((_shouldAutoScroll && !isProcessing) || force) {
-        _mainScrollController.jumpTo(
-          _mainScrollController.position.maxScrollExtent,
-        );
-      } else if (_shouldAutoScroll) {
-        _mainScrollController.animateTo(
-          _mainScrollController.position.maxScrollExtent,
-          duration: Duration(milliseconds: 500),
-          curve: Curves.easeOut,
-        );
-      }
-    });
   }
 
   void _handleStop() {
@@ -387,6 +412,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
   /// Create a Message from user input and delegate to ChatService.
   Future<void> _submitMessage(String? userMessage) async {
+    _needsBottomMargin = false;
     final conversationsNotifier = ref.read(conversationsProvider.notifier);
     final balanceNotifier = ref.read(balanceProvider.notifier);
 
@@ -670,6 +696,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     }
 
     var l = SuperListView.builder(
+      listController: mini ? _miniMapListController : _listController,
       controller: controller,
       cacheExtent: 100,
       padding: padding ?? const EdgeInsets.all(16.0),
@@ -776,15 +803,20 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
     final messages = currentConversation.messages;
 
-    if (messages.isNotEmpty) _scrollToBottom();
-
-    // Get bottom padding to ensure minimap doesn't go under input box
-    final bottomPadding = 0.0;
+    // Dynamic bottom padding: give room for streaming response to grow
+    final viewportHeight = MediaQuery.of(context).size.height;
+    final dynamicBottomPadding = _needsBottomMargin ? (viewportHeight - 350) : 16.0;
 
     // Build main content and minimap content using the shared function
     final mainContent = buildMessageList(
       messages: messages,
       controller: _mainScrollController,
+      padding: EdgeInsets.only(
+        left: 16.0,
+        right: 16.0,
+        top: 16.0,
+        bottom: dynamicBottomPadding,
+      ),
     );
 
     final miniMapContent = buildMessageList(
@@ -795,8 +827,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         left: 4.0,
         right: 4.0,
         top: 4.0,
-        bottom:
-            bottomPadding, // Add bottom padding to prevent going under input
+        bottom: 0.0,
       ),
     );
 
@@ -1140,13 +1171,17 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
           ),
 
         // Scroll to bottom button
-        if (!_shouldAutoScroll)
+        if (!_isNearBottom)
           Positioned(
             right: 16,
             bottom: 80,
             child: FloatingActionButton(
               mini: true,
-              onPressed: () => _scrollToBottom(force: true),
+              onPressed: () => _mainScrollController.animateTo(
+                _mainScrollController.position.maxScrollExtent,
+                duration: Duration(milliseconds: 300),
+                curve: Curves.easeOut,
+              ),
               child: const Icon(Icons.arrow_downward),
             ),
           ),

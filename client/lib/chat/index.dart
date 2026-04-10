@@ -418,7 +418,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         children: [
           // Conversations list (second rail)
           Container(
-            width: 252,
+            width: 265,
             child: ConversationList(
               isMobile: isMobile,
               onDelete: () {
