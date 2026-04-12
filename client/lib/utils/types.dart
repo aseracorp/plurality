@@ -4,6 +4,28 @@ import 'package:plurality/api/mini-apps.dart';
 import 'package:plurality/chat/message-list/model-picker.dart';
 part 'types.g.dart';
 
+// --- Helpers ---
+
+/// Convert a dynamic value to Map<String, dynamic>, handling both normal JSON
+/// objects and BSON primitive.D format ([{Key: k, Value: v}, ...]) that the
+/// Go MongoDB driver can produce when serializing interface{} fields.
+Map<String, dynamic>? _toMapOrNull(dynamic value) {
+  if (value is Map<String, dynamic>) return value;
+  if (value is Map) return value.cast<String, dynamic>();
+  if (value is List) {
+    // BSON primitive.D: [{Key: "type", Value: "text"}, ...]
+    final map = <String, dynamic>{};
+    for (final pair in value) {
+      if (pair is Map && pair.containsKey('Key') && pair.containsKey('Value')) {
+        final v = pair['Value'];
+        map[pair['Key'].toString()] = v is List ? (_toMapOrNull(v) ?? v) : v;
+      }
+    }
+    if (map.isNotEmpty) return map;
+  }
+  return null;
+}
+
 // --- OpenAI-Compatible Message Types ---
 
 @HiveType(typeId: 1)
@@ -43,13 +65,17 @@ class ContentPart {
   }
 
   factory ContentPart.fromJson(Map<String, dynamic> json) {
+    ContentImageURL? imageUrl;
+    if (json['image_url'] != null) {
+      final imgMap = _toMapOrNull(json['image_url']);
+      if (imgMap != null) {
+        imageUrl = ContentImageURL.fromJson(imgMap);
+      }
+    }
     return ContentPart(
       type: json['type'] ?? 'text',
       text: json['text'],
-      imageUrl:
-          json['image_url'] != null
-              ? ContentImageURL.fromJson(json['image_url'])
-              : null,
+      imageUrl: imageUrl,
     );
   }
 }
@@ -273,19 +299,24 @@ class Message {
         parsedContent = [ContentPart(type: 'text', text: rawContent)];
       }
     } else if (rawContent is List) {
-      parsedContent =
-          rawContent
-              .map((c) => ContentPart.fromJson(c as Map<String, dynamic>))
-              .toList();
+      for (final c in rawContent) {
+        final map = _toMapOrNull(c);
+        if (map != null) {
+          parsedContent.add(ContentPart.fromJson(map));
+        }
+      }
     }
 
     // Parse tool_calls
     List<ToolCall>? toolCalls;
-    if (json['tool_calls'] != null) {
-      toolCalls =
-          (json['tool_calls'] as List)
-              .map((t) => ToolCall.fromJson(t as Map<String, dynamic>))
-              .toList();
+    if (json['tool_calls'] != null && json['tool_calls'] is List) {
+      for (final t in json['tool_calls'] as List) {
+        final map = _toMapOrNull(t);
+        if (map != null) {
+          toolCalls ??= [];
+          toolCalls.add(ToolCall.fromJson(map));
+        }
+      }
     }
 
     return Message(
@@ -399,9 +430,11 @@ class Conversation extends HiveObject {
               ? DateTime.parse(json['last_message_at'])
               : DateTime.now(),
       messages:
-          json['messages'] != null
+          json['messages'] != null && json['messages'] is List
               ? (json['messages'] as List)
-                  .map((m) => Message.fromJson(m as Map<String, dynamic>))
+                  .map((m) => _toMapOrNull(m))
+                  .where((m) => m != null)
+                  .map((m) => Message.fromJson(m!))
                   .toList()
               : [],
       modelSelected:
