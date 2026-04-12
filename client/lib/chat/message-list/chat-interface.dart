@@ -284,11 +284,19 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     super.dispose();
   }
 
+  double get _contentMaxExtent {
+    if (!_mainScrollController.hasClients) return 0;
+    final max = _mainScrollController.position.maxScrollExtent;
+    if (!_needsBottomMargin) return max;
+    final viewportHeight = MediaQuery.of(context).size.height;
+    return (max - (viewportHeight - 400) + 16.0).clamp(0.0, max);
+  }
+
   void _scrollListener() {
     if (!_mainScrollController.hasClients) return;
     final isNearBottom =
         _mainScrollController.position.pixels >=
-        _mainScrollController.position.maxScrollExtent - 200;
+        _contentMaxExtent - 200;
     if (isNearBottom != _isNearBottom) {
       setState(() {
         _isNearBottom = isNearBottom;
@@ -805,7 +813,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
     // Dynamic bottom padding: give room for streaming response to grow
     final viewportHeight = MediaQuery.of(context).size.height;
-    final dynamicBottomPadding = _needsBottomMargin ? (viewportHeight - 350) : 16.0;
+    final dynamicBottomPadding = _needsBottomMargin ? (viewportHeight - 400) : 16.0;
 
     // Build main content and minimap content using the shared function
     final mainContent = buildMessageList(
@@ -1178,7 +1186,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
             child: FloatingActionButton(
               mini: true,
               onPressed: () => _mainScrollController.animateTo(
-                _mainScrollController.position.maxScrollExtent,
+                _contentMaxExtent,
                 duration: Duration(milliseconds: 300),
                 curve: Curves.easeOut,
               ),

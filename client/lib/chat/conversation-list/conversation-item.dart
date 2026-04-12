@@ -441,7 +441,10 @@ class _AnimatedBorderAvatarState extends State<_AnimatedBorderAvatar>
                 color: Theme.of(context).scaffoldBackgroundColor,
               ),
               padding: const EdgeInsets.all(1),
-              child: child,
+              child: Transform.rotate(
+                angle: -_controller.value * 6.2832,
+                child: child,
+              ),
             ),
           ),
         );

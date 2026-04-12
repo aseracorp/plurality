@@ -124,15 +124,19 @@ class ConversationStorage {
   ) async {
     final box = _getBox();
     for (var conversation in conversations) {
-      if (!box.containsKey(conversation.id)) {
-        await box.put(conversation.id, conversation);
-      } else {
-        await box.put(conversation.id, conversation);
+      if (box.containsKey(conversation.id)) {
+        // Preserve local messages when the server response has none
+        // (the list endpoint strips messages for efficiency)
+        final existing = box.get(conversation.id)!;
+        if (conversation.messages.isEmpty && existing.messages.isNotEmpty) {
+          conversation.messages = existing.messages;
+        }
       }
+      await box.put(conversation.id, conversation);
     }
 
     // remove conversations that are not in the new list
-    for (var key in box.keys) {
+    for (var key in box.keys.toList()) {
       if (!conversations.any((conv) => conv.id == key)) {
         await box.delete(key);
       }

@@ -1,7 +1,5 @@
 - Test client tools 
   - what happens if 2+ clients opened? 
-- ZOOM ?
-- When streaming, scroll so that the user message is at the top rather than scrolling on eachchunk
 - !!! Refreshing conversation loses opened conversation completely
 - When status says "open conversations has an udpate" (from a different client potentially) refresh the conversation ? (without over refreshing if current client)
 
@@ -10,7 +8,6 @@
 - notifs? 
 - tools bundle (ex: code has grep etc...)
 
-- mobile: scrolling issues with images 
 - mobile: margin around screen ?  Fullscreen? 
 
 # Road to relese
@@ -22,6 +19,8 @@
 	- Home page
 
 - forget old function calls to save tokens
+
+- migrate out of Together AI (it's shit!!)
 
 # private MVP2 - bigger
 - MCP: tool call output is not always text!!

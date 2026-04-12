@@ -293,6 +293,17 @@ class ChatService {
           final conversationId = data['conversation_id'] as String? ?? '';
           if (conversationId.isEmpty) return;
 
+          // Handle server-generated title/icon pushed via status stream
+          final title = data['title'] as String?;
+          final icon = data['icon'] as String?;
+          if (title != null && title.isNotEmpty) {
+            _conversationsNotifier?.updateConversationMetaData(
+              conversationId: conversationId,
+              title: title,
+              icon: icon,
+            );
+          }
+
           final status = ConversationStatus(
             state: data['state'] as String? ?? 'idle',
             activity: data['activity'] as String? ?? '',
@@ -552,7 +563,6 @@ class ChatService {
   Future<void> _finalizeSession(String conversationId, String? title) async {
     final session = getSession(conversationId);
     final resolvedId = session.value.resolvedConversationId ?? conversationId;
-    final isNewConversation = session.value.resolvedConversationId != null;
 
     // Reset session state
     session.value = ChatSessionState(
@@ -565,22 +575,6 @@ class ChatService {
       _conversationsNotifier?.loadConversation(resolvedId);
     }
 
-    // Auto-generate title for new conversations via the dedicated endpoint
-    if (isNewConversation && resolvedId.isNotEmpty) {
-      try {
-        final result = await _api.generateTitle(resolvedId);
-        final generatedTitle = result['title'] as String?;
-        final generatedIcon = result['icon'] as String?;
-        if (generatedTitle != null && generatedTitle.isNotEmpty) {
-          _conversationsNotifier?.updateConversationMetaData(
-            conversationId: resolvedId,
-            title: generatedTitle,
-            icon: generatedIcon,
-          );
-        }
-      } catch (e) {
-        debugPrint('[ChatService] Error generating title: $e');
-      }
-    }
+    // Title generation is now handled server-side and pushed via the status stream
   }
 }

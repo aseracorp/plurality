@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -257,16 +258,9 @@ func API_HandleConversation(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func API_HandleTitleGeneration(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	id := vars["id"]
-
-	conversation, err := db.GetConversationById(r.Context(), id)
-	if err != nil {
-		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
+// generateTitleAndIcon generates a title and icon for a conversation and persists them.
+// Returns the generated title and icon (base64), or an error.
+func generateTitleAndIcon(ctx context.Context, conversation utils.Conversation) (string, string, error) {
 	// Build a payload from the first 2 messages for title generation
 	messages := conversation.Messages
 	if len(messages) > 2 {
@@ -285,23 +279,39 @@ func API_HandleTitleGeneration(w http.ResponseWriter, r *http.Request) {
 
 	title, err := GenerateTitleForMessage(titlePayload)
 	if err != nil {
-		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
-		return
+		return "", "", fmt.Errorf("generating title: %w", err)
 	}
 
-	iconPrompt := "Simple illustration with low details and no text, for chat about: " + title
+	iconPrompt := "Simple illustration, visual, " + title
 	iconData, err := GenerateIconForConversation(iconPrompt)
+	if err != nil {
+		return "", "", fmt.Errorf("generating icon: %w", err)
+	}
+
+	if err := db.UpdateConversationMetadata(ctx, conversation.ID, title, iconData); err != nil {
+		return "", "", fmt.Errorf("updating metadata: %w", err)
+	}
+
+	db.RemoveCredits(ctx, 100, utils.UserAction{Type: TITLE, Provider: NONE, Model: utils.Model{}})
+
+	return title, iconData, nil
+}
+
+func API_HandleTitleGeneration(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	conversation, err := db.GetConversationById(r.Context(), id)
 	if err != nil {
 		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if err := db.UpdateConversationMetadata(r.Context(), conversation.ID, title, iconData); err != nil {
+	title, iconData, err := generateTitleAndIcon(r.Context(), *conversation)
+	if err != nil {
 		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	db.RemoveCredits(r.Context(), 100, utils.UserAction{Type: TITLE, Provider: NONE, Model: utils.Model{}})
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"title": title, "icon": iconData})

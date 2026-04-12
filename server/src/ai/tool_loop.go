@@ -84,6 +84,25 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				ConversationID: ar.ConversationID.Hex(),
 				Title:          conversation.Title,
 			})
+
+			// Auto-generate title for new conversations
+			if conversation.Title == "New Chat" {
+				go func() {
+					title, icon, err := generateTitleAndIcon(ctx, conversation)
+					if err != nil {
+						utils.Error("[LLMLoop] Auto title generation failed", err)
+						return
+					}
+					utils.Log("[LLMLoop] Auto-generated title for %s: %s", ar.ConversationID.Hex(), title)
+					StatusRegistry.BroadcastToUser(ar.UserID, StatusEvent{
+						ConversationID: ar.ConversationID.Hex(),
+						State:          string(utils.StateIdle),
+						Title:          title,
+						Icon:           icon,
+					})
+				}()
+			}
+
 			return
 		}
 
