@@ -1,6 +1,7 @@
+- Redesign the app using an oled black design (or white in light mode) and the gradient (238, 70, 84) > (245, 194, 86) in a subtle but relevant manner (ex. buttons and stuff but not entire messages) also the Title instead of a "Start a new Conversation" should be "Plurality AI" with Plurality in white, and AI using the gradient described earlier
+
 - Test client tools 
   - what happens if 2+ clients opened? 
-- !!! Refreshing conversation loses opened conversation completely
 - When status says "open conversations has an udpate" (from a different client potentially) refresh the conversation ? (without over refreshing if current client)
 
 - Agents (sub conversations as conversatiosn)
@@ -28,8 +29,7 @@
 - MCP: implement MCP for other providers 
 - MCP: the "dynamic" arguments break because you cant mix strings and numbers
 - Fix tool_use for gpt/firework
-- /Image (with maj) broken
-- Add "quizz" and  "More" in mini apps
+- Add "CODE" !! , "quizz" and  "More" in mini apps
 - Allow people to switch their plans (need to support paying without the invoice paid, in case of downgrade)
 
 - Make the icon not download on first load, instead lazy load from URL
