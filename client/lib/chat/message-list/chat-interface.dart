@@ -384,7 +384,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         } else {
           final bytes = await xFile.readAsBytes();
           final base64Data = base64Encode(bytes);
-          final attType = mimeType == 'pdf' ? 'pdf' : 'file';
+          final attType = documentTypeExts.contains(mimeType) ? mimeType : 'file';
 
           setState(() {
             attachments.add(
@@ -431,10 +431,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       // Check if there are image attachments
       final imageAttachments =
           attachments.where((a) => a.type == 'image_url').toList();
-      final pdfAttachments =
-          attachments.where((a) => a.type == 'pdf').toList();
+      final documentAttachments =
+          attachments.where((a) => isDocumentType(a.type)).toList();
       final otherAttachments =
-          attachments.where((a) => a.type != 'image_url' && a.type != 'pdf').toList();
+          attachments.where((a) => a.type != 'image_url' && !isDocumentType(a.type)).toList();
 
       List<ContentPart> contentParts = [];
 
@@ -451,9 +451,9 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         ));
       }
 
-      // Add PDF attachments
-      for (final att in pdfAttachments) {
-        contentParts.add(ContentPart(type: 'pdf', text: att.content, filename: att.filename));
+      // Add document attachments (pdf, docx, xlsx, pptx)
+      for (final att in documentAttachments) {
+        contentParts.add(ContentPart(type: att.type, text: att.content, filename: att.filename));
       }
 
       // Add other attachments as text content parts (snippets, files)

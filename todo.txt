@@ -1,12 +1,7 @@
 - Redesign the app using an oled black design (or white in light mode) and the gradient (238, 70, 84) > (245, 194, 86) in a subtle but relevant manner (ex. buttons and stuff but not entire messages) also the Title instead of a "Start a new Conversation" should be "Plurality AI" with Plurality in white, and AI using the gradient described earlier
 
 - Refactor: Streaming / conversation rendering should not be duplicated
--Can you look at how token price are currently calculated and whether it's possible to be more accurate ?    
-
-- if send message becfore client gets updated title, possibel to override it
-
-- pre-parse pdf/excel/etc...
-  - add search_attachment? 
+- Can you look at how token price are currently calculated and whether it's possible to be more accurate ?    
 
 - Test client tools 
   - what happens if 2+ clients opened? 

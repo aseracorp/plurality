@@ -1,4 +1,4 @@
-package utils
+package docsupport
 
 import (
 	"bytes"
@@ -45,7 +45,6 @@ func ParsePDF(data []byte, pages string, maxChars int) (string, error) {
 
 		text, err := page.GetPlainText(nil)
 		if err != nil {
-			// Skip pages that fail to extract
 			continue
 		}
 
@@ -75,17 +74,9 @@ func ParsePDF(data []byte, pages string, maxChars int) (string, error) {
 	return result, nil
 }
 
-// SearchPDFMatch holds a single regex match result from a PDF page.
-type SearchPDFMatch struct {
-	Page    int    `json:"page"`
-	Match   string `json:"match"`
-	Context string `json:"context"` // surrounding text for context
-}
-
 // SearchPDF runs a regex pattern against all pages of a PDF and returns matches
 // with page numbers and surrounding context.
-// maxResults limits how many matches to return (0 = default 50).
-func SearchPDF(data []byte, pattern string, maxResults int) ([]SearchPDFMatch, error) {
+func SearchPDF(data []byte, pattern string, maxResults int) ([]SearchMatch, error) {
 	if maxResults <= 0 {
 		maxResults = 50
 	}
@@ -105,7 +96,7 @@ func SearchPDF(data []byte, pattern string, maxResults int) ([]SearchPDFMatch, e
 		return nil, fmt.Errorf("PDF has no pages")
 	}
 
-	var matches []SearchPDFMatch
+	var matches []SearchMatch
 
 	for i := 1; i <= totalPages; i++ {
 		page := reader.Page(i)
@@ -120,7 +111,6 @@ func SearchPDF(data []byte, pattern string, maxResults int) ([]SearchPDFMatch, e
 
 		locs := re.FindAllStringIndex(text, -1)
 		for _, loc := range locs {
-			// Extract context: up to 80 chars before and after the match
 			ctxStart := loc[0] - 80
 			if ctxStart < 0 {
 				ctxStart = 0
@@ -130,7 +120,7 @@ func SearchPDF(data []byte, pattern string, maxResults int) ([]SearchPDFMatch, e
 				ctxEnd = len(text)
 			}
 
-			matches = append(matches, SearchPDFMatch{
+			matches = append(matches, SearchMatch{
 				Page:    i,
 				Match:   text[loc[0]:loc[1]],
 				Context: strings.TrimSpace(text[ctxStart:ctxEnd]),

@@ -456,7 +456,7 @@ class _InputBoxState extends State<InputBox> {
         final bytes = await file.readAsBytes();
         final base64Data = base64Encode(bytes);
         final mimeType = _getMimeType(file.name) ?? 'application/octet-stream';
-        final attType = fileExt == 'pdf' ? 'pdf' : 'file';
+        final attType = documentTypeExts.contains(fileExt) ? fileExt : 'file';
 
         widget.addAttachment(
           Attachment(
@@ -501,6 +501,12 @@ class _InputBoxState extends State<InputBox> {
       'doc': 'application/msword',
       'docx':
           'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'xls': 'application/vnd.ms-excel',
+      'xlsx':
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'ppt': 'application/vnd.ms-powerpoint',
+      'pptx':
+          'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     };
     return mimeTypes[ext];
   }

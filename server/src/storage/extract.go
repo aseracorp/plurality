@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/azukaar/plurality/src/docsupport"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -41,10 +42,10 @@ func ExtractBlobsFromMessage(userID string, msg *utils.Message) error {
 			changed = true
 		}
 
-		if part.Type == "pdf" && strings.HasPrefix(part.Text, "data:") {
+		if docsupport.IsDocumentType(part.Type) && strings.HasPrefix(part.Text, "data:") {
 			data, _, ext, err := ExtractBlobFromDataURI(part.Text)
 			if err != nil {
-				utils.Error("[Storage] Failed to extract PDF blob", err)
+				utils.Error("[Storage] Failed to extract document blob", err)
 				continue
 			}
 			if len(data) > maxBlobSize {
@@ -52,7 +53,7 @@ func ExtractBlobsFromMessage(userID string, msg *utils.Message) error {
 			}
 			urlPath, err := SaveBlob(userID, data, ext)
 			if err != nil {
-				return fmt.Errorf("saving PDF blob: %w", err)
+				return fmt.Errorf("saving document blob: %w", err)
 			}
 			newParts[i].Text = urlPath
 			changed = true
@@ -131,6 +132,10 @@ func extFromMIME(mimeType string) string {
 		return "docx"
 	case "application/msword":
 		return "doc"
+	case "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+		return "pptx"
+	case "application/vnd.ms-powerpoint":
+		return "ppt"
 	default:
 		// Try to extract subtype: "image/bmp" -> "bmp"
 		if idx := strings.LastIndex(mimeType, "/"); idx >= 0 {

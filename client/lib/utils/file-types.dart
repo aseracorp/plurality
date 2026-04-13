@@ -115,3 +115,10 @@ final List<String> documentFileExtensions = [
   'pub',
   'pdf',
 ];
+
+/// Document extensions that get their own content-part type and are parsed
+/// server-side by the docsupport package. Adding an entry here (and a
+/// matching parser on the server) is all that's needed to support a new format.
+const documentTypeExts = {'pdf', 'docx', 'xlsx', 'pptx'};
+
+bool isDocumentType(String type) => documentTypeExts.contains(type);

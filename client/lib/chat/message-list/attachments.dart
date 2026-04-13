@@ -4,8 +4,32 @@ import 'package:file_saver/file_saver.dart';
 import 'image.dart';
 import 'text-preview.dart';
 import '../../utils/types.dart';
+import '../../utils/file-types.dart';
 import '../../api/api.dart';
 import 'dart:convert';
+
+class _DocStyle {
+  final IconData icon;
+  final Color iconColor;
+  final Color bgColor;
+  final Color borderColor;
+  const _DocStyle(this.icon, this.iconColor, this.bgColor, this.borderColor);
+}
+
+_DocStyle _documentStyle(String type) {
+  switch (type) {
+    case 'pdf':
+      return _DocStyle(Icons.picture_as_pdf, Colors.red.shade400, Colors.red.shade50, Colors.red.shade200);
+    case 'docx':
+      return _DocStyle(Icons.description, Colors.blue.shade400, Colors.blue.shade50, Colors.blue.shade200);
+    case 'xlsx':
+      return _DocStyle(Icons.table_chart, Colors.green.shade400, Colors.green.shade50, Colors.green.shade200);
+    case 'pptx':
+      return _DocStyle(Icons.slideshow, Colors.orange.shade400, Colors.orange.shade50, Colors.orange.shade200);
+    default:
+      return _DocStyle(Icons.insert_drive_file, Colors.grey.shade400, Colors.grey.shade50, Colors.grey.shade200);
+  }
+}
 
 class AttachmentViewer extends StatelessWidget {
   final Attachment attachment;
@@ -50,7 +74,7 @@ class AttachmentViewer extends StatelessWidget {
   Future<void> _downloadFile(BuildContext context) async {
     try {
       final content = attachment.content;
-      final filename = attachment.filename ?? 'document.${attachment.ext ?? 'pdf'}';
+      final filename = attachment.filename ?? 'document.${attachment.ext ?? attachment.type}';
       Uint8List bytes;
 
       if (content.startsWith('/attachments/')) {
@@ -206,21 +230,14 @@ class AttachmentViewer extends StatelessWidget {
       );
     } else if (attachment.type == "image_url") {
       return ImagePreviewComponent(imageUrl: attachment.content, mini: mini);
-    } else if (attachment.type == "pdf") {
+    } else if (isDocumentType(attachment.type) || attachment.type == "file") {
+      final docStyle = _documentStyle(attachment.type);
       return _buildDocumentCard(
         context,
-        icon: Icons.picture_as_pdf,
-        iconColor: Colors.red[400]!,
-        bgColor: Colors.red[50]!,
-        borderColor: Colors.red[200]!,
-      );
-    } else if (attachment.type == "file") {
-      return _buildDocumentCard(
-        context,
-        icon: Icons.insert_drive_file,
-        iconColor: Colors.blue[400]!,
-        bgColor: Colors.blue[50]!,
-        borderColor: Colors.blue[200]!,
+        icon: docStyle.icon,
+        iconColor: docStyle.iconColor,
+        bgColor: docStyle.bgColor,
+        borderColor: docStyle.borderColor,
       );
     }
     return Container();

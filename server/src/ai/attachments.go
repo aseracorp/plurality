@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 
+	"github.com/azukaar/plurality/src/docsupport"
 	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/utils"
 )
@@ -33,7 +34,7 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 
 	hasDocumentAttachments := false
 	for _, item := range index.Items {
-		if item.Type == "pdf" {
+		if docsupport.IsDocumentType(item.Type) {
 			hasDocumentAttachments = true
 			break
 		}
@@ -117,9 +118,9 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 					desc = att.Ext
 				}
 				var placeholder string
-				if att.Type == "pdf" {
+				if docsupport.IsDocumentType(att.Type) {
 					placeholder = fmt.Sprintf(
-						"[Document omitted: %s (%s, %d bytes). Use the \"read_pdf\" function to extract and read its text content.]",
+						"[Document omitted: %s (%s, %d bytes). Use the \"read_document\" function to extract and read its text content.]",
 						att.ID, desc, att.Size,
 					)
 				} else {

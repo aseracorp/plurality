@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/azukaar/plurality/src/docsupport"
 )
 
 // AttachmentMeta holds lightweight metadata about a single attachment
@@ -55,7 +57,7 @@ func BuildAttachmentIndex(messages []Message, fileSizeFn FileSizeFunc) Attachmen
 			if part.Type == "image_url" && part.ImageURL != nil {
 				content = part.ImageURL.URL
 				isInternalURL = strings.HasPrefix(content, "/attachments/")
-			} else if part.Type == "pdf" && part.Text != "" {
+			} else if docsupport.IsDocumentType(part.Type) && part.Text != "" {
 				content = part.Text
 				isInternalURL = strings.HasPrefix(content, "/attachments/")
 			} else if part.Text != "" {
@@ -96,8 +98,8 @@ func BuildAttachmentIndex(messages []Message, fileSizeFn FileSizeFunc) Attachmen
 				} else {
 					meta.Ext = guessImageExt(content)
 				}
-			} else if part.Type == "pdf" {
-				meta.Ext = "pdf"
+			} else if docsupport.IsDocumentType(part.Type) {
+				meta.Ext = part.Type
 			}
 
 			index.Items = append(index.Items, meta)

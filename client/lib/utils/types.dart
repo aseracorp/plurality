@@ -42,10 +42,12 @@ class ContentImageURL {
   }
 }
 
+const _documentTypes = {'pdf', 'docx', 'xlsx', 'pptx'};
+
 @HiveType(typeId: 2)
 class ContentPart {
   @HiveField(0)
-  final String type; // "text", "image_url", "snippet", "file", "pdf"
+  final String type; // "text", "image_url", "snippet", "file", "pdf", "docx", "xlsx", "pptx"
 
   @HiveField(1)
   final String? text;
@@ -59,8 +61,8 @@ class ContentPart {
   ContentPart({required this.type, this.text, this.imageUrl, this.filename});
 
   /// True for any content part that carries text (text, snippet, file, etc.).
-  /// image_url and pdf parts are non-text.
-  bool get isTextLike => type != 'image_url' && type != 'pdf';
+  /// image_url and document parts are non-text.
+  bool get isTextLike => type != 'image_url' && !_documentTypes.contains(type);
 
   Map<String, dynamic> toJson() {
     final data = <String, dynamic>{'type': type};

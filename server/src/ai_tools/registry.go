@@ -17,8 +17,8 @@ var Registry = map[string]utils.AITool{
 	PlaceSearchTool.ToolID:             PlaceSearchTool,
 	ImageGenTool.ToolID:                ImageGenTool,
 	ConversationAttachmentsTool.ToolID: ConversationAttachmentsTool,
-	ReadPDFTool.ToolID:                ReadPDFTool,
-	SearchPDFTool.ToolID:              SearchPDFTool,
+	ReadDocumentTool.ToolID:            ReadDocumentTool,
+	SearchDocumentTool.ToolID:          SearchDocumentTool,
 }
 
 func RegisterTool(tool utils.AITool) {
@@ -39,7 +39,7 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 	var selected = model.Tools
 
 	for _, tool := range Registry {
-		if tool.ToolID == ConversationAttachmentsTool.ToolID || tool.ToolID == ReadPDFTool.ToolID || tool.ToolID == SearchPDFTool.ToolID {
+		if tool.ToolID == ConversationAttachmentsTool.ToolID || tool.ToolID == ReadDocumentTool.ToolID || tool.ToolID == SearchDocumentTool.ToolID {
 			continue // handled separately below
 		}
 		if utils.ContainsString(selected, tool.ToolID) {
@@ -61,10 +61,10 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 		requests = append(requests, ConversationAttachmentsTool.ToolRequest)
 	}
 
-	// Force-include PDF tools when the conversation has document attachments
+	// Force-include document tools when the conversation has document attachments
 	if hasDocumentAttachments {
-		requests = append(requests, ReadPDFTool.ToolRequest)
-		requests = append(requests, SearchPDFTool.ToolRequest)
+		requests = append(requests, ReadDocumentTool.ToolRequest)
+		requests = append(requests, SearchDocumentTool.ToolRequest)
 	}
 
 	return requests
@@ -97,7 +97,7 @@ func GetClaudeRequests(model utils.Model, ClientSideTools []utils.FunctionToolsR
 	var selected = model.Tools
 
 	for _, tool := range Registry {
-		if tool.ToolID == ConversationAttachmentsTool.ToolID || tool.ToolID == ReadPDFTool.ToolID || tool.ToolID == SearchPDFTool.ToolID {
+		if tool.ToolID == ConversationAttachmentsTool.ToolID || tool.ToolID == ReadDocumentTool.ToolID || tool.ToolID == SearchDocumentTool.ToolID {
 			continue // handled separately below
 		}
 		if utils.ContainsString(selected, tool.ToolID) {
@@ -116,10 +116,10 @@ func GetClaudeRequests(model utils.Model, ClientSideTools []utils.FunctionToolsR
 		requests = append(requests, GetClaudeSchema(ConversationAttachmentsTool.ToolID))
 	}
 
-	// Force-include PDF tools when the conversation has document attachments
+	// Force-include document tools when the conversation has document attachments
 	if hasDocumentAttachments {
-		requests = append(requests, GetClaudeSchema(ReadPDFTool.ToolID))
-		requests = append(requests, GetClaudeSchema(SearchPDFTool.ToolID))
+		requests = append(requests, GetClaudeSchema(ReadDocumentTool.ToolID))
+		requests = append(requests, GetClaudeSchema(SearchDocumentTool.ToolID))
 	}
 
 	return requests

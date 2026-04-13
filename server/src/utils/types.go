@@ -21,7 +21,7 @@ type ContentImageURL struct {
 // ContentPart represents one element of a multi-part content array.
 // Used when a message contains mixed content (text + images).
 type ContentPart struct {
-	Type     string           `json:"type" bson:"type"` // "text", "image_url", "snippet", "file", "pdf"
+	Type     string           `json:"type" bson:"type"` // "text", "image_url", "snippet", "file", "pdf", "docx", "xlsx", "pptx"
 	Text     string           `json:"text,omitempty" bson:"text,omitempty"`
 	ImageURL *ContentImageURL `json:"image_url,omitempty" bson:"image_url,omitempty"`
 	Filename string           `json:"filename,omitempty" bson:"filename,omitempty"`
