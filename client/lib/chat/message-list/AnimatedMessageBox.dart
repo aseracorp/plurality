@@ -232,14 +232,19 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
                       p: TextStyle(
                         color: widget.isBot ? botFG : Colors.white,
                         fontSize: widget.mini ? 3 : 16,
+                        height: widget.mini ? 1.0 : 1.5,
                       ),
+                      pPadding: EdgeInsets.only(bottom: widget.mini ? 0 : 6),
                       h1: TextStyle(fontSize: widget.mini ? 6 : 24),
+                      h1Padding: EdgeInsets.only(top: widget.mini ? 0 : 18, bottom: widget.mini ? 0 : 8),
                       h2: TextStyle(fontSize: widget.mini ? 5 : 20),
+                      h2Padding: EdgeInsets.only(top: widget.mini ? 0 : 16, bottom: widget.mini ? 0 : 6),
                       h3: TextStyle(fontSize: widget.mini ? 4 : 18),
+                      h3Padding: EdgeInsets.only(top: widget.mini ? 0 : 14, bottom: widget.mini ? 0 : 6),
                       h4: TextStyle(fontSize: widget.mini ? 4 : 16),
                       h5: TextStyle(fontSize: widget.mini ? 4 : 14),
                       h6: TextStyle(fontSize: widget.mini ? 4 : 12),
-                      blockquote: TextStyle(fontSize: widget.mini ? 3 : 16),
+                      blockquote: TextStyle(fontSize: widget.mini ? 3 : 16, height: widget.mini ? 1.0 : 1.5),
                       listBullet: TextStyle(fontSize: widget.mini ? 3 : 16),
                       blockquotePadding: EdgeInsets.symmetric(
                         horizontal: widget.mini ? 2 : 8,
@@ -252,16 +257,27 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
                         bottom: 0,
                       ),
                       listIndent: widget.mini ? 1 : 24,
+                      codeblockPadding: EdgeInsets.symmetric(vertical: widget.mini ? 0 : 8),
                       tableHead: TextStyle(fontSize: widget.mini ? 3 : 16),
                       tableBody: TextStyle(fontSize: widget.mini ? 3 : 16),
                       tablePadding: EdgeInsets.symmetric(
                         horizontal: widget.mini ? 0 : 8,
-                        vertical: widget.mini ? 0 : 4,
+                        vertical: widget.mini ? 0 : 16,
                       ),
                       tableCellsPadding: EdgeInsets.symmetric(
                         horizontal: widget.mini ? 2 : 8,
-                        vertical: widget.mini ? 1 : 4,
+                        vertical: widget.mini ? 1 : 8,
                       ),
+                      horizontalRuleDecoration: BoxDecoration(
+                        border: Border(
+                          top: BorderSide(color: Colors.transparent, width: widget.mini ? 0 : 12),
+                          bottom: BorderSide(
+                            color: (widget.isBot ? botFG : Colors.white).withOpacity(0.2),
+                            width: 1,
+                          ),
+                        ),
+                      ),
+                      blockSpacing: widget.mini ? 0 : 16,
                       codeblockDecoration: BoxDecoration(
                         color: Colors.transparent,
                         borderRadius: BorderRadius.circular(0),

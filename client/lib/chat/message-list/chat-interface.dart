@@ -835,6 +835,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       mainAxisAlignment: MainAxisAlignment.center,
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
+        const SizedBox(height: 30),
         if (widget.conversationId.isEmpty && _miniAppSelected == null)
           Center(
             child: Text(

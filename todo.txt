@@ -27,6 +27,8 @@
 
 - CHEAPER ICON GEN (Flux 2 )
 
+- can you study the attachment system and function calls? i'd like to explore being able to use attachments as input to function calls, the main use case I    can think of is image edit (using Flux with input image(s) for edits)  
+
 # private MVP2 - bigger
 - MCP: tool call output is not always text!!
 - MCP: MCP should enable/disable the entire MCP instead of individual tools
