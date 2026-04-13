@@ -10,7 +10,7 @@ import 'dart:io';
 class ApiService {
   static final ApiService _instance = ApiService._internal();
   final AuthService _authService = AuthService();
-  final String _baseUrl =
+  static final String baseUrl =
       kReleaseMode
           ? 'https://app.plurality-ai.com'
           : 'http://192.168.1.102:8090';
@@ -31,7 +31,7 @@ class ApiService {
     }
 
     final response = await http.get(
-      Uri.parse('$_baseUrl/check'),
+      Uri.parse('$baseUrl/check'),
       headers: {'Authorization': 'Bearer $firebaseToken'},
     );
 
@@ -55,7 +55,7 @@ class ApiService {
 
       // Prepare and send the request
       final response = await http.post(
-        Uri.parse('$_baseUrl/$endpoint'),
+        Uri.parse('$baseUrl/$endpoint'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $firebaseToken',
@@ -105,7 +105,7 @@ class ApiService {
     bool isCall = false,
     List<Map<String, dynamic>>? clientSideTools,
   }) async {
-    final request = http.Request('POST', Uri.parse('$_baseUrl/chat'));
+    final request = http.Request('POST', Uri.parse('$baseUrl/chat'));
     request.headers['Content-Type'] = 'application/json';
     request.headers['Authorization'] =
         'Bearer ${await _authService.getCurrentUserToken()}';
@@ -142,7 +142,7 @@ class ApiService {
   Future<Stream<SSEEvent>> connectStream(String conversationId) async {
     final request = http.Request(
       'GET',
-      Uri.parse('$_baseUrl/chat/stream/$conversationId'),
+      Uri.parse('$baseUrl/chat/stream/$conversationId'),
     );
     request.headers['Authorization'] =
         'Bearer ${await _authService.getCurrentUserToken()}';
@@ -162,7 +162,7 @@ class ApiService {
   Future<void> cancelChat(String conversationId) async {
     final token = await _authService.getCurrentUserToken();
     await http.post(
-      Uri.parse('$_baseUrl/chat/cancel/$conversationId'),
+      Uri.parse('$baseUrl/chat/cancel/$conversationId'),
       headers: {'Authorization': 'Bearer $token'},
     );
   }
@@ -171,7 +171,7 @@ class ApiService {
   Future<List<Map<String, dynamic>>> getServerTools() async {
     final token = await _authService.getCurrentUserToken();
     final response = await http.get(
-      Uri.parse('$_baseUrl/v1/tools'),
+      Uri.parse('$baseUrl/v1/tools'),
       headers: {'Authorization': 'Bearer $token'},
     );
     if (response.statusCode == 200) {
@@ -183,7 +183,7 @@ class ApiService {
   /// Connect to the global status stream (SSE). Returns lightweight StatusEvents
   /// for all active conversations — no content, just state changes.
   Future<Stream<Map<String, dynamic>>> connectStatusStream() async {
-    final request = http.Request('GET', Uri.parse('$_baseUrl/status/stream'));
+    final request = http.Request('GET', Uri.parse('$baseUrl/status/stream'));
     request.headers['Authorization'] =
         'Bearer ${await _authService.getCurrentUserToken()}';
 
@@ -210,7 +210,7 @@ class ApiService {
 
       // Make the GET request
       final response = await http.get(
-        Uri.parse('$_baseUrl/conversations'),
+        Uri.parse('$baseUrl/conversations'),
         headers: {'Authorization': 'Bearer $firebaseToken'},
       );
 
@@ -254,7 +254,7 @@ class ApiService {
 
       // Make the DELETE request
       final response = await http.delete(
-        Uri.parse('$_baseUrl/conversation/$conversationID'),
+        Uri.parse('$baseUrl/conversation/$conversationID'),
         headers: {'Authorization': 'Bearer $firebaseToken'},
       );
 
@@ -283,7 +283,7 @@ class ApiService {
       }
       // Make the GET request
       final response = await http.get(
-        Uri.parse('$_baseUrl/conversation/$conversationID'),
+        Uri.parse('$baseUrl/conversation/$conversationID'),
         headers: {'Authorization': 'Bearer $firebaseToken'},
       );
       // Process the response
@@ -315,7 +315,7 @@ class ApiService {
       }
       // Make the GET request
       final response = await http.get(
-        Uri.parse('$_baseUrl/generate-title/$conversationID'),
+        Uri.parse('$baseUrl/generate-title/$conversationID'),
         headers: {'Authorization': 'Bearer $firebaseToken'},
       );
       // Process the response
@@ -347,7 +347,7 @@ class ApiService {
       }
       // Make the GET request
       final response = await http.get(
-        Uri.parse('$_baseUrl/balance'),
+        Uri.parse('$baseUrl/balance'),
         headers: {'Authorization': 'Bearer $firebaseToken'},
       );
       // Process the response
@@ -381,7 +381,7 @@ class ApiService {
       }
       // Make the DELETE request
       final response = await http.delete(
-        Uri.parse('$_baseUrl/delete-user'),
+        Uri.parse('$baseUrl/delete-user'),
         headers: {'Authorization': 'Bearer $firebaseToken'},
       );
       // Process the response
@@ -415,7 +415,7 @@ class ApiService {
 
       // Make the PUT request
       final response = await http.post(
-        Uri.parse("$_baseUrl/rename-conversation/$conversationID"),
+        Uri.parse("$baseUrl/rename-conversation/$conversationID"),
         headers: {
           "Content-Type": "application/json",
           "Authorization": "Bearer $firebaseToken",
@@ -455,7 +455,7 @@ class ApiService {
 
       // Make the POST request (based on the Go code, this uses POST method)
       final response = await http.post(
-        Uri.parse('$_baseUrl/set-conversation-folder/$conversationID'),
+        Uri.parse('$baseUrl/set-conversation-folder/$conversationID'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $firebaseToken',
@@ -493,7 +493,7 @@ class ApiService {
       }
 
       // Create the request
-      final request = http.Request('POST', Uri.parse('$_baseUrl/transcribe'));
+      final request = http.Request('POST', Uri.parse('$baseUrl/transcribe'));
       request.headers['Content-Type'] = 'application/json';
       request.headers['Authorization'] = 'Bearer $firebaseToken';
 

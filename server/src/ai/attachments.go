@@ -1,8 +1,10 @@
 package ai
 
 import (
+	"encoding/base64"
 	"fmt"
 
+	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -21,7 +23,7 @@ const kb = 1024
 //
 // Returns the processed messages and whether the conversation has any attachments.
 func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.Message, bool) {
-	index := utils.BuildAttachmentIndex(messages)
+	index := utils.BuildAttachmentIndex(messages, storage.FileSizeFromURL)
 
 	if len(index.Items) == 0 {
 		utils.Debug("[Attachments] No attachments found in conversation")
@@ -196,5 +198,50 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 
 	utils.Debug("[Attachments] Indexed and removed %d attachment(s) (%d KB saved)", removedCount, savedBytes/kb)
 
+	// Re-inflate internal URLs back to data URIs so LLMs can see the images
+	finalResult = reInflateImageURLs(finalResult)
+
 	return finalResult, true
+}
+
+// reInflateImageURLs reads image files from disk for any ContentPart that uses
+// an internal /attachments/... URL, converting back to a data: URI.
+// This is called on the ephemeral copy of messages before sending to LLMs.
+func reInflateImageURLs(messages []utils.Message) []utils.Message {
+	for i, msg := range messages {
+		parts := msg.ContentParts()
+		if len(parts) == 0 {
+			continue
+		}
+
+		changed := false
+		newParts := make([]utils.ContentPart, len(parts))
+		copy(newParts, parts)
+
+		for j, part := range newParts {
+			if part.Type == "image_url" && part.ImageURL != nil && storage.IsInternalURL(part.ImageURL.URL) {
+				data, mimeType, err := storage.ReadBlob(part.ImageURL.URL)
+				if err != nil {
+					utils.Error("[Attachments] Error reading blob for re-inflation", err)
+					// Replace with text so the LLM doesn't see an opaque internal URL
+					newParts[j] = utils.ContentPart{
+						Type: "text",
+						Text: "[Image unavailable: file could not be read from storage]",
+					}
+					changed = true
+					continue
+				}
+				b64 := base64.StdEncoding.EncodeToString(data)
+				newParts[j].ImageURL = &utils.ContentImageURL{
+					URL: fmt.Sprintf("data:%s;base64,%s", mimeType, b64),
+				}
+				changed = true
+			}
+		}
+
+		if changed {
+			messages[i].Content = utils.NewPartsContent(newParts)
+		}
+	}
+	return messages
 }

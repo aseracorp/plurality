@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,10 +9,10 @@ import '../../api/service.dart';
 import '../../api/chat_service.dart';
 import '../../api/tts.dart';
 import '../../utils/types.dart';
+import '../../utils/image_loader.dart';
 import '../../auth/account.dart';
 import '../budget.dart';
 import 'conversation-list.dart';
-import 'dart:convert';
 
 String _getToolDisplayName(String toolName) {
   if (toolName.isEmpty) return 'Using tool...';
@@ -163,28 +164,42 @@ class ConversationItem extends StatelessWidget {
         }
 
         // Avatar: animated border when active
-        Widget avatar = CircleAvatar(
-          backgroundColor:
-              conversation.icon != null && conversation.icon!.isNotEmpty
-                  ? Colors.transparent
-                  : Colors.primaries[conversation.title.hashCode.abs() % Colors.primaries.length],
-          child:
-              conversation.icon != null && conversation.icon!.isNotEmpty
-                  ? ClipOval(
+        Widget avatar;
+        if (conversation.icon != null && conversation.icon!.isNotEmpty) {
+          avatar = FutureBuilder<Uint8List>(
+            future: loadImageBytes(conversation.icon!),
+            builder: (context, snapshot) {
+              if (snapshot.hasData) {
+                return CircleAvatar(
+                  backgroundColor: Colors.transparent,
+                  child: ClipOval(
                     child: Image.memory(
-                      base64Decode(conversation.icon!),
+                      snapshot.data!,
                       width: 250,
                       height: 250,
                       fit: BoxFit.cover,
                     ),
-                  )
-                  : Text(
-                    conversation.title.isNotEmpty
-                        ? conversation.title[0].toUpperCase()
-                        : '?',
-                    style: TextStyle(color: Colors.white),
                   ),
-        );
+                );
+              }
+              return CircleAvatar(
+                backgroundColor: Colors.primaries[conversation.title.hashCode.abs() % Colors.primaries.length],
+                child: Text(
+                  conversation.title.isNotEmpty ? conversation.title[0].toUpperCase() : '?',
+                  style: TextStyle(color: Colors.white),
+                ),
+              );
+            },
+          );
+        } else {
+          avatar = CircleAvatar(
+            backgroundColor: Colors.primaries[conversation.title.hashCode.abs() % Colors.primaries.length],
+            child: Text(
+              conversation.title.isNotEmpty ? conversation.title[0].toUpperCase() : '?',
+              style: TextStyle(color: Colors.white),
+            ),
+          );
+        }
 
         if (isActive) {
           avatar = _AnimatedBorderAvatar(child: avatar);

@@ -10,6 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
+	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -138,12 +139,10 @@ func DeleteConversation(ctx context.Context, id string) error {
 	i, _ := primitive.ObjectIDFromHex(id)
 
 	res, err := collection.DeleteOne(ctx, bson.M{
-		// convert to ObjectID
 		"_id":     i,
 		"user_id": userID,
 	})
 
-	// check res
 	if res.DeletedCount == 0 {
 		return errors.New("conversation not found")
 	}
@@ -313,6 +312,11 @@ func DeleteAllConversations(ctx context.Context, userID string) (int64, error) {
 	}
 
 	utils.Log("[DeleteAllConversations] Deleted %d conversations for user ID: %s", deleteResult.DeletedCount, userID)
+
+	// Clean up all attachment files for this user
+	if cleanErr := storage.DeleteUserFiles(userID); cleanErr != nil {
+		utils.Error("[DeleteAllConversations] Error cleaning up user files", cleanErr)
+	}
 
 	return deleteResult.DeletedCount, nil
 }

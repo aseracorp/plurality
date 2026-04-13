@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -23,10 +24,15 @@ type AttachmentIndex struct {
 	ContentMap map[string]string `json:"-"` // ID -> full content (not serialized)
 }
 
+// FileSizeFunc resolves the size of a file-backed attachment given its internal
+// URL path (e.g. "/attachments/uid/cid/file.png"). Callers inject this so that
+// the utils package doesn't depend on the storage package.
+type FileSizeFunc func(urlPath string) int64
+
 // BuildAttachmentIndex scans conversation messages and builds an index of all
-// non-text attachments. This includes user-uploaded images, snippets, files,
-// and tool results that contain base64 data (e.g. generated images).
-func BuildAttachmentIndex(messages []Message) AttachmentIndex {
+// non-text attachments. fileSizeFn is called for internal-URL attachments to
+// get their on-disk size; pass nil if file-backed attachments are not expected.
+func BuildAttachmentIndex(messages []Message, fileSizeFn FileSizeFunc) AttachmentIndex {
 	index := AttachmentIndex{
 		Items:      []AttachmentMeta{},
 		ContentMap: make(map[string]string),
@@ -45,13 +51,28 @@ func BuildAttachmentIndex(messages []Message) AttachmentIndex {
 
 		for partIdx, part := range parts {
 			content := ""
+			isInternalURL := false
 			if part.Type == "image_url" && part.ImageURL != nil {
 				content = part.ImageURL.URL
+				isInternalURL = strings.HasPrefix(content, "/attachments/")
 			} else if part.Text != "" {
 				content = part.Text
 			}
 
-			if content == "" || len(content) < 3*1024 {
+			if content == "" {
+				continue
+			}
+
+			// For internal URLs, get size from disk; for inline, check minimum size
+			contentSize := len(content)
+			if isInternalURL {
+				if fileSizeFn != nil {
+					contentSize = int(fileSizeFn(content))
+				}
+				if contentSize == 0 {
+					continue
+				}
+			} else if contentSize < 3*1024 {
 				continue
 			}
 
@@ -61,23 +82,34 @@ func BuildAttachmentIndex(messages []Message) AttachmentIndex {
 			meta := AttachmentMeta{
 				ID:           id,
 				Type:         part.Type,
-				Size:         len(content),
+				Size:         contentSize,
 				MessageIndex: msgIdx,
 				PartIndex:    partIdx,
 			}
 
-			// Try to extract extension from content
 			if part.Type == "image_url" {
-				meta.Ext = guessImageExt(content)
+				if isInternalURL {
+					meta.Ext = guessExtFromPath(content)
+				} else {
+					meta.Ext = guessImageExt(content)
+				}
 			}
 
 			index.Items = append(index.Items, meta)
 			index.ContentMap[id] = content
 		}
-
 	}
 
 	return index
+}
+
+// guessExtFromPath extracts the file extension from an internal URL path.
+func guessExtFromPath(path string) string {
+	ext := filepath.Ext(path)
+	if ext != "" {
+		return strings.TrimPrefix(ext, ".")
+	}
+	return "image"
 }
 
 // guessImageExt tries to determine the image format from a data URI or URL.
@@ -91,7 +123,6 @@ func guessImageExt(content string) string {
 	} else if strings.HasPrefix(content, "data:image/webp") {
 		return "webp"
 	} else if strings.HasPrefix(content, "data:image/") {
-		// Extract MIME subtype
 		parts := strings.SplitN(content, ";", 2)
 		if len(parts) > 0 {
 			mime := strings.TrimPrefix(parts[0], "data:image/")

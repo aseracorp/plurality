@@ -60,15 +60,13 @@ func convertMessagesToClaude(messages []utils.Message, model utils.Model) ([]Cla
 				switch part.Type {
 				case "image_url":
 					if part.ImageURL != nil {
-						imageData := part.ImageURL.URL
-						imageData = strings.TrimPrefix(imageData, "data:image/jpeg;base64,")
-						imageData = strings.TrimPrefix(imageData, "data:image/png;base64,")
+						mediaType, b64Data := parseDataURI(part.ImageURL.URL)
 						toolContent = append(toolContent, ClaudeContentReq{
 							Type: "image",
 							Source: &ClaudeImageSourceReq{
 								Type:      "base64",
-								MediaType: "image/jpeg",
-								Data:      imageData,
+								MediaType: mediaType,
+								Data:      b64Data,
 							},
 						})
 					}
@@ -118,15 +116,13 @@ func convertMessagesToClaude(messages []utils.Message, model utils.Model) ([]Cla
 				switch part.Type {
 				case "image_url":
 					if part.ImageURL != nil {
-						imageData := part.ImageURL.URL
-						imageData = strings.TrimPrefix(imageData, "data:image/jpeg;base64,")
-						imageData = strings.TrimPrefix(imageData, "data:image/png;base64,")
+						mediaType, b64Data := parseDataURI(part.ImageURL.URL)
 						contents = append(contents, ClaudeContentReq{
 							Type: "image",
 							Source: &ClaudeImageSourceReq{
 								Type:      "base64",
-								MediaType: "image/jpeg",
-								Data:      imageData,
+								MediaType: mediaType,
+								Data:      b64Data,
 							},
 						})
 					}
@@ -245,4 +241,15 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, conversati
 	}
 
 	return resp.Body, int(priceToken), nil
+}
+
+// parseDataURI splits a "data:mime/type;base64,AAAA..." URI into media type and raw base64.
+func parseDataURI(dataURI string) (string, string) {
+	commaIdx := strings.Index(dataURI, ",")
+	if commaIdx < 0 {
+		return "image/jpeg", dataURI
+	}
+	header := dataURI[5:commaIdx] // strip "data:"
+	mediaType := strings.TrimSuffix(header, ";base64")
+	return mediaType, dataURI[commaIdx+1:]
 }

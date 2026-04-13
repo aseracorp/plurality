@@ -2,10 +2,12 @@ package ai_tools
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -58,7 +60,7 @@ func execConversationAttachments(_ context.Context, input string, conv utils.Con
 	mode := params["mode"]
 	utils.Log("[Attachments] conversation_attachments called with mode=%s", mode)
 
-	index := utils.BuildAttachmentIndex(conv.Messages)
+	index := utils.BuildAttachmentIndex(conv.Messages, storage.FileSizeFromURL)
 
 	if len(index.Items) == 0 {
 		utils.Log("[Attachments] No attachments found")
@@ -136,12 +138,24 @@ func handleGet(index utils.AttachmentIndex, attachmentsJSON string) utils.Messag
 		sliced := content[from:to]
 
 		if attMeta != nil && attMeta.Type == "image_url" {
-			// Return as a proper image content part so the AI can see it
+			// Resolve internal URLs to data URIs so the AI can see the image
+			imageURL := content
+			if storage.IsInternalURL(content) {
+				data, mimeType, err := storage.ReadBlob(content)
+				if err != nil {
+					parts = append(parts, utils.ContentPart{
+						Type: "text",
+						Text: fmt.Sprintf("[Error reading image %s: %s]", req.ID, err.Error()),
+					})
+					continue
+				}
+				imageURL = fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(data))
+				total = len(data)
+			}
 			parts = append(parts, utils.ContentPart{
 				Type:     "image_url",
-				ImageURL: &utils.ContentImageURL{URL: sliced},
+				ImageURL: &utils.ContentImageURL{URL: imageURL},
 			})
-			// Add a text label so the AI knows which attachment this is
 			parts = append(parts, utils.ContentPart{
 				Type: "text",
 				Text: fmt.Sprintf("[Retrieved image: %s (%d bytes)]", req.ID, total),

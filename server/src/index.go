@@ -9,6 +9,7 @@ import (
 	"github.com/azukaar/plurality/src/ai"
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/miniapps"
+	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/user"
 	"github.com/azukaar/plurality/src/utils"
 	"github.com/gorilla/mux"
@@ -21,6 +22,7 @@ func main() {
 	// Initialize Firebase Auth
 	utils.InitFirebase()
 	db.InitDB()
+	storage.Init()
 
 	utils.Log("[main] Starting server on :8090")
 
@@ -73,6 +75,9 @@ func main() {
 				http.NotFound(w, r)
 			}
 		}).Methods("GET")
+
+	// Attachment file serving (authenticated)
+	r.HandleFunc("/attachments/{userId}/{month}/{filename}", utils.AuthMiddleware(storage.ServeAttachment)).Methods("GET", "OPTIONS")
 
 	r.HandleFunc("/stripe-webhook", HandleStripeWebhook).Methods("POST")
 

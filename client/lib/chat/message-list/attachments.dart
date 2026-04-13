@@ -23,10 +23,7 @@ class AttachmentViewer extends StatelessWidget {
   }) : super(key: key);
 
   String summarizeText(int nb, String text) {
-    // Step 1 keep 5 lines
-
     String res = "";
-
     List<String> lines = text.split('\n');
     if (lines.length > nb) {
       res = lines.sublist(0, nb).join('\n');
@@ -34,7 +31,6 @@ class AttachmentViewer extends StatelessWidget {
       res = text;
     }
 
-    // Step 2 keep 15 characters per line
     List<String> resLines = res.split('\n');
     res = "";
     for (var line in resLines) {
@@ -90,6 +86,7 @@ class AttachmentViewer extends StatelessWidget {
         summary: summarizeText(10, attachment.content),
       );
     } else if (attachment.type == "image_url" && editMode) {
+      // Edit mode: content is a local data: URI from the file picker
       return Stack(
         children: [
           Padding(
@@ -99,7 +96,7 @@ class AttachmentViewer extends StatelessWidget {
               child: Container(
                 constraints: BoxConstraints(maxHeight: 100),
                 child: Image.memory(
-                  base64Decode((attachment?.content.split(",")?.last) ?? ''),
+                  base64Decode(attachment.content.split(",").last),
                   width: mini ? 10 : 100,
                   fit: BoxFit.cover,
                   cacheWidth: 100,
@@ -122,11 +119,7 @@ class AttachmentViewer extends StatelessWidget {
       );
     } else if (attachment.type == "image_url") {
       return ImagePreviewComponent(imageUrl: attachment.content, mini: mini);
-    } /*else if (attachment.type == "tool_use" && !mini) {
-      return ToolCallBadge(toolCall: toolCall!, isLoading: loading);
-    } else if (attachment.type == "tool_result" && !mini) {
-      return Text(attachment.content);
-    }*/
+    }
     return Container();
   }
 }

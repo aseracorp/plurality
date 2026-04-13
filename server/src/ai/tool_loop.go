@@ -8,6 +8,7 @@ import (
 
 	"github.com/azukaar/plurality/src/ai_tools"
 	"github.com/azukaar/plurality/src/db"
+	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -134,15 +135,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 
 			resultContent := executeServerTool(ar.Ctx, ar, *tc, payload)
 
-			ar.Broadcast(SSEEvent{
-				Type:           "tool_result",
-				ToolCallID:     tc.ID,
-				ToolName:       tc.Function.Name,
-				ToolResult:     resultContent.TextContent(),
-				IsServer:       true,
-				ConversationID: ar.ConversationID.Hex(),
-			})
-
+			// Extract blobs from tool result before saving
 			toolMessage := utils.Message{
 				Role:       "tool",
 				Content:    resultContent,
@@ -150,6 +143,19 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				Name:       tc.Function.Name,
 				Timestamp:  time.Now().Format(time.RFC3339),
 			}
+			if err := storage.ExtractBlobsFromMessage(ar.UserID, &toolMessage); err != nil {
+				utils.Error("[LLMLoop] Error extracting blobs from tool result", err)
+			}
+
+			ar.Broadcast(SSEEvent{
+				Type:           "tool_result",
+				ToolCallID:     tc.ID,
+				ToolName:       tc.Function.Name,
+				ToolResult:     toolMessage.TextContent(),
+				IsServer:       true,
+				ConversationID: ar.ConversationID.Hex(),
+			})
+
 			updatedConv, _, pushErr := db.PushMessage(ctx, conversation, toolMessage)
 			if pushErr != nil {
 				utils.Error("[LLMLoop] Error saving tool result to DB", pushErr)

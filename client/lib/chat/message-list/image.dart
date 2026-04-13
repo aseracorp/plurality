@@ -1,9 +1,10 @@
-import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:file_saver/file_saver.dart';
 import 'package:share_plus/share_plus.dart';
+import '../../utils/image_loader.dart';
 
-class ImagePreviewComponent extends StatelessWidget {
+class ImagePreviewComponent extends StatefulWidget {
   final String imageUrl;
   final bool mini;
 
@@ -14,58 +15,88 @@ class ImagePreviewComponent extends StatelessWidget {
   }) : super(key: key);
 
   @override
-  Widget build(BuildContext context) {
-    // Extract the base64 image data
-    final imageData = imageUrl.split(",").last;
+  State<ImagePreviewComponent> createState() => _ImagePreviewComponentState();
+}
 
+class _ImagePreviewComponentState extends State<ImagePreviewComponent> {
+  Future<Uint8List>? _imageFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _imageFuture = loadImageBytes(widget.imageUrl);
+  }
+
+  @override
+  void didUpdateWidget(ImagePreviewComponent oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.imageUrl != widget.imageUrl) {
+      _imageFuture = loadImageBytes(widget.imageUrl);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Padding(
-      key: ValueKey('image_${imageUrl.hashCode}'),
+      key: ValueKey('image_${widget.imageUrl.hashCode}'),
       padding: const EdgeInsets.only(bottom: 8.0),
-      child: GestureDetector(
-        onTap: () => {if (!mini) _showImagePreviewModal(context, imageData)},
-        child: ClipRRect(
-          borderRadius:
-              mini ? BorderRadius.circular(2.0) : BorderRadius.circular(8.0),
-          child: SizedBox(
-            height: mini ? 20 : 200,
-            child: Image.memory(
-              base64Decode(imageData),
-              height: mini ? 20 : 200,
-              fit: BoxFit.cover,
-              cacheWidth: 200,
-              gaplessPlayback: true,
+      child: FutureBuilder<Uint8List>(
+        future: _imageFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return SizedBox(
+              height: widget.mini ? 20 : 200,
+              width: widget.mini ? 20 : 200,
+              child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            );
+          }
+          if (snapshot.hasError || !snapshot.hasData) {
+            return SizedBox(
+              height: widget.mini ? 20 : 200,
+              child: const Center(child: Icon(Icons.broken_image, color: Colors.grey)),
+            );
+          }
+          final imageData = snapshot.data!;
+          return GestureDetector(
+            onTap: () {
+              if (!widget.mini) _showImagePreviewModal(context, imageData);
+            },
+            child: ClipRRect(
+              borderRadius: widget.mini
+                  ? BorderRadius.circular(2.0)
+                  : BorderRadius.circular(8.0),
+              child: SizedBox(
+                height: widget.mini ? 20 : 200,
+                child: Image.memory(
+                  imageData,
+                  height: widget.mini ? 20 : 200,
+                  fit: BoxFit.cover,
+                  cacheWidth: 200,
+                  gaplessPlayback: true,
+                ),
+              ),
             ),
-          ),
-        ),
+          );
+        },
       ),
     );
   }
 
-  void _showImagePreviewModal(BuildContext context, String imageData) {
-    // First, decode the image to get its dimensions
-    final decodedImage = base64Decode(imageData);
-
+  void _showImagePreviewModal(BuildContext context, Uint8List imageData) {
     showDialog(
       context: context,
       builder: (BuildContext context) {
         return Dialog(
-          // Remove default inset padding to allow custom sizing
           insetPadding: EdgeInsets.zero,
-          // Make the dialog background transparent
           backgroundColor: Colors.transparent,
-          // Use IntrinsicWidth to make the dialog only as wide as its content
           child: IntrinsicWidth(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Custom app bar with same width as image
                 Container(
                   color: Colors.black.withOpacity(0.7),
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 8,
-                    horizontal: 8,
-                  ),
+                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -83,22 +114,15 @@ class ImagePreviewComponent extends StatelessWidget {
                       Row(
                         children: [
                           IconButton(
-                            icon: const Icon(
-                              Icons.download,
-                              color: Colors.white,
-                            ),
+                            icon: const Icon(Icons.download, color: Colors.white),
                             onPressed: () async {
                               await FileSaver.instance.saveFile(
-                                name:
-                                    'image_${DateTime.now().millisecondsSinceEpoch}.jpg',
-                                bytes: decodedImage,
+                                name: 'image_${DateTime.now().millisecondsSinceEpoch}.jpg',
+                                bytes: imageData,
                               );
-
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                  content: Text(
-                                    'Image saved to download folder',
-                                  ),
+                                  content: Text('Image saved to download folder'),
                                 ),
                               );
                             },
@@ -111,7 +135,7 @@ class ImagePreviewComponent extends StatelessWidget {
                             icon: const Icon(Icons.share, color: Colors.white),
                             onPressed: () async {
                               await Share.shareXFiles(
-                                [XFile.fromData(decodedImage)],
+                                [XFile.fromData(imageData)],
                                 fileNameOverrides: ['image.jpg'],
                               );
                             },
@@ -124,7 +148,6 @@ class ImagePreviewComponent extends StatelessWidget {
                     ],
                   ),
                 ),
-                // Wrap the InteractiveViewer in a container with constraints to handle large images
                 Container(
                   constraints: BoxConstraints(
                     maxWidth: MediaQuery.of(context).size.width * 0.9,
@@ -137,7 +160,7 @@ class ImagePreviewComponent extends StatelessWidget {
                     minScale: 0.5,
                     maxScale: 4.0,
                     child: Image.memory(
-                      decodedImage,
+                      imageData,
                       fit: BoxFit.contain,
                       gaplessPlayback: true,
                     ),

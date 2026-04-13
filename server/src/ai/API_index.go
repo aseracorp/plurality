@@ -12,6 +12,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
 	"github.com/azukaar/plurality/src/db"
+	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -23,6 +24,9 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		utils.SendHTTPError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Limit request body to 100MB
+	r.Body = http.MaxBytesReader(w, r.Body, 100*1024*1024)
 
 	var payload ChatPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -50,13 +54,18 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		partialConversation.MiniApp = &payload.MiniApp
 	}
 
+	userID, _ := r.Context().Value("userID").(string)
+
 	var conversation utils.Conversation
 
 	if len(payload.ToolResults) > 0 {
 		// Client is submitting tool results — push each to DB, then resume LLM loop
-		for _, toolResult := range payload.ToolResults {
-			toolResult.Timestamp = time.Now().Format(time.RFC3339)
-			updatedConversation, _, err := db.PushMessage(r.Context(), partialConversation, toolResult)
+		for i := range payload.ToolResults {
+			payload.ToolResults[i].Timestamp = time.Now().Format(time.RFC3339)
+			if err := storage.ExtractBlobsFromMessage(userID, &payload.ToolResults[i]); err != nil {
+				utils.Error("[HandleChat] Error extracting blobs from tool result", err)
+			}
+			updatedConversation, _, err := db.PushMessage(r.Context(), partialConversation, payload.ToolResults[i])
 			if err != nil {
 				utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -67,6 +76,9 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		// New user message
 		userMessage := payload.Messages[0]
 		userMessage.Timestamp = time.Now().Format(time.RFC3339)
+		if err := storage.ExtractBlobsFromMessage(userID, &userMessage); err != nil {
+			utils.Error("[HandleChat] Error extracting blobs from user message", err)
+		}
 		updatedConversation, _, err := db.PushMessage(r.Context(), partialConversation, userMessage)
 		if err != nil {
 			utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
@@ -289,13 +301,20 @@ func generateTitleAndIcon(ctx context.Context, conversation utils.Conversation) 
 		return "", "", fmt.Errorf("generating icon: %w", err)
 	}
 
-	if err := db.UpdateConversationMetadata(ctx, conversation.ID, title, iconData); err != nil {
+	// Save icon to file storage
+	iconURL, err := storage.ExtractIconBlob(conversation.UserID, iconData)
+	if err != nil {
+		utils.Error("[generateTitleAndIcon] Error saving icon to storage", err)
+		iconURL = "" // non-fatal
+	}
+
+	if err := db.UpdateConversationMetadata(ctx, conversation.ID, title, iconURL); err != nil {
 		return "", "", fmt.Errorf("updating metadata: %w", err)
 	}
 
 	db.RemoveCredits(ctx, 100, utils.UserAction{Type: TITLE, Provider: NONE, Model: utils.Model{}})
 
-	return title, iconData, nil
+	return title, iconURL, nil
 }
 
 func API_HandleTitleGeneration(w http.ResponseWriter, r *http.Request) {
