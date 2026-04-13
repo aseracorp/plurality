@@ -32,12 +32,12 @@ var WeatherTool = utils.AITool{
 	},
 	LoadingString: "Getting the weather...",
 	IconURL:       "https://cdn-icons-png.flaticon.com/512/220/220221.png",
-	Exec: func(args string) string {
+	Exec: func(args string, _ utils.Conversation) utils.MessageContent {
 		argsJson := utils.ParseJson(args)
 
 		location := argsJson["location"].(string)
 		unit := argsJson["unit"].(string)
 
-		return "The weather in " + location + " is 25 degrees " + unit
+		return utils.NewTextContent("The weather in " + location + " is 25 degrees " + unit)
 	},
 }

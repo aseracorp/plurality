@@ -54,18 +54,56 @@ func convertMessagesToClaude(messages []utils.Message, model utils.Model) ([]Cla
 		case "tool":
 			// Tool result messages become tool_result content blocks.
 			// Claude requires tool_result to be in a "user" role message.
-			toolResultContent := msg.TextContent()
-			if ai_tools.ShouldStripResponse(toolResultContent) {
-				toolResultContent = "Tool result displayed to user."
+			// If the tool returned image parts, include them as image blocks.
+			var toolContent []ClaudeContentReq
+			for _, part := range msg.ContentParts() {
+				switch part.Type {
+				case "image_url":
+					if part.ImageURL != nil {
+						imageData := part.ImageURL.URL
+						imageData = strings.TrimPrefix(imageData, "data:image/jpeg;base64,")
+						imageData = strings.TrimPrefix(imageData, "data:image/png;base64,")
+						toolContent = append(toolContent, ClaudeContentReq{
+							Type: "image",
+							Source: &ClaudeImageSourceReq{
+								Type:      "base64",
+								MediaType: "image/jpeg",
+								Data:      imageData,
+							},
+						})
+					}
+				default:
+					text := part.Text
+					if text != "" && msg.Name != "conversation_attachments" && ai_tools.ShouldStripResponse(text) {
+						text = "Tool result displayed to user."
+					}
+					if text != "" {
+						priceEstimate += float64(len(text)) / 4.0
+						toolContent = append(toolContent, ClaudeContentReq{
+							Type: "text",
+							Text: text,
+						})
+					}
+				}
 			}
-			if toolResultContent != "" {
-				priceEstimate += float64(len(toolResultContent)) / 4.0
+			if len(toolContent) == 0 {
+				continue
 			}
-			contents = append(contents, ClaudeContentReq{
-				Type:      "tool_result",
-				ToolUseID: msg.ToolCallID,
-				Content:   toolResultContent,
-			})
+			// If only one text block, use simple string content
+			if len(toolContent) == 1 && toolContent[0].Type == "text" {
+				contents = append(contents, ClaudeContentReq{
+					Type:      "tool_result",
+					ToolUseID: msg.ToolCallID,
+					Content:   toolContent[0].Text,
+				})
+			} else {
+				// Multi-part tool result (text + images)
+				contents = append(contents, ClaudeContentReq{
+					Type:      "tool_result",
+					ToolUseID: msg.ToolCallID,
+					Content:   toolContent,
+				})
+			}
 			// Override role to "user" since Claude expects tool results in user messages
 			if len(contents) > 0 {
 				claudeMessages = append(claudeMessages, ClaudeMessageReq{
@@ -78,14 +116,6 @@ func convertMessagesToClaude(messages []utils.Message, model utils.Model) ([]Cla
 		case "user":
 			for _, part := range msg.ContentParts() {
 				switch part.Type {
-				case "text":
-					if part.Text != "" {
-						priceEstimate += float64(len(part.Text)) / 4.0
-						contents = append(contents, ClaudeContentReq{
-							Type: "text",
-							Text: part.Text,
-						})
-					}
 				case "image_url":
 					if part.ImageURL != nil {
 						imageData := part.ImageURL.URL
@@ -98,6 +128,14 @@ func convertMessagesToClaude(messages []utils.Message, model utils.Model) ([]Cla
 								MediaType: "image/jpeg",
 								Data:      imageData,
 							},
+						})
+					}
+				default:
+					if part.Text != "" {
+						priceEstimate += float64(len(part.Text)) / 4.0
+						contents = append(contents, ClaudeContentReq{
+							Type: "text",
+							Text: part.Text,
 						})
 					}
 				}
@@ -136,8 +174,11 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, conversati
 	// Estimate system prompt cost
 	_, priceToken := GetPrice(TEXT_INPUT, CLAUDE, model, fullSystemPrompt)
 
+	// Optimize messages — replace stale attachments with placeholders
+	optimizedMessages, hasAttachments := PrepareMessagesForAI(conversation.Messages, model)
+
 	// Convert messages to Claude format
-	claudeMessages, contentPrice := convertMessagesToClaude(conversation.Messages, model)
+	claudeMessages, contentPrice := convertMessagesToClaude(optimizedMessages, model)
 	priceToken += contentPrice
 
 	modelName := strings.TrimPrefix(model.Name, "Claude/")
@@ -165,7 +206,7 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, conversati
 		System:      fullSystemPrompt,
 	}
 
-	tools := ai_tools.GetClaudeRequests(model, payload.ClientSideTools)
+	tools := ai_tools.GetClaudeRequests(model, payload.ClientSideTools, hasAttachments)
 	if CheckActionModel(model.Name) && len(tools) > 0 {
 		requestData.Tools = tools
 	}

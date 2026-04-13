@@ -556,7 +556,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
               isLoading: !hasResult,
               result: hasResult ? ContentPart(type: 'text', text: toolResults[tc.id]!) : null,
             ));
-            if (toolResultImages.containsKey(tc.id)) {
+            if (toolResultImages.containsKey(tc.id) && tc.function.name != 'conversation_attachments') {
               for (final url in toolResultImages[tc.id]!) {
                 widgets.add(ImagePreviewComponent(imageUrl: url, mini: mini));
               }
@@ -668,12 +668,14 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         ),
       ];
 
-      for (final url in resultImages) {
-        widgets.add(ImagePreviewComponent(imageUrl: url, mini: mini));
-      }
-      if (toolResultMessage != null && toolResultMessage.hasImages) {
-        for (final url in toolResultMessage.imageUrls) {
+      if (toolCall.function.name != 'conversation_attachments') {
+        for (final url in resultImages) {
           widgets.add(ImagePreviewComponent(imageUrl: url, mini: mini));
+        }
+        if (toolResultMessage != null && toolResultMessage.hasImages) {
+          for (final url in toolResultMessage.imageUrls) {
+            widgets.add(ImagePreviewComponent(imageUrl: url, mini: mini));
+          }
         }
       }
 

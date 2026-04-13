@@ -85,11 +85,11 @@ func convertMessagesToGemini(messages []utils.Message, model utils.Model) ([]Gem
 			}
 		} else if msg.Role == "tool" {
 			// Tool results become FunctionResponse parts
-			var responseMap map[string]interface{}
 			resultText := msg.TextContent()
-			if ai_tools.ShouldStripResponse(resultText) {
+			if msg.Name != "conversation_attachments" && ai_tools.ShouldStripResponse(resultText) {
 				resultText = "Tool result displayed to user."
 			}
+			var responseMap map[string]interface{}
 			if err := json.Unmarshal([]byte(resultText), &responseMap); err != nil {
 				responseMap = map[string]interface{}{"content": resultText}
 			}
@@ -99,14 +99,26 @@ func convertMessagesToGemini(messages []utils.Message, model utils.Model) ([]Gem
 					Response: responseMap,
 				},
 			})
+			// Include images from tool results (e.g. retrieved attachments)
+			for _, contentPart := range msg.ContentParts() {
+				if contentPart.Type == "image_url" && contentPart.ImageURL != nil {
+					mimeType, b64Data, err := getImageBase64(contentPart.ImageURL.URL)
+					if err != nil {
+						continue
+					}
+					parts = append(parts, GeminiPart{
+						InlineData: &GeminiInlineData{
+							MimeType: mimeType,
+							Data:     b64Data,
+						},
+					})
+					basePrice += GetPriceFromTokenUsage(IMAGE_VISION, GOOGLE, model, 0)
+				}
+			}
 		} else {
 			// User messages: text + images
 			for _, contentPart := range msg.ContentParts() {
 				switch contentPart.Type {
-				case "text":
-					if contentPart.Text != "" {
-						parts = append(parts, GeminiPart{Text: contentPart.Text})
-					}
 				case "image_url":
 					if contentPart.ImageURL != nil {
 						mimeType, b64Data, err := getImageBase64(contentPart.ImageURL.URL)
@@ -121,6 +133,10 @@ func convertMessagesToGemini(messages []utils.Message, model utils.Model) ([]Gem
 							},
 						})
 						basePrice += GetPriceFromTokenUsage(IMAGE_VISION, GOOGLE, model, 0)
+					}
+				default:
+					if contentPart.Text != "" {
+						parts = append(parts, GeminiPart{Text: contentPart.Text})
 					}
 				}
 			}
@@ -156,8 +172,11 @@ func SendChatCompletionGoogle(ctx context.Context, model utils.Model, conversati
 		strconv.Itoa(int(time.Now().Month())) + "/" +
 		strconv.Itoa(time.Now().Year())
 
+	// Optimize messages — replace stale attachments with placeholders
+	optimizedMessages, hasAttachments := PrepareMessagesForAI(conversation.Messages, model)
+
 	// Convert messages
-	geminiContents, basePrice := convertMessagesToGemini(conversation.Messages, model)
+	geminiContents, basePrice := convertMessagesToGemini(optimizedMessages, model)
 
 	// System instruction
 	systemInstruction := &GeminiContent{
@@ -196,7 +215,7 @@ func SendChatCompletionGoogle(ctx context.Context, model utils.Model, conversati
 	// Tools
 	var geminiTools []GeminiTool
 	if CheckActionModel(model.Name) {
-		registeredTools := ai_tools.GetRequests(model, payload.ClientSideTools)
+		registeredTools := ai_tools.GetRequests(model, payload.ClientSideTools, hasAttachments)
 		if len(registeredTools) > 0 {
 			var declarations []GeminiFunctionDeclaration
 			for _, tool := range registeredTools {

@@ -85,7 +85,7 @@ type ClaudeContentReq struct {
 	Type      string                `json:"type"`
 	Text      string                `json:"text,omitempty"`
 	ToolUseID string                `json:"tool_use_id,omitempty"`
-	Content   string                `json:"content,omitempty"` // tool_result content
+	Content   interface{}           `json:"content,omitempty"` // tool_result: string or []ClaudeContentReq
 	ID        string                `json:"id,omitempty"`      // tool_use ID
 	Name      string                `json:"name,omitempty"`    // tool_use name
 	Input     map[string]string     `json:"input,omitempty"`   // tool_use arguments

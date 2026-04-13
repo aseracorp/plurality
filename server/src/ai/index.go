@@ -103,7 +103,7 @@ func convertMessagesToStandard(messages []utils.Message, model utils.Model, isFi
 				// Build multi-part content with StandardContentReq
 				contentParts := make([]StandardContentReq, 0, len(parts))
 				for _, part := range parts {
-					if part.Type == "image_url" {
+					if part.Type == "image_url" && part.ImageURL != nil {
 						basePrice += GetPriceFromTokenUsage(IMAGE_VISION, TOGETHER, model, 0)
 						contentParts = append(contentParts, StandardContentReq{
 							Type: "image_url",
@@ -111,7 +111,7 @@ func convertMessagesToStandard(messages []utils.Message, model utils.Model, isFi
 								URL: part.ImageURL.URL,
 							},
 						})
-					} else if part.Type == "text" && part.Text != "" {
+					} else if part.Text != "" {
 						inputText += "user " + part.Text + " {}{}{}{}{}{}{}"
 						contentParts = append(contentParts, StandardContentReq{
 							Type: "text",
@@ -148,7 +148,17 @@ func convertMessagesToStandard(messages []utils.Message, model utils.Model, isFi
 				inputText += "assistant " + text + " {}{}{}{}{}{}{}"
 			}
 			if len(msg.ToolCalls) > 0 {
-				smr.ToolCalls = msg.ToolCalls
+				// Strip transient display fields (IconURL, Loading) so they
+				// are never sent to the LLM provider.
+				cleaned := make([]utils.ToolCall, len(msg.ToolCalls))
+				for i, tc := range msg.ToolCalls {
+					cleaned[i] = utils.ToolCall{
+						ID:       tc.ID,
+						Type:     tc.Type,
+						Function: tc.Function,
+					}
+				}
+				smr.ToolCalls = cleaned
 			}
 			// Skip assistant messages with no content and no tool calls
 			if text == "" && len(msg.ToolCalls) == 0 {
@@ -157,31 +167,71 @@ func convertMessagesToStandard(messages []utils.Message, model utils.Model, isFi
 			result = append(result, smr)
 
 		case "tool":
-			text := msg.TextContent()
-			if ai_tools.ShouldStripResponse(text) {
-				text = "Tool result displayed to user."
-			}
-			if text == "" {
-				continue
-			}
+			parts := msg.ContentParts()
+			hasImages := msg.HasImages()
 
-			if isFireworks {
-				// Fireworks doesn't support native tool-result messages;
-				// wrap as a user-visible text message with prefix.
-				inputText += "user " + text + " {}{}{}{}{}{}{}"
-				result = append(result, StandardMessageReq{
-					Role:    "user",
-					Content: "[HIDDEN TO USER] FUNCTION CALL RESULT: " + text,
-				})
+			if hasImages {
+				// Tool result with images — build multi-part content
+				contentParts := make([]StandardContentReq, 0, len(parts))
+				for _, part := range parts {
+					if part.Type == "image_url" && part.ImageURL != nil {
+						basePrice += GetPriceFromTokenUsage(IMAGE_VISION, TOGETHER, model, 0)
+						contentParts = append(contentParts, StandardContentReq{
+							Type:     "image_url",
+							ImageURL: &utils.ContentImageURL{URL: part.ImageURL.URL},
+						})
+					} else if part.Text != "" {
+						text := part.Text
+						if msg.Name != "conversation_attachments" && ai_tools.ShouldStripResponse(text) {
+							text = "Tool result displayed to user."
+						}
+						inputText += "tool " + text + " {}{}{}{}{}{}{}"
+						contentParts = append(contentParts, StandardContentReq{
+							Type: "text",
+							Text: text,
+						})
+					}
+				}
+				if len(contentParts) == 0 {
+					continue
+				}
+				if isFireworks {
+					result = append(result, StandardMessageReq{
+						Role:    "user",
+						Content: contentParts,
+					})
+				} else {
+					result = append(result, StandardMessageReq{
+						Role:       "tool",
+						Content:    contentParts,
+						ToolCallID: msg.ToolCallID,
+						Name:       msg.Name,
+					})
+				}
 			} else {
-				// OpenAI supports native tool messages
-				inputText += "tool " + text + " {}{}{}{}{}{}{}"
-				result = append(result, StandardMessageReq{
-					Role:       "tool",
-					Content:    text,
-					ToolCallID: msg.ToolCallID,
-					Name:       msg.Name,
-				})
+				text := msg.TextContent()
+				if msg.Name != "conversation_attachments" && ai_tools.ShouldStripResponse(text) {
+					text = "Tool result displayed to user."
+				}
+				if text == "" {
+					continue
+				}
+
+				if isFireworks {
+					inputText += "user " + text + " {}{}{}{}{}{}{}"
+					result = append(result, StandardMessageReq{
+						Role:    "user",
+						Content: "[HIDDEN TO USER] FUNCTION CALL RESULT: " + text,
+					})
+				} else {
+					inputText += "tool " + text + " {}{}{}{}{}{}{}"
+					result = append(result, StandardMessageReq{
+						Role:       "tool",
+						Content:    text,
+						ToolCallID: msg.ToolCallID,
+						Name:       msg.Name,
+					})
+				}
 			}
 		}
 	}
@@ -194,14 +244,14 @@ func convertMessagesToStandard(messages []utils.Message, model utils.Model, isFi
 func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, conv utils.Conversation, systemPrompt string, payload ChatPayload) (io.ReadCloser, int, error) {
 	systemMsg := utils.Message{
 		Role: "system",
-		Content: systemPrompt +
+		Content: utils.NewTextContent(systemPrompt +
 			time.Now().String() +
 			" on " +
 			strconv.Itoa(time.Now().Day()) +
 			"/" +
 			strconv.Itoa(int(time.Now().Month())) +
 			"/" +
-			strconv.Itoa(time.Now().Year()),
+			strconv.Itoa(time.Now().Year())),
 	}
 
 	apiKey := os.Getenv("FIREWORK_KEY")
@@ -209,7 +259,7 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, conv u
 		return nil, 0, fmt.Errorf("FIREWORK_KEY is not set")
 	}
 
-	utils.Debug("conv: ", conv)
+
 
 	if model.Name == "" {
 		model.Name = "llama-v3p1-70b-instruct"
@@ -237,7 +287,8 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, conv u
 
 	// Convert messages to standard format
 	allMessages := append([]utils.Message{systemMsg}, conv.Messages...)
-	msgReqList, basePrice, inputMessage := convertMessagesToStandard(allMessages, model, true)
+	optimizedMessages, hasAttachments := PrepareMessagesForAI(allMessages, model)
+	msgReqList, basePrice, inputMessage := convertMessagesToStandard(optimizedMessages, model, true)
 
 	maxTok := 4096
 
@@ -253,7 +304,7 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, conv u
 		Stream:            true,
 	}
 
-	ait := ai_tools.GetRequests(model, payload.ClientSideTools)
+	ait := ai_tools.GetRequests(model, payload.ClientSideTools, hasAttachments)
 	if CheckActionModel(model.Name) && len(ait) > 0 {
 		requestData.Tools = ait
 	}
@@ -310,14 +361,14 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, conv u
 func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, conv utils.Conversation, systemPrompt string, payload ChatPayload) (io.ReadCloser, int, error) {
 	systemMsg := utils.Message{
 		Role: "system",
-		Content: systemPrompt +
+		Content: utils.NewTextContent(systemPrompt +
 			time.Now().String() +
 			" on " +
 			strconv.Itoa(time.Now().Day()) +
 			"/" +
 			strconv.Itoa(int(time.Now().Month())) +
 			"/" +
-			strconv.Itoa(time.Now().Year()),
+			strconv.Itoa(time.Now().Year())),
 	}
 
 	apiKey := os.Getenv("CHATGPT_API_KEY")
@@ -325,7 +376,7 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, conv util
 		return nil, 0, fmt.Errorf("CHATGPT_API_KEY is not set")
 	}
 
-	utils.Debug("conv: ", conv)
+
 
 	if model.Name == "" {
 		model.Name = "ChatGPT/gpt-4o"
@@ -348,7 +399,8 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, conv util
 
 	// Convert messages to standard format (OpenAI supports native tool messages)
 	allMessages := append([]utils.Message{systemMsg}, conv.Messages...)
-	msgReqList, basePrice, inputMessage := convertMessagesToStandard(allMessages, model, false)
+	optimizedMessages, hasAttachments := PrepareMessagesForAI(allMessages, model)
+	msgReqList, basePrice, inputMessage := convertMessagesToStandard(optimizedMessages, model, false)
 
 	maxTok := 4096
 
@@ -364,7 +416,7 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, conv util
 		requestData.Temperature = &Temperature
 	}
 
-	ait := ai_tools.GetRequests(model, payload.ClientSideTools)
+	ait := ai_tools.GetRequests(model, payload.ClientSideTools, hasAttachments)
 	if CheckActionModel(model.Name) && len(ait) > 0 {
 		requestData.Tools = ait
 	}

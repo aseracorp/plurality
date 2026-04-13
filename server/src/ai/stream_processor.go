@@ -78,7 +78,7 @@ func (sp *StreamProcessor) buildAssistantMessage() utils.Message {
 
 	text := sp.request.TextBuffer.String()
 	if text != "" {
-		message.Content = text
+		message.Content = utils.NewTextContent(text)
 	}
 
 	if len(sp.request.ToolCallBuffer) > 0 {

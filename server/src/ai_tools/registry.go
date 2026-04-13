@@ -11,11 +11,12 @@ import (
 var Registry = map[string]utils.AITool{
 	// WeatherTool.ToolID: WeatherTool,
 	// NewsSearchTool.ToolID: NewsSearchTool,
-	DiceRollTool.ToolID:    DiceRollTool,
-	WebTool.ToolID:         WebTool,
-	SearchTool.ToolID:      SearchTool,
-	PlaceSearchTool.ToolID: PlaceSearchTool,
-	ImageGenTool.ToolID:    ImageGenTool,
+	DiceRollTool.ToolID:                DiceRollTool,
+	WebTool.ToolID:                     WebTool,
+	SearchTool.ToolID:                  SearchTool,
+	PlaceSearchTool.ToolID:             PlaceSearchTool,
+	ImageGenTool.ToolID:                ImageGenTool,
+	ConversationAttachmentsTool.ToolID: ConversationAttachmentsTool,
 }
 
 func RegisterTool(tool utils.AITool) {
@@ -28,14 +29,17 @@ func GetTool(toolID string) (utils.AITool, bool) {
 }
 
 func ShouldStripResponse(content string) bool {
-	return strings.Contains(content, "base64,")
+	return strings.HasPrefix(content, "base64,")
 }
 
-func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest) []utils.ToolsRequest {
+func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest, hasAttachments bool) []utils.ToolsRequest {
 	var requests []utils.ToolsRequest
 	var selected = model.Tools
 
 	for _, tool := range Registry {
+		if tool.ToolID == ConversationAttachmentsTool.ToolID {
+			continue // handled separately below
+		}
 		if utils.ContainsString(selected, tool.ToolID) {
 			requests = append(requests, tool.ToolRequest)
 		}
@@ -48,6 +52,11 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 				Function: tool,
 			})
 		}
+	}
+
+	// Force-include conversation_attachments when the conversation has attachments
+	if hasAttachments {
+		requests = append(requests, ConversationAttachmentsTool.ToolRequest)
 	}
 
 	return requests
@@ -75,11 +84,14 @@ func ConvertToClaudeSchema(requests utils.FunctionToolsRequest) utils.FunctionTo
 	return toolRequest
 }
 
-func GetClaudeRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest) []utils.FunctionToolsRequest {
+func GetClaudeRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest, hasAttachments bool) []utils.FunctionToolsRequest {
 	var requests = []utils.FunctionToolsRequest{}
 	var selected = model.Tools
 
 	for _, tool := range Registry {
+		if tool.ToolID == ConversationAttachmentsTool.ToolID {
+			continue // handled separately below
+		}
 		if utils.ContainsString(selected, tool.ToolID) {
 			requests = append(requests, GetClaudeSchema(tool.ToolID))
 		}
@@ -89,6 +101,11 @@ func GetClaudeRequests(model utils.Model, ClientSideTools []utils.FunctionToolsR
 		if utils.ContainsString(selected, tool.Name) {
 			requests = append(requests, ConvertToClaudeSchema(tool))
 		}
+	}
+
+	// Force-include conversation_attachments when the conversation has attachments
+	if hasAttachments {
+		requests = append(requests, GetClaudeSchema(ConversationAttachmentsTool.ToolID))
 	}
 
 	return requests

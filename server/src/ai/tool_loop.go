@@ -121,20 +121,20 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				ConversationID: ar.ConversationID.Hex(),
 			})
 
-			result := executeServerTool(ctx, ar, *tc, payload)
+			resultContent := executeServerTool(ctx, ar, *tc, payload)
 
 			ar.Broadcast(SSEEvent{
 				Type:           "tool_result",
 				ToolCallID:     tc.ID,
 				ToolName:       tc.Function.Name,
-				ToolResult:     result,
+				ToolResult:     resultContent.TextContent(),
 				IsServer:       true,
 				ConversationID: ar.ConversationID.Hex(),
 			})
 
 			toolMessage := utils.Message{
 				Role:       "tool",
-				Content:    result,
+				Content:    resultContent,
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
 				Timestamp:  time.Now().Format(time.RFC3339),
@@ -223,15 +223,22 @@ func categorizeToolCalls(toolCalls []utils.ToolCall) (serverTools, clientTools [
 }
 
 // executeServerTool runs a server-side tool and handles credit deduction.
-func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.ToolCall, payload ChatPayload) string {
+func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.ToolCall, payload ChatPayload) utils.MessageContent {
 	tool, ok := ai_tools.GetTool(toolCall.Function.Name)
 	if !ok {
-		return "Tool not found: " + toolCall.Function.Name
+		return utils.NewTextContent("Tool not found: " + toolCall.Function.Name)
 	}
 
 	args := toolCall.Function.Arguments
 	if args == "" {
 		args = "{}"
+	}
+
+	// Fetch current conversation — all tools receive it
+	conv, convErr := db.GetConversationById(ctx, ar.ConversationID.Hex())
+	if convErr != nil {
+		utils.Error("[LLMLoop] Error loading conversation for tool execution", convErr)
+		return utils.NewTextContent("Error: could not load conversation data")
 	}
 
 	// Inject user's selected image model into args if applicable
@@ -256,7 +263,7 @@ func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.To
 		db.RemoveCredits(ctx, float64(tool.Cost), utils.UserAction{Type: TOOL_USE, Provider: NONE})
 	}
 
-	return tool.Exec(args)
+	return tool.Exec(args, *conv)
 }
 
 // setState updates the conversation state in both the ActiveRequest and the DB.
@@ -278,7 +285,7 @@ func (ar *ActiveRequest) flushPartialResponse(ctx context.Context, conversation 
 
 	partialMessage := utils.Message{
 		Role:      "assistant",
-		Content:   text,
+		Content:   utils.NewTextContent(text),
 		Timestamp: time.Now().Format(time.RFC3339),
 		Model:     ar.Model,
 	}

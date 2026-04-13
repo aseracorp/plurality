@@ -55,12 +55,14 @@ class ContentPart {
 
   ContentPart({required this.type, this.text, this.imageUrl});
 
+  /// True for any content part that carries text (text, snippet, file, etc.).
+  /// Only image_url parts are non-text.
+  bool get isTextLike => type != 'image_url';
+
   Map<String, dynamic> toJson() {
     final data = <String, dynamic>{'type': type};
-    if (type == 'text' && text != null) data['text'] = text;
-    if (type == 'image_url' && imageUrl != null) {
-      data['image_url'] = imageUrl!.toJson();
-    }
+    if (isTextLike && text != null && text!.isNotEmpty) data['text'] = text;
+    if (!isTextLike && imageUrl != null) data['image_url'] = imageUrl!.toJson();
     return data;
   }
 
@@ -272,7 +274,7 @@ class Message {
     final data = <String, dynamic>{'role': role};
 
     // Content: string for simple text, array for multi-part
-    if (content.length == 1 && content[0].type == 'text') {
+    if (content.length == 1 && content[0].isTextLike) {
       data['content'] = content[0].text ?? '';
     } else if (content.isNotEmpty) {
       data['content'] = content.map((c) => c.toJson()).toList();
