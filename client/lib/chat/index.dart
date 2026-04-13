@@ -268,7 +268,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     ],
                   )
                   : null,
-          body: destinations[_selectedIndex]['content'] as Widget,
+          body: SafeArea(
+            top: _selectedConversationId == null,
+            bottom: _selectedConversationId != null,
+            child: destinations[_selectedIndex]['content'] as Widget,
+          ),
           bottomNavigationBar:
               _selectedConversationId == null
                   ? BottomNavigationBar(
