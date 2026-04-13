@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -381,7 +382,7 @@ type AITool struct {
 	LoadingString string              `json:"loading_string" bson:"loading_string"`
 	IconURL       string              `json:"icon_url" bson:"icon_url"`
 	Author        string              `json:"author" bson:"author"`
-	Exec func(string, Conversation) MessageContent `json:"-"`
+	Exec func(context.Context, string, Conversation) MessageContent `json:"-"`
 	Cost int                                       `json:"cost" bson:"cost"`
 	CostFunc                func(string) (float64, UserAction) `json:"-"`
 }

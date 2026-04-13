@@ -1,6 +1,8 @@
 package ai_tools
 
 import (
+	"context"
+
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -32,7 +34,7 @@ var WeatherTool = utils.AITool{
 	},
 	LoadingString: "Getting the weather...",
 	IconURL:       "https://cdn-icons-png.flaticon.com/512/220/220221.png",
-	Exec: func(args string, _ utils.Conversation) utils.MessageContent {
+	Exec: func(_ context.Context, args string, _ utils.Conversation) utils.MessageContent {
 		argsJson := utils.ParseJson(args)
 
 		location := argsJson["location"].(string)

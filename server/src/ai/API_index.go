@@ -81,12 +81,13 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	// Select model based on content (text vs vision)
 	model := SelectModel(payload.ModelSelected, conversation.Messages)
 
-	// Create the ActiveRequest
-	activeRequest := NewActiveRequest(conversation.ID, conversation.UserID, model, payload.ModelSelected)
-	RequestRegistry.Set(conversation.ID.Hex(), activeRequest)
-
-	// Set conversation state to processing
+	// Create the ActiveRequest with a cancelable context that carries the userID
 	persistCtx := CopyUserContext(r)
+	activeRequest := NewActiveRequest(conversation.ID, conversation.UserID, model, payload.ModelSelected)
+	cancelCtx, cancelFunc := context.WithCancel(persistCtx)
+	activeRequest.Ctx = cancelCtx
+	activeRequest.Cancel = cancelFunc
+	RequestRegistry.Set(conversation.ID.Hex(), activeRequest)
 	if err := db.UpdateConversationState(persistCtx, conversation.ID, utils.StateProcessing); err != nil {
 		utils.Error("[HandleChat] Error setting conversation state", err)
 	}

@@ -1,6 +1,7 @@
 package ai_tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -48,7 +49,7 @@ type attachmentGetRequest struct {
 	To   *int   `json:"to,omitempty"`
 }
 
-func execConversationAttachments(input string, conv utils.Conversation) utils.MessageContent {
+func execConversationAttachments(_ context.Context, input string, conv utils.Conversation) utils.MessageContent {
 	var params map[string]string
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
 		return utils.NewTextContent(fmt.Sprintf("Error parsing parameters: %s", err.Error()))

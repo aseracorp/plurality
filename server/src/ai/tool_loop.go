@@ -26,7 +26,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-ar.Ctx.Done():
 			ar.flushPartialResponse(ctx, conversation)
 			return
 		default:
@@ -38,8 +38,12 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		ar.ResetBuffer()
 		ar.BroadcastStatus("typing", "")
 		utils.Log("[LLMLoop] Calling LLM with model %s", model.Name)
-		response, inputPriceToken, err := SendChatCompletion(ctx, model, conversation, payload)
+		response, inputPriceToken, err := SendChatCompletion(ar.Ctx, model, conversation, payload)
 		if err != nil {
+			if ar.Ctx.Err() != nil {
+				ar.flushPartialResponse(ctx, conversation)
+				return
+			}
 			utils.Error("[LLMLoop] Error calling LLM", err)
 			ar.Broadcast(SSEEvent{
 				Type:           "error",
@@ -53,10 +57,10 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 
 		// Process the streaming response
 		sp := NewStreamProcessor(ar, model, conversation, inputPriceToken)
-		assistantMessage, err := sp.processStream(ctx, response, model)
+		assistantMessage, err := sp.processStream(ar.Ctx, response, model)
 		if err != nil {
 			utils.Error("[LLMLoop] Error processing stream", err)
-			if ctx.Err() != nil {
+			if ar.Ctx.Err() != nil {
 				ar.flushPartialResponse(ctx, conversation)
 				return
 			}
@@ -111,6 +115,13 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 
 		// Execute server-side tools
 		for i := range serverTools {
+			select {
+			case <-ar.Ctx.Done():
+				ar.flushPartialResponse(ctx, conversation)
+				return
+			default:
+			}
+
 			tc := &serverTools[i]
 			enrichToolCallMetadata(tc)
 			ar.BroadcastStatus("tool_use", tc.Function.Name)
@@ -121,7 +132,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				ConversationID: ar.ConversationID.Hex(),
 			})
 
-			resultContent := executeServerTool(ctx, ar, *tc, payload)
+			resultContent := executeServerTool(ar.Ctx, ar, *tc, payload)
 
 			ar.Broadcast(SSEEvent{
 				Type:           "tool_result",
@@ -263,7 +274,7 @@ func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.To
 		db.RemoveCredits(ctx, float64(tool.Cost), utils.UserAction{Type: TOOL_USE, Provider: NONE})
 	}
 
-	return tool.Exec(args, *conv)
+	return tool.Exec(ctx, args, *conv)
 }
 
 // setState updates the conversation state in both the ActiveRequest and the DB.

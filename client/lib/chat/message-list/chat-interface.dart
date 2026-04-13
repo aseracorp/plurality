@@ -512,26 +512,16 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     }
   }
 
-  /// Build the streaming section: renders items in the order they arrived.
+  /// Build the streaming section: renders items in arrival order, reusing
+  /// _buildToolCallWidgets so tool rendering stays in sync with the normal path.
   List<Widget> _buildStreamingWidgets(
     ChatSessionState sessionState,
     List<Message> allMessages,
     bool mini,
   ) {
     final widgets = <Widget>[];
+    final isProcessing = sessionState.state == ConversationState.processing;
 
-    // Collect tool results for matching with tool_use badges
-    final toolResults = <String, String>{};
-    final toolResultImages = <String, List<String>>{};
-    for (final item in sessionState.items) {
-      if (item.type == 'tool_result' && item.toolCallId != null) {
-        final parsed = _parseToolResult(item.toolResult ?? '');
-        toolResults[item.toolCallId!] = parsed.text;
-        if (parsed.images.isNotEmpty) toolResultImages[item.toolCallId!] = parsed.images;
-      }
-    }
-
-    // Render each item in order
     for (final item in sessionState.items) {
       switch (item.type) {
         case 'text':
@@ -542,34 +532,42 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
               message: Message(role: 'assistant', content: [ContentPart(type: 'text', text: item.text)]),
               text: sanitizeMessages(item.text),
               isBot: true,
-              isLoading: item == sessionState.items.last && sessionState.state == ConversationState.processing,
+              isLoading: item == sessionState.items.last && isProcessing,
             ));
           }
           break;
 
         case 'tool_use':
-          if (item.toolCall != null) {
-            final tc = _enrichToolCall(item.toolCall!);
-            final hasResult = toolResults.containsKey(tc.id);
-            widgets.add(ToolCallBadge(
-              toolCall: tc,
-              isLoading: !hasResult,
-              result: hasResult ? ContentPart(type: 'text', text: toolResults[tc.id]!) : null,
+          if (!mini && item.toolCall != null) {
+            // Wrap in a temporary Message and delegate to _buildToolCallWidgets
+            final toolMessage = Message(
+              role: 'assistant',
+              content: const [],
+              toolCalls: [item.toolCall!],
+            );
+            final resultItem = sessionState.items
+                .where((i) => i.type == 'tool_result' && i.toolCallId == item.toolCall!.id)
+                .firstOrNull;
+            final lookupMessages = <Message>[
+              if (resultItem != null)
+                Message(
+                  role: 'tool',
+                  toolCallId: resultItem.toolCallId,
+                  content: [ContentPart(type: 'text', text: resultItem.toolResult ?? '')],
+                ),
+            ];
+            widgets.addAll(_buildToolCallWidgets(
+              toolMessage, lookupMessages, isProcessing, 0, 1, mini,
             ));
-            if (toolResultImages.containsKey(tc.id) && tc.function.name != 'conversation_attachments') {
-              for (final url in toolResultImages[tc.id]!) {
-                widgets.add(ImagePreviewComponent(imageUrl: url, mini: mini));
-              }
-            }
           }
           break;
 
-        // tool_result items are consumed by the tool_use badge above, not rendered separately
+        // tool_result items are rendered by the tool_use case above
       }
     }
 
     // Loading indicator if processing but nothing to show yet
-    if (widgets.isEmpty && sessionState.state == ConversationState.processing) {
+    if (widgets.isEmpty && isProcessing) {
       widgets.add(const Padding(
         padding: EdgeInsets.all(8.0),
         child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
@@ -630,46 +628,19 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
           .firstOrNull;
 
       final resultContent = toolResultMessage?.textContent ?? '';
-      List<String> resultImages = [];
-      String resultText = resultContent;
-
-      try {
-        if (resultContent.startsWith('{')) {
-          final parsed = jsonDecode(resultContent);
-          if (parsed is Map && parsed.containsKey('content') && parsed['content'] is List) {
-            resultText = '';
-            for (final item in parsed['content']) {
-              if (item['type'] == 'text') resultText = item['text'] ?? '';
-              if (item['type'] == 'image' && item['data'] != null) resultImages.add(item['data']);
-            }
-          }
-        }
-      } catch (_) {}
-
-      var displayToolCall = toolCall;
-      if (toolCall.loading.isEmpty || toolCall.iconURL.isEmpty) {
-        final meta = _chatService.getToolMetadata(toolCall.function.name);
-        if (meta != null) {
-          displayToolCall = ToolCall(
-            id: toolCall.id,
-            type: toolCall.type,
-            function: toolCall.function,
-            loading: toolCall.loading.isNotEmpty ? toolCall.loading : (meta['loading'] ?? ''),
-            iconURL: toolCall.iconURL.isNotEmpty ? toolCall.iconURL : (meta['icon_url'] ?? ''),
-          );
-        }
-      }
+      final parsed = _parseToolResult(resultContent);
+      final displayToolCall = _enrichToolCall(toolCall);
 
       final widgets = <Widget>[
         ToolCallBadge(
           toolCall: displayToolCall,
           isLoading: isProcessing && index >= visibleMessageCount - 1 && toolResultMessage == null,
-          result: toolResultMessage != null ? ContentPart(type: 'text', text: resultText) : null,
+          result: toolResultMessage != null ? ContentPart(type: 'text', text: parsed.text) : null,
         ),
       ];
 
       if (toolCall.function.name != 'conversation_attachments') {
-        for (final url in resultImages) {
+        for (final url in parsed.images) {
           widgets.add(ImagePreviewComponent(imageUrl: url, mini: mini));
         }
         if (toolResultMessage != null && toolResultMessage.hasImages) {
@@ -1130,7 +1101,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         if (!_closeMessageWarning &&
             messages.isNotEmpty &&
             messages.last.totalTokens != null &&
-            messages.last.totalTokens! > 40000 &&
+            messages.last.totalTokens! > 100000 &&
             messages.length > 5)
           Container(
             width: double.infinity,
@@ -1148,7 +1119,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                   child: Text(
                     "Replying to long conversation costs more credits. Consider starting a new conversation whenever possible. Last message cost was " +
                         messages.last.totalTokens.toString() +
-                        " credits",
+                        " credits (message cost goes up and down as the conversation goes on).",
                     style: TextStyle(color: Colors.white, fontSize: 16),
                   ),
                 ),
