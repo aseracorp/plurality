@@ -22,7 +22,7 @@ RUN flutter pub get
 RUN flutter build web --release
 
 # Stage 2: Build the Go server
-FROM golang:1.23-alpine AS go_builder
+FROM golang:1.25-alpine AS go_builder
 
 # Install build dependencies
 RUN apk add --no-cache bash git
