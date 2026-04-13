@@ -21,13 +21,22 @@ const kb = 1024
 // since there is no way for the model to retrieve them. Text-based attachments
 // (snippets, files) are kept inline regardless.
 //
-// Returns the processed messages and whether the conversation has any attachments.
-func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.Message, bool) {
+// Returns the processed messages, whether the conversation has any attachments,
+// and whether any of them are document attachments (PDF, etc.).
+func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.Message, bool, bool) {
 	index := utils.BuildAttachmentIndex(messages, storage.FileSizeFromURL)
 
 	if len(index.Items) == 0 {
 		utils.Debug("[Attachments] No attachments found in conversation")
-		return messages, false
+		return messages, false, false
+	}
+
+	hasDocumentAttachments := false
+	for _, item := range index.Items {
+		if item.Type == "pdf" {
+			hasDocumentAttachments = true
+			break
+		}
 	}
 
 	utils.Log("[Attachments] Found %d attachment(s) in conversation", len(index.Items))
@@ -107,10 +116,18 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 				if att.Ext != "" {
 					desc = att.Ext
 				}
-				placeholder := fmt.Sprintf(
-					"[Attachment omitted: %s (%s, %d bytes). Use the \"conversation_attachments\" function to retrieve it.]",
-					att.ID, desc, att.Size,
-				)
+				var placeholder string
+				if att.Type == "pdf" {
+					placeholder = fmt.Sprintf(
+						"[Document omitted: %s (%s, %d bytes). Use the \"read_pdf\" function to extract and read its text content.]",
+						att.ID, desc, att.Size,
+					)
+				} else {
+					placeholder = fmt.Sprintf(
+						"[Attachment omitted: %s (%s, %d bytes). Use the \"conversation_attachments\" function to retrieve it.]",
+						att.ID, desc, att.Size,
+					)
+				}
 				newParts = append(newParts, utils.ContentPart{
 					Type: "text",
 					Text: placeholder,
@@ -201,7 +218,7 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 	// Re-inflate internal URLs back to data URIs so LLMs can see the images
 	finalResult = reInflateImageURLs(finalResult)
 
-	return finalResult, true
+	return finalResult, true, hasDocumentAttachments
 }
 
 // reInflateImageURLs reads image files from disk for any ContentPart that uses

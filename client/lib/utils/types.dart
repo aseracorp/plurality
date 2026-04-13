@@ -45,7 +45,7 @@ class ContentImageURL {
 @HiveType(typeId: 2)
 class ContentPart {
   @HiveField(0)
-  final String type; // "text" or "image_url"
+  final String type; // "text", "image_url", "snippet", "file", "pdf"
 
   @HiveField(1)
   final String? text;
@@ -53,16 +53,20 @@ class ContentPart {
   @HiveField(2)
   final ContentImageURL? imageUrl;
 
-  ContentPart({required this.type, this.text, this.imageUrl});
+  @HiveField(3)
+  final String? filename;
+
+  ContentPart({required this.type, this.text, this.imageUrl, this.filename});
 
   /// True for any content part that carries text (text, snippet, file, etc.).
-  /// Only image_url parts are non-text.
-  bool get isTextLike => type != 'image_url';
+  /// image_url and pdf parts are non-text.
+  bool get isTextLike => type != 'image_url' && type != 'pdf';
 
   Map<String, dynamic> toJson() {
     final data = <String, dynamic>{'type': type};
-    if (isTextLike && text != null && text!.isNotEmpty) data['text'] = text;
+    if (text != null && text!.isNotEmpty) data['text'] = text;
     if (!isTextLike && imageUrl != null) data['image_url'] = imageUrl!.toJson();
+    if (filename != null && filename!.isNotEmpty) data['filename'] = filename;
     return data;
   }
 
@@ -78,6 +82,7 @@ class ContentPart {
       type: json['type'] ?? 'text',
       text: json['text'],
       imageUrl: imageUrl,
+      filename: json['filename'],
     );
   }
 }

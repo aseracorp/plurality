@@ -55,6 +55,9 @@ func BuildAttachmentIndex(messages []Message, fileSizeFn FileSizeFunc) Attachmen
 			if part.Type == "image_url" && part.ImageURL != nil {
 				content = part.ImageURL.URL
 				isInternalURL = strings.HasPrefix(content, "/attachments/")
+			} else if part.Type == "pdf" && part.Text != "" {
+				content = part.Text
+				isInternalURL = strings.HasPrefix(content, "/attachments/")
 			} else if part.Text != "" {
 				content = part.Text
 			}
@@ -93,6 +96,8 @@ func BuildAttachmentIndex(messages []Message, fileSizeFn FileSizeFunc) Attachmen
 				} else {
 					meta.Ext = guessImageExt(content)
 				}
+			} else if part.Type == "pdf" {
+				meta.Ext = "pdf"
 			}
 
 			index.Items = append(index.Items, meta)

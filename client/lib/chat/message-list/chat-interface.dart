@@ -382,14 +382,14 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
             );
           });
         } else {
-          // TODO
           final bytes = await xFile.readAsBytes();
           final base64Data = base64Encode(bytes);
+          final attType = mimeType == 'pdf' ? 'pdf' : 'file';
 
           setState(() {
             attachments.add(
               Attachment(
-                type: 'file',
+                type: attType,
                 filename: file.name,
                 ext: mimeType,
                 content: 'data:$mimeType;base64,$base64Data',
@@ -431,8 +431,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       // Check if there are image attachments
       final imageAttachments =
           attachments.where((a) => a.type == 'image_url').toList();
+      final pdfAttachments =
+          attachments.where((a) => a.type == 'pdf').toList();
       final otherAttachments =
-          attachments.where((a) => a.type != 'image_url').toList();
+          attachments.where((a) => a.type != 'image_url' && a.type != 'pdf').toList();
 
       List<ContentPart> contentParts = [];
 
@@ -449,9 +451,14 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         ));
       }
 
+      // Add PDF attachments
+      for (final att in pdfAttachments) {
+        contentParts.add(ContentPart(type: 'pdf', text: att.content, filename: att.filename));
+      }
+
       // Add other attachments as text content parts (snippets, files)
       for (final att in otherAttachments) {
-        contentParts.add(ContentPart(type: att.type, text: att.content));
+        contentParts.add(ContentPart(type: att.type, text: att.content, filename: att.filename));
       }
 
       newMessage = Message(
@@ -724,6 +731,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                   attachment: Attachment(
                     type: part.type,
                     content: (part.type == 'image_url' ? part.imageUrl?.url : part.text) ?? '',
+                    filename: part.filename,
                   ),
                   removeAttachment: _removeAttachment,
                   editMode: false,

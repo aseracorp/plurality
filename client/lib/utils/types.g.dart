@@ -52,19 +52,22 @@ class ContentPartAdapter extends TypeAdapter<ContentPart> {
       type: fields[0] as String,
       text: fields[1] as String?,
       imageUrl: fields[2] as ContentImageURL?,
+      filename: fields[3] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, ContentPart obj) {
     writer
-      ..writeByte(3)
+      ..writeByte(4)
       ..writeByte(0)
       ..write(obj.type)
       ..writeByte(1)
       ..write(obj.text)
       ..writeByte(2)
-      ..write(obj.imageUrl);
+      ..write(obj.imageUrl)
+      ..writeByte(3)
+      ..write(obj.filename);
   }
 
   @override

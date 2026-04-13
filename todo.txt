@@ -3,6 +3,8 @@
 - Refactor: Streaming / conversation rendering should not be duplicated
 -Can you look at how token price are currently calculated and whether it's possible to be more accurate ?    
 
+- if send message becfore client gets updated title, possibel to override it
+
 - pre-parse pdf/excel/etc...
   - add search_attachment? 
 

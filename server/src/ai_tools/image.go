@@ -3,6 +3,7 @@ package ai_tools
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -157,10 +158,22 @@ var ImageGenTool = utils.AITool{
 		imageData := jsonResponse.Data[0].B64Json
 		infTime := jsonResponse.Data[0].Timings.Inference
 
+		// Detect actual image format from the base64 data
+		mimeType := "image/png"
+		if decoded, err := base64.StdEncoding.DecodeString(imageData[:16]); err == nil {
+			if len(decoded) >= 3 && decoded[0] == 0xFF && decoded[1] == 0xD8 && decoded[2] == 0xFF {
+				mimeType = "image/jpeg"
+			} else if len(decoded) >= 4 && string(decoded[:4]) == "\x89PNG" {
+				mimeType = "image/png"
+			} else if len(decoded) >= 4 && string(decoded[:4]) == "RIFF" {
+				mimeType = "image/webp"
+			}
+		}
+
 		return utils.NewPartsContent([]utils.ContentPart{
 			{
 				Type:     "image_url",
-				ImageURL: &utils.ContentImageURL{URL: "data:image/png;base64," + imageData},
+				ImageURL: &utils.ContentImageURL{URL: "data:" + mimeType + ";base64," + imageData},
 			},
 			{
 				Type: "text",

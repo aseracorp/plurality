@@ -11,6 +11,8 @@ import './budget.dart';
 import 'conversation-list/conversation-list.dart';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
+import '../utils/image_loader.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final bool isMobile;
@@ -211,13 +213,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                         selectedConv!.icon != null &&
                                                 selectedConv!.icon!.isNotEmpty
                                             ? ClipOval(
-                                              child: Image.memory(
-                                                base64Decode(
-                                                  selectedConv!.icon!,
-                                                ),
-                                                width: 250,
-                                                height: 250,
-                                                fit: BoxFit.cover,
+                                              child: FutureBuilder<Uint8List>(
+                                                future: loadImageBytes(selectedConv!.icon!),
+                                                builder: (context, snapshot) {
+                                                  if (snapshot.hasData) {
+                                                    return Image.memory(
+                                                      snapshot.data!,
+                                                      width: 250,
+                                                      height: 250,
+                                                      fit: BoxFit.cover,
+                                                    );
+                                                  }
+                                                  return SizedBox(width: 40, height: 40);
+                                                },
                                               ),
                                             )
                                             : Text(

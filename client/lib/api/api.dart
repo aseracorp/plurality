@@ -76,6 +76,25 @@ class ApiService {
     }
   }
 
+  /// Fetch raw bytes for an internal attachment URL (e.g. /attachments/uid/month/file.pdf).
+  Future<Uint8List> fetchAttachmentBytes(String urlPath) async {
+    String? firebaseToken = await _authService.getCurrentUserToken();
+    if (firebaseToken == null) {
+      throw Exception('User not authenticated');
+    }
+
+    final response = await http.get(
+      Uri.parse('$baseUrl$urlPath'),
+      headers: {'Authorization': 'Bearer $firebaseToken'},
+    );
+
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return response.bodyBytes;
+    } else {
+      throw Exception('Failed to fetch attachment: ${response.statusCode}');
+    }
+  }
+
   // --- Chat API Methods ---
 
   /// Parse an SSE response stream into a stream of SSEEvent objects.

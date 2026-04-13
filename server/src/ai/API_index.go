@@ -47,8 +47,10 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 
 	partialConversation := utils.Conversation{
 		ID:            payload.ConversationID,
-		Title:         "New Chat",
 		ModelSelected: payload.ModelSelected,
+	}
+	if payload.ConversationID == primitive.NilObjectID {
+		partialConversation.Title = "New Chat"
 	}
 	if payload.MiniApp.ID != primitive.NilObjectID {
 		partialConversation.MiniApp = &payload.MiniApp

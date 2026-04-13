@@ -456,10 +456,11 @@ class _InputBoxState extends State<InputBox> {
         final bytes = await file.readAsBytes();
         final base64Data = base64Encode(bytes);
         final mimeType = _getMimeType(file.name) ?? 'application/octet-stream';
+        final attType = fileExt == 'pdf' ? 'pdf' : 'file';
 
         widget.addAttachment(
           Attachment(
-            type: 'file',
+            type: attType,
             filename: file.name,
             ext: fileExt,
             content: 'data:$mimeType;base64,$base64Data',

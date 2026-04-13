@@ -167,7 +167,7 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
               Container(
                 margin: EdgeInsets.only(
                   left: widget.isBot ? 0 : 32.0,
-                  right: widget.isBot ? 32.0 : 0,
+                  right: widget.isBot ? 32.0 : 8.0,
                   top: 4.0,
                   bottom: 4.0,
                 ),

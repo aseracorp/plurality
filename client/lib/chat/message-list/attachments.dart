@@ -1,7 +1,10 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:file_saver/file_saver.dart';
 import 'image.dart';
 import 'text-preview.dart';
 import '../../utils/types.dart';
+import '../../api/api.dart';
 import 'dart:convert';
 
 class AttachmentViewer extends StatelessWidget {
@@ -42,6 +45,90 @@ class AttachmentViewer extends StatelessWidget {
     }
 
     return res;
+  }
+
+  Future<void> _downloadFile(BuildContext context) async {
+    try {
+      final content = attachment.content;
+      final filename = attachment.filename ?? 'document.${attachment.ext ?? 'pdf'}';
+      Uint8List bytes;
+
+      if (content.startsWith('/attachments/')) {
+        // Internal URL — fetch from server
+        bytes = await ApiService().fetchAttachmentBytes(content);
+      } else if (content.startsWith('data:')) {
+        // Data URI — decode base64
+        bytes = base64Decode(content.split(',').last);
+      } else {
+        return;
+      }
+
+      await FileSaver.instance.saveFile(
+        name: filename,
+        bytes: bytes,
+      );
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to download: $e'), showCloseIcon: true),
+        );
+      }
+    }
+  }
+
+  Widget _buildDocumentCard(BuildContext context, {required IconData icon, required Color iconColor, required Color bgColor, required Color borderColor}) {
+    final filename = attachment.filename ?? 'document.${attachment.ext ?? 'bin'}';
+    return Stack(
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(right: 8.0),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: editMode ? null : () => _downloadFile(context),
+            child: Container(
+              width: mini ? 10 : 100,
+              height: mini ? 10 : 100,
+              decoration: BoxDecoration(
+                color: bgColor,
+                borderRadius: BorderRadius.circular(8.0),
+                border: Border.all(color: borderColor),
+              ),
+              padding: const EdgeInsets.all(8.0),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(icon, color: iconColor, size: mini ? 8 : 32),
+                  if (!mini) const SizedBox(height: 4),
+                  if (!mini)
+                    Text(
+                      filename,
+                      style: TextStyle(color: Colors.grey[800], fontSize: 9.0),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 2,
+                      textAlign: TextAlign.center,
+                    ),
+                  if (!mini && !editMode) ...[
+                    const SizedBox(height: 2),
+                    Icon(Icons.download, color: Colors.grey[500], size: 14),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+        if (editMode)
+          Positioned(
+            right: 0,
+            top: 0,
+            child: IconButton(
+              onPressed: () {
+                removeAttachment(attachment);
+              },
+              icon: Icon(Icons.close, color: Colors.grey),
+            ),
+          ),
+      ],
+    );
   }
 
   @override
@@ -119,6 +206,22 @@ class AttachmentViewer extends StatelessWidget {
       );
     } else if (attachment.type == "image_url") {
       return ImagePreviewComponent(imageUrl: attachment.content, mini: mini);
+    } else if (attachment.type == "pdf") {
+      return _buildDocumentCard(
+        context,
+        icon: Icons.picture_as_pdf,
+        iconColor: Colors.red[400]!,
+        bgColor: Colors.red[50]!,
+        borderColor: Colors.red[200]!,
+      );
+    } else if (attachment.type == "file") {
+      return _buildDocumentCard(
+        context,
+        icon: Icons.insert_drive_file,
+        iconColor: Colors.blue[400]!,
+        bgColor: Colors.blue[50]!,
+        borderColor: Colors.blue[200]!,
+      );
     }
     return Container();
   }

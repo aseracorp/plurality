@@ -40,6 +40,23 @@ func ExtractBlobsFromMessage(userID string, msg *utils.Message) error {
 			newParts[i].ImageURL = &utils.ContentImageURL{URL: urlPath}
 			changed = true
 		}
+
+		if part.Type == "pdf" && strings.HasPrefix(part.Text, "data:") {
+			data, _, ext, err := ExtractBlobFromDataURI(part.Text)
+			if err != nil {
+				utils.Error("[Storage] Failed to extract PDF blob", err)
+				continue
+			}
+			if len(data) > maxBlobSize {
+				return fmt.Errorf("blob exceeds maximum size of %d bytes", maxBlobSize)
+			}
+			urlPath, err := SaveBlob(userID, data, ext)
+			if err != nil {
+				return fmt.Errorf("saving PDF blob: %w", err)
+			}
+			newParts[i].Text = urlPath
+			changed = true
+		}
 	}
 
 	if changed {

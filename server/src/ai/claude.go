@@ -171,7 +171,7 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, conversati
 	_, priceToken := GetPrice(TEXT_INPUT, CLAUDE, model, fullSystemPrompt)
 
 	// Optimize messages — replace stale attachments with placeholders
-	optimizedMessages, hasAttachments := PrepareMessagesForAI(conversation.Messages, model)
+	optimizedMessages, hasAttachments, hasDocAttachments := PrepareMessagesForAI(conversation.Messages, model)
 
 	// Convert messages to Claude format
 	claudeMessages, contentPrice := convertMessagesToClaude(optimizedMessages, model)
@@ -202,7 +202,7 @@ func SendChatCompletionClaude(ctx context.Context, model utils.Model, conversati
 		System:      fullSystemPrompt,
 	}
 
-	tools := ai_tools.GetClaudeRequests(model, payload.ClientSideTools, hasAttachments)
+	tools := ai_tools.GetClaudeRequests(model, payload.ClientSideTools, hasAttachments, hasDocAttachments)
 	if CheckActionModel(model.Name) && len(tools) > 0 {
 		requestData.Tools = tools
 	}

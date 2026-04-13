@@ -173,7 +173,7 @@ func SendChatCompletionGoogle(ctx context.Context, model utils.Model, conversati
 		strconv.Itoa(time.Now().Year())
 
 	// Optimize messages — replace stale attachments with placeholders
-	optimizedMessages, hasAttachments := PrepareMessagesForAI(conversation.Messages, model)
+	optimizedMessages, hasAttachments, hasDocAttachments := PrepareMessagesForAI(conversation.Messages, model)
 
 	// Convert messages
 	geminiContents, basePrice := convertMessagesToGemini(optimizedMessages, model)
@@ -215,7 +215,7 @@ func SendChatCompletionGoogle(ctx context.Context, model utils.Model, conversati
 	// Tools
 	var geminiTools []GeminiTool
 	if CheckActionModel(model.Name) {
-		registeredTools := ai_tools.GetRequests(model, payload.ClientSideTools, hasAttachments)
+		registeredTools := ai_tools.GetRequests(model, payload.ClientSideTools, hasAttachments, hasDocAttachments)
 		if len(registeredTools) > 0 {
 			var declarations []GeminiFunctionDeclaration
 			for _, tool := range registeredTools {

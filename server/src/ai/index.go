@@ -287,7 +287,7 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, conv u
 
 	// Convert messages to standard format
 	allMessages := append([]utils.Message{systemMsg}, conv.Messages...)
-	optimizedMessages, hasAttachments := PrepareMessagesForAI(allMessages, model)
+	optimizedMessages, hasAttachments, hasDocAttachments := PrepareMessagesForAI(allMessages, model)
 	msgReqList, basePrice, inputMessage := convertMessagesToStandard(optimizedMessages, model, true)
 
 	maxTok := 4096
@@ -304,7 +304,7 @@ func SendChatCompletionTogetherAI(ctx context.Context, model utils.Model, conv u
 		Stream:            true,
 	}
 
-	ait := ai_tools.GetRequests(model, payload.ClientSideTools, hasAttachments)
+	ait := ai_tools.GetRequests(model, payload.ClientSideTools, hasAttachments, hasDocAttachments)
 	if CheckActionModel(model.Name) && len(ait) > 0 {
 		requestData.Tools = ait
 	}
@@ -399,7 +399,7 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, conv util
 
 	// Convert messages to standard format (OpenAI supports native tool messages)
 	allMessages := append([]utils.Message{systemMsg}, conv.Messages...)
-	optimizedMessages, hasAttachments := PrepareMessagesForAI(allMessages, model)
+	optimizedMessages, hasAttachments, hasDocAttachments := PrepareMessagesForAI(allMessages, model)
 	msgReqList, basePrice, inputMessage := convertMessagesToStandard(optimizedMessages, model, false)
 
 	maxTok := 4096
@@ -416,7 +416,7 @@ func SendChatCompletionChatGPT(ctx context.Context, model utils.Model, conv util
 		requestData.Temperature = &Temperature
 	}
 
-	ait := ai_tools.GetRequests(model, payload.ClientSideTools, hasAttachments)
+	ait := ai_tools.GetRequests(model, payload.ClientSideTools, hasAttachments, hasDocAttachments)
 	if CheckActionModel(model.Name) && len(ait) > 0 {
 		requestData.Tools = ait
 	}
