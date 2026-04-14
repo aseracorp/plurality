@@ -12,4 +12,11 @@ go build -o build\Plurality.exe src\index.go src\stripe.go
 
 if errorlevel 1 goto :error
 
+REM Copy LiteLLM files needed at runtime
+if not exist build\litellm mkdir build\litellm
+copy litellm_config.yaml build\litellm\
+copy litellm_proxy.py build\litellm\
+copy litellm_requirements.txt build\litellm\
+copy litellm_setup.bat build\litellm\
+
 echo Success!

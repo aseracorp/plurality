@@ -161,10 +161,13 @@ func watchProcess() {
 }
 
 func findConfigPath() string {
+	exeDir := filepath.Dir(os.Args[0])
 	candidates := []string{
 		"litellm_config.yaml",
+		"litellm/litellm_config.yaml",
 		"../litellm_config.yaml",
-		filepath.Join(filepath.Dir(os.Args[0]), "litellm_config.yaml"),
+		filepath.Join(exeDir, "litellm_config.yaml"),
+		filepath.Join(exeDir, "litellm", "litellm_config.yaml"),
 	}
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
@@ -176,10 +179,13 @@ func findConfigPath() string {
 }
 
 func findProxyScript() string {
+	exeDir := filepath.Dir(os.Args[0])
 	candidates := []string{
 		"litellm_proxy.py",
+		"litellm/litellm_proxy.py",
 		"../litellm_proxy.py",
-		filepath.Join(filepath.Dir(os.Args[0]), "litellm_proxy.py"),
+		filepath.Join(exeDir, "litellm_proxy.py"),
+		filepath.Join(exeDir, "litellm", "litellm_proxy.py"),
 	}
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
@@ -192,11 +198,16 @@ func findProxyScript() string {
 
 func findPythonBin() string {
 	// Check for venv first
+	exeDir := filepath.Dir(os.Args[0])
 	venvPaths := []string{
 		"litellm_venv/bin/python",
 		"litellm_venv/Scripts/python.exe",
+		"litellm/litellm_venv/bin/python",
+		"litellm/litellm_venv/Scripts/python.exe",
 		"../litellm_venv/bin/python",
 		"../litellm_venv/Scripts/python.exe",
+		filepath.Join(exeDir, "litellm", "litellm_venv", "bin", "python"),
+		filepath.Join(exeDir, "litellm", "litellm_venv", "Scripts", "python.exe"),
 	}
 	for _, p := range venvPaths {
 		if _, err := os.Stat(p); err == nil {

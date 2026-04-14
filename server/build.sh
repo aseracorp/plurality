@@ -15,5 +15,9 @@ fi
 # echo "Building for Windows..."
 # GOOS=windows GOARCH=amd64 go build -o build/Plurality.exe src/index.go
 
+# Copy LiteLLM files needed at runtime
+mkdir -p build/litellm
+cp litellm_config.yaml litellm_proxy.py litellm_requirements.txt litellm_setup.sh build/litellm/
+
 echo "Build complete. Binaries are in the 'build' directory."
 echo "Linux binary: build/Plurality"
