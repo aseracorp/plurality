@@ -71,11 +71,11 @@ final Map<String, ModelSelected> modelPresets = {
   ),
   'Smart': ModelSelected(
     text: Model(
-      name: 'Claude/claude-sonnet-4-6',
+      name: 'glm-5p1',
       params: null,
       tools: ['search_web', 'place_search', 'visit_link', 'generate_image'],
     ),
-    vision: Model(name: 'Claude/claude-sonnet-4-6', params: null, tools: ['generate_image']),
+    vision: Model(name: 'qwen3p6-plus', params: null, tools: ['generate_image']),
     imageGen: Model(name: 'black-forest-labs/FLUX.2-pro', params: null),
   ),
 };

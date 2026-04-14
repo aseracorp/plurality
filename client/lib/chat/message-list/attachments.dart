@@ -79,18 +79,36 @@ class AttachmentViewer extends StatelessWidget {
 
       if (content.startsWith('/attachments/')) {
         // Internal URL — fetch from server
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Downloading $filename...'), duration: Duration(seconds: 1)),
+          );
+        }
         bytes = await ApiService().fetchAttachmentBytes(content);
       } else if (content.startsWith('data:')) {
         // Data URI — decode base64
         bytes = base64Decode(content.split(',').last);
       } else {
-        return;
+        // Plain text content (snippets, etc.) — encode as UTF-8
+        bytes = Uint8List.fromList(utf8.encode(content));
       }
 
+      // Extract extension for FileSaver
+      final dotIdx = filename.lastIndexOf('.');
+      final ext = dotIdx >= 0 ? filename.substring(dotIdx + 1) : (attachment.ext ?? attachment.type);
+      final nameWithoutExt = dotIdx >= 0 ? filename.substring(0, dotIdx) : filename;
+
       await FileSaver.instance.saveFile(
-        name: filename,
+        name: nameWithoutExt,
         bytes: bytes,
+        ext: ext,
       );
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Saved $filename (${bytes.length} bytes)'), showCloseIcon: true),
+        );
+      }
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

@@ -87,6 +87,7 @@ func BuildAttachmentIndex(messages []Message, fileSizeFn FileSizeFunc) Attachmen
 			meta := AttachmentMeta{
 				ID:           id,
 				Type:         part.Type,
+				Filename:     part.Filename,
 				Size:         contentSize,
 				MessageIndex: msgIdx,
 				PartIndex:    partIdx,

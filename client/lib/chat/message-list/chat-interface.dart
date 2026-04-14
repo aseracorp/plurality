@@ -198,12 +198,14 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       });
     }
 
-    // Reset when streaming ends and focus the input
+    // Reset when streaming ends and focus the input (skip on mobile to avoid virtual keyboard pop-up)
     if (state.state != ConversationState.processing) {
       _hasScrolledToUserMessage = false;
-      Future.delayed(Duration(milliseconds: 150), () {
-        if (mounted) _inputFocusNode.requestFocus();
-      });
+      if (!widget.isMobile) {
+        Future.delayed(Duration(milliseconds: 150), () {
+          if (mounted) _inputFocusNode.requestFocus();
+        });
+      }
     }
 
     setState(() {});
@@ -504,9 +506,11 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
       if (!mounted) return;
       balanceNotifier.refresh();
-      Future.delayed(Duration(milliseconds: 150), () {
-        if (mounted) _inputFocusNode.requestFocus();
-      });
+      if (!widget.isMobile) {
+        Future.delayed(Duration(milliseconds: 150), () {
+          if (mounted) _inputFocusNode.requestFocus();
+        });
+      }
     } catch (e, s) {
       print('Error: $e');
       print('Stack: $s');
