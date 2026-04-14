@@ -52,17 +52,17 @@ var ImageGenTool = utils.AITool{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
 			Name:        "generate_image",
-			Description: "Generate or edit an image. Use this tool when the user asks you to create, draw, generate, design, or make an image, picture, illustration, photo, artwork, or any visual content. When the user provides a reference image (as an attachment) and asks to modify it, pass the attachment ID in the 'image' parameter. Write a detailed, descriptive prompt that will produce great results.",
+			Description: "Generate or edit an image from a text description. Write a detailed prompt covering style, composition, and subject. To edit an existing image, pass its attachment ID in the 'image' parameter.",
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{
 					"prompt": {
 						Type:        "string",
-						Description: "A detailed image generation prompt describing the desired image. Be specific about style, composition, colors, lighting, and subject matter. For edits, describe the desired change.",
+						Description: "Detailed image generation prompt",
 					},
 					"image": {
 						Type:        "string",
-						Description: "Optional. An attachment ID (e.g. 'att_0') referencing an image from the conversation to use as input for image editing. When provided, the image is modified according to the prompt instead of generating from scratch.",
+						Description: "Optional attachment ID (e.g. 'att_0') to edit an existing image",
 					},
 				},
 				Required: []string{"prompt"},

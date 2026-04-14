@@ -18,21 +18,21 @@ var SearchDocumentTool = utils.AITool{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
 			Name:        "search_document",
-			Description: "Search a document (PDF, DOCX, XLSX, PPTX) attached to this conversation using a regex pattern. Returns matching text with surrounding context. Useful for finding specific information in large documents without reading them entirely.",
+			Description: "Search a document attachment (PDF, DOCX, XLSX, PPTX) with regex. Returns matches with context.",
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{
 					"attachment_id": {
 						Type:        "string",
-						Description: "The attachment ID (e.g. \"att_0\") from the conversation",
+						Description: "Attachment ID (e.g. 'att_0')",
 					},
 					"pattern": {
 						Type:        "string",
-						Description: "Regex pattern to search for (e.g. \"total.*revenue\", \"\\d{4}-\\d{2}-\\d{2}\" for dates, or a simple string like \"conclusion\")",
+						Description: "Regex pattern to search for",
 					},
 					"max_results": {
 						Type:        "number",
-						Description: "Maximum number of matches to return (default 50)",
+						Description: "Max matches to return (default 50)",
 					},
 				},
 				Required: []string{"attachment_id", "pattern"},

@@ -21,13 +21,13 @@ var SearchTool = utils.AITool{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
 			Name:        "search_web",
-			Description: "Search on the internet via Google informations that are not in the knowledge base if you really need to. Once you do a search, YOU HAVE to use visit_link to visit the links you want based on what's relevant.",
+			Description: "Search the internet via Google. After searching, use visit_link on relevant results.",
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{
 					"query": {
 						Type:        "string",
-						Description: "The query you want to search for. keep it straight to the point. it will be fed to google, use meaningful keywords",
+						Description: "Search query with meaningful keywords",
 					},
 				},
 			},

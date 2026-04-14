@@ -53,10 +53,12 @@ type ActiveRequest struct {
 	clients map[*SSEClient]bool
 
 	// In-memory buffer for the current assistant turn
-	TextBuffer      strings.Builder
-	ToolCallBuffer  []utils.ToolCall
-	TokenUsage      int
-	InputPriceToken int
+	TextBuffer       strings.Builder
+	ToolCallBuffer   []utils.ToolCall
+	TokenUsage       int
+	PromptTokens     int
+	CompletionTokens int
+	ResponseCost     float64
 }
 
 // NewActiveRequest creates a new ActiveRequest with a cancelable context.
@@ -145,7 +147,9 @@ func (ar *ActiveRequest) ResetBuffer() {
 	ar.TextBuffer.Reset()
 	ar.ToolCallBuffer = nil
 	ar.TokenUsage = 0
-	ar.InputPriceToken = 0
+	ar.PromptTokens = 0
+	ar.CompletionTokens = 0
+	ar.ResponseCost = 0
 }
 
 // --- Global Registry ---

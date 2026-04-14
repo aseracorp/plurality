@@ -368,18 +368,9 @@ type parsedToolDelta struct {
 	arguments string
 }
 
-// parseProviderChunk extracts text and tool call deltas from a raw LLM provider chunk.
-// Works for Standard (OpenAI/Fireworks), Claude, and Gemini formats.
+// parseProviderChunk extracts text and tool call deltas from a raw LLM chunk.
+// All chunks are in OpenAI format since everything goes through the LiteLLM proxy.
 func parseProviderChunk(data string, modelName string) (string, []parsedToolDelta) {
-	if strings.HasPrefix(modelName, "Claude/") {
-		return parseClaudeChunk(data)
-	} else if strings.HasPrefix(modelName, "Gemini/") {
-		return parseGeminiChunk(data)
-	}
-	return parseStandardChunk(data)
-}
-
-func parseStandardChunk(data string) (string, []parsedToolDelta) {
 	var chunk AIChunk
 	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 		return "", nil
@@ -401,57 +392,6 @@ func parseStandardChunk(data string) (string, []parsedToolDelta) {
 			name:      tc.Function.Name,
 			arguments: tc.Function.Arguments,
 		})
-	}
-	return text, tools
-}
-
-func parseClaudeChunk(data string) (string, []parsedToolDelta) {
-	var chunk ClaudeAIChunk
-	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-		return "", nil
-	}
-
-	switch chunk.Type {
-	case "content_block_start":
-		if chunk.ContentBlock.Type == "tool_use" {
-			return "", []parsedToolDelta{{id: chunk.ContentBlock.ID, name: chunk.ContentBlock.Name}}
-		}
-	case "content_block_delta":
-		if chunk.Delta.Type == "text_delta" {
-			return chunk.Delta.Text, nil
-		}
-		if chunk.Delta.Type == "input_json_delta" {
-			return "", []parsedToolDelta{{arguments: chunk.Delta.PartialJson}}
-		}
-	}
-	return "", nil
-}
-
-func parseGeminiChunk(data string) (string, []parsedToolDelta) {
-	var chunk GeminiAIChunk
-	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-		return "", nil
-	}
-
-	var text string
-	var tools []parsedToolDelta
-	for _, candidate := range chunk.Candidates {
-		if candidate.Content == nil {
-			continue
-		}
-		for _, part := range candidate.Content.Parts {
-			if part.Text != "" {
-				text += part.Text
-			}
-			if part.FunctionCall != nil {
-				argsJSON, _ := json.Marshal(part.FunctionCall.Args)
-				tools = append(tools, parsedToolDelta{
-					id:        fmt.Sprintf("gemini-tool-%d", len(tools)),
-					name:      part.FunctionCall.Name,
-					arguments: string(argsJSON),
-				})
-			}
-		}
 	}
 	return text, tools
 }

@@ -18,21 +18,21 @@ var ReadDocumentTool = utils.AITool{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
 			Name:        "read_document",
-			Description: "Extract readable text content from a document (PDF, DOCX, XLSX, PPTX) attached to this conversation. Use this when you see a document attachment placeholder. Returns the text content.",
+			Description: "Extract text from a document attachment (PDF, DOCX, XLSX, PPTX).",
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{
 					"attachment_id": {
 						Type:        "string",
-						Description: "The attachment ID (e.g. \"att_0\") from the conversation",
+						Description: "Attachment ID (e.g. 'att_0')",
 					},
 					"pages": {
 						Type:        "string",
-						Description: "Optional page selection (PDF only): a single page like \"3\", a range like \"1-5\", or omit for all pages",
+						Description: "Page selection for PDFs: '3', '1-5', or omit for all",
 					},
 					"max_chars": {
 						Type:        "number",
-						Description: "Maximum characters to return (default 10000). Use a smaller value for large documents to get an overview first.",
+						Description: "Max characters to return (default 10000)",
 					},
 				},
 				Required: []string{"attachment_id"},

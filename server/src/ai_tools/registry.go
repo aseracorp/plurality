@@ -4,13 +4,9 @@ import (
 	"strings"
 
 	"github.com/azukaar/plurality/src/utils"
-
-	"log"
 )
 
 var Registry = map[string]utils.AITool{
-	// WeatherTool.ToolID: WeatherTool,
-	// NewsSearchTool.ToolID: NewsSearchTool,
 	DiceRollTool.ToolID:                DiceRollTool,
 	WebTool.ToolID:                     WebTool,
 	SearchTool.ToolID:                  SearchTool,
@@ -65,61 +61,6 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 	if hasDocumentAttachments {
 		requests = append(requests, ReadDocumentTool.ToolRequest)
 		requests = append(requests, SearchDocumentTool.ToolRequest)
-	}
-
-	return requests
-}
-
-func GetClaudeSchema(toolID string) utils.FunctionToolsRequest {
-	tool, ok := GetTool(toolID)
-	if !ok {
-		log.Printf("Tool with ID %s not found", toolID)
-		return utils.FunctionToolsRequest{}
-	}
-
-	toolRequest := tool.ToolRequest.Function
-	toolRequest.InputSchema = toolRequest.Parameters
-	toolRequest.Parameters = nil
-
-	return toolRequest
-}
-
-func ConvertToClaudeSchema(requests utils.FunctionToolsRequest) utils.FunctionToolsRequest {
-	toolRequest := requests
-	toolRequest.InputSchema = toolRequest.Parameters
-	toolRequest.Parameters = nil
-
-	return toolRequest
-}
-
-func GetClaudeRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest, hasAttachments bool, hasDocumentAttachments bool) []utils.FunctionToolsRequest {
-	var requests = []utils.FunctionToolsRequest{}
-	var selected = model.Tools
-
-	for _, tool := range Registry {
-		if tool.ToolID == ConversationAttachmentsTool.ToolID || tool.ToolID == ReadDocumentTool.ToolID || tool.ToolID == SearchDocumentTool.ToolID {
-			continue // handled separately below
-		}
-		if utils.ContainsString(selected, tool.ToolID) {
-			requests = append(requests, GetClaudeSchema(tool.ToolID))
-		}
-	}
-
-	for _, tool := range ClientSideTools {
-		if utils.ContainsString(selected, tool.Name) {
-			requests = append(requests, ConvertToClaudeSchema(tool))
-		}
-	}
-
-	// Force-include conversation_attachments when the conversation has attachments
-	if hasAttachments {
-		requests = append(requests, GetClaudeSchema(ConversationAttachmentsTool.ToolID))
-	}
-
-	// Force-include document tools when the conversation has document attachments
-	if hasDocumentAttachments {
-		requests = append(requests, GetClaudeSchema(ReadDocumentTool.ToolID))
-		requests = append(requests, GetClaudeSchema(SearchDocumentTool.ToolID))
 	}
 
 	return requests

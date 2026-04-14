@@ -28,15 +28,15 @@ var PlaceSearchTool = utils.AITool{
 				Properties: map[string]utils.PropertyParameterToolsRequest{
 					"query": {
 						Type:        "string",
-						Description: "The place or location you want to search for. Be specific for better results.",
+						Description: "Place or location to search for",
 					},
 					"location": {
 						Type:        "string",
-						Description: "Optional: Specify a location to search near (e.g., 'New York, NY')",
+						Description: "Location to search near (e.g. 'New York, NY')",
 					},
 					"type": {
 						Type:        "string",
-						Description: "Optional: Filter by place type (e.g., restaurant, hotel, museum)",
+						Description: "Place type filter (e.g. restaurant, hotel)",
 					},
 				},
 				Required: []string{"query"},

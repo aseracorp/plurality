@@ -37,19 +37,21 @@ type ChatPayload struct {
 	ClientSideTools []utils.FunctionToolsRequest `json:"client_side_tools"`
 }
 
-// --- Provider-Specific Request Types ---
+// --- Provider Request Types ---
 
-// These are internal types for building requests to each LLM provider.
-// They are NOT used in the client-server API or DB.
+// StreamOptions enables usage information in streaming responses.
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
 
-// StandardContentReq is a content block in an OpenAI/Fireworks request message.
+// StandardContentReq is a content block in an OpenAI request message.
 type StandardContentReq struct {
 	Type     string                 `json:"type"`
 	Text     string                 `json:"text,omitempty"`
 	ImageURL *utils.ContentImageURL `json:"image_url,omitempty"`
 }
 
-// StandardMessageReq is a message in an OpenAI/Fireworks request.
+// StandardMessageReq is a message in an OpenAI request.
 type StandardMessageReq struct {
 	Role       string           `json:"role"`
 	Content    interface{}      `json:"content"`                // string or []StandardContentReq
@@ -58,100 +60,31 @@ type StandardMessageReq struct {
 	Name       string           `json:"name,omitempty"`         // tool messages
 }
 
-// StandardChatRequest is the request body for OpenAI/Fireworks APIs.
+// StandardChatRequest is the request body sent to the LiteLLM proxy (OpenAI-compatible).
 type StandardChatRequest struct {
 	Model             string               `json:"model"`
 	Messages          []StandardMessageReq `json:"messages"`
 	MaxTokens         *int                 `json:"max_tokens,omitempty"`
-	MaxCompletionToks *int                 `json:"max_completion_tokens,omitempty"` // OpenAI-specific
+	MaxCompletionToks *int                 `json:"max_completion_tokens,omitempty"`
 	Temperature       *float64             `json:"temperature,omitempty"`
 	TopP              float64              `json:"top_p,omitempty"`
 	TopK              int                  `json:"top_k,omitempty"`
 	RepetitionPenalty float64              `json:"repetition_penalty,omitempty"`
 	Stop              []string             `json:"stop,omitempty"`
 	Stream            bool                 `json:"stream"`
+	StreamOptions     *StreamOptions       `json:"stream_options,omitempty"`
 	Tools             []utils.ToolsRequest `json:"tools,omitempty"`
 }
 
-// Claude-specific types
-
-type ClaudeImageSourceReq struct {
-	Type      string `json:"type"`
-	MediaType string `json:"media_type"`
-	Data      string `json:"data"`
-}
-
-type ClaudeContentReq struct {
-	Type      string                `json:"type"`
-	Text      string                `json:"text,omitempty"`
-	ToolUseID string                `json:"tool_use_id,omitempty"`
-	Content   interface{}           `json:"content,omitempty"` // tool_result: string or []ClaudeContentReq
-	ID        string                `json:"id,omitempty"`      // tool_use ID
-	Name      string                `json:"name,omitempty"`    // tool_use name
-	Input     map[string]string     `json:"input,omitempty"`   // tool_use arguments
-	Source    *ClaudeImageSourceReq `json:"source,omitempty"`
-}
-
-type ClaudeMessageReq struct {
-	Role    string             `json:"role"`
-	Content []ClaudeContentReq `json:"content"`
-}
-
-type ClaudeChatRequest struct {
-	Model       string                       `json:"model"`
-	Messages    []ClaudeMessageReq           `json:"messages"`
-	MaxTokens   int                          `json:"max_tokens"`
-	Temperature float64                      `json:"temperature"`
-	Stream      bool                         `json:"stream"`
-	System      string                       `json:"system"`
-	Tools       []utils.FunctionToolsRequest `json:"tools,omitempty"`
-}
-
-type ClaudeAIChunk struct {
-	Type         string        `json:"type"`
-	Delta        ClaudeDelta   `json:"delta,omitempty"`
-	Usage        ClaudeUsage   `json:"usage,omitempty"`
-	Message      ClaudeMessage `json:"message,omitempty"`
-	ContentBlock struct {
-		Type string `json:"type"`
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	} `json:"content_block,omitempty"`
-}
-
-type ClaudeMessage struct {
-	ID      string          `json:"id"`
-	Type    string          `json:"type"`
-	Role    string          `json:"role"`
-	Content []ClaudeContent `json:"content"`
-	Model   string          `json:"model"`
-	Usage   ClaudeUsage     `json:"usage"`
-}
-
-type ClaudeDelta struct {
-	Type        string `json:"type"`
-	Text        string `json:"text,omitempty"`
-	PartialJson string `json:"partial_json,omitempty"`
-}
-
-type ClaudeContent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-}
-
-type ClaudeUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-}
-
-// --- Standard streaming chunk (OpenAI/Fireworks) ---
+// --- Standard streaming chunk (OpenAI format, used for all providers via LiteLLM) ---
 
 type AIChunk struct {
 	Model string `json:"model"`
 	Usage struct {
-		TotalTokens      int `json:"total_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		PromptTokens     int `json:"prompt_tokens"`
+		TotalTokens      int     `json:"total_tokens"`
+		CompletionTokens int     `json:"completion_tokens"`
+		PromptTokens     int     `json:"prompt_tokens"`
+		ResponseCost     float64 `json:"response_cost,omitempty"`
 	} `json:"usage,omitempty"`
 	Choices []struct {
 		Text  string `json:"text"`

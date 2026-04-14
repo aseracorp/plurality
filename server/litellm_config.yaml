@@ -1,0 +1,128 @@
+model_list:
+  # OpenAI models
+  - model_name: "gpt-5.2"
+    litellm_params:
+      model: "gpt-5.2"
+      api_key: "os.environ/CHATGPT_API_KEY"
+  - model_name: "gpt-5"
+    litellm_params:
+      model: "gpt-5"
+      api_key: "os.environ/CHATGPT_API_KEY"
+  - model_name: "gpt-5-mini"
+    litellm_params:
+      model: "gpt-5-mini"
+      api_key: "os.environ/CHATGPT_API_KEY"
+  - model_name: "gpt-5-nano"
+    litellm_params:
+      model: "gpt-5-nano"
+      api_key: "os.environ/CHATGPT_API_KEY"
+  - model_name: "gpt-4.1"
+    litellm_params:
+      model: "gpt-4.1"
+      api_key: "os.environ/CHATGPT_API_KEY"
+  - model_name: "gpt-4.1-mini"
+    litellm_params:
+      model: "gpt-4.1-mini"
+      api_key: "os.environ/CHATGPT_API_KEY"
+  - model_name: "gpt-4.1-nano"
+    litellm_params:
+      model: "gpt-4.1-nano"
+      api_key: "os.environ/CHATGPT_API_KEY"
+
+  # Claude models
+  - model_name: "claude-haiku-4-6"
+    litellm_params:
+      model: "anthropic/claude-haiku-4-6"
+      api_key: "os.environ/CLAUDE_API_KEY"
+  - model_name: "claude-sonnet-4-6"
+    litellm_params:
+      model: "anthropic/claude-sonnet-4-6"
+      api_key: "os.environ/CLAUDE_API_KEY"
+  - model_name: "claude-opus-4-6"
+    litellm_params:
+      model: "anthropic/claude-opus-4-6"
+      api_key: "os.environ/CLAUDE_API_KEY"
+
+  # Gemini models
+  - model_name: "gemini-2.5-pro"
+    litellm_params:
+      model: "gemini/gemini-2.5-pro"
+      api_key: "os.environ/GOOGLE_API_KEY"
+  - model_name: "gemini-2.5-flash"
+    litellm_params:
+      model: "gemini/gemini-2.5-flash"
+      api_key: "os.environ/GOOGLE_API_KEY"
+  - model_name: "gemini-2.5-flash-lite"
+    litellm_params:
+      model: "gemini/gemini-2.5-flash-lite"
+      api_key: "os.environ/GOOGLE_API_KEY"
+
+  # Fireworks models
+  - model_name: "llama4-scout-instruct-basic"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/llama4-scout-instruct-basic"
+      api_key: "os.environ/FIREWORK_KEY"
+  - model_name: "llama4-maverick-instruct-basic"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/llama4-maverick-instruct-basic"
+      api_key: "os.environ/FIREWORK_KEY"
+  - model_name: "deepseek-r1"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/deepseek-r1"
+      api_key: "os.environ/FIREWORK_KEY"
+  - model_name: "deepseek-r1-basic"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/deepseek-r1-basic"
+      api_key: "os.environ/FIREWORK_KEY"
+  - model_name: "deepseek-r1-0528"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/deepseek-r1-0528"
+      api_key: "os.environ/FIREWORK_KEY"
+  - model_name: "deepseek-v3"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/deepseek-v3"
+      api_key: "os.environ/FIREWORK_KEY"
+  - model_name: "deepseek-v3-0324"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/deepseek-v3-0324"
+      api_key: "os.environ/FIREWORK_KEY"
+  - model_name: "deepseek-v3p2"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/deepseek-v3p2"
+      api_key: "os.environ/FIREWORK_KEY"
+  - model_name: "qwen3p6-plus"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/qwen3p6-plus"
+      api_key: "os.environ/FIREWORK_KEY"
+  - model_name: "qwen3-30b-a3b-instruct-2507"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/qwen3-30b-a3b-instruct-2507"
+      api_key: "os.environ/FIREWORK_KEY"
+  - model_name: "qwen3p5-397b-a17b"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/qwen3p5-397b-a17b"
+      api_key: "os.environ/FIREWORK_KEY"
+  - model_name: "kimi-k2p5"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/kimi-k2p5"
+      api_key: "os.environ/FIREWORK_KEY"
+  - model_name: "glm-5p1"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/glm-5p1"
+      api_key: "os.environ/FIREWORK_KEY"
+  - model_name: "minimax-m2p5"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/minimax-m2p5"
+      api_key: "os.environ/FIREWORK_KEY"
+
+  # Together AI (title generation)
+  - model_name: "Qwen/Qwen3-VL-8B-Instruct"
+    litellm_params:
+      model: "together_ai/Qwen/Qwen3-VL-8B-Instruct"
+      api_key: "os.environ/TOGETHER_API_KEY"
+
+general_settings:
+  drop_params: true
+
+litellm_settings:
+  drop_params: true

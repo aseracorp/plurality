@@ -22,18 +22,18 @@ var ConversationAttachmentsTool = utils.AITool{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
 			Name: "conversation_attachments",
-			Description: "Retrieve attachments (images, documents, code snippets) from earlier in this conversation that were omitted to save context. WARNING: Use sparingly and avoid calling multiple times in a row. Two modes: 'list' returns metadata for all attachments, 'get' retrieves content for up to 5 attachments with optional byte-range slicing.",
+			Description: "Retrieve conversation attachments omitted for context savings. Mode 'list': returns metadata. Mode 'get': retrieves up to 5 attachments with optional byte-range slicing.",
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{
 					"mode": {
 						Type:        "string",
-						Description: "The operation mode: 'list' to list all attachments with metadata (id, type, extension, size), 'get' to retrieve specific attachment content",
+						Description: "'list' for metadata, 'get' for content",
 						Enum:        []string{"list", "get"},
 					},
 					"attachments": {
 						Type:        "string",
-						Description: "JSON array for 'get' mode only. Each element: {\"id\": \"att_0\", \"from\": 0, \"to\": 1000}. 'from' and 'to' are optional byte offsets for partial retrieval. Maximum 5 attachments per call.",
+						Description: "JSON array for 'get' mode: [{\"id\": \"att_0\", \"from\": 0, \"to\": 1000}]. Max 5.",
 					},
 				},
 				Required: []string{"mode"},

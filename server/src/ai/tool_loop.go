@@ -3,7 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
-	"strings"
+	"io"
 	"time"
 
 	"github.com/azukaar/plurality/src/ai_tools"
@@ -39,7 +39,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		ar.ResetBuffer()
 		ar.BroadcastStatus("typing", "")
 		utils.Log("[LLMLoop] Calling LLM with model %s", model.Name)
-		response, inputPriceToken, err := SendChatCompletion(ar.Ctx, model, conversation, payload)
+		response, _, err := SendChatCompletion(ar.Ctx, model, conversation, payload)
 		if err != nil {
 			if ar.Ctx.Err() != nil {
 				ar.flushPartialResponse(ctx, conversation)
@@ -56,9 +56,9 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			return
 		}
 
-		// Process the streaming response
-		sp := NewStreamProcessor(ar, model, conversation, inputPriceToken)
-		assistantMessage, err := sp.processStream(ar.Ctx, response, model)
+		// Process the streaming response (always OpenAI format via LiteLLM)
+		sp := NewStreamProcessor(ar, model, conversation)
+		assistantMessage, err := sp.ProcessStandardStream(ar.Ctx, response.(io.ReadCloser))
 		if err != nil {
 			utils.Error("[LLMLoop] Error processing stream", err)
 			if ar.Ctx.Err() != nil {
@@ -191,30 +191,6 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		// All tools were server-side — loop back to LLM with results
 		utils.Log("[LLMLoop] All server tools executed, looping back to LLM")
 	}
-}
-
-// processStream dispatches to the correct provider-specific stream processor.
-func (sp *StreamProcessor) processStream(ctx context.Context, response interface{}, model utils.Model) (utils.Message, error) {
-	reader, ok := response.(interface{ Close() error })
-	if ok {
-		_ = reader // just checking the interface
-	}
-
-	if strings.HasPrefix(model.Name, "Claude/") {
-		return sp.ProcessClaudeStream(ctx, response.(interface {
-			Read([]byte) (int, error)
-			Close() error
-		}))
-	} else if strings.HasPrefix(model.Name, "Gemini/") {
-		return sp.ProcessGeminiStream(ctx, response.(interface {
-			Read([]byte) (int, error)
-			Close() error
-		}))
-	}
-	return sp.ProcessStandardStream(ctx, response.(interface {
-		Read([]byte) (int, error)
-		Close() error
-	}))
 }
 
 // enrichToolCallMetadata populates the Loading and IconURL fields from the tool registry.

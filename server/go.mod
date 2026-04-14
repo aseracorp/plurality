@@ -10,8 +10,7 @@ require (
 	github.com/gorilla/mux v1.8.1
 	github.com/joho/godotenv v1.5.1
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
-	github.com/pkoukk/tiktoken-go v0.1.7
-	github.com/stripe/stripe-go/v82 v82.0.0
+github.com/stripe/stripe-go/v82 v82.0.0
 	github.com/xuri/excelize/v2 v2.10.1
 	go.mongodb.org/mongo-driver v1.17.3
 	google.golang.org/api v0.215.0

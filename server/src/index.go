@@ -24,6 +24,13 @@ func main() {
 	db.InitDB()
 	storage.Init()
 
+	// Initialize LiteLLM proxy for AI provider routing
+	if err := ai.InitLiteLLM(); err != nil {
+		log.Printf("[main] WARNING: LiteLLM proxy not available: %v", err)
+		log.Printf("[main] Set LITELLM_URL env var or run litellm/setup.sh to enable AI features")
+	}
+	defer ai.ShutdownLiteLLM()
+
 	utils.Log("[main] Starting server on :8090")
 
 	r := mux.NewRouter()
