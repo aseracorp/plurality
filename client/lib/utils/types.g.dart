@@ -419,7 +419,7 @@ class ModelAdapter extends TypeAdapter<Model> {
     return Model(
       name: fields[0] as String,
       params: (fields[1] as Map?)?.cast<String, String>(),
-      tools: fields[2] == null ? const [] : (fields[2] as List).cast<String>(),
+      tools: fields[2] == null ? const {} : (fields[2] as Map).cast<String, String>(),
     );
   }
 

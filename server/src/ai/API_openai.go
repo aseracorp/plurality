@@ -172,8 +172,11 @@ func HandleOpenAIChatCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Extract tool names for model.Tools
+	if model.Tools == nil {
+		model.Tools = make(map[string]string)
+	}
 	for _, tool := range req.Tools {
-		model.Tools = append(model.Tools, tool.Function.Name)
+		model.Tools[tool.Function.Name] = "true"
 	}
 
 	conversation := utils.Conversation{Messages: req.Messages}

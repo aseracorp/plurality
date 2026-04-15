@@ -346,7 +346,7 @@ class Message {
 
 // --- Conversation State ---
 
-enum ConversationState { idle, processing, waitingForTool }
+enum ConversationState { idle, processing, waitingForTool, waitingForApproval }
 
 ConversationState conversationStateFromString(String? state) {
   switch (state) {
@@ -354,6 +354,8 @@ ConversationState conversationStateFromString(String? state) {
       return ConversationState.processing;
     case 'waiting_for_tool':
       return ConversationState.waitingForTool;
+    case 'waiting_for_approval':
+      return ConversationState.waitingForApproval;
     default:
       return ConversationState.idle;
   }
@@ -595,9 +597,9 @@ class Model {
   final Map<String, String>? params;
 
   @HiveField(2)
-  final List<String> tools;
+  final Map<String, String> tools;
 
-  const Model({required this.name, required this.params, this.tools = const []});
+  const Model({required this.name, required this.params, this.tools = const {}});
 
   Map<String, dynamic> toJson() => {
     'name': name,
@@ -616,13 +618,21 @@ class Model {
       params = null;
     }
 
-    List<String> tools = [];
+    Map<String, String> tools = {};
     try {
       if (json['tools'] != null) {
-        tools = List<String>.from(json['tools']);
+        if (json['tools'] is List) {
+          // Backward compat: convert old list format to map
+          for (final t in json['tools']) {
+            tools[t.toString()] = 'true';
+          }
+        } else {
+          final rawTools = json['tools'] as Map<String, dynamic>;
+          tools = rawTools.map((key, value) => MapEntry(key, value.toString()));
+        }
       }
     } catch (_) {
-      tools = [];
+      tools = {};
     }
 
     return Model(name: (json['name'] ?? '') as String, params: params, tools: tools);

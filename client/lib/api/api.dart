@@ -211,6 +211,43 @@ class ApiService {
     );
   }
 
+  /// Approve/deny server-side "ask" tools. Server executes approved ones,
+  /// pushes results to DB, and relaunches the LLM loop with SSE streaming.
+  Future<Stream<SSEEvent>> approveTools({
+    required String conversationId,
+    required List<Map<String, dynamic>> approvals,
+    required ModelSelected modelSelected,
+    List<Map<String, dynamic>>? clientSideTools,
+    List<String>? availableSkills,
+  }) async {
+    final request = http.Request('POST', Uri.parse('$baseUrl/chat/approve/$conversationId'));
+    request.headers['Content-Type'] = 'application/json';
+    request.headers['Authorization'] =
+        'Bearer ${await _authService.getCurrentUserToken()}';
+
+    final body = <String, dynamic>{
+      'approvals': approvals,
+      'model_selected': modelSelected.toJson(),
+    };
+    if (clientSideTools != null) body['client_side_tools'] = clientSideTools;
+    if (availableSkills != null && availableSkills.isNotEmpty) {
+      body['available_skills'] = availableSkills;
+    }
+
+    request.body = jsonEncode(body);
+
+    final response = await request.send();
+    if (response.statusCode != 200) {
+      final errorBody = await response.stream.bytesToString();
+      throw APIException(
+        errorBody.isNotEmpty ? errorBody : 'Approve request failed',
+        statusCode: response.statusCode,
+      );
+    }
+
+    return _parseSSEStream(response);
+  }
+
   /// Fetch server-side tool metadata (icons, loading strings).
   Future<List<Map<String, dynamic>>> getServerTools() async {
     final token = await _authService.getCurrentUserToken();

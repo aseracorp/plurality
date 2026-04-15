@@ -461,13 +461,21 @@ class ChatService {
           toolCall: event.toolCall,
           isServer: event.isServer,
         ));
-        if (event.isServer) {
-          session.value = session.value.copyWith(items: items);
-        } else if (event.toolCall != null) {
-          session.value = session.value.copyWith(
-            items: items,
-            pendingClientTools: [...session.value.pendingClientTools, event.toolCall!],
-          );
+        if (event.toolCall != null) {
+          // Check if this tool is in "ask" mode — if so, don't auto-queue it
+          final toolsMap = modelSelected?.text?.tools;
+          final isAsk = toolsMap != null && toolsMap[event.toolCall!.function.name] == 'ask';
+          if (isAsk) {
+            // Just add to items — the approval banner derives from DB state
+            session.value = session.value.copyWith(items: items);
+          } else if (event.isServer) {
+            session.value = session.value.copyWith(items: items);
+          } else {
+            session.value = session.value.copyWith(
+              items: items,
+              pendingClientTools: [...session.value.pendingClientTools, event.toolCall!],
+            );
+          }
         }
         break;
 
@@ -486,10 +494,12 @@ class ChatService {
         final newState = conversationStateFromString(event.state);
         session.value = session.value.copyWith(state: newState);
 
-        if (newState == ConversationState.waitingForTool &&
-            session.value.pendingClientTools.isNotEmpty &&
-            modelSelected != null) {
-          _executeClientTools(conversationId, modelSelected);
+        if (newState == ConversationState.waitingForTool && modelSelected != null) {
+          if (session.value.pendingClientTools.isNotEmpty) {
+            // Auto-execute non-ask client tools
+            _executeClientTools(conversationId, modelSelected);
+          }
+          // If pendingAskTools is non-empty, the UI will show an approval banner
         }
         break;
 
@@ -585,6 +595,132 @@ class ChatService {
       await submitToolResults(
         conversationId: conversationId,
         toolResults: results,
+        modelSelected: modelSelected,
+      );
+    }
+  }
+
+  /// Handle user approval/denial of "ask" tools.
+  /// [decisions] maps tool call ID → approved (true/false).
+  /// Server-side tools are sent to /chat/approve (server executes + relaunches loop).
+  /// Client-side tools are executed locally and submitted via HandleChat + ToolResults.
+  Future<void> approveTools({
+    required String conversationId,
+    required ModelSelected modelSelected,
+    required Map<String, bool> decisions,
+    required List<ToolCall> askTools,
+  }) async {
+    if (askTools.isEmpty) return;
+
+    final session = getSession(conversationId);
+    session.value = session.value.copyWith(
+      state: ConversationState.processing,
+    );
+
+    // Split into server-side and client-side tools
+    final serverApprovals = <Map<String, dynamic>>[];
+    final clientAskTools = <ToolCall>[];
+
+    for (final toolCall in askTools) {
+      final approved = decisions[toolCall.id] ?? false;
+      final isClientTool = _mcp.getToolServerName(toolCall.function.name) != null
+          || toolCall.function.name == 'retrieve_skill';
+      if (isClientTool) {
+        clientAskTools.add(toolCall);
+      } else {
+        serverApprovals.add({
+          'tool_call_id': toolCall.id,
+          'tool_name': toolCall.function.name,
+          'arguments': toolCall.function.arguments,
+          'approved': approved,
+        });
+      }
+    }
+
+    // Handle client-side ask tools locally
+    final clientResults = <Message>[];
+    for (final toolCall in clientAskTools) {
+      final approved = decisions[toolCall.id] ?? false;
+      if (approved) {
+        try {
+          if (toolCall.function.name == 'retrieve_skill') {
+            final args = jsonDecode(
+              toolCall.function.arguments.isEmpty ? '{}' : toolCall.function.arguments,
+            );
+            final content = await _skills.executeRetrieveSkill(
+              args['skill_name'] as String? ?? '',
+              args['file_name'] as String?,
+            );
+            clientResults.add(Message.toolResult(
+              toolCallId: toolCall.id, name: toolCall.function.name, result: content,
+            ));
+          } else {
+            final serverName = _mcp.getToolServerName(toolCall.function.name)!;
+            final args = jsonDecode(
+              toolCall.function.arguments.isEmpty ? '{}' : toolCall.function.arguments,
+            );
+            final response = await _mcp.serverManager.sendRequest(
+              serverName, 'tools/call',
+              {'name': toolCall.function.name, 'arguments': args},
+            );
+            clientResults.add(Message.toolResult(
+              toolCallId: toolCall.id, name: toolCall.function.name, result: jsonEncode(response),
+            ));
+          }
+        } catch (e) {
+          clientResults.add(Message.toolResult(
+            toolCallId: toolCall.id, name: toolCall.function.name, result: 'Error: $e',
+          ));
+        }
+      } else {
+        clientResults.add(Message.toolResult(
+          toolCallId: toolCall.id, name: toolCall.function.name,
+          result: 'Tool call rejected by user.',
+        ));
+      }
+    }
+
+    // If there are server-side approvals, use /chat/approve (it relaunches the loop)
+    if (serverApprovals.isNotEmpty) {
+      // If we also have client results, submit those first via HandleChat
+      if (clientResults.isNotEmpty) {
+        for (final result in clientResults) {
+          _conversationsNotifier?.addMessage(conversationId: conversationId, message: result);
+        }
+        // Push client results to DB without relaunching loop
+        await submitToolResults(
+          conversationId: conversationId,
+          toolResults: clientResults,
+          modelSelected: modelSelected,
+        );
+      }
+      // Then approve server tools (this relaunches the loop + SSE)
+      try {
+        final skillNames = _skills.getSkillNames();
+        final stream = await _api.approveTools(
+          conversationId: conversationId,
+          approvals: serverApprovals,
+          modelSelected: modelSelected,
+          clientSideTools: [
+            ..._mcp.getToolList(),
+            if (skillNames.isNotEmpty) _skills.getToolDefinition(),
+          ],
+          availableSkills: skillNames,
+        );
+        _connectSSE(conversationId, stream, modelSelected);
+      } catch (e) {
+        session.value = session.value.copyWith(
+          state: ConversationState.idle, error: e.toString(),
+        );
+      }
+    } else if (clientResults.isNotEmpty) {
+      // Only client-side tools — submit via existing HandleChat + ToolResults
+      for (final result in clientResults) {
+        _conversationsNotifier?.addMessage(conversationId: conversationId, message: result);
+      }
+      await submitToolResults(
+        conversationId: conversationId,
+        toolResults: clientResults,
         modelSelected: modelSelected,
       );
     }

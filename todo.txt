@@ -1,4 +1,3 @@
-- tools / MCP : Yes/no/Ask 
 - files tools 
 - Knowledge base
 - Shared memory "skill"
@@ -11,9 +10,6 @@
 - embedding dont cost tokens 
 
 - Redesign the app using an oled black design (or white in light mode) and the gradient (238, 70, 84) > (245, 194, 86) in a subtle but relevant manner (ex. buttons and stuff but not entire messages) also the Title instead of a "Start a new Conversation" should be "Plurality AI" with Plurality in white, and AI using the gradient described earlier
-
-- Refactor: Streaming / conversation rendering should not be duplicated
-- Can you look at how token price are currently calculated and whether it's possible to be more accurate ?    
 
 - tables look aweful on mobile
 

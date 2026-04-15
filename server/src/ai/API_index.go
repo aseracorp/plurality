@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/mux"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
+	"github.com/azukaar/plurality/src/ai_tools"
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/utils"
@@ -180,6 +181,128 @@ func HandleCancel(w http.ResponseWriter, r *http.Request) {
 
 	activeRequest.Cancel()
 	w.WriteHeader(http.StatusOK)
+}
+
+// HandleApprove handles user approval/denial of server-side "ask" tools.
+// Executes approved tools, pushes rejection for denied ones, then relaunches the LLM loop.
+// Client-side "ask" tools are handled by the client separately via HandleChat + ToolResults.
+func HandleApprove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		utils.SendHTTPError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	vars := mux.Vars(r)
+	conversationID := vars["id"]
+
+	var payload struct {
+		Approvals []struct {
+			ToolCallID string `json:"tool_call_id"`
+			ToolName   string `json:"tool_name"`
+			Arguments  string `json:"arguments"`
+			Approved   bool   `json:"approved"`
+		} `json:"approvals"`
+		ModelSelected   utils.ModelSelected          `json:"model_selected"`
+		ClientSideTools []utils.FunctionToolsRequest `json:"client_side_tools"`
+		AvailableSkills []string                     `json:"available_skills,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		utils.SendHTTPError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Verify user owns this conversation
+	conversation, err := db.GetConversationById(r.Context(), conversationID)
+	if err != nil {
+		utils.SendHTTPError(w, "Conversation not found", http.StatusNotFound)
+		return
+	}
+	userID, _ := r.Context().Value("userID").(string)
+	if conversation.UserID != userID {
+		utils.SendHTTPError(w, "Unauthorized", http.StatusForbidden)
+		return
+	}
+
+	// Process each server-side tool approval
+	for _, approval := range payload.Approvals {
+		var toolMessage utils.Message
+		if approval.Approved {
+			tool, ok := ai_tools.GetTool(approval.ToolName)
+			if !ok {
+				toolMessage = utils.Message{
+					Role: "tool", Content: utils.NewTextContent("Tool not found: " + approval.ToolName),
+					ToolCallID: approval.ToolCallID, Name: approval.ToolName,
+					Timestamp: time.Now().Format(time.RFC3339),
+				}
+			} else {
+				args := approval.Arguments
+				if args == "" {
+					args = "{}"
+				}
+				if tool.CostFunc != nil {
+					price, action := tool.CostFunc(args)
+					db.RemoveCredits(r.Context(), price, action)
+				} else if tool.Cost > 0 {
+					db.RemoveCredits(r.Context(), float64(tool.Cost), utils.UserAction{Type: TOOL_USE, Provider: NONE})
+				}
+				resultContent := tool.Exec(r.Context(), args, *conversation)
+				toolMessage = utils.Message{
+					Role: "tool", Content: resultContent,
+					ToolCallID: approval.ToolCallID, Name: approval.ToolName,
+					Timestamp: time.Now().Format(time.RFC3339),
+				}
+			}
+		} else {
+			toolMessage = utils.Message{
+				Role: "tool", Content: utils.NewTextContent("Tool call rejected by user."),
+				ToolCallID: approval.ToolCallID, Name: approval.ToolName,
+				Timestamp: time.Now().Format(time.RFC3339),
+			}
+		}
+		if err := storage.ExtractBlobsFromMessage(userID, &toolMessage); err != nil {
+			utils.Error("[HandleApprove] Error extracting blobs", err)
+		}
+		updatedConv, _, pushErr := db.PushMessage(r.Context(), *conversation, toolMessage)
+		if pushErr != nil {
+			utils.Error("[HandleApprove] Error saving tool result", pushErr)
+		} else {
+			*conversation = updatedConv
+		}
+	}
+
+	// Relaunch LLM loop
+	model := SelectModel(payload.ModelSelected, conversation.Messages)
+	persistCtx := CopyUserContext(r)
+	activeRequest := NewActiveRequest(conversation.ID, conversation.UserID, model, payload.ModelSelected)
+	cancelCtx, cancelFunc := context.WithCancel(persistCtx)
+	activeRequest.Ctx = cancelCtx
+	activeRequest.Cancel = cancelFunc
+	RequestRegistry.Set(conversation.ID, activeRequest)
+	if err := db.UpdateConversationState(persistCtx, conversation.ID, utils.StateProcessing); err != nil {
+		utils.Error("[HandleApprove] Error setting conversation state", err)
+	}
+
+	SetSSEHeaders(w)
+	sseClient := NewSSEClient(w)
+	if sseClient == nil {
+		utils.SendHTTPError(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+	activeRequest.AddClient(sseClient)
+
+	chatPayload := ChatPayload{
+		ConversationID:  conversationID,
+		ModelSelected:   payload.ModelSelected,
+		ClientSideTools: payload.ClientSideTools,
+		AvailableSkills: payload.AvailableSkills,
+	}
+	go activeRequest.RunLLMLoop(persistCtx, *conversation, chatPayload)
+
+	select {
+	case <-sseClient.Done:
+	case <-r.Context().Done():
+		activeRequest.RemoveClient(sseClient)
+	}
 }
 
 // HandleStatusStream is a long-lived SSE connection that broadcasts compact

@@ -40,13 +40,13 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 		if tool.ToolID == ConversationAttachmentsTool.ToolID || tool.ToolID == ReadDocumentTool.ToolID || tool.ToolID == SearchDocumentTool.ToolID {
 			continue // handled separately below
 		}
-		if utils.ContainsString(selected, tool.ToolID) {
+		if _, ok := selected[tool.ToolID]; ok {
 			requests = append(requests, tool.ToolRequest)
 		}
 	}
 
 	for _, tool := range ClientSideTools {
-		if utils.ContainsString(selected, tool.Name) {
+		if _, ok := selected[tool.Name]; ok {
 			requests = append(requests, utils.ToolsRequest{
 				Type:     "function",
 				Function: tool,

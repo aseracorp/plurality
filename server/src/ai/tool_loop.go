@@ -114,7 +114,22 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		// Categorize tool calls: server-side vs client-side
 		serverTools, clientTools := categorizeToolCalls(assistantMessage.ToolCalls)
 
-		// Execute server-side tools
+		// Split server tools into auto-execute vs needs-approval
+		var askServerTools []utils.ToolCall
+		if payload.ModelSelected.Text != nil && len(payload.ModelSelected.Text.Tools) > 0 {
+			var autoServerTools []utils.ToolCall
+			for i := range serverTools {
+				mode := payload.ModelSelected.Text.Tools[serverTools[i].Function.Name]
+				if mode == "ask" {
+					askServerTools = append(askServerTools, serverTools[i])
+				} else {
+					autoServerTools = append(autoServerTools, serverTools[i])
+				}
+			}
+			serverTools = autoServerTools
+		}
+
+		// Execute auto server-side tools
 		for i := range serverTools {
 			select {
 			case <-ar.Ctx.Done():
@@ -164,8 +179,18 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			}
 		}
 
-		// If there are client-side tools, pause and wait
-		if len(clientTools) > 0 {
+		// If there are ask-server tools or client-side tools, pause and wait
+		if len(askServerTools) > 0 || len(clientTools) > 0 {
+			for i := range askServerTools {
+				tc := &askServerTools[i]
+				enrichToolCallMetadata(tc)
+				ar.Broadcast(SSEEvent{
+					Type:           "tool_use",
+					ToolCall:       tc,
+					IsServer:       true,
+					ConversationID: ar.ConversationID,
+				})
+			}
 			for _, toolCall := range clientTools {
 				ar.Broadcast(SSEEvent{
 					Type:           "tool_use",
@@ -175,17 +200,31 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				})
 			}
 
-			ar.setState(ctx, utils.StateWaitingForTool)
+			// Use waiting_for_approval if any tool (server or client) is in "ask" mode
+			waitState := utils.StateWaitingForTool
+			hasAskTools := len(askServerTools) > 0
+			if !hasAskTools && payload.ModelSelected.Text != nil {
+				for _, tc := range clientTools {
+					if payload.ModelSelected.Text.Tools[tc.Function.Name] == "ask" {
+						hasAskTools = true
+						break
+					}
+				}
+			}
+			if hasAskTools {
+				waitState = utils.StateWaitingForApproval
+			}
+			ar.setState(ctx, waitState)
 			ar.Broadcast(SSEEvent{
 				Type:           "state_change",
-				State:          string(utils.StateWaitingForTool),
+				State:          string(waitState),
 				ConversationID: ar.ConversationID,
 			})
 			ar.Broadcast(SSEEvent{
 				Type:           "done",
 				ConversationID: ar.ConversationID,
 			})
-			return // Wait for client to POST tool results
+			return // Wait for client to POST tool results or approvals
 		}
 
 		// All tools were server-side — loop back to LLM with results

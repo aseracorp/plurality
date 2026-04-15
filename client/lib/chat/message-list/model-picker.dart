@@ -38,12 +38,12 @@ final List<String> VisionModelOptions = [
 const modelPresentFastText = Model(
   name: 'Gemini/gemini-2.5-flash',
   params: null,
-  tools: ['search_web', 'place_search', 'visit_link', 'generate_image', 'search_conversations', 'retrieve_conversation'],
+  tools: {'search_web': 'true', 'place_search': 'true', 'visit_link': 'true', 'generate_image': 'true', 'search_conversations': 'true', 'retrieve_conversation': 'true'},
 );
 const modelPresentFastVision = Model(
   name: 'Gemini/gemini-2.5-flash',
   params: null,
-  tools: ['search_web', 'place_search', 'visit_link', 'generate_image', 'search_conversations', 'retrieve_conversation'],
+  tools: {'search_web': 'true', 'place_search': 'true', 'visit_link': 'true', 'generate_image': 'true', 'search_conversations': 'true', 'retrieve_conversation': 'true'},
 );
 const modelPresentFastImageGen = Model(
   name: 'black-forest-labs/FLUX.2-dev',
@@ -61,12 +61,12 @@ final Map<String, ModelSelected> modelPresets = {
     text: Model(
       name: 'qwen3p6-plus',
       params: null,
-      tools: ['search_web', 'place_search', 'visit_link', 'generate_image', 'search_conversations', 'retrieve_conversation'],
+      tools: {'search_web': 'true', 'place_search': 'true', 'visit_link': 'true', 'generate_image': 'true', 'search_conversations': 'true', 'retrieve_conversation': 'true'},
     ),
     vision: Model(
       name: 'qwen3p6-plus',
       params: null,
-      tools: ['search_web', 'place_search', 'visit_link', 'generate_image', 'search_conversations', 'retrieve_conversation'],
+      tools: {'search_web': 'true', 'place_search': 'true', 'visit_link': 'true', 'generate_image': 'true', 'search_conversations': 'true', 'retrieve_conversation': 'true'},
     ),
     imageGen: Model(name: 'black-forest-labs/FLUX.2-dev', params: null),
   ),
@@ -74,9 +74,9 @@ final Map<String, ModelSelected> modelPresets = {
     text: Model(
       name: 'glm-5p1',
       params: null,
-      tools: ['search_web', 'place_search', 'visit_link', 'generate_image', 'search_conversations', 'retrieve_conversation'],
+      tools: {'search_web': 'true', 'place_search': 'true', 'visit_link': 'true', 'generate_image': 'true', 'search_conversations': 'true', 'retrieve_conversation': 'true'},
     ),
-    vision: Model(name: 'qwen3p6-plus', params: null, tools: ['generate_image', 'search_conversations', 'retrieve_conversation']),
+    vision: Model(name: 'qwen3p6-plus', params: null, tools: {'generate_image': 'true', 'search_conversations': 'true', 'retrieve_conversation': 'true'}),
     imageGen: Model(name: 'black-forest-labs/FLUX.2-pro', params: null),
   ),
 };
@@ -146,44 +146,44 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
       'key': 'search_web',
       'label': 'Search Web',
       'description': 'Search sites via Google',
-      'enabled': true,
+      'enabled': 'on',
     },
     {
       'key': 'place_search',
       'label': 'Place Search',
       'description': 'Search locations via Google Maps',
-      'enabled': true,
+      'enabled': 'on',
     },
     {
       'key': 'visit_link',
       'label': 'Visit Link',
       'description': 'Visit websites shared in the chat',
-      'enabled': true,
+      'enabled': 'on',
     },
     {
       'key': 'roll_dice',
       'label': 'Roll Dice',
       'description': 'Well... rolls a dice',
-      'enabled': true,
+      'enabled': 'on',
     },
     {
       'key': 'generate_image',
       'label': 'Image Generation',
       'description': 'Generate images from text descriptions',
-      'enabled': true,
+      'enabled': 'on',
     },
     {
       'key': 'search_conversations',
       'label': 'Search Conversations',
       'description': 'Search past conversations by topic',
-      'enabled': true,
+      'enabled': 'on',
       'parent': 'conversations',
     },
     {
       'key': 'retrieve_conversation',
       'label': 'Retrieve Conversation',
       'description': 'Retrieve messages from a past conversation',
-      'enabled': true,
+      'enabled': 'on',
       'parent': 'conversations',
     },
   ];
@@ -196,6 +196,13 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     },
   };
 
+  /// Convert map value ("true"/"ask"/null) to toggle state ("on"/"ask"/"off")
+  static String _mapValueToToggle(String? mapValue) {
+    if (mapValue == null) return 'off';
+    if (mapValue == 'ask') return 'ask';
+    return 'on'; // "true" or any other value
+  }
+
   List<Map<String, dynamic>> _functions = [];
   List<Map<String, dynamic>> _skillItems = [];
 
@@ -205,7 +212,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
       'key': skill.name,
       'label': skill.name,
       'description': skill.description,
-      'enabled': true,
+      'enabled': 'on',
     }).toList().cast<Map<String, dynamic>>();
   }
 
@@ -226,7 +233,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
             'key': parent,
             'label': bundleInfo?['label'] ?? parent,
             'description': bundleInfo?['description'] ?? '',
-            'enabled': true,
+            'enabled': 'on',
             'tools': [func['key']],
           });
         }
@@ -266,7 +273,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
           'key': serverName,
           'label': serverName,
           'description': description,
-          'enabled': true,
+          'enabled': 'on',
           'tools': [tool['name']],
         });
       }
@@ -302,30 +309,33 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     _selectedImageGenModel =
         widget.selectedModel.imageGen?.name ?? _imageGenModelOptions.first;
 
-    if (widget.selectedModel.text?.tools != null) {
+    final toolsMap = widget.selectedModel.text?.tools ?? {};
+    if (toolsMap.isNotEmpty) {
       for (var function in _functions) {
         if (function['tools'] == null) {
-          function['enabled'] = widget.selectedModel.text!.tools!.contains(
-            function['key'],
-          );
+          final mode = toolsMap[function['key']];
+          function['enabled'] = _mapValueToToggle(mode);
         } else {
-          // check each tool in the list is enabled
+          // Bundle: check each tool in the list
+          bool allEnabled = true;
+          String bundleMode = 'off';
           for (var tool in function['tools']) {
-            if (widget.selectedModel.text!.tools!.contains(tool)) {
-              function['enabled'] = true;
+            final mode = toolsMap[tool];
+            if (mode != null) {
+              bundleMode = _mapValueToToggle(mode);
             } else {
-              function['enabled'] = false;
+              allEnabled = false;
               break;
             }
           }
+          function['enabled'] = allEnabled ? bundleMode : 'off';
         }
       }
 
       // Restore skill toggle state from model tools (same logic as functions)
       for (var skill in _skillItems) {
-        skill['enabled'] = widget.selectedModel.text!.tools!.contains(
-          skill['key'],
-        );
+        final mode = toolsMap[skill['key']];
+        skill['enabled'] = _mapValueToToggle(mode);
       }
     }
 
@@ -536,32 +546,33 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
                         isFree
                             ? null
                             : () {
-                              // Get enabled tools
-                              final enabledTools =
-                                  _functions
-                                      .where((function) => function['enabled'])
-                                      .map((function) {
-                                        final tools = function['tools'];
-                                        if (tools != null && tools is List) {
-                                          return tools
-                                              .map((tool) => tool as String)
-                                              .toList();
-                                        } else {
-                                          return [function['key'] as String];
-                                        }
-                                      })
-                                      .expand((tool) => tool)
-                                      .toSet() // Remove duplicates
-                                      .toList();
+                              // Build tools map: key -> "true" or "ask"
+                              final Map<String, String> toolsMap = {};
+                              for (final function in _functions) {
+                                final mode = function['enabled'] as String;
+                                if (mode == 'off') continue;
+                                final mapValue = mode == 'ask' ? 'ask' : 'true';
+                                final tools = function['tools'];
+                                if (tools != null && tools is List) {
+                                  for (final tool in tools) {
+                                    toolsMap[tool as String] = mapValue;
+                                  }
+                                } else {
+                                  toolsMap[function['key'] as String] = mapValue;
+                                }
+                              }
 
-                              // Add enabled skill keys + retrieve_skill (same toggle logic as functions)
-                              final enabledSkillKeys = _skillItems
-                                  .where((s) => s['enabled'] == true)
-                                  .map((s) => s['key'] as String)
-                                  .toList();
-                              if (enabledSkillKeys.isNotEmpty) {
-                                enabledTools.addAll(enabledSkillKeys);
-                                enabledTools.add('retrieve_skill');
+                              // Add enabled skill keys + retrieve_skill
+                              bool hasEnabledSkills = false;
+                              for (final skill in _skillItems) {
+                                final mode = skill['enabled'] as String;
+                                if (mode == 'off') continue;
+                                final mapValue = mode == 'ask' ? 'ask' : 'true';
+                                toolsMap[skill['key'] as String] = mapValue;
+                                hasEnabledSkills = true;
+                              }
+                              if (hasEnabledSkills) {
+                                toolsMap['retrieve_skill'] = 'true';
                               }
 
                               // Return the selected models and tools to the parent widget
@@ -572,12 +583,12 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
                                         text: Model(
                                           name: _selectedModel,
                                           params: null,
-                                          tools: enabledTools,
+                                          tools: toolsMap,
                                         ),
                                         vision: Model(
                                           name: _selectedVisionModel,
                                           params: null,
-                                          tools: enabledTools,
+                                          tools: toolsMap,
                                         ),
                                         imageGen: Model(
                                           name: _selectedImageGenModel,
@@ -766,25 +777,40 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     );
   }
 
+  Widget _buildToolToggle(String currentMode, ValueChanged<String> onChanged) {
+    return SegmentedButton<String>(
+      segments: const [
+        ButtonSegment(value: 'off', label: Text('Off')),
+        ButtonSegment(value: 'ask', label: Text('Ask')),
+        ButtonSegment(value: 'on', label: Text('On')),
+      ],
+      selected: {currentMode},
+      onSelectionChanged: (selected) => onChanged(selected.first),
+      showSelectedIcon: false,
+      style: ButtonStyle(
+        visualDensity: VisualDensity.compact,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        padding: WidgetStateProperty.all(const EdgeInsets.symmetric(horizontal: 8)),
+      ),
+    );
+  }
+
   Widget _buildFunctionsTab() {
     return ListView.builder(
       itemCount: _functions.length,
       itemBuilder: (context, index) {
         final function = _functions[index];
-        return SwitchListTile(
-          title: Text(
-            function['label'] +
-                ((function['tools'] != null && function['tools'].length > 1)
-                    ? ' (${function['tools'].length} tools) '
-                    : ''),
-          ),
+        final label = function['label'] +
+            ((function['tools'] != null && function['tools'].length > 1)
+                ? ' (${function['tools'].length} tools) '
+                : '');
+        return ListTile(
+          title: Text(label),
           subtitle: Text(function['description']),
-          value: function['enabled'],
-          onChanged: (value) {
-            setState(() {
-              _functions[index]['enabled'] = value;
-            });
-          },
+          trailing: _buildToolToggle(
+            function['enabled'] as String,
+            (mode) => setState(() => _functions[index]['enabled'] = mode),
+          ),
         );
       },
     );
@@ -866,15 +892,13 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
             itemCount: _skillItems.length,
             itemBuilder: (context, index) {
               final skill = _skillItems[index];
-              return SwitchListTile(
+              return ListTile(
                 title: Text(skill['label']),
                 subtitle: Text(skill['description']),
-                value: skill['enabled'],
-                onChanged: (value) {
-                  setState(() {
-                    _skillItems[index]['enabled'] = value;
-                  });
-                },
+                trailing: _buildToolToggle(
+                  skill['enabled'] as String,
+                  (mode) => setState(() => _skillItems[index]['enabled'] = mode),
+                ),
               );
             },
           ),

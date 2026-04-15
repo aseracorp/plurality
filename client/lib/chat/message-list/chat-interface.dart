@@ -523,8 +523,65 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     }
   }
 
+  /// Render a single Message into its content widgets (attachments, text, tool calls).
+  /// Used by both streaming and non-streaming paths — single source of truth.
+  List<Widget> _buildMessageWidgets({
+    required Message message,
+    required List<Message> allMessagesForLookup,
+    required bool isProcessing,
+    required int index,
+    required int visibleMessageCount,
+    required bool mini,
+    bool isLoading = false,
+    Set<String> excludeToolIds = const {},
+  }) {
+    final widgets = <Widget>[];
+    final messageText = message.textContent;
+
+    // Attachments (images and other non-text content)
+    for (final part in message.content.where((c) => c.type != 'text')) {
+      widgets.add(AttachmentViewer(
+        mini: mini,
+        toolCall: null,
+        loading: false,
+        attachment: Attachment(
+          type: part.type,
+          content: (part.type == 'image_url' ? part.imageUrl?.url : part.text) ?? '',
+          filename: part.filename,
+        ),
+        removeAttachment: _removeAttachment,
+        editMode: false,
+      ));
+    }
+
+    // Text content
+    final sanitized = sanitizeMessages(messageText);
+    if (sanitized != "") {
+      widgets.add(AnimatedMessageBox(
+        iconURL: _miniAppSelected?.iconURL,
+        mini: mini,
+        message: message,
+        text: sanitized,
+        isBot: message.isBot,
+        isLoading: isLoading,
+        onConversationTap: (id) => widget.setConversationID?.call(id, true),
+      ));
+    }
+
+    // Tool call badges
+    if (!mini && message.hasToolCalls) {
+      widgets.addAll(_buildToolCallWidgets(
+        message, allMessagesForLookup, isProcessing,
+        index, visibleMessageCount, mini,
+        excludeIds: excludeToolIds,
+      ));
+    }
+
+    return widgets;
+  }
+
   /// Build the streaming section: renders items in arrival order, reusing
-  /// _buildToolCallWidgets so tool rendering stays in sync with the normal path.
+  /// _buildMessageWidgets so rendering stays in sync with the normal path.
   List<Widget> _buildStreamingWidgets(
     ChatSessionState sessionState,
     List<Message> allMessages,
@@ -537,21 +594,24 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       switch (item.type) {
         case 'text':
           if (item.text.isNotEmpty) {
-            widgets.add(AnimatedMessageBox(
-              iconURL: _miniAppSelected?.iconURL,
+            final syntheticMessage = Message(
+              role: 'assistant',
+              content: [ContentPart(type: 'text', text: item.text)],
+            );
+            widgets.addAll(_buildMessageWidgets(
+              message: syntheticMessage,
+              allMessagesForLookup: allMessages,
+              isProcessing: isProcessing,
+              index: 0,
+              visibleMessageCount: 1,
               mini: mini,
-              message: Message(role: 'assistant', content: [ContentPart(type: 'text', text: item.text)]),
-              text: sanitizeMessages(item.text),
-              isBot: true,
               isLoading: item == sessionState.items.last && isProcessing,
-              onConversationTap: (id) => widget.setConversationID?.call(id, true),
             ));
           }
           break;
 
         case 'tool_use':
           if (!mini && item.toolCall != null) {
-            // Wrap in a temporary Message and delegate to _buildToolCallWidgets
             final toolMessage = Message(
               role: 'assistant',
               content: const [],
@@ -568,8 +628,13 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                   content: [ContentPart(type: 'text', text: resultItem.toolResult ?? '')],
                 ),
             ];
-            widgets.addAll(_buildToolCallWidgets(
-              toolMessage, lookupMessages, isProcessing, 0, 1, mini,
+            widgets.addAll(_buildMessageWidgets(
+              message: toolMessage,
+              allMessagesForLookup: lookupMessages,
+              isProcessing: isProcessing,
+              index: 0,
+              visibleMessageCount: 1,
+              mini: mini,
             ));
           }
           break;
@@ -587,6 +652,48 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     }
 
     return widgets;
+  }
+
+  /// Derive pending ask tools purely from conversation data.
+  /// Looks for the last assistant message with tool calls that have no
+  /// corresponding tool result, and cross-references with model.tools for "ask" mode.
+  List<ToolCall> _derivePendingAskTools(List<Message> messages) {
+    final toolsMap = _modelSelected.text?.tools ?? {};
+
+    // Find tool call IDs that already have results
+    final resolvedToolCallIds = messages
+        .where((m) => m.role == 'tool' && m.toolCallId != null)
+        .map((m) => m.toolCallId!)
+        .toSet();
+
+    // Find unresolved tool calls from assistant messages where mode is "ask"
+    final pending = <ToolCall>[];
+    for (final msg in messages.reversed) {
+      if (msg.role == 'assistant' && msg.toolCalls != null) {
+        for (final tc in msg.toolCalls!) {
+          if (!resolvedToolCallIds.contains(tc.id) && toolsMap[tc.function.name] == 'ask') {
+            pending.add(tc);
+          }
+        }
+        break; // Only check the last assistant message with tool calls
+      }
+    }
+    return pending;
+  }
+
+  Widget _buildApprovalBanner(List<ToolCall> askTools) {
+    return ToolApprovalBanner(
+      askTools: askTools,
+      enrichToolCall: _enrichToolCall,
+      onSubmit: (decisions) {
+        _chatService.approveTools(
+          conversationId: widget.conversationId,
+          modelSelected: _modelSelected,
+          askTools: askTools,
+          decisions: decisions,
+        );
+      },
+    );
   }
 
   /// Enrich a tool call with cached metadata if not already set.
@@ -677,26 +784,47 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     final isProcessing = sessionState.state == ConversationState.processing;
     final hasStreamingContent = sessionState.hasContent;
 
-    // Filter out tool result messages — they're rendered inline with tool call badges.
-    // When streaming, also skip assistant/tool messages added by the server mid-loop
-    // (after the last user message) — the streaming section renders those.
-    var visibleMessages = messages.where((m) => m.role != 'tool').toList();
-    if (hasStreamingContent) {
-      final lastUserIndex = visibleMessages.lastIndexWhere((m) => m.role == 'user');
-      if (lastUserIndex >= 0) {
-        visibleMessages = visibleMessages.sublist(0, lastUserIndex + 1);
+    // Derive pending ask tools from conversation data:
+    // conversation is in waiting_for_tool state, last assistant message has tool calls
+    // with no matching tool result — cross-reference with model.tools map for "ask" mode
+    final pendingAskTools = isProcessing ? <ToolCall>[] : _derivePendingAskTools(messages);
+    final hasPendingApproval = pendingAskTools.isNotEmpty;
+
+    // Compute tool IDs already shown in streaming section
+    final streamingToolIds = sessionState.items
+        .where((i) => i.type == 'tool_use' && i.toolCall != null)
+        .map((i) => i.toolCall!.id)
+        .toSet();
+
+    // Filter out tool result messages and dedupe against streaming.
+    // Skip any DB message whose content is already rendered by the streaming section.
+    var visibleMessages = messages.where((m) {
+      if (m.role == 'tool') return false;
+      if (!hasStreamingContent) return true;
+      // Skip assistant messages that are fully covered by streaming items
+      if (m.role == 'assistant') {
+        final hasText = m.textContent.isNotEmpty;
+        final hasToolCalls = m.toolCalls != null && m.toolCalls!.isNotEmpty;
+        final allToolsInStream = hasToolCalls &&
+            m.toolCalls!.every((tc) => streamingToolIds.contains(tc.id));
+        final textInStream = hasText && sessionState.streamingText.contains(m.textContent);
+        // If everything in this message is already in streaming, skip it
+        if ((!hasText || textInStream) && (!hasToolCalls || allToolsInStream)) return false;
       }
-    }
+      return true;
+    }).toList();
 
     var l = SuperListView.builder(
       listController: mini ? _miniMapListController : _listController,
       controller: controller,
       cacheExtent: 100,
       padding: padding ?? const EdgeInsets.all(16.0),
-      itemCount: visibleMessages.length + (hasStreamingContent ? 1 : 0),
+      itemCount: visibleMessages.length
+          + (hasStreamingContent ? 1 : 0)
+          + (hasPendingApproval ? 1 : 0),
       itemBuilder: (context, index) {
-        // --- Streaming item: render SSE events in order ---
-        if (index >= visibleMessages.length) {
+        // --- Streaming content ---
+        if (hasStreamingContent && index == visibleMessages.length) {
           return Align(
             alignment: Alignment.centerLeft,
             child: Column(
@@ -706,54 +834,29 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
           );
         }
 
+        // --- Approval banner (shown whenever tools need approval) ---
+        final approvalIndex = visibleMessages.length + (hasStreamingContent ? 1 : 0);
+        if (hasPendingApproval && index == approvalIndex) {
+          return _buildApprovalBanner(pendingAskTools);
+        }
+
         // --- DB-loaded message ---
         final message = visibleMessages[index];
-        final messageText = message.textContent;
-
-        var textWidget =
-            sanitizeMessages(messageText) != ""
-                ? AnimatedMessageBox(
-                  iconURL: _miniAppSelected?.iconURL,
-                  mini: mini,
-                  message: message,
-                  text: sanitizeMessages(messageText),
-                  isBot: message.isBot,
-                  isLoading: false,
-                  onConversationTap: (id) => widget.setConversationID?.call(id, true),
-                )
-                : null;
+        final childWidgets = _buildMessageWidgets(
+          message: message,
+          allMessagesForLookup: messages,
+          isProcessing: isProcessing,
+          index: index,
+          visibleMessageCount: visibleMessages.length,
+          mini: mini,
+          excludeToolIds: streamingToolIds,
+        );
 
         return Align(
           alignment: message.isBot ? Alignment.centerLeft : Alignment.centerRight,
           child: Column(
             crossAxisAlignment: message.isBot ? CrossAxisAlignment.start : CrossAxisAlignment.end,
-            children: [
-              // Images and other non-text content
-              ...message.content.where((c) => c.type != 'text').map(
-                (part) => AttachmentViewer(
-                  mini: mini,
-                  toolCall: null,
-                  loading: false,
-                  attachment: Attachment(
-                    type: part.type,
-                    content: (part.type == 'image_url' ? part.imageUrl?.url : part.text) ?? '',
-                    filename: part.filename,
-                  ),
-                  removeAttachment: _removeAttachment,
-                  editMode: false,
-                ),
-              ),
-              if (textWidget != null) textWidget,
-              // Tool call badges — dedupe against streaming items
-              if (!mini && message.hasToolCalls)
-                ..._buildToolCallWidgets(
-                  message, messages, isProcessing, index, visibleMessages.length, mini,
-                  excludeIds: sessionState.items
-                      .where((i) => i.type == 'tool_use' && i.toolCall != null)
-                      .map((i) => i.toolCall!.id)
-                      .toSet(),
-                ),
-            ],
+            children: childWidgets,
           ),
         );
       },
@@ -1182,6 +1285,242 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
             ),
           ),
       ],
+    );
+  }
+}
+
+/// Self-contained approval banner widget with its own local state.
+/// State is destroyed when the widget unmounts (conversation changes, approval submitted).
+class ToolApprovalBanner extends StatefulWidget {
+  final List<ToolCall> askTools;
+  final ToolCall Function(ToolCall) enrichToolCall;
+  final void Function(Map<String, bool> decisions) onSubmit;
+
+  const ToolApprovalBanner({
+    super.key,
+    required this.askTools,
+    required this.enrichToolCall,
+    required this.onSubmit,
+  });
+
+  @override
+  State<ToolApprovalBanner> createState() => _ToolApprovalBannerState();
+}
+
+class _ToolApprovalBannerState extends State<ToolApprovalBanner> {
+  final Map<String, bool> _decisions = {};
+
+  String _formatArgs(String argsJson) {
+    try {
+      final args = Map<String, dynamic>.from(jsonDecode(argsJson));
+      if (args.isEmpty) return '';
+      return args.entries.map((e) => '${e.key}: ${e.value}').join('\n');
+    } catch (_) {
+      return argsJson;
+    }
+  }
+
+  String _displayLabel(ToolCall tc) {
+    final enriched = widget.enrichToolCall(tc);
+    String label = enriched.loading.isNotEmpty ? enriched.loading : enriched.function.name;
+    try {
+      final args = Map<String, dynamic>.from(jsonDecode(tc.function.arguments));
+      args.forEach((key, value) {
+        label = label.replaceAll('{{$key}}', value.toString());
+      });
+    } catch (_) {}
+    return label.replaceAll(RegExp(r'\{\{.*?\}\}'), '').replaceAll('  ', ' ').trim();
+  }
+
+  void _decide(String toolCallId, bool approved) {
+    setState(() => _decisions[toolCallId] = approved);
+    if (widget.askTools.every((tc) => _decisions.containsKey(tc.id))) {
+      widget.onSubmit(Map<String, bool>.from(_decisions));
+    }
+  }
+
+  void _decideAll(bool approved) {
+    for (final tc in widget.askTools) {
+      _decisions[tc.id] = approved;
+    }
+    widget.onSubmit(Map<String, bool>.from(_decisions));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final accentColor = Theme.of(context).colorScheme.primary;
+
+    return FractionallySizedBox(
+      widthFactor: 0.5,
+      alignment: Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 8),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: accentColor.withOpacity(0.4)),
+          color: accentColor.withOpacity(isDark ? 0.08 : 0.04),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              child: Row(
+                children: [
+                  Icon(Icons.shield_outlined, size: 18, color: accentColor),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Approval required',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // Tool cards
+            ...widget.askTools.map((tc) {
+              final label = _displayLabel(tc);
+              final argsFormatted = _formatArgs(tc.function.arguments);
+              final enriched = widget.enrichToolCall(tc);
+              final decision = _decisions[tc.id];
+
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: decision == null
+                        ? Theme.of(context).colorScheme.surface
+                        : decision
+                            ? Colors.green.withOpacity(isDark ? 0.1 : 0.05)
+                            : Colors.red.withOpacity(isDark ? 0.1 : 0.05),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: decision == null
+                          ? Theme.of(context).colorScheme.outline.withOpacity(0.2)
+                          : decision
+                              ? Colors.green.withOpacity(0.4)
+                              : Colors.red.withOpacity(0.4),
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          if (enriched.iconURL.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: SizedBox(
+                                width: 16, height: 16,
+                                child: Image.memory(
+                                  base64Decode(enriched.iconURL),
+                                  width: 16, fit: BoxFit.cover, cacheWidth: 16,
+                                  gaplessPlayback: true,
+                                ),
+                              ),
+                            )
+                          else
+                            Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: Icon(Icons.extension, size: 16,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant),
+                            ),
+                          Expanded(
+                            child: Text(
+                              label,
+                              style: TextStyle(
+                                fontWeight: FontWeight.w500,
+                                fontSize: 13,
+                                color: Theme.of(context).colorScheme.onSurface,
+                              ),
+                            ),
+                          ),
+                          if (decision == null) ...[
+                            OutlinedButton(
+                              onPressed: () => _decide(tc.id, false),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Theme.of(context).colorScheme.error,
+                                side: BorderSide(color: Theme.of(context).colorScheme.error.withOpacity(0.5)),
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                minimumSize: const Size(0, 36),
+                              ),
+                              child: const Text('Deny'),
+                            ),
+                            const SizedBox(width: 6),
+                            FilledButton(
+                              onPressed: () => _decide(tc.id, true),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: Colors.green,
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                minimumSize: const Size(0, 36),
+                              ),
+                              child: const Text('Approve'),
+                            ),
+                          ] else
+                            Icon(
+                              decision ? Icons.check_circle : Icons.cancel,
+                              size: 20,
+                              color: decision ? Colors.green : Theme.of(context).colorScheme.error,
+                            ),
+                        ],
+                      ),
+                      if (argsFormatted.isNotEmpty) ...[
+                        const SizedBox(height: 6),
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 50),
+                          child: SingleChildScrollView(
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.5),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                argsFormatted,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontFamily: 'monospace',
+                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              );
+            }),
+            // Bulk buttons (only for multiple tools)
+            if (widget.askTools.length > 1)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () => _decideAll(false),
+                      child: const Text('Deny All'),
+                    ),
+                    TextButton(
+                      onPressed: () => _decideAll(true),
+                      child: const Text('Approve All'),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }

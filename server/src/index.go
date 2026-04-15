@@ -52,6 +52,7 @@ func main() {
 	r.HandleFunc("/chat", utils.AuthMiddleware(ai.HandleChat)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/chat/stream/{id}", utils.AuthMiddleware(ai.HandleStreamReconnect)).Methods("GET", "OPTIONS")
 	r.HandleFunc("/chat/cancel/{id}", utils.AuthMiddleware(ai.HandleCancel)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/chat/approve/{id}", utils.AuthMiddleware(ai.HandleApprove)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/status/stream", utils.AuthMiddleware(ai.HandleStatusStream)).Methods("GET", "OPTIONS")
 
 	// Conversations

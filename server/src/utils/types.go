@@ -162,9 +162,10 @@ func (m Message) HasImages() bool { return m.Content.HasImages() }
 type ConversationState string
 
 const (
-	StateIdle           ConversationState = "idle"
-	StateProcessing     ConversationState = "processing"
-	StateWaitingForTool ConversationState = "waiting_for_tool"
+	StateIdle               ConversationState = "idle"
+	StateProcessing         ConversationState = "processing"
+	StateWaitingForTool     ConversationState = "waiting_for_tool"
+	StateWaitingForApproval ConversationState = "waiting_for_approval"
 )
 
 // --- Model & Configuration ---
@@ -172,7 +173,7 @@ const (
 type Model struct {
 	Name   string            `json:"name,omitempty" bson:"name,omitempty"`
 	Params map[string]string `json:"params,omitempty" bson:"params,omitempty"`
-	Tools  []string          `json:"tools,omitempty" bson:"tools,omitempty"`
+	Tools  map[string]string `json:"tools,omitempty" bson:"tools,omitempty"`
 }
 
 type ModelSelected struct {
