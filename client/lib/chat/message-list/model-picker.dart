@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:plurality/api/MCP.dart';
+import 'package:plurality/api/skills_service.dart';
 import '../../api/balance.dart';
 import '../../utils/types.dart';
 
@@ -176,20 +177,63 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
       'label': 'Search Conversations',
       'description': 'Search past conversations by topic',
       'enabled': true,
+      'parent': 'conversations',
     },
     {
       'key': 'retrieve_conversation',
       'label': 'Retrieve Conversation',
       'description': 'Retrieve messages from a past conversation',
       'enabled': true,
+      'parent': 'conversations',
     },
   ];
 
+  // Bundle definitions: parent key -> display label & description
+  final Map<String, Map<String, String>> _bundles = {
+    'conversations': {
+      'label': 'Search Conversations',
+      'description': 'Search and retrieve past conversations',
+    },
+  };
+
   List<Map<String, dynamic>> _functions = [];
+  List<Map<String, dynamic>> _skillItems = [];
+
+  List<Map<String, dynamic>> initSkillItems() {
+    final skills = SkillsService().getSkillList();
+    return skills.map((skill) => {
+      'key': skill.name,
+      'label': skill.name,
+      'description': skill.description,
+      'enabled': true,
+    }).toList().cast<Map<String, dynamic>>();
+  }
 
   initFunctions() {
     List<Map<String, dynamic>> finalList = [];
-    finalList.addAll(_baseFunctions);
+
+    // Group base functions by parent bundle
+    for (var func in _baseFunctions) {
+      final parent = func['parent'] as String?;
+      if (parent != null) {
+        // Add to existing bundle or create one
+        final existing = finalList.where((e) => e['key'] == parent);
+        if (existing.isNotEmpty) {
+          existing.first['tools'].add(func['key']);
+        } else {
+          final bundleInfo = _bundles[parent];
+          finalList.add({
+            'key': parent,
+            'label': bundleInfo?['label'] ?? parent,
+            'description': bundleInfo?['description'] ?? '',
+            'enabled': true,
+            'tools': [func['key']],
+          });
+        }
+      } else {
+        finalList.add(Map<String, dynamic>.from(func));
+      }
+    }
 
     var clientSide = MCPService().getToolList();
 
@@ -244,12 +288,13 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
   void initState() {
     super.initState();
     _tabController = TabController(
-      length: 3,
+      length: 4,
       vsync: this,
-    ); // Change length to 3
+    );
     _tabController.addListener(_handleTabChange);
 
     _functions = initFunctions();
+    _skillItems = initSkillItems();
 
     _selectedModel = widget.selectedModel.text?.name ?? _modelOptions.first;
     _selectedVisionModel =
@@ -274,6 +319,13 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
             }
           }
         }
+      }
+
+      // Restore skill toggle state from model tools (same logic as functions)
+      for (var skill in _skillItems) {
+        skill['enabled'] = widget.selectedModel.text!.tools!.contains(
+          skill['key'],
+        );
       }
     }
 
@@ -371,7 +423,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
 
     return Container(
-      constraints: const BoxConstraints(maxWidth: 400),
+      constraints: const BoxConstraints(maxWidth: 500),
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         shape: BoxShape.rectangle,
@@ -402,6 +454,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
                 Tab(text: 'Presets'),
                 Tab(text: 'Custom'),
                 Tab(text: 'Functions'),
+                Tab(text: 'Skills'),
               ],
               labelColor: Theme.of(context).colorScheme.primary,
               unselectedLabelColor: isDarkMode ? Colors.white : Colors.black,
@@ -422,6 +475,8 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
                   _buildCustomTab(isFree),
                   // Functions tab
                   _buildFunctionsTab(),
+                  // Skills tab
+                  _buildSkillsTab(),
                 ],
               ),
             ),
@@ -475,7 +530,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
                   child: const Text('Cancel'),
                 ),
                 const SizedBox(width: 8),
-                if (_currentTabIndex == 1 || _currentTabIndex == 2)
+                if (_currentTabIndex == 1 || _currentTabIndex == 2 || _currentTabIndex == 3)
                   ElevatedButton(
                     onPressed:
                         isFree
@@ -498,6 +553,16 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
                                       .expand((tool) => tool)
                                       .toSet() // Remove duplicates
                                       .toList();
+
+                              // Add enabled skill keys + retrieve_skill (same toggle logic as functions)
+                              final enabledSkillKeys = _skillItems
+                                  .where((s) => s['enabled'] == true)
+                                  .map((s) => s['key'] as String)
+                                  .toList();
+                              if (enabledSkillKeys.isNotEmpty) {
+                                enabledTools.addAll(enabledSkillKeys);
+                                enabledTools.add('retrieve_skill');
+                              }
 
                               // Return the selected models and tools to the parent widget
                               final selectedModels =
@@ -722,6 +787,99 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
           },
         );
       },
+    );
+  }
+
+  Widget _buildSkillsTab() {
+    if (_skillItems.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text(
+              'No skills found',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Create a folder with a SKILL.md file\nin your skills directory to get started.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey),
+            ),
+            const SizedBox(height: 16),
+            if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS))
+              ElevatedButton.icon(
+                onPressed: () async {
+                  final skillsDir = await SkillsService().getSkillsPath();
+                  final dirPath = skillsDir.path;
+                  if (Platform.isWindows) {
+                    Process.run('explorer', [dirPath]);
+                  } else if (Platform.isMacOS) {
+                    Process.run('open', [dirPath]);
+                  } else if (Platform.isLinux) {
+                    Process.run('xdg-open', [dirPath]);
+                  }
+                },
+                icon: const Icon(Icons.folder_open, size: 18),
+                label: const Text('Open Skills Folder'),
+              ),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS))
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton.icon(
+                onPressed: () async {
+                  final skillsDir = await SkillsService().getSkillsPath();
+                  final dirPath = skillsDir.path;
+                  if (Platform.isWindows) {
+                    Process.run('explorer', [dirPath]);
+                  } else if (Platform.isMacOS) {
+                    Process.run('open', [dirPath]);
+                  } else if (Platform.isLinux) {
+                    Process.run('xdg-open', [dirPath]);
+                  }
+                },
+                icon: const Icon(Icons.folder_open, size: 18),
+                label: const Text('Open Folder'),
+              ),
+              IconButton(
+                onPressed: () async {
+                  await SkillsService().initSkills();
+                  setState(() {
+                    _skillItems = initSkillItems();
+                  });
+                },
+                icon: const Icon(Icons.refresh, size: 18),
+                tooltip: 'Refresh skills',
+              ),
+            ],
+          ),
+        Expanded(
+          child: ListView.builder(
+            itemCount: _skillItems.length,
+            itemBuilder: (context, index) {
+              final skill = _skillItems[index];
+              return SwitchListTile(
+                title: Text(skill['label']),
+                subtitle: Text(skill['description']),
+                value: skill['enabled'],
+                onChanged: (value) {
+                  setState(() {
+                    _skillItems[index]['enabled'] = value;
+                  });
+                },
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 

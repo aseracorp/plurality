@@ -54,6 +54,13 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		}
 	}
 
+	if len(payload.AvailableSkills) > 0 {
+		skillsList := strings.Join(payload.AvailableSkills, ", ")
+		systemPrompt += "\n\nYou have access to the following skills: " + skillsList +
+			". When a user's request matches one of these skills, use the retrieve_skill tool to load the skill's instructions before responding. " +
+			"Call retrieve_skill with the skill_name parameter. You can optionally specify a file_name to retrieve a specific file from the skill folder (defaults to SKILL.md)."
+	}
+
 	if !LiteLLMReady() {
 		return nil, 0, fmt.Errorf("AI proxy is not ready, please try again in a moment")
 	}

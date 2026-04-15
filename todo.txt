@@ -1,8 +1,8 @@
+- tools / MCP : Yes/no/Ask 
+- files tools 
 - Knowledge base
 - Shared memory "skill"
 - Agents (sub conversations as conversatiosn)
-- tools / MCP : Yes/no/Ask 
-- tools bundle (ex: code has grep etc... CALLED SKILL, add instructions to prompt)
 - browser tools 
 - emails tools 
 - code tools

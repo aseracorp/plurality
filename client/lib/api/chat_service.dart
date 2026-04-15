@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:plurality/api/MCP.dart';
+import 'package:plurality/api/skills_service.dart';
 
 import '../utils/types.dart';
 import 'api.dart';
@@ -113,6 +114,7 @@ class ChatService {
 
   final ApiService _api = ApiService();
   final MCPService _mcp = MCPService();
+  final SkillsService _skills = SkillsService();
 
   /// Active SSE stream subscriptions per conversation.
   final Map<String, StreamSubscription> _activeStreams = {};
@@ -195,12 +197,17 @@ class ChatService {
     }
 
     try {
+      final skillNames = _skills.getSkillNames();
       final stream = await _api.postChat(
         conversationId: conversationId,
         modelSelected: modelSelected,
         messages: [message],
         miniApp: miniApp,
-        clientSideTools: _mcp.getToolList(),
+        clientSideTools: [
+          ..._mcp.getToolList(),
+          if (skillNames.isNotEmpty) _skills.getToolDefinition(),
+        ],
+        availableSkills: skillNames,
       );
       _connectSSE(conversationId, stream, modelSelected);
     } catch (e) {
@@ -232,11 +239,16 @@ class ChatService {
     );
 
     try {
+      final skillNames = _skills.getSkillNames();
       final stream = await _api.postChat(
         conversationId: conversationId,
         modelSelected: modelSelected,
         toolResults: toolResults,
-        clientSideTools: _mcp.getToolList(),
+        clientSideTools: [
+          ..._mcp.getToolList(),
+          if (skillNames.isNotEmpty) _skills.getToolDefinition(),
+        ],
+        availableSkills: skillNames,
       );
       _connectSSE(conversationId, stream, modelSelected);
     } catch (e) {
@@ -507,6 +519,25 @@ class ChatService {
 
     for (final toolCall in toolCalls) {
       try {
+        // Handle retrieve_skill locally (not an MCP tool)
+        if (toolCall.function.name == 'retrieve_skill') {
+          final args = jsonDecode(
+            toolCall.function.arguments.isEmpty
+                ? '{}'
+                : toolCall.function.arguments,
+          );
+          final content = await _skills.executeRetrieveSkill(
+            args['skill_name'] as String? ?? '',
+            args['file_name'] as String?,
+          );
+          results.add(Message.toolResult(
+            toolCallId: toolCall.id,
+            name: toolCall.function.name,
+            result: content,
+          ));
+          continue;
+        }
+
         final serverName = _mcp.getToolServerName(toolCall.function.name);
         if (serverName == null) {
           results.add(Message.toolResult(

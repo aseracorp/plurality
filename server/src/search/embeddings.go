@@ -101,7 +101,7 @@ func VectorSearch(db *sql.DB, queryVec []float32, sourceType string, k int) ([]S
 		if err := rows.Scan(&r.SourceID, &r.Score); err != nil {
 			return nil, err
 		}
-		utils.Debug("[Search] vec hit source_id=%s distance=%.4f", r.SourceID, r.Score)
+		
 		if r.Score <= maxDistance {
 			results = append(results, r)
 		}

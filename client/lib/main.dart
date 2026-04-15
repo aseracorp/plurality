@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:plurality/api/MCP.dart';
+import 'package:plurality/api/skills_service.dart';
 import 'package:plurality/api/chat_service.dart';
 import 'package:plurality/auth/email-verify.dart';
 import './firebase_options.dart';
@@ -48,6 +49,7 @@ void main() async {
   }
 
   MCPService().initMCP();
+  SkillsService().initSkills();
 
   runApp(ProviderScope(child: MyApp()));
 }

@@ -144,6 +144,7 @@ class ApiService {
     MiniApp? miniApp,
     bool isCall = false,
     List<Map<String, dynamic>>? clientSideTools,
+    List<String>? availableSkills,
   }) async {
     final request = http.Request('POST', Uri.parse('$baseUrl/chat'));
     request.headers['Content-Type'] = 'application/json';
@@ -163,6 +164,9 @@ class ApiService {
     }
     if (miniApp != null) body['mini_app'] = miniApp.toJson();
     if (clientSideTools != null) body['client_side_tools'] = clientSideTools;
+    if (availableSkills != null && availableSkills.isNotEmpty) {
+      body['available_skills'] = availableSkills;
+    }
 
     request.body = jsonEncode(body);
 
