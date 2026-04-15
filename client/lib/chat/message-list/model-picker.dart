@@ -37,12 +37,12 @@ final List<String> VisionModelOptions = [
 const modelPresentFastText = Model(
   name: 'Gemini/gemini-2.5-flash',
   params: null,
-  tools: ['search_web', 'place_search', 'visit_link', 'generate_image'],
+  tools: ['search_web', 'place_search', 'visit_link', 'generate_image', 'search_conversations', 'retrieve_conversation'],
 );
 const modelPresentFastVision = Model(
   name: 'Gemini/gemini-2.5-flash',
   params: null,
-  tools: ['search_web', 'place_search', 'visit_link', 'generate_image'],
+  tools: ['search_web', 'place_search', 'visit_link', 'generate_image', 'search_conversations', 'retrieve_conversation'],
 );
 const modelPresentFastImageGen = Model(
   name: 'black-forest-labs/FLUX.2-dev',
@@ -60,12 +60,12 @@ final Map<String, ModelSelected> modelPresets = {
     text: Model(
       name: 'qwen3p6-plus',
       params: null,
-      tools: ['search_web', 'place_search', 'visit_link', 'generate_image'],
+      tools: ['search_web', 'place_search', 'visit_link', 'generate_image', 'search_conversations', 'retrieve_conversation'],
     ),
     vision: Model(
       name: 'qwen3p6-plus',
       params: null,
-      tools: ['search_web', 'place_search', 'visit_link', 'generate_image'],
+      tools: ['search_web', 'place_search', 'visit_link', 'generate_image', 'search_conversations', 'retrieve_conversation'],
     ),
     imageGen: Model(name: 'black-forest-labs/FLUX.2-dev', params: null),
   ),
@@ -73,9 +73,9 @@ final Map<String, ModelSelected> modelPresets = {
     text: Model(
       name: 'glm-5p1',
       params: null,
-      tools: ['search_web', 'place_search', 'visit_link', 'generate_image'],
+      tools: ['search_web', 'place_search', 'visit_link', 'generate_image', 'search_conversations', 'retrieve_conversation'],
     ),
-    vision: Model(name: 'qwen3p6-plus', params: null, tools: ['generate_image']),
+    vision: Model(name: 'qwen3p6-plus', params: null, tools: ['generate_image', 'search_conversations', 'retrieve_conversation']),
     imageGen: Model(name: 'black-forest-labs/FLUX.2-pro', params: null),
   ),
 };
@@ -169,6 +169,18 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
       'key': 'generate_image',
       'label': 'Image Generation',
       'description': 'Generate images from text descriptions',
+      'enabled': true,
+    },
+    {
+      'key': 'search_conversations',
+      'label': 'Search Conversations',
+      'description': 'Search past conversations by topic',
+      'enabled': true,
+    },
+    {
+      'key': 'retrieve_conversation',
+      'label': 'Retrieve Conversation',
+      'description': 'Retrieve messages from a past conversation',
       'enabled': true,
     },
   ];

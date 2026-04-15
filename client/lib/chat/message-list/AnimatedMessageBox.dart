@@ -62,6 +62,7 @@ class AnimatedMessageBox extends StatefulWidget {
   final bool mini;
   final Message message;
   final String? iconURL;
+  final Function(String)? onConversationTap;
 
   const AnimatedMessageBox({
     super.key,
@@ -71,6 +72,7 @@ class AnimatedMessageBox extends StatefulWidget {
     required this.isLoading,
     this.mini = false,
     required this.message,
+    this.onConversationTap,
   });
 
   @override
@@ -211,7 +213,12 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
                     onTapLink: (text, url, title) {
                       if (url == null) return;
 
-                      if (url.startsWith('http')) {
+                      if (url.startsWith('plurality://conversation/')) {
+                        final convId = url.replaceFirst('plurality://conversation/', '');
+                        if (widget.onConversationTap != null) {
+                          widget.onConversationTap!(convId);
+                        }
+                      } else if (url.startsWith('http')) {
                         launchUrl(
                           Uri.parse(url ?? ''),
                           mode: LaunchMode.externalApplication,

@@ -5,12 +5,14 @@ go 1.25.0
 require (
 	firebase.google.com/go/v4 v4.15.2
 	github.com/PuerkitoBio/goquery v1.10.2
+	github.com/asg017/sqlite-vec-go-bindings v0.1.7-alpha.2
 	github.com/go-audio/audio v1.0.0
 	github.com/go-audio/wav v1.1.0
 	github.com/gorilla/mux v1.8.1
 	github.com/joho/godotenv v1.5.1
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
-github.com/stripe/stripe-go/v82 v82.0.0
+	github.com/mattn/go-sqlite3 v1.14.42
+	github.com/stripe/stripe-go/v82 v82.0.0
 	github.com/xuri/excelize/v2 v2.10.1
 	go.mongodb.org/mongo-driver v1.17.3
 	google.golang.org/api v0.215.0
@@ -35,7 +37,6 @@ require (
 	github.com/census-instrumentation/opencensus-proto v0.4.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cncf/xds/go v0.0.0-20240905190251-b4127c9b8d78 // indirect
-	github.com/dlclark/regexp2 v1.10.0 // indirect
 	github.com/envoyproxy/go-control-plane v0.13.1 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.1.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
@@ -69,12 +70,12 @@ require (
 	go.opentelemetry.io/otel/sdk v1.29.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.29.0 // indirect
 	go.opentelemetry.io/otel/trace v1.29.0 // indirect
-	golang.org/x/crypto v0.48.0 // indirect
-	golang.org/x/net v0.50.0 // indirect
+	golang.org/x/crypto v0.50.0 // indirect
+	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/oauth2 v0.25.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/time v0.8.0 // indirect
 	google.golang.org/appengine/v2 v2.0.6 // indirect
 	google.golang.org/genproto v0.0.0-20241118233622-e639e219e697 // indirect

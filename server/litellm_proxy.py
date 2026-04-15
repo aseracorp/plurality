@@ -82,6 +82,16 @@ async def list_models():
     return {"object": "list", "data": models}
 
 
+@app.post("/v1/embeddings")
+async def embeddings(request: Request):
+    body = await request.json()
+    model = body.get("model", "")
+    input_text = body.get("input", "")
+
+    response = await router.aembedding(model=model, input=[input_text] if isinstance(input_text, str) else input_text)
+    return JSONResponse(content=response.model_dump())
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     body = await request.json()

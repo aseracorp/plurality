@@ -355,7 +355,7 @@ func GenerateTitleForMessage(message string) (string, error) {
 	maxTokens := 30
 	temperature := 0.3
 	requestData := StandardChatRequest{
-		Model:       "Qwen/Qwen3-VL-8B-Instruct",
+		Model:       "meta-llama/Meta-Llama-3-8B-Instruct-Lite",
 		Messages:    msgReqList,
 		MaxTokens:   &maxTokens,
 		Temperature: &temperature,

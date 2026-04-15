@@ -125,17 +125,20 @@ func HandleOpenAIListModels(w http.ResponseWriter, r *http.Request) {
 // Stateless — no conversation persistence, no state machine.
 func HandleOpenAIChatCompletion(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		utils.Error("[OpenAI] Method not allowed", nil)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	var req OpenAIChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.Error("[OpenAI] Invalid request body", err)
 		http.Error(w, `{"error":{"message":"Invalid request body"}}`, http.StatusBadRequest)
 		return
 	}
 
 	if req.Model == "" || len(req.Messages) == 0 {
+		utils.Error("[OpenAI] model and messages are required", nil)
 		http.Error(w, `{"error":{"message":"model and messages are required"}}`, http.StatusBadRequest)
 		return
 	}
@@ -143,10 +146,12 @@ func HandleOpenAIChatCompletion(w http.ResponseWriter, r *http.Request) {
 	// Validate model
 	planName, err := db.GetPlanName(r.Context())
 	if err != nil {
+		utils.Error("[OpenAI] Error getting plan name", err)
 		http.Error(w, fmt.Sprintf(`{"error":{"message":"%s"}}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 	if !CheckModel(req.Model, planName) {
+		utils.Error("[OpenAI] Invalid model for plan", nil, req.Model)
 		http.Error(w, `{"error":{"message":"Invalid model for your plan"}}`, http.StatusBadRequest)
 		return
 	}
@@ -185,6 +190,7 @@ func HandleOpenAIChatCompletion(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(errLower, "insufficient credits") {
 			statusCode = http.StatusPaymentRequired
 		}
+		utils.Error("[OpenAI] Chat completion error", err)
 		http.Error(w, fmt.Sprintf(`{"error":{"message":"%s"}}`, err.Error()), statusCode)
 		return
 	}

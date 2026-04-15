@@ -6,7 +6,11 @@ rm -rf build/*
 
 # Build for Linux
 echo "Building for Linux..."
-if ! GOOS=linux GOARCH=amd64 go build -o build/Plurality src/index.go src/stripe.go; then
+# sqlite-vec CGO needs sqlite3.h from mattn/go-sqlite3
+MATTN_DIR=$(go list -m -f '{{.Dir}}' github.com/mattn/go-sqlite3)
+export CGO_CFLAGS="-I${MATTN_DIR}"
+
+if ! CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags "fts5" -o build/Plurality src/index.go src/stripe.go; then
   echo "Linux build failed. Exiting..."
   exit 1
 fi

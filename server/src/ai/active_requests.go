@@ -6,8 +6,6 @@ import (
 	"strings"
 	"sync"
 
-	"go.mongodb.org/mongo-driver/bson/primitive"
-
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -41,7 +39,7 @@ func (c *SSEClient) Send(event SSEEvent) bool {
 // ActiveRequest tracks an in-progress LLM request for a conversation.
 // The LLM loop goroutine writes to this; SSE clients subscribe for events.
 type ActiveRequest struct {
-	ConversationID primitive.ObjectID
+	ConversationID string
 	UserID         string
 	Ctx            context.Context
 	Cancel         context.CancelFunc
@@ -62,7 +60,7 @@ type ActiveRequest struct {
 }
 
 // NewActiveRequest creates a new ActiveRequest with a cancelable context.
-func NewActiveRequest(conversationID primitive.ObjectID, userID string, model utils.Model, modelSelected utils.ModelSelected) *ActiveRequest {
+func NewActiveRequest(conversationID string, userID string, model utils.Model, modelSelected utils.ModelSelected) *ActiveRequest {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ActiveRequest{
 		ConversationID: conversationID,
@@ -103,7 +101,7 @@ func (ar *ActiveRequest) Broadcast(event SSEEvent) {
 	ar.mu.Lock()
 	defer ar.mu.Unlock()
 	if len(ar.clients) == 0 && event.Type != "text" {
-		utils.Debug("[Broadcast] No clients connected for %s event on %s", event.Type, ar.ConversationID.Hex())
+		utils.Debug("[Broadcast] No clients connected for %s event on %s", event.Type, ar.ConversationID)
 	}
 	for client := range ar.clients {
 		if !client.Send(event) {
@@ -135,7 +133,7 @@ func (ar *ActiveRequest) CloseAllClients() {
 // BroadcastStatus sends a compact status event to all status stream clients for this user.
 func (ar *ActiveRequest) BroadcastStatus(activity string, toolName string) {
 	StatusRegistry.BroadcastToUser(ar.UserID, StatusEvent{
-		ConversationID: ar.ConversationID.Hex(),
+		ConversationID: ar.ConversationID,
 		State:          string(ar.State),
 		Activity:       activity,
 		ToolName:       toolName,

@@ -180,6 +180,7 @@ func GenerateRandomString(n int) string {
 
 func SendHTTPError(w http.ResponseWriter, message string, code int) {
 	if os.Getenv("LOG_LEVEL") == "DEBUG" {
+		Error("User error", nil, message)
 		http.Error(w, message, code)
 	} else {
 		userError := GenerateRandomString(8)

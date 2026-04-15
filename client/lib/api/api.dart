@@ -95,6 +95,27 @@ class ApiService {
     }
   }
 
+  /// Search conversations via server-side FTS5 + vector search.
+  /// Returns conversation IDs ranked by relevance.
+  Future<List<String>> searchConversations(String query) async {
+    String? firebaseToken = await _authService.getCurrentUserToken();
+    if (firebaseToken == null) {
+      throw Exception('User not authenticated');
+    }
+
+    final response = await http.get(
+      Uri.parse('$baseUrl/search?q=${Uri.encodeQueryComponent(query)}'),
+      headers: {'Authorization': 'Bearer $firebaseToken'},
+    );
+
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      final List<dynamic> data = jsonDecode(response.body);
+      return data.map((item) => item['conversation_id'] as String).toList();
+    } else {
+      return [];
+    }
+  }
+
   // --- Chat API Methods ---
 
   /// Parse an SSE response stream into a stream of SSEEvent objects.

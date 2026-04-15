@@ -272,13 +272,40 @@ class ConversationsNotifier extends StateNotifier<ConversationsState> {
   }
 }
 
+// Ordered list of conversation IDs from the last server search.
+// null means no active search; empty list means search returned nothing.
+final searchResultIdsProvider = StateProvider<List<String>?>((ref) => null);
+
 // Create a simple provider to access sorted folders
 final sortedFoldersProvider =
     Provider.family<List<Map<String, dynamic>>, String?>((ref, searchQuery) {
       final state = ref.watch(conversationsProvider);
       final folderMap = state.folderMap;
+      final searchIds = ref.watch(searchResultIdsProvider);
 
-      // Sort folder names
+      final isSearching = searchQuery != null && searchQuery.length >= 3 && searchIds != null;
+
+      // When searching, return a single flat list ordered by server ranking
+      if (isSearching) {
+        // Build a lookup of all conversations by ID
+        final allConvs = <String, Conversation>{};
+        for (final convs in folderMap.values) {
+          for (final conv in convs) {
+            allConvs[conv.id] = conv;
+          }
+        }
+
+        // Return in server-ranked order
+        final ranked = searchIds
+            .where((id) => allConvs.containsKey(id))
+            .map((id) => allConvs[id]!)
+            .toList();
+
+        if (ranked.isEmpty) return [];
+        return [{'name': 'Search Results', 'conversations': ranked}];
+      }
+
+      // Normal view: group by folders
       final sortedFolderNames =
           folderMap.keys.toList()..sort((a, b) {
             if (a == "") return 1;
@@ -291,28 +318,8 @@ final sortedFoldersProvider =
       return sortedFolderNames
           .map((folderName) {
             final conversations = folderMap[folderName]!;
-
-            // Apply search filter if needed
-            final filteredConversations =
-                (searchQuery != null && searchQuery.length >= 3)
-                    ? conversations
-                        .where(
-                          (conv) => conv.title.toLowerCase().contains(
-                            searchQuery.toLowerCase(),
-                          ),
-                        )
-                        .toList()
-                    : conversations;
-
-            return {'name': folderName, 'conversations': filteredConversations};
+            return {'name': folderName, 'conversations': conversations};
           })
-          // Filter out empty folders when searching
-          .where(
-            (folder) =>
-                searchQuery == null ||
-                searchQuery.length < 3 ||
-                (folder['conversations'] as List).isNotEmpty,
-          )
           .toList();
     });
 

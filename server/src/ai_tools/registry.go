@@ -15,6 +15,8 @@ var Registry = map[string]utils.AITool{
 	ConversationAttachmentsTool.ToolID: ConversationAttachmentsTool,
 	ReadDocumentTool.ToolID:            ReadDocumentTool,
 	SearchDocumentTool.ToolID:          SearchDocumentTool,
+	SearchConversationsTool.ToolID:     SearchConversationsTool,
+	RetrieveConversationTool.ToolID:    RetrieveConversationTool,
 }
 
 func RegisterTool(tool utils.AITool) {

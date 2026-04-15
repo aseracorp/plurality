@@ -15,13 +15,13 @@ import (
 
 var storagePath string
 
-// Init reads the ATTACHMENT_STORAGE env var (default "./attachments" relative
-// to the binary) and creates the directory if it doesn't exist.
+// Init reads the USER_DATA_STORAGE env var (default "./users-data" relative
+// to the binary) and creates the directory.
 func Init() {
-	storagePath = os.Getenv("ATTACHMENT_STORAGE")
+	storagePath = os.Getenv("USER_DATA_STORAGE")
 	if storagePath == "" {
 		exec, _ := os.Executable()
-		storagePath = filepath.Join(filepath.Dir(exec), "attachments")
+		storagePath = filepath.Join(filepath.Dir(exec), "users-data")
 	}
 	if err := os.MkdirAll(storagePath, 0755); err != nil {
 		utils.Error("[Storage] Failed to create storage directory", err)
@@ -47,7 +47,7 @@ func SaveBlob(userID string, data []byte, ext string) (string, error) {
 	}
 
 	month := time.Now().Format("2006.01")
-	dir := filepath.Join(storagePath, userID, month)
+	dir := filepath.Join(storagePath, userID, "attachments", month)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", fmt.Errorf("creating directory: %w", err)
 	}
@@ -66,7 +66,7 @@ func SaveBlob(userID string, data []byte, ext string) (string, error) {
 }
 
 // ReadBlob reads a file from the storage path given a URL path like
-// /attachments/{userID}/{conversationID}/{filename}.
+// /attachments/{userID}/{month}/{filename}.
 // Returns the raw bytes and detected MIME type.
 func ReadBlob(urlPath string) ([]byte, string, error) {
 	rel := strings.TrimPrefix(urlPath, "/attachments/")
@@ -80,7 +80,7 @@ func ReadBlob(urlPath string) ([]byte, string, error) {
 		}
 	}
 
-	filePath := filepath.Join(storagePath, parts[0], parts[1], parts[2])
+	filePath := filepath.Join(storagePath, parts[0], "attachments", parts[1], parts[2])
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, "", fmt.Errorf("reading file: %w", err)
@@ -112,7 +112,7 @@ func FileSizeFromURL(urlPath string) int64 {
 	if len(parts) != 3 {
 		return 0
 	}
-	filePath := filepath.Join(storagePath, parts[0], parts[1], parts[2])
+	filePath := filepath.Join(storagePath, parts[0], "attachments", parts[1], parts[2])
 	info, err := os.Stat(filePath)
 	if err != nil {
 		return 0

@@ -115,10 +115,16 @@ model_list:
       model: "fireworks_ai/accounts/fireworks/models/minimax-m2p5"
       api_key: "os.environ/FIREWORK_KEY"
 
-  # Together AI (title generation)
-  - model_name: "Qwen/Qwen3-VL-8B-Instruct"
+  # Embedding model (for conversation search)
+  - model_name: "text-embedding-3-small"
     litellm_params:
-      model: "together_ai/Qwen/Qwen3-VL-8B-Instruct"
+      model: "text-embedding-3-small"
+      api_key: "os.environ/CHATGPT_API_KEY"
+
+  # Together AI (title generation)
+  - model_name: "meta-llama/Meta-Llama-3-8B-Instruct-Lite"
+    litellm_params:
+      model: "together_ai/meta-llama/Meta-Llama-3-8B-Instruct-Lite"
       api_key: "os.environ/TOGETHER_API_KEY"
 
 general_settings:

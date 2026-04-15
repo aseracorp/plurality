@@ -23,7 +23,7 @@ import (
 func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conversation, payload ChatPayload) {
 	defer ar.cleanup(ctx)
 
-	utils.Log("[LLMLoop] Starting for conversation %s with %d connected clients", ar.ConversationID.Hex(), ar.ClientCount())
+	utils.Log("[LLMLoop] Starting for conversation %s with %d connected clients", ar.ConversationID, ar.ClientCount())
 
 	for {
 		select {
@@ -49,7 +49,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			ar.Broadcast(SSEEvent{
 				Type:           "error",
 				Content:        err.Error(),
-				ConversationID: ar.ConversationID.Hex(),
+				ConversationID: ar.ConversationID,
 			})
 			ar.setState(ctx, utils.StateIdle)
 			ar.BroadcastStatus("", "")
@@ -70,7 +70,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		utils.Log("[LLMLoop] Stream complete. Text length: %d, Tool calls: %d", len(ar.TextBuffer.String()), len(assistantMessage.ToolCalls))
 
 		// Refresh conversation from DB (finalizeCredits already pushed the assistant message)
-		updatedConversation, err := db.GetConversationById(ctx, ar.ConversationID.Hex())
+		updatedConversation, err := db.GetConversationById(ctx, ar.ConversationID)
 		if err != nil {
 			utils.Error("[LLMLoop] Error refreshing conversation from DB", err)
 			ar.setState(ctx, utils.StateIdle)
@@ -86,7 +86,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			ar.BroadcastStatus("", "")
 			ar.Broadcast(SSEEvent{
 				Type:           "done",
-				ConversationID: ar.ConversationID.Hex(),
+				ConversationID: ar.ConversationID,
 				Title:          conversation.Title,
 			})
 
@@ -98,9 +98,9 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 						utils.Error("[LLMLoop] Auto title generation failed", err)
 						return
 					}
-					utils.Log("[LLMLoop] Auto-generated title for %s: %s", ar.ConversationID.Hex(), title)
+					utils.Log("[LLMLoop] Auto-generated title for %s: %s", ar.ConversationID, title)
 					StatusRegistry.BroadcastToUser(ar.UserID, StatusEvent{
-						ConversationID: ar.ConversationID.Hex(),
+						ConversationID: ar.ConversationID,
 						State:          string(utils.StateIdle),
 						Title:          title,
 						Icon:           icon,
@@ -130,7 +130,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				Type:           "tool_use",
 				ToolCall:       tc,
 				IsServer:       true,
-				ConversationID: ar.ConversationID.Hex(),
+				ConversationID: ar.ConversationID,
 			})
 
 			resultContent := executeServerTool(ar.Ctx, ar, *tc, payload)
@@ -153,7 +153,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				ToolName:       tc.Function.Name,
 				ToolResult:     toolMessage.TextContent(),
 				IsServer:       true,
-				ConversationID: ar.ConversationID.Hex(),
+				ConversationID: ar.ConversationID,
 			})
 
 			updatedConv, _, pushErr := db.PushMessage(ctx, conversation, toolMessage)
@@ -171,7 +171,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 					Type:           "tool_use",
 					ToolCall:       &toolCall,
 					IsServer:       false,
-					ConversationID: ar.ConversationID.Hex(),
+					ConversationID: ar.ConversationID,
 				})
 			}
 
@@ -179,11 +179,11 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			ar.Broadcast(SSEEvent{
 				Type:           "state_change",
 				State:          string(utils.StateWaitingForTool),
-				ConversationID: ar.ConversationID.Hex(),
+				ConversationID: ar.ConversationID,
 			})
 			ar.Broadcast(SSEEvent{
 				Type:           "done",
-				ConversationID: ar.ConversationID.Hex(),
+				ConversationID: ar.ConversationID,
 			})
 			return // Wait for client to POST tool results
 		}
@@ -228,7 +228,7 @@ func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.To
 	}
 
 	// Fetch current conversation — all tools receive it
-	conv, convErr := db.GetConversationById(ctx, ar.ConversationID.Hex())
+	conv, convErr := db.GetConversationById(ctx, ar.ConversationID)
 	if convErr != nil {
 		utils.Error("[LLMLoop] Error loading conversation for tool execution", convErr)
 		return utils.NewTextContent("Error: could not load conversation data")
@@ -289,6 +289,6 @@ func (ar *ActiveRequest) flushPartialResponse(ctx context.Context, conversation 
 
 // cleanup removes the ActiveRequest from the registry and closes all clients.
 func (ar *ActiveRequest) cleanup(ctx context.Context) {
-	RequestRegistry.Remove(ar.ConversationID.Hex())
+	RequestRegistry.Remove(ar.ConversationID)
 	ar.CloseAllClients()
 }

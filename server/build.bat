@@ -8,7 +8,13 @@ REM Build for Windows
 echo Building for Windows...
 set GOOS=windows
 set GOARCH=amd64
-go build -o build\Plurality.exe src\index.go src\stripe.go
+set CGO_ENABLED=1
+
+REM sqlite-vec CGO needs sqlite3.h from mattn/go-sqlite3
+for /f "delims=" %%i in ('go list -m -f "{{.Dir}}" github.com/mattn/go-sqlite3') do set MATTN_DIR=%%i
+set CGO_CFLAGS=-I%MATTN_DIR%
+
+go build -tags "fts5" -o build\Plurality.exe src\index.go src\stripe.go
 
 if errorlevel 1 goto :error
 

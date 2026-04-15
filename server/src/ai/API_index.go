@@ -41,6 +41,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !CheckModel(payload.ModelSelected.Text.Name, planName) || !CheckModel(payload.ModelSelected.Vision.Name, planName) {
+		utils.Error("[HandleChat] Invalid model for plan", nil)
 		http.Error(w, "Invalid model for your plan", http.StatusBadRequest)
 		return
 	}
@@ -49,7 +50,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		ID:            payload.ConversationID,
 		ModelSelected: payload.ModelSelected,
 	}
-	if payload.ConversationID == primitive.NilObjectID {
+	if payload.ConversationID == "" {
 		partialConversation.Title = "New Chat"
 	}
 	if payload.MiniApp.ID != primitive.NilObjectID {
@@ -101,7 +102,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	cancelCtx, cancelFunc := context.WithCancel(persistCtx)
 	activeRequest.Ctx = cancelCtx
 	activeRequest.Cancel = cancelFunc
-	RequestRegistry.Set(conversation.ID.Hex(), activeRequest)
+	RequestRegistry.Set(conversation.ID, activeRequest)
 	if err := db.UpdateConversationState(persistCtx, conversation.ID, utils.StateProcessing); err != nil {
 		utils.Error("[HandleChat] Error setting conversation state", err)
 	}
@@ -135,6 +136,7 @@ func HandleStreamReconnect(w http.ResponseWriter, r *http.Request) {
 
 	activeRequest := RequestRegistry.Get(conversationID)
 	if activeRequest == nil {
+		utils.Error("[HandleStreamReconnect] No active request for conversation", nil, conversationID)
 		http.Error(w, "No active request for this conversation", http.StatusNotFound)
 		return
 	}
@@ -171,6 +173,7 @@ func HandleCancel(w http.ResponseWriter, r *http.Request) {
 
 	activeRequest := RequestRegistry.Get(conversationID)
 	if activeRequest == nil {
+		utils.Error("[HandleCancel] No active request for conversation", nil, conversationID)
 		http.Error(w, "No active request for this conversation", http.StatusNotFound)
 		return
 	}
@@ -207,7 +210,7 @@ func HandleStatusStream(w http.ResponseWriter, r *http.Request) {
 	// Send initial catch-up: current state of all active conversations
 	for _, ar := range RequestRegistry.GetForUser(userID) {
 		client.Send(StatusEvent{
-			ConversationID: ar.ConversationID.Hex(),
+			ConversationID: ar.ConversationID,
 			State:          string(ar.State),
 		})
 	}
@@ -403,13 +406,7 @@ func API_UpdateConversationFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	oid, err := primitive.ObjectIDFromHex(id)
-	if err != nil {
-		utils.SendHTTPError(w, "Invalid conversation ID", http.StatusBadRequest)
-		return
-	}
-
-	if err := db.UpdateConversationFolder(r.Context(), oid, request.Folder); err != nil {
+	if err := db.UpdateConversationFolder(r.Context(), id, request.Folder); err != nil {
 		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -439,13 +436,7 @@ func API_UpdateConversationTitle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	oid, err := primitive.ObjectIDFromHex(id)
-	if err != nil {
-		utils.SendHTTPError(w, "Invalid conversation ID", http.StatusBadRequest)
-		return
-	}
-
-	if err := db.UpdateConversationMetadata(r.Context(), oid, request.Title, ""); err != nil {
+	if err := db.UpdateConversationMetadata(r.Context(), id, request.Title, ""); err != nil {
 		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

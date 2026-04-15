@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../api/api.dart';
 import '../../api/service.dart';
 import 'package:super_sliver_list/super_sliver_list.dart';
 import '../../utils/types.dart';
@@ -32,6 +35,7 @@ class _ConversationListState extends ConsumerState<ConversationList> {
   String searchQuery = '';
   Map<String, bool> _folderExpansionState = {};
   Map<String, Widget> convCacheFuckYouFlutter = {};
+  Timer? _searchDebounce;
 
   // Toggle folder expansion state
   void _toggleFolderExpansion(String folderName) {
@@ -51,15 +55,6 @@ class _ConversationListState extends ConsumerState<ConversationList> {
     // Initialize folder expansion state for any new folders
     for (var folder in folders) {
       _folderExpansionState.putIfAbsent(folder['name'] as String, () => true);
-    }
-
-    if (folders.isEmpty) {
-      return Center(
-        child: Text(
-          'No conversations yet',
-          style: Theme.of(context).textTheme.titleMedium,
-        ),
-      );
     }
 
     // Create a flat list of all items (folders and conversations)
@@ -152,18 +147,37 @@ class _ConversationListState extends ConsumerState<ConversationList> {
               setState(() {
                 searchQuery = value;
               });
+              _searchDebounce?.cancel();
+              if (value.length >= 3) {
+                _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+                  ApiService().searchConversations(value).then((ids) {
+                    ref.read(searchResultIdsProvider.notifier).state = ids;
+                  });
+                });
+              } else {
+                ref.read(searchResultIdsProvider.notifier).state = null;
+              }
             },
           ),
         ),
 
         // Single flat list for folders and conversations with pull to refresh
         Expanded(
-          child: RefreshIndicator(
-            onRefresh: () async {
-              ref.read(conversationsProvider.notifier).refresh();
-            },
-            child: SuperListView(shrinkWrap: true, children: allItems),
-          ),
+          child: allItems.isEmpty
+              ? Center(
+                  child: Text(
+                    searchQuery.length >= 3
+                        ? 'No matching conversations'
+                        : 'No conversations yet',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                )
+              : RefreshIndicator(
+                  onRefresh: () async {
+                    ref.read(conversationsProvider.notifier).refresh();
+                  },
+                  child: SuperListView(shrinkWrap: true, children: allItems),
+                ),
         ),
       ],
     );

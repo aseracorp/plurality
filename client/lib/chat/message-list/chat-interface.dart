@@ -544,6 +544,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
               text: sanitizeMessages(item.text),
               isBot: true,
               isLoading: item == sessionState.items.last && isProcessing,
+              onConversationTap: (id) => widget.setConversationID?.call(id, true),
             ));
           }
           break;
@@ -718,6 +719,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                   text: sanitizeMessages(messageText),
                   isBot: message.isBot,
                   isLoading: false,
+                  onConversationTap: (id) => widget.setConversationID?.call(id, true),
                 )
                 : null;
 

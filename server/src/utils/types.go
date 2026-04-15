@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/bsontype"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -15,25 +13,24 @@ import (
 
 // ContentImageURL holds the URL for an image content part.
 type ContentImageURL struct {
-	URL string `json:"url" bson:"url"`
+	URL string `json:"url"`
 }
 
 // ContentPart represents one element of a multi-part content array.
 // Used when a message contains mixed content (text + images).
 type ContentPart struct {
-	Type     string           `json:"type" bson:"type"` // "text", "image_url", "snippet", "file", "pdf", "docx", "xlsx", "pptx"
-	Text     string           `json:"text,omitempty" bson:"text,omitempty"`
-	ImageURL *ContentImageURL `json:"image_url,omitempty" bson:"image_url,omitempty"`
-	Filename string           `json:"filename,omitempty" bson:"filename,omitempty"`
+	Type     string           `json:"type"`                       // "text", "image_url", "snippet", "file", "pdf", "docx", "xlsx", "pptx"
+	Text     string           `json:"text,omitempty"`
+	ImageURL *ContentImageURL `json:"image_url,omitempty"`
+	Filename string           `json:"filename,omitempty"`
 }
 
 // --- MessageContent ---
 
 // MessageContent holds message content as a normalized []ContentPart slice.
-// It implements custom BSON and JSON marshaling so that:
+// It implements custom JSON marshaling so that:
 //   - A single text-only part is serialized as a plain string (compact, API-compatible)
 //   - Multiple parts are serialized as an array of content-part objects
-//   - BSON deserialization handles both old (primitive.D/A) and new formats
 type MessageContent struct {
 	parts []ContentPart
 }
@@ -117,131 +114,21 @@ func (mc *MessageContent) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// --- BSON marshaling ---
-
-func (mc MessageContent) MarshalBSONValue() (bsontype.Type, []byte, error) {
-	if len(mc.parts) == 0 {
-		return bson.MarshalValue("")
-	}
-	if len(mc.parts) == 1 && mc.parts[0].Type == "text" && mc.parts[0].ImageURL == nil {
-		return bson.MarshalValue(mc.parts[0].Text)
-	}
-	return bson.MarshalValue(mc.parts)
-}
-
-func (mc *MessageContent) UnmarshalBSONValue(t bsontype.Type, data []byte) error {
-	rv := bson.RawValue{Type: t, Value: data}
-
-	switch t {
-	case bsontype.String:
-		var s string
-		if err := rv.Unmarshal(&s); err != nil {
-			return fmt.Errorf("MessageContent: bad BSON string: %w", err)
-		}
-		if s != "" {
-			mc.parts = []ContentPart{{Type: "text", Text: s}}
-		} else {
-			mc.parts = nil
-		}
-		return nil
-
-	case bsontype.Array:
-		// Try direct unmarshal into typed slice (works for both old and new docs
-		// because the BSON field names match ContentPart's bson tags).
-		var parts []ContentPart
-		if err := rv.Unmarshal(&parts); err == nil && len(parts) > 0 && parts[0].Type != "" {
-			mc.parts = parts
-			return nil
-		}
-		// Fallback: unmarshal as primitive.A and convert primitive.D elements
-		var arr primitive.A
-		if err := rv.Unmarshal(&arr); err != nil {
-			return fmt.Errorf("MessageContent: bad BSON array: %w", err)
-		}
-		mc.parts = contentPartsFromPrimitiveA(arr)
-		return nil
-
-	case bsontype.Null, bsontype.Undefined:
-		mc.parts = nil
-		return nil
-
-	default:
-		return fmt.Errorf("MessageContent: unexpected BSON type %s", t)
-	}
-}
-
-// contentPartsFromPrimitiveA converts a primitive.A (from legacy interface{} decoding)
-// into []ContentPart by manually reading primitive.D key-value pairs.
-func contentPartsFromPrimitiveA(arr primitive.A) []ContentPart {
-	parts := make([]ContentPart, 0, len(arr))
-	for _, elem := range arr {
-		if d, ok := elem.(primitive.D); ok {
-			parts = append(parts, contentPartFromD(d))
-		} else if m, ok := elem.(map[string]interface{}); ok {
-			part := ContentPart{}
-			if t, ok := m["type"].(string); ok {
-				part.Type = t
-			}
-			if t, ok := m["text"].(string); ok {
-				part.Text = t
-			}
-			if imgURL, ok := m["image_url"].(map[string]interface{}); ok {
-				if url, ok := imgURL["url"].(string); ok {
-					part.ImageURL = &ContentImageURL{URL: url}
-				}
-			}
-			parts = append(parts, part)
-		}
-	}
-	return parts
-}
-
-func contentPartFromD(d primitive.D) ContentPart {
-	part := ContentPart{}
-	for _, e := range d {
-		switch e.Key {
-		case "type":
-			if s, ok := e.Value.(string); ok {
-				part.Type = s
-			}
-		case "text":
-			if s, ok := e.Value.(string); ok {
-				part.Text = s
-			}
-		case "image_url":
-			if sub, ok := e.Value.(primitive.D); ok {
-				for _, se := range sub {
-					if se.Key == "url" {
-						if s, ok := se.Value.(string); ok {
-							part.ImageURL = &ContentImageURL{URL: s}
-						}
-					}
-				}
-			} else if sub, ok := e.Value.(map[string]interface{}); ok {
-				if url, ok := sub["url"].(string); ok {
-					part.ImageURL = &ContentImageURL{URL: url}
-				}
-			}
-		}
-	}
-	return part
-}
-
 // FunctionCall holds the function name and JSON-encoded arguments for a tool call.
 type FunctionCall struct {
-	Name      string `json:"name" bson:"name"`
-	Arguments string `json:"arguments" bson:"arguments"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // ToolCall represents an assistant's request to invoke a tool.
 // Loading and IconURL are transient Plurality extensions — included in SSE
 // events for live display but NOT persisted to DB.
 type ToolCall struct {
-	ID       string       `json:"id" bson:"id"`
-	Type     string       `json:"type" bson:"type"` // "function"
-	Function FunctionCall `json:"function" bson:"function"`
-	Loading  string       `json:"loading,omitempty" bson:"-"` // transient: display template
-	IconURL  string       `json:"icon_url,omitempty" bson:"-"` // transient: base64 icon
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`                    // "function"
+	Function FunctionCall `json:"function"`
+	Loading  string       `json:"loading,omitempty"`        // transient: display template
+	IconURL  string       `json:"icon_url,omitempty"`       // transient: base64 icon
 }
 
 // Message is an OpenAI-compatible message.
@@ -249,16 +136,16 @@ type ToolCall struct {
 // Content is a MessageContent that is internally always []ContentPart.
 // Use TextContent() and ContentParts() for access.
 type Message struct {
-	Role       string         `json:"role" bson:"role"`                                     // "system", "user", "assistant", "tool"
-	Content    MessageContent `json:"content,omitempty" bson:"content,omitempty"`
-	ToolCalls  []ToolCall     `json:"tool_calls,omitempty" bson:"tool_calls,omitempty"`     // assistant only
-	ToolCallID string         `json:"tool_call_id,omitempty" bson:"tool_call_id,omitempty"` // tool role only
-	Name       string         `json:"name,omitempty" bson:"name,omitempty"`                 // tool role only
+	Role       string         `json:"role"`                           // "system", "user", "assistant", "tool"
+	Content    MessageContent `json:"content,omitempty"`
+	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`           // assistant only
+	ToolCallID string         `json:"tool_call_id,omitempty"`         // tool role only
+	Name       string         `json:"name,omitempty"`                 // tool role only
 
 	// Metadata — stored in DB, not sent to LLMs
-	Timestamp   string `json:"timestamp,omitempty" bson:"timestamp,omitempty"`
-	TotalTokens int    `json:"total_tokens,omitempty" bson:"total_tokens,omitempty"`
-	Model       Model  `json:"model,omitempty" bson:"model,omitempty"`
+	Timestamp   string `json:"timestamp,omitempty"`
+	TotalTokens int    `json:"total_tokens,omitempty"`
+	Model       Model  `json:"model,omitempty"`
 }
 
 // TextContent returns the text of the first "text" content part.
@@ -303,16 +190,16 @@ type ModelSelected struct {
 // --- Conversation ---
 
 type Conversation struct {
-	ID            primitive.ObjectID `json:"id,omitempty" bson:"_id,omitempty"`
-	UserID        string             `json:"user_id" bson:"user_id"`
-	Messages      []Message          `json:"messages" bson:"messages"`
-	Title         string             `json:"title" bson:"title"`
-	LastMessageAt time.Time          `json:"last_message_at" bson:"last_message_at"`
-	ModelSelected ModelSelected      `json:"model_selected" bson:"model_selected"`
-	State         ConversationState  `json:"state" bson:"state"`
-	MiniApp       *MiniApp           `json:"mini_app,omitempty" bson:"mini_app"`
-	Folder        string             `json:"folder" bson:"folder"`
-	Icon          string             `json:"icon" bson:"icon"`
+	ID            string            `json:"id,omitempty"`
+	UserID        string            `json:"user_id"`
+	Messages      []Message         `json:"messages"`
+	Title         string            `json:"title"`
+	LastMessageAt time.Time         `json:"last_message_at"`
+	ModelSelected ModelSelected     `json:"model_selected"`
+	State         ConversationState `json:"state"`
+	MiniApp       *MiniApp          `json:"mini_app,omitempty"`
+	Folder        string            `json:"folder"`
+	Icon          string            `json:"icon"`
 }
 
 // --- Billing ---

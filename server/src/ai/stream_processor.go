@@ -39,7 +39,7 @@ func (sp *StreamProcessor) broadcastText(content string) {
 	sp.request.Broadcast(SSEEvent{
 		Type:           "text",
 		Content:        content,
-		ConversationID: sp.request.ConversationID.Hex(),
+		ConversationID: sp.request.ConversationID,
 		Model:          &sp.model,
 		TotalTokens:    sp.request.TokenUsage,
 		Title:          sp.conversation.Title,

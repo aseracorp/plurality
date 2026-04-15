@@ -1,15 +1,13 @@
 package ai
 
 import (
-	"go.mongodb.org/mongo-driver/bson/primitive"
-
 	"github.com/azukaar/plurality/src/utils"
 )
 
 // --- Image Generation ---
 
 type ImageGenerationRequest struct {
-	ConversationID primitive.ObjectID `json:"conversation_id"`
+	ConversationID string `json:"conversation_id"`
 	Model          string             `json:"model"`
 	Prompt         string             `json:"prompt"`
 	Width          int                `json:"width"`
@@ -28,7 +26,7 @@ type ImageGenerationResponse struct {
 // ChatPayload is the request body for POST /chat.
 // Either Messages or ToolResults should be non-empty, not both.
 type ChatPayload struct {
-	ConversationID  primitive.ObjectID           `json:"conversation_id"`
+	ConversationID  string                       `json:"conversation_id"`
 	ModelSelected   utils.ModelSelected          `json:"model_selected"`
 	Messages        []utils.Message              `json:"messages"`
 	ToolResults     []utils.Message              `json:"tool_results"`

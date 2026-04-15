@@ -42,6 +42,6 @@ func ServeAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filePath := filepath.Join(storagePath, requestedUserID, month, filename)
+	filePath := filepath.Join(storagePath, requestedUserID, "attachments", month, filename)
 	http.ServeFile(w, r, filePath)
 }

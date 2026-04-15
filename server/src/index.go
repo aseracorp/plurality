@@ -1,14 +1,17 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/azukaar/plurality/src/ai"
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/miniapps"
+	"github.com/azukaar/plurality/src/search"
 	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/user"
 	"github.com/azukaar/plurality/src/utils"
@@ -22,6 +25,8 @@ func main() {
 	// Initialize Firebase Auth
 	utils.InitFirebase()
 	db.InitDB()
+	db.InitSQLite()
+	defer db.CloseAllUserDBs()
 	storage.Init()
 
 	// Initialize LiteLLM proxy for AI provider routing
@@ -30,6 +35,9 @@ func main() {
 		log.Printf("[main] Set LITELLM_URL env var or run litellm/setup.sh to enable AI features")
 	}
 	defer ai.ShutdownLiteLLM()
+
+	// Pass LiteLLM URL to db package for async embedding generation
+	db.LiteLLMBaseURL = ai.LiteLLMBaseURL
 
 	utils.Log("[main] Starting server on :8090")
 
@@ -56,6 +64,9 @@ func main() {
 	r.HandleFunc("/transcribe", utils.AuthMiddleware(ai.HandleTranscribe)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/generate-audio", utils.AuthMiddleware(ai.HandleGenerateAudio)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/delete-user", utils.AuthMiddleware(user.API_DeleteUser)).Methods("DELETE", "OPTIONS")
+
+	// Search
+	r.HandleFunc("/search", utils.AuthMiddleware(handleSearch)).Methods("GET", "OPTIONS")
 
 	r.HandleFunc("/miniapps", utils.AuthMiddleware(miniapps.API_ListMiniApps)).Methods("GET")
 	r.HandleFunc("/miniapps/pinned", utils.AuthMiddleware(miniapps.API_GetUserPinnedMiniApps)).Methods("GET")
@@ -126,4 +137,40 @@ func main() {
 	// Start server
 	log.Printf("Server starting on port 8090...")
 	log.Fatal(http.ListenAndServe(":8090", nil))
+}
+
+func handleSearch(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		utils.SendHTTPError(w, "Missing query parameter 'q'", http.StatusBadRequest)
+		return
+	}
+
+	userID, ok := r.Context().Value("userID").(string)
+	if !ok {
+		utils.SendHTTPError(w, "User not authenticated", http.StatusUnauthorized)
+		return
+	}
+
+	userDB, err := db.GetUserDB(userID)
+	if err != nil {
+		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	limit := 20
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	results, err := search.Search(r.Context(), userDB, ai.LiteLLMBaseURL, query, limit)
+	if err != nil {
+		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
 }
