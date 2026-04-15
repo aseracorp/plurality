@@ -36,8 +36,15 @@ WORKDIR /app/server
 RUN chmod +x build.sh
 RUN ./build.sh
 
+# Stub out pyroscope-io (needs Rust/cargo to build, not needed at runtime)
+RUN mkdir -p /tmp/dummy-pyroscope && \
+    printf '[project]\nname = "pyroscope-io"\nversion = "99.0.0"\n' > /tmp/dummy-pyroscope/pyproject.toml && \
+    echo 'pyroscope-io>=99.0.0' > /tmp/pip-constraints.txt
+
 # Build LiteLLM venv inside the litellm subfolder
 RUN python3 -m venv --copies build/litellm/litellm_venv && \
+    build/litellm/litellm_venv/bin/pip install --no-cache-dir /tmp/dummy-pyroscope && \
+    PIP_CONSTRAINT=/tmp/pip-constraints.txt \
     build/litellm/litellm_venv/bin/pip install --no-cache-dir -r litellm_requirements.txt
 
 # Stage 3: Create the final image
