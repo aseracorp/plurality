@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"time"
 
@@ -130,25 +131,28 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		}
 
 		// Execute auto server-side tools
+		cancelled := false
 		for i := range serverTools {
-			select {
-			case <-ar.Ctx.Done():
-				ar.flushPartialResponse(ctx, conversation)
-				return
-			default:
-			}
-
 			tc := &serverTools[i]
 			enrichToolCallMetadata(tc)
-			ar.BroadcastStatus("tool_use", tc.Function.Name)
-			ar.Broadcast(SSEEvent{
-				Type:           "tool_use",
-				ToolCall:       tc,
-				IsServer:       true,
-				ConversationID: ar.ConversationID,
-			})
 
-			resultContent := executeServerTool(ar.Ctx, ar, *tc, payload)
+			var resultContent utils.MessageContent
+
+			select {
+			case <-ar.Ctx.Done():
+				cancelled = true
+				resultContent = utils.NewTextContent("Cancelled by user")
+			default:
+				ar.BroadcastStatus("tool_use", tc.Function.Name)
+				ar.Broadcast(SSEEvent{
+					Type:           "tool_use",
+					ToolCall:       tc,
+					IsServer:       true,
+					ConversationID: ar.ConversationID,
+				})
+
+				resultContent = executeServerTool(ar.Ctx, ar, *tc, payload)
+			}
 
 			// Extract blobs from tool result before saving
 			toolMessage := utils.Message{
@@ -158,18 +162,20 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				Name:       tc.Function.Name,
 				Timestamp:  time.Now().Format(time.RFC3339),
 			}
-			if err := storage.ExtractBlobsFromMessage(ar.UserID, &toolMessage); err != nil {
-				utils.Error("[LLMLoop] Error extracting blobs from tool result", err)
-			}
+			if !cancelled {
+				if err := storage.ExtractBlobsFromMessage(ar.UserID, &toolMessage); err != nil {
+					utils.Error("[LLMLoop] Error extracting blobs from tool result", err)
+				}
 
-			ar.Broadcast(SSEEvent{
-				Type:           "tool_result",
-				ToolCallID:     tc.ID,
-				ToolName:       tc.Function.Name,
-				ToolResult:     toolMessage.TextContent(),
-				IsServer:       true,
-				ConversationID: ar.ConversationID,
-			})
+				ar.Broadcast(SSEEvent{
+					Type:           "tool_result",
+					ToolCallID:     tc.ID,
+					ToolName:       tc.Function.Name,
+					ToolResult:     toolMessage.TextContent(),
+					IsServer:       true,
+					ConversationID: ar.ConversationID,
+				})
+			}
 
 			updatedConv, _, pushErr := db.PushMessage(ctx, conversation, toolMessage)
 			if pushErr != nil {
@@ -177,6 +183,30 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			} else {
 				conversation = updatedConv
 			}
+		}
+
+		// If cancelled, also fill in results for ask-server and client-side tools, then stop
+		if cancelled {
+			allRemaining := append(askServerTools, clientTools...)
+			for i := range allRemaining {
+				tc := &allRemaining[i]
+				toolMessage := utils.Message{
+					Role:       "tool",
+					Content:    utils.NewTextContent("Cancelled by user"),
+					ToolCallID: tc.ID,
+					Name:       tc.Function.Name,
+					Timestamp:  time.Now().Format(time.RFC3339),
+				}
+				updatedConv, _, pushErr := db.PushMessage(ctx, conversation, toolMessage)
+				if pushErr != nil {
+					utils.Error("[LLMLoop] Error saving cancelled tool result to DB", pushErr)
+				} else {
+					conversation = updatedConv
+				}
+			}
+			ar.setState(ctx, utils.StateIdle)
+			ar.BroadcastStatus("", "")
+			return
 		}
 
 		// If there are ask-server tools or client-side tools, pause and wait
@@ -255,7 +285,13 @@ func categorizeToolCalls(toolCalls []utils.ToolCall) (serverTools, clientTools [
 }
 
 // executeServerTool runs a server-side tool and handles credit deduction.
-func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.ToolCall, payload ChatPayload) utils.MessageContent {
+func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.ToolCall, payload ChatPayload) (result utils.MessageContent) {
+	defer func() {
+		if r := recover(); r != nil {
+			utils.Error(fmt.Sprintf("[LLMLoop] Tool %s panicked: %v", toolCall.Function.Name, r), nil)
+			result = utils.NewTextContent(fmt.Sprintf("Error: tool %s encountered an internal error", toolCall.Function.Name))
+		}
+	}()
 	tool, ok := ai_tools.GetTool(toolCall.Function.Name)
 	if !ok {
 		return utils.NewTextContent("Tool not found: " + toolCall.Function.Name)

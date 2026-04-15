@@ -93,31 +93,51 @@ var SearchTool = utils.AITool{
 	},
 }
 
-// Helper function to format search results
+func safeString(m map[string]interface{}, key, fallback string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return fallback
+}
+
 func formatSearchResults(results map[string]interface{}) string {
 	var formattedResults string
 
-	// Check if we have search results
 	items, ok := results["items"].([]interface{})
 	if !ok || len(items) == 0 {
 		return "No results found"
 	}
 
-	formattedResults = "### Search Results for " + results["queries"].(map[string]interface{})["request"].([]interface{})[0].(map[string]interface{})["searchTerms"].(string) + "\n\n"
+	header := "### Search Results\n\n"
+	if queries, ok := results["queries"].(map[string]interface{}); ok {
+		if request, ok := queries["request"].([]interface{}); ok && len(request) > 0 {
+			if reqMap, ok := request[0].(map[string]interface{}); ok {
+				if terms, ok := reqMap["searchTerms"].(string); ok {
+					header = "### Search Results for " + terms + "\n\n"
+				}
+			}
+		}
+	}
+	formattedResults = header
 
-	// Process the top results
 	for i, item := range items {
-		if i >= 5 { // Limit to top 5 results
+		if i >= 5 {
 			break
 		}
 
-		result := item.(map[string]interface{})
-		title := result["title"].(string)
-		link := result["link"].(string)
-		snippet := result["snippet"].(string)
+		result, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		title := safeString(result, "title", "Untitled")
+		link := safeString(result, "link", "")
+		snippet := safeString(result, "snippet", "")
 
 		formattedResults += fmt.Sprintf("**%s**\n", title)
-		formattedResults += fmt.Sprintf("%s\n", snippet)
+		if snippet != "" {
+			formattedResults += fmt.Sprintf("%s\n", snippet)
+		}
 		formattedResults += fmt.Sprintf("URL: %s\n\n", link)
 	}
 
