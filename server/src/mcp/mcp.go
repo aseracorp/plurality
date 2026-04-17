@@ -127,6 +127,7 @@ func Init() {
 			cmdPath = resolved
 		}
 
+		utils.Log("[MCP] Starting %s (%s)...", name, cmdPath)
 		pm := NewProcessManager(name, cmdPath, server.Args)
 		if err := pm.Start(); err != nil {
 			utils.Error("[MCP] Failed to start "+name, err)
@@ -135,6 +136,7 @@ func Init() {
 
 		// Initialize then list tools. Many MCP servers require "initialize"
 		// before they will accept other calls.
+		utils.Log("[MCP] %s: sending initialize...", name)
 		if _, err := pm.SendRequest("initialize", map[string]interface{}{
 			"protocolVersion": "2024-11-05",
 			"capabilities":    map[string]interface{}{},
@@ -144,6 +146,7 @@ func Init() {
 		}
 		_, _ = pm.SendRequest("notifications/initialized", nil)
 
+		utils.Log("[MCP] %s: fetching tools...", name)
 		raw, err := pm.SendRequest("tools/list", map[string]interface{}{})
 		if err != nil {
 			utils.Error("[MCP] "+name+": tools/list failed", err)

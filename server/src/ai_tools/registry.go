@@ -19,6 +19,7 @@ var Registry = map[string]utils.AITool{
 	SearchDocumentTool.ToolID:          SearchDocumentTool,
 	SearchConversationsTool.ToolID:     SearchConversationsTool,
 	RetrieveConversationTool.ToolID:    RetrieveConversationTool,
+	DebugMCPTool.ToolID:                DebugMCPTool,
 }
 
 // RegisterRetrieveServerSkill adds retrieve_server_skill to the registry.
