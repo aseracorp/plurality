@@ -42,16 +42,8 @@ WORKDIR /app/server
 RUN chmod +x build.sh
 RUN ./build.sh
 
-# Stub out pyroscope-io (needs Rust/cargo to build, not needed at runtime)
-RUN mkdir -p /tmp/dummy-pyroscope && \
-    printf '[project]\nname = "pyroscope-io"\nversion = "99.0.0"\n' > /tmp/dummy-pyroscope/pyproject.toml && \
-    echo 'pyroscope-io>=99.0.0' > /tmp/pip-constraints.txt
-
-# Build LiteLLM venv inside the litellm subfolder
-RUN python3 -m venv --copies build/litellm/litellm_venv && \
-    build/litellm/litellm_venv/bin/pip install --no-cache-dir /tmp/dummy-pyroscope && \
-    PIP_CONSTRAINT=/tmp/pip-constraints.txt \
-    build/litellm/litellm_venv/bin/pip install --no-cache-dir -r litellm_requirements.txt
+# Copy litellm requirements for installation in final stage
+RUN mkdir -p build/litellm && cp litellm_requirements.txt build/litellm/
 
 # Download Lightpanda headless browser (stateful MCP server for interactive browsing)
 RUN curl -L -o build/lightpanda https://github.com/lightpanda-io/browser/releases/download/nightly/lightpanda-x86_64-linux && \
@@ -63,17 +55,28 @@ FROM debian:bookworm-slim
 # Install runtime dependencies (Python needed for LiteLLM proxy;
 # nodejs/npm needed for npx-based MCP servers).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates python3 nodejs npm && \
+    ca-certificates python3 python3-venv python3-pip nodejs npm && \
     rm -rf /var/lib/apt/lists/*
-
-# Create a non-root user to run the app
-RUN useradd -m appuser
-USER appuser
 
 WORKDIR /app
 
 # Copy the compiled Go binary and litellm files from the builder stage
 COPY --from=go_builder /app/server/build/ /app/
+
+# Build LiteLLM venv using runtime Python (avoids glibc version mismatch)
+# Stub out pyroscope-io (needs Rust/cargo to build, not needed at runtime)
+RUN mkdir -p /tmp/dummy-pyroscope && \
+    printf '[project]\nname = "pyroscope-io"\nversion = "99.0.0"\n' > /tmp/dummy-pyroscope/pyproject.toml && \
+    echo 'pyroscope-io>=99.0.0' > /tmp/pip-constraints.txt && \
+    python3 -m venv /app/litellm/litellm_venv && \
+    /app/litellm/litellm_venv/bin/pip install --no-cache-dir /tmp/dummy-pyroscope && \
+    PIP_CONSTRAINT=/tmp/pip-constraints.txt \
+    /app/litellm/litellm_venv/bin/pip install --no-cache-dir -r /app/litellm/litellm_requirements.txt && \
+    rm -rf /tmp/dummy-pyroscope /tmp/pip-constraints.txt
+
+# Create a non-root user to run the app
+RUN useradd -m appuser
+USER appuser
 
 # Copy the Flutter web build to the static directory
 RUN mkdir -p /app/web
