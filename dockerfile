@@ -78,17 +78,16 @@ RUN mkdir -p /tmp/dummy-pyroscope && \
 RUN mkdir -p /app/web
 COPY --from=flutter_builder /app/client/build/web /app/web
 
-# Create the users-data directory for per-user SQLite DBs and attachments
-RUN mkdir -p /app/users-data
-VOLUME /app/users-data
-
-# Global server config: mcp.json + skills/
-RUN mkdir -p /app/data
-VOLUME /app/data
+# Create directories for volumes
+RUN mkdir -p /app/users-data /app/data
 
 # Create a non-root user and give ownership of /app
 RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
+
+# Declare volumes after chown (Docker discards changes after VOLUME)
+VOLUME /app/users-data
+VOLUME /app/data
 
 # Expose the port the server listens on
 EXPOSE 8090

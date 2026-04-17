@@ -15,6 +15,8 @@ import (
 
 const requestTimeout = 30 * time.Second
 
+const maxLogLines = 1000
+
 // ProcessManager runs one MCP server subprocess and speaks newline-delimited
 // JSON-RPC 2.0 over its stdio. Ported from client/lib/api/process.dart.
 type ProcessManager struct {
@@ -27,10 +29,11 @@ type ProcessManager struct {
 	stdout io.ReadCloser
 	stderr io.ReadCloser
 
-	mu      sync.Mutex
-	pending map[string]chan rpcResult
-	running bool
-	exited  chan struct{}
+	mu       sync.Mutex
+	pending  map[string]chan rpcResult
+	running  bool
+	exited   chan struct{}
+	logLines []string // circular buffer of recent stderr lines
 }
 
 type rpcResult struct {
@@ -107,6 +110,13 @@ func (p *ProcessManager) Start() error {
 	go p.watchExit()
 
 	return nil
+}
+
+// IsRunning reports whether the subprocess is still running.
+func (p *ProcessManager) IsRunning() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.running
 }
 
 // Stop kills the subprocess and fails any pending requests.
@@ -209,8 +219,29 @@ func (p *ProcessManager) readStderr() {
 	scanner := bufio.NewScanner(p.stderr)
 	scanner.Buffer(make([]byte, 1024*1024), 8*1024*1024)
 	for scanner.Scan() {
-		utils.Debug("[mcp:%s stderr] %s", p.name, scanner.Text())
+		line := scanner.Text()
+		utils.Log("[mcp:%s stderr] %s", p.name, line)
+		p.appendLog(line)
 	}
+}
+
+// appendLog adds a line to the circular log buffer.
+func (p *ProcessManager) appendLog(line string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.logLines) >= maxLogLines {
+		p.logLines = p.logLines[1:]
+	}
+	p.logLines = append(p.logLines, line)
+}
+
+// GetLogs returns a copy of the recent log lines.
+func (p *ProcessManager) GetLogs() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]string, len(p.logLines))
+	copy(out, p.logLines)
+	return out
 }
 
 func (p *ProcessManager) watchExit() {

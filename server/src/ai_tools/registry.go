@@ -92,5 +92,11 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 		requests = append(requests, RetrieveServerSkillTool.ToolRequest)
 	}
 
+	// Force-include debug_mcp whenever MCP servers exist, so the LLM can
+	// debug crashed or failing MCP processes.
+	if mcp.HasAnyServers() {
+		requests = append(requests, DebugMCPTool.ToolRequest)
+	}
+
 	return requests
 }

@@ -432,8 +432,13 @@ func getOrCreateConvProcess(conversationID, serverName string, cfg mcpServerConf
 
 	if servers, ok := convProcesses[conversationID]; ok {
 		if cp, ok := servers[serverName]; ok {
-			cp.lastUsed = time.Now()
-			return cp.pm, nil
+			// Check if process is still running; if crashed, respawn
+			if cp.pm.IsRunning() {
+				cp.lastUsed = time.Now()
+				return cp.pm, nil
+			}
+			utils.Log("[MCP] Stateful process %s/%s crashed, respawning", serverName, conversationID)
+			delete(servers, serverName)
 		}
 	}
 
@@ -501,6 +506,64 @@ func cleanupLoop() {
 		}
 		mu.Unlock()
 	}
+}
+
+// GetMCPLogs returns the recent stderr logs for an MCP process.
+// For stateful servers, uses the conversation-specific process.
+// For shared servers, uses the global process.
+func GetMCPLogs(serverName, conversationID string) string {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	// Try conversation-specific process first (stateful)
+	if servers, ok := convProcesses[conversationID]; ok {
+		if cp, ok := servers[serverName]; ok {
+			logs := cp.pm.GetLogs()
+			if len(logs) == 0 {
+				return "(no logs captured yet)"
+			}
+			return strings.Join(logs, "\n")
+		}
+	}
+
+	// Try shared process
+	if pm, ok := processes[serverName]; ok {
+		logs := pm.GetLogs()
+		if len(logs) == 0 {
+			return "(no logs captured yet)"
+		}
+		return strings.Join(logs, "\n")
+	}
+
+	return fmt.Sprintf("(no process found for %s)", serverName)
+}
+
+// ListAllMCPServers returns names of all configured MCP servers.
+func ListAllMCPServers() []string {
+	mu.RLock()
+	defer mu.RUnlock()
+	seen := map[string]bool{}
+	var out []string
+	for name := range statefulConfigs {
+		if !seen[name] {
+			out = append(out, name)
+			seen[name] = true
+		}
+	}
+	for name := range processes {
+		if !seen[name] {
+			out = append(out, name)
+			seen[name] = true
+		}
+	}
+	return out
+}
+
+// HasAnyServers returns true if any MCP servers are configured.
+func HasAnyServers() bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	return len(statefulConfigs) > 0 || len(processes) > 0
 }
 
 // defaultMCPConfig returns the default mcp.json content, including
