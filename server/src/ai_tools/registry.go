@@ -22,6 +22,7 @@ var Registry = map[string]utils.AITool{
 	DebugMCPTool.ToolID:                DebugMCPTool,
 	ManageMCPTool.ToolID:               ManageMCPTool,
 	ShellExecTool.ToolID:               ShellExecTool,
+	AptInstallTool.ToolID:              AptInstallTool,
 }
 
 // RegisterRetrieveServerSkill adds retrieve_server_skill to the registry.

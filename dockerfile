@@ -81,11 +81,7 @@ COPY --from=flutter_builder /app/client/build/web /app/web
 # Create directories for volumes
 RUN mkdir -p /app/users-data /app/data
 
-# Create a non-root user and give ownership of /app
-RUN useradd -m appuser && chown -R appuser:appuser /app
-USER appuser
-
-# Declare volumes after chown (Docker discards changes after VOLUME)
+# Declare volumes
 VOLUME /app/users-data
 VOLUME /app/data
 
