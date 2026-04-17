@@ -74,10 +74,6 @@ RUN mkdir -p /tmp/dummy-pyroscope && \
     /app/litellm/litellm_venv/bin/pip install --no-cache-dir -r /app/litellm/litellm_requirements.txt && \
     rm -rf /tmp/dummy-pyroscope /tmp/pip-constraints.txt
 
-# Create a non-root user to run the app
-RUN useradd -m appuser
-USER appuser
-
 # Copy the Flutter web build to the static directory
 RUN mkdir -p /app/web
 COPY --from=flutter_builder /app/client/build/web /app/web
@@ -89,6 +85,10 @@ VOLUME /app/users-data
 # Global server config: mcp.json + skills/
 RUN mkdir -p /app/data
 VOLUME /app/data
+
+# Create a non-root user and give ownership of /app
+RUN useradd -m appuser && chown -R appuser:appuser /app
+USER appuser
 
 # Expose the port the server listens on
 EXPOSE 8090
