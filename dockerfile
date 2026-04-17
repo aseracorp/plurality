@@ -24,17 +24,17 @@ RUN flutter build web --release
 # Stage 2: Build the Go server
 FROM golang:1.25-alpine AS go_builder
 
-# Install build dependencies (gcc/musl-dev for CGO/SQLite, sqlite-dev for sqlite3ext.h used by sqlite-vec, Python for LiteLLM venv)
-RUN apk add --no-cache bash git gcc musl-dev sqlite-dev python3 py3-pip py3-virtualenv
+# Install build dependencies (gcc/musl-dev for CGO/SQLite, Python for LiteLLM venv)
+RUN apk add --no-cache bash git gcc musl-dev python3 py3-pip py3-virtualenv
 
 # Copy the Go app source
 WORKDIR /app
 COPY server/ ./server/
 WORKDIR /app/server
 
-# Build the Go application
+# Build the Go application (build.sh sets its own CGO_CFLAGS)
 RUN chmod +x build.sh
-RUN CGO_CFLAGS="-I$(go list -m -f '{{.Dir}}' github.com/mattn/go-sqlite3)" ./build.sh
+RUN ./build.sh
 
 # Stub out pyroscope-io (needs Rust/cargo to build, not needed at runtime)
 RUN mkdir -p /tmp/dummy-pyroscope && \
