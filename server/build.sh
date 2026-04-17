@@ -14,7 +14,10 @@ echo "Building for Linux..."
 # sqlite-dev is used as a fallback.
 MATTN_DIR=$(go list -m -f '{{.Dir}}' github.com/mattn/go-sqlite3)
 SQLVEC_DIR=$(go list -m -f '{{.Dir}}' github.com/asg017/sqlite-vec-go-bindings)/cgo
-export CGO_CFLAGS="-DSQLITE_CORE -I${MATTN_DIR} -I${SQLVEC_DIR}"
+# Alias BSD-style uint types (u_int8_t etc.) to stdint equivalents; musl
+# (Alpine) doesn't provide the BSD names, so sqlite-vec.c's typedefs fail
+# without these. Valid on glibc too (macro substitution yields self-typedefs).
+export CGO_CFLAGS="-DSQLITE_CORE -Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int64_t=uint64_t -I${MATTN_DIR} -I${SQLVEC_DIR}"
 
 if ! CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags "fts5" -o build/Plurality src/index.go src/stripe.go; then
   echo "Linux build failed. Exiting..."
