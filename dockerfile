@@ -56,14 +56,16 @@ RUN curl -L -o build/lightpanda https://github.com/lightpanda-io/browser/release
     chmod +x build/lightpanda
 
 # Stage 3: Create the final image
-FROM alpine:latest
+FROM debian:bookworm-slim
 
 # Install runtime dependencies (Python needed for LiteLLM proxy;
 # nodejs/npm needed for npx-based MCP servers).
-RUN apk add --no-cache ca-certificates python3 nodejs npm gcompat
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates python3 nodejs npm && \
+    rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user to run the app
-RUN adduser -D appuser
+RUN useradd -m appuser
 USER appuser
 
 WORKDIR /app
