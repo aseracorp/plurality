@@ -60,7 +60,7 @@ FROM alpine:latest
 
 # Install runtime dependencies (Python needed for LiteLLM proxy;
 # nodejs/npm needed for npx-based MCP servers).
-RUN apk add --no-cache ca-certificates python3 nodejs npm
+RUN apk add --no-cache ca-certificates python3 nodejs npm gcompat
 
 # Create a non-root user to run the app
 RUN adduser -D appuser
