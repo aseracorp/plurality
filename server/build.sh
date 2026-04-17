@@ -11,9 +11,17 @@ echo "Building for Linux..."
 # macro for cgo). Explicitly add the sqlite-vec cgo dir to the include path —
 # on Alpine/Linux gcc doesn't reliably resolve sqlite3.h via "including file's
 # directory" when cgo builds from a temp work dir. Also include mattn/go-sqlite3.
+# Force full module extraction first — `go list -m` alone may return a dir
+# path before all files are on disk.
+go mod download github.com/mattn/go-sqlite3 github.com/asg017/sqlite-vec-go-bindings
 MATTN_DIR=$(go list -m -f '{{.Dir}}' github.com/mattn/go-sqlite3)
 SQLVEC_DIR=$(go list -m -f '{{.Dir}}' github.com/asg017/sqlite-vec-go-bindings)/cgo
+echo "DEBUG MATTN_DIR=$MATTN_DIR"
+echo "DEBUG SQLVEC_DIR=$SQLVEC_DIR"
+echo "DEBUG ls SQLVEC_DIR:"
+ls -la "$SQLVEC_DIR" || echo "ls failed"
 export CGO_CFLAGS="-DSQLITE_CORE -I${MATTN_DIR} -I${SQLVEC_DIR}"
+echo "DEBUG CGO_CFLAGS=$CGO_CFLAGS"
 
 if ! CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags "fts5" -o build/Plurality src/index.go src/stripe.go; then
   echo "Linux build failed. Exiting..."
