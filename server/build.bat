@@ -12,9 +12,11 @@ set CGO_ENABLED=1
 
 REM sqlite-vec CGO: define SQLITE_CORE so sqlite-vec uses its bundled sqlite3.h
 REM instead of sqlite3ext.h (which turns sqlite3_auto_extension into an
-REM unparseable macro for cgo). Also include mattn/go-sqlite3 dir.
+REM unparseable macro for cgo). Also include mattn/go-sqlite3 and sqlite-vec
+REM cgo dirs explicitly so sqlite3.h resolves on all platforms.
 for /f "delims=" %%i in ('go list -m -f "{{.Dir}}" github.com/mattn/go-sqlite3') do set MATTN_DIR=%%i
-set CGO_CFLAGS=-DSQLITE_CORE -I%MATTN_DIR%
+for /f "delims=" %%i in ('go list -m -f "{{.Dir}}" github.com/asg017/sqlite-vec-go-bindings') do set SQLVEC_DIR=%%i\cgo
+set CGO_CFLAGS=-DSQLITE_CORE -I%MATTN_DIR% -I%SQLVEC_DIR%
 
 go build -tags "fts5" -o build\Plurality.exe src\index.go src\stripe.go
 
