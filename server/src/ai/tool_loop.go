@@ -9,6 +9,7 @@ import (
 
 	"github.com/azukaar/plurality/src/ai_tools"
 	"github.com/azukaar/plurality/src/db"
+	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/utils"
 )
@@ -271,20 +272,26 @@ func enrichToolCallMetadata(tc *utils.ToolCall) {
 	}
 }
 
-// categorizeToolCalls splits tool calls into server-side (in registry) and client-side.
+// categorizeToolCalls splits tool calls into server-side (builtin registry or
+// server-side MCP) and client-side.
 func categorizeToolCalls(toolCalls []utils.ToolCall) (serverTools, clientTools []utils.ToolCall) {
 	for _, tc := range toolCalls {
-		_, isServerTool := ai_tools.GetTool(tc.Function.Name)
-		if isServerTool {
+		if _, isBuiltin := ai_tools.GetTool(tc.Function.Name); isBuiltin {
 			serverTools = append(serverTools, tc)
-		} else {
-			clientTools = append(clientTools, tc)
+			continue
 		}
+		if mcp.IsMCPTool(tc.Function.Name) {
+			serverTools = append(serverTools, tc)
+			continue
+		}
+		clientTools = append(clientTools, tc)
 	}
 	return
 }
 
 // executeServerTool runs a server-side tool and handles credit deduction.
+// Server-side MCP tools are dispatched through mcp.CallTool; builtin tools
+// come from ai_tools.Registry.
 func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.ToolCall, payload ChatPayload) (result utils.MessageContent) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -294,6 +301,14 @@ func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.To
 	}()
 	tool, ok := ai_tools.GetTool(toolCall.Function.Name)
 	if !ok {
+		// Not a builtin — check MCP.
+		if mcp.IsMCPTool(toolCall.Function.Name) {
+			args := toolCall.Function.Arguments
+			if args == "" {
+				args = "{}"
+			}
+			return mcp.CallTool(ctx, toolCall.Function.Name, args, ar.ConversationID)
+		}
 		return utils.NewTextContent("Tool not found: " + toolCall.Function.Name)
 	}
 

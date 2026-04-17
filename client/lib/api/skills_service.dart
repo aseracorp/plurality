@@ -45,25 +45,28 @@ class SkillsService {
           final skillFile = File(path.join(entity.path, 'SKILL.md'));
 
           if (await skillFile.exists()) {
-            String description = skillName;
-            try {
-              final content = await skillFile.readAsString();
-              final firstLine = content.split('\n').first.trim();
-              if (firstLine.isNotEmpty) {
-                // Strip leading markdown heading markers
-                description = firstLine.replaceFirst(RegExp(r'^#+\s*'), '');
-              }
-            } catch (_) {}
-
             _skills.add(SkillInfo(
               name: skillName,
-              description: description,
+              description: await _readMetaDescription(entity.path),
               path: entity.path,
             ));
           }
         }
       }
     }
+  }
+
+  Future<String> _readMetaDescription(String skillPath) async {
+    try {
+      final meta = File(path.join(skillPath, 'meta.json'));
+      if (!await meta.exists()) return '';
+      final content = await meta.readAsString();
+      final decoded = jsonDecode(content);
+      if (decoded is Map && decoded['description'] is String) {
+        return (decoded['description'] as String).trim();
+      }
+    } catch (_) {}
+    return '';
   }
 
   List<SkillInfo> getSkillList() {

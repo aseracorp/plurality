@@ -334,40 +334,15 @@ class ModelSelectedAdapter extends TypeAdapter<ModelSelected> {
       for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
     };
     return ModelSelected(
-      text: fields[0] == null ? modelPresentFastText : fields[0] as Model?,
-      vision: fields[1] == null ? modelPresentFastVision : fields[1] as Model?,
-      imageGen:
-          fields[2] == null ? modelPresentFastImageGen : fields[2] as Model?,
-      audioGen:
-          fields[5] == null
-              ? const Model(
-                name: 'cartesia/sonic',
-                params: {"voice": "sweet lady"},
-              )
-              : fields[5] as Model?,
-      voiceGen:
-          fields[4] == null
-              ? const Model(name: '', params: {})
-              : fields[4] as Model?,
-      audioTranscribe:
-          fields[3] == null
-              ? const Model(name: '', params: {})
-              : fields[3] as Model?,
-      videoGen:
-          fields[6] == null
-              ? const Model(name: '', params: {})
-              : fields[6] as Model?,
-      videoVision:
-          fields[7] == null
-              ? const Model(name: '', params: {})
-              : fields[7] as Model?,
-      code:
-          fields[8] == null
-              ? const Model(
-                name: 'codellama/CodeLlama-34b-Instruct-hf',
-                params: {},
-              )
-              : fields[8] as Model?,
+      text: fields[0] as Model?,
+      vision: fields[1] as Model?,
+      imageGen: fields[2] as Model?,
+      audioGen: fields[5] as Model?,
+      voiceGen: fields[4] as Model?,
+      audioTranscribe: fields[3] as Model?,
+      videoGen: fields[6] as Model?,
+      videoVision: fields[7] as Model?,
+      code: fields[8] as Model?,
     );
   }
 

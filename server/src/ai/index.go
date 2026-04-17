@@ -14,6 +14,8 @@ import (
 
 	"github.com/azukaar/plurality/src/ai_tools"
 	"github.com/azukaar/plurality/src/db"
+	"github.com/azukaar/plurality/src/mcp"
+	"github.com/azukaar/plurality/src/skills"
 	"github.com/azukaar/plurality/src/utils"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -56,9 +58,21 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 
 	if len(payload.AvailableSkills) > 0 {
 		skillsList := strings.Join(payload.AvailableSkills, ", ")
-		systemPrompt += "\n\nYou have access to the following skills: " + skillsList +
+		systemPrompt += "\n\nYou have access to the following local skills: " + skillsList +
 			". When a user's request matches one of these skills, use the retrieve_skill tool to load the skill's instructions before responding. " +
 			"Call retrieve_skill with the skill_name parameter. You can optionally specify a file_name to retrieve a specific file from the skill folder (defaults to SKILL.md)."
+	}
+
+	if serverSkillNames := skills.Names(); len(serverSkillNames) > 0 {
+		serverSkillsList := strings.Join(serverSkillNames, ", ")
+		systemPrompt += "\n\nYou have access to the following server-shared skills: " + serverSkillsList +
+			". When a user's request matches one of these skills, use the retrieve_server_skill tool to load the skill's instructions before responding. " +
+			"Call retrieve_server_skill with the skill_name parameter. You can optionally specify a file_name to retrieve a specific file from the skill folder (defaults to SKILL.md)."
+	}
+
+	// Append MCP server descriptions configured in mcp.json.
+	for serverName, desc := range mcp.ServerDescriptions() {
+		systemPrompt += "\n\n[" + serverName + "] " + desc
 	}
 
 	if !LiteLLMReady() {

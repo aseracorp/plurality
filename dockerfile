@@ -47,11 +47,16 @@ RUN python3 -m venv --copies build/litellm/litellm_venv && \
     PIP_CONSTRAINT=/tmp/pip-constraints.txt \
     build/litellm/litellm_venv/bin/pip install --no-cache-dir -r litellm_requirements.txt
 
+# Download Lightpanda headless browser (stateful MCP server for interactive browsing)
+RUN curl -L -o build/lightpanda https://github.com/lightpanda-io/browser/releases/download/nightly/lightpanda-x86_64-linux && \
+    chmod +x build/lightpanda
+
 # Stage 3: Create the final image
 FROM alpine:latest
 
-# Install runtime dependencies (Python needed for LiteLLM proxy)
-RUN apk add --no-cache ca-certificates python3
+# Install runtime dependencies (Python needed for LiteLLM proxy;
+# nodejs/npm needed for npx-based MCP servers).
+RUN apk add --no-cache ca-certificates python3 nodejs npm
 
 # Create a non-root user to run the app
 RUN adduser -D appuser
@@ -69,6 +74,10 @@ COPY --from=flutter_builder /app/client/build/web /app/web
 # Create the users-data directory for per-user SQLite DBs and attachments
 RUN mkdir -p /app/users-data
 VOLUME /app/users-data
+
+# Global server config: mcp.json + skills/
+RUN mkdir -p /app/data
+VOLUME /app/data
 
 # Expose the port the server listens on
 EXPOSE 8090

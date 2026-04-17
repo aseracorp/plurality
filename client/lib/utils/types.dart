@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'package:hive_ce/hive.dart';
 import 'package:plurality/api/mini-apps.dart';
-import 'package:plurality/chat/message-list/model-picker.dart';
 part 'types.g.dart';
 
 // --- Helpers ---
@@ -534,21 +533,15 @@ class ModelSelected {
   final Model? code;
 
   const ModelSelected({
-    this.text = modelPresentFastText,
-    this.vision = modelPresentFastVision,
-    this.imageGen = modelPresentFastImageGen,
-    this.audioGen = const Model(
-      name: 'cartesia/sonic',
-      params: {"voice": "sweet lady"},
-    ),
-    this.voiceGen = const Model(name: '', params: {}),
-    this.audioTranscribe = const Model(name: '', params: {}),
-    this.videoGen = const Model(name: '', params: {}),
-    this.videoVision = const Model(name: '', params: {}),
-    this.code = const Model(
-      name: 'codellama/CodeLlama-34b-Instruct-hf',
-      params: {},
-    ),
+    this.text,
+    this.vision,
+    this.imageGen,
+    this.audioGen,
+    this.voiceGen,
+    this.audioTranscribe,
+    this.videoGen,
+    this.videoVision,
+    this.code,
   });
 
   Map<String, dynamic> toJson() => {

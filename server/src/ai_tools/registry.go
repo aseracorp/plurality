@@ -3,6 +3,8 @@ package ai_tools
 import (
 	"strings"
 
+	"github.com/azukaar/plurality/src/mcp"
+	"github.com/azukaar/plurality/src/skills"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -17,6 +19,12 @@ var Registry = map[string]utils.AITool{
 	SearchDocumentTool.ToolID:          SearchDocumentTool,
 	SearchConversationsTool.ToolID:     SearchConversationsTool,
 	RetrieveConversationTool.ToolID:    RetrieveConversationTool,
+}
+
+// RegisterRetrieveServerSkill adds retrieve_server_skill to the registry.
+// Called from main after skills.Init(), only when at least one skill exists.
+func RegisterRetrieveServerSkill() {
+	Registry[RetrieveServerSkillTool.ToolID] = RetrieveServerSkillTool
 }
 
 func RegisterTool(tool utils.AITool) {
@@ -40,8 +48,20 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 		if tool.ToolID == ConversationAttachmentsTool.ToolID || tool.ToolID == ReadDocumentTool.ToolID || tool.ToolID == SearchDocumentTool.ToolID {
 			continue // handled separately below
 		}
+		if tool.ToolID == RetrieveServerSkillTool.ToolID {
+			continue // force-included below when skills exist
+		}
 		if _, ok := selected[tool.ToolID]; ok {
 			requests = append(requests, tool.ToolRequest)
+		}
+	}
+
+	// Server-side MCP tools (from data/mcp.json). Name collisions with
+	// ClientSideTools are resolved in the tool loop's categorizer — here
+	// we just advertise whatever is selected in model.Tools.
+	for _, mcpReq := range mcp.ToolsRequests() {
+		if _, ok := selected[mcpReq.Function.Name]; ok {
+			requests = append(requests, mcpReq)
 		}
 	}
 
@@ -63,6 +83,13 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 	if hasDocumentAttachments {
 		requests = append(requests, ReadDocumentTool.ToolRequest)
 		requests = append(requests, SearchDocumentTool.ToolRequest)
+	}
+
+	// Force-include retrieve_server_skill whenever the server has skills,
+	// so the LLM can always reach them even if the user didn't explicitly
+	// toggle the builtin in the picker.
+	if skills.HasAny() {
+		requests = append(requests, RetrieveServerSkillTool.ToolRequest)
 	}
 
 	return requests

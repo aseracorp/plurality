@@ -14,8 +14,15 @@ import 'package:path/path.dart' as path;
 
 class MCPServerManager {
   final Map<String, ProcessManager> _servers = {};
+  final Map<String, MCPServer> _statefulConfigs = {};
+  final Map<String, Map<String, ProcessManager>> _convServers = {};
 
   Future<bool> startServer(MCPServer server) async {
+    if (server.stateful) {
+      _statefulConfigs[server.name] = server;
+      return true;
+    }
+
     if (_servers.containsKey(server.name)) {
       return false;
     }
@@ -34,18 +41,64 @@ class MCPServerManager {
     return success;
   }
 
+  /// Returns true if [serverName] is a stateful MCP server.
+  bool isStateful(String serverName) => _statefulConfigs.containsKey(serverName);
+
+  /// Get or create a per-conversation process for a stateful MCP server.
+  Future<ProcessManager> _getConversationServer(
+    String conversationId,
+    String serverName,
+  ) async {
+    _convServers[conversationId] ??= {};
+    if (_convServers[conversationId]!.containsKey(serverName)) {
+      return _convServers[conversationId]![serverName]!;
+    }
+
+    final config = _statefulConfigs[serverName]!;
+    final pm = ProcessManager(
+      command: config.command,
+      name: serverName,
+      args: config.args,
+    );
+    final success = await pm.start();
+    if (!success) {
+      throw Exception('Failed to start stateful MCP server $serverName');
+    }
+
+    // MCP initialize handshake.
+    await pm.sendRequest('initialize', {
+      'protocolVersion': '2024-11-05',
+      'capabilities': {},
+      'clientInfo': {'name': 'plurality-client', 'version': '1.0'},
+    });
+    try {
+      await pm.sendRequest('notifications/initialized', {});
+    } catch (_) {}
+
+    _convServers[conversationId]![serverName] = pm;
+    return pm;
+  }
+
   Future<dynamic> sendRequest(
     String serverName,
     String method, [
     dynamic params,
+    String? conversationId,
   ]) async {
     if (params == null) {
       params = {};
     }
 
     print(
-      "MCPServerManager: sendRequest() called with serverName: $serverName, method: $method, params: $params",
+      "MCPServerManager: sendRequest() called with serverName: $serverName, method: $method",
     );
+
+    // Route stateful servers to per-conversation processes.
+    if (_statefulConfigs.containsKey(serverName) && conversationId != null) {
+      final pm = await _getConversationServer(conversationId, serverName);
+      return pm.sendRequest(method, params);
+    }
+
     final server = _servers[serverName];
     if (server == null) {
       throw Exception("Server '$serverName' is not running");
@@ -65,13 +118,31 @@ class MCPServerManager {
     }
   }
 
+  /// Stop all stateful MCP processes for a conversation.
+  Future<void> stopConversation(String conversationId) async {
+    final servers = _convServers.remove(conversationId);
+    if (servers != null) {
+      for (final pm in servers.values) {
+        await pm.stop();
+      }
+    }
+  }
+
   Future<void> stopAll() async {
     final servers = List<ProcessManager>.from(_servers.values);
     _servers.clear();
+    _statefulConfigs.clear();
 
     for (final server in servers) {
       await server.stop();
     }
+
+    for (final convMap in _convServers.values) {
+      for (final pm in convMap.values) {
+        await pm.stop();
+      }
+    }
+    _convServers.clear();
   }
 }
 
@@ -79,9 +150,11 @@ class MCPServer {
   String command;
   String name;
   List<String> args;
+  bool stateful;
+  String description;
   String toolList = "";
 
-  MCPServer({required this.command, required this.name, required this.args});
+  MCPServer({required this.command, required this.name, required this.args, this.stateful = false, this.description = ''});
 }
 
 class MCPService {
@@ -133,56 +206,89 @@ class MCPService {
           final server = entry.value;
           final command = server['command'] ?? '';
           final args = List<String>.from(server['args'] ?? []);
+          final stateful = server['stateful'] == true;
+          final description = server['description'] as String? ?? '';
 
           if (command.isEmpty || name.isEmpty) {
             print('Invalid server entry: $server');
             continue;
           }
 
-          print("adding server: $name, command: $command, args: $args");
+          print("adding server: $name, command: $command, args: $args, stateful: $stateful");
 
-          // add to list of servers
           MCPServer mcpServer = MCPServer(
             command: command,
             name: name,
             args: args,
+            stateful: stateful,
+            description: description,
           );
-          // do something with mcpServer
 
           mcpServers[name] = mcpServer;
 
-          // start server
-          final success = await serverManager.startServer(mcpServer);
-
-          if (success) {
-            print('Server $name started successfully.');
-          } else {
-            print('Failed to start server $name.');
+          // For stateful servers we start a temporary process just for tool
+          // discovery, then stop it. Per-conversation processes are spawned
+          // lazily by MCPServerManager.
+          ProcessManager? discoveryPm;
+          if (stateful) {
+            discoveryPm = ProcessManager(command: command, name: name, args: args);
+            final ok = await discoveryPm.start();
+            if (!ok) {
+              print('Failed to start discovery process for stateful server $name.');
+              continue;
+            }
+            try {
+              await discoveryPm.sendRequest('initialize', {
+                'protocolVersion': '2024-11-05',
+                'capabilities': {},
+                'clientInfo': {'name': 'plurality-client', 'version': '1.0'},
+              });
+              await discoveryPm.sendRequest('notifications/initialized', {});
+            } catch (_) {}
           }
 
-          // Send tools/list
-          final response =
-              await serverManager.sendRequest(name, 'tools/list')
-                  as Map<String, dynamic>?;
+          // Register with the manager (stateful configs are stored, not started).
+          final success = await serverManager.startServer(mcpServer);
+          if (!stateful && !success) {
+            print('Failed to start server $name.');
+            continue;
+          }
 
-          if (response != null) {
-            var t = response['tools'] ?? [];
-            // for each tool replace inputSchema with Parameters
-            for (var i = 0; i < t.length; i++) {
-              var tool = t[i];
-              if (tool['inputSchema'] != null) {
-                var inputSchema = tool['inputSchema'];
-                if (inputSchema is Map<String, dynamic>) {
-                  tool['parameters'] = inputSchema;
-                  tool.remove('inputSchema'); // Use remove instead of delete
-                }
-              }
-              toolServerNames[tool["name"]] = name;
+          // Discover tools via tools/list.
+          try {
+            Map<String, dynamic>? response;
+            if (stateful && discoveryPm != null) {
+              response = await discoveryPm.sendRequest('tools/list', {})
+                  as Map<String, dynamic>?;
+            } else {
+              response = await serverManager.sendRequest(name, 'tools/list')
+                  as Map<String, dynamic>?;
             }
 
-            toolLists.addAll(t);
-          } else {
-            print('No response from $name.');
+            if (response != null) {
+              var t = response['tools'] ?? [];
+              for (var i = 0; i < t.length; i++) {
+                var tool = t[i];
+                if (tool['inputSchema'] != null) {
+                  var inputSchema = tool['inputSchema'];
+                  if (inputSchema is Map<String, dynamic>) {
+                    tool['parameters'] = inputSchema;
+                    tool.remove('inputSchema');
+                  }
+                }
+                toolServerNames[tool["name"]] = name;
+              }
+              toolLists.addAll(t);
+            } else {
+              print('No response from $name.');
+            }
+          } catch (e) {
+            print('Tool discovery failed for $name: $e');
+          }
+
+          // Stop the temporary discovery process for stateful servers.
+          if (stateful && discoveryPm != null) {
+            await discoveryPm.stop();
           }
         }
 
@@ -208,5 +314,21 @@ class MCPService {
     return toolLists
         .where((tool) => toolServerNames[tool["name"]] == serverName)
         .toList();
+  }
+
+  /// Returns the user-configured description for a server, or empty string.
+  String getServerDescription(String serverName) {
+    return mcpServers[serverName]?.description ?? '';
+  }
+
+  /// Returns all server descriptions keyed by server name.
+  Map<String, String> getServerDescriptions() {
+    final out = <String, String>{};
+    for (final entry in mcpServers.entries) {
+      if (entry.value.description.isNotEmpty) {
+        out[entry.key] = entry.value.description;
+      }
+    }
+    return out;
   }
 }

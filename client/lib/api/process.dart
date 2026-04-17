@@ -15,6 +15,7 @@ class ProcessManager {
   final _uuid = Uuid();
   final _processOutput = StreamController<String>.broadcast();
   bool _isRunning = false;
+  bool _isClosed = false;
 
   Stream<String> get outputStream => _processOutput.stream;
   bool get isRunning => _isRunning;
@@ -56,13 +57,16 @@ class ProcessManager {
       _process!.stdout
           .transform(utf8.decoder)
           .transform(const LineSplitter())
-          .listen(_handleProcessOutput);
+          .listen((line) {
+            if (!_isClosed) _handleProcessOutput(line);
+          });
 
       // Handle stderr
       _process!.stderr
           .transform(utf8.decoder)
           .transform(const LineSplitter())
           .listen((line) {
+            if (_isClosed) return;
             print("ERROR: [$name] $line");
             _processOutput.add("ERROR: $line");
           });
@@ -71,7 +75,9 @@ class ProcessManager {
       _process!.exitCode.then((exitCode) {
         _isRunning = false;
         print("Process $name exited with code $exitCode");
-        _processOutput.add("Process exited with code $exitCode");
+        if (!_isClosed) {
+          _processOutput.add("Process exited with code $exitCode");
+        }
 
         // Complete any pending requests with an error
         for (final entry in _responseCompleters.entries) {
@@ -128,6 +134,7 @@ class ProcessManager {
 
   /// Handles each line of output from the process
   void _handleProcessOutput(String line) {
+    if (_isClosed) return;
     _processOutput.add(line);
 
     try {
@@ -177,6 +184,9 @@ class ProcessManager {
 
   /// Stops the process
   Future<void> stop() async {
+    _isRunning = false;
+    _isClosed = true;
+
     if (_process != null) {
       try {
         _process!.kill();
@@ -185,7 +195,6 @@ class ProcessManager {
       }
     }
 
-    _isRunning = false;
     await _processOutput.close();
   }
 }

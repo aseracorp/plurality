@@ -20,7 +20,6 @@ import 'package:top_snackbar_flutter/top_snack_bar.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'image.dart';
 import 'input.dart';
-import 'model-picker.dart';
 import '../../utils/index.dart';
 import '../../utils/file-types.dart';
 import '../../api/stt.dart';
@@ -213,10 +212,6 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
   // Extract the model selection logic to a separate method
   void _updateSelectedModel() {
-    final balanceState = ref.read(balanceProvider);
-    final balance = balanceState.value;
-    final isFree = balance?.planName == 'Free';
-
     final conversationsState = ref.read(conversationsProvider);
     final preferences = ref.read(preferencesProvider);
 
@@ -231,14 +226,11 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       _modelSelected = matches.first.modelSelected;
       _miniAppSelected = matches.first.miniApp;
     } else {
-      // Fall back to the globally selected model from preferences
+      // Fall back to the globally selected model from preferences.
+      // Free-plan users get the Fast preset auto-applied the first time the
+      // model picker opens (see _checkAndSetDefaultModels in model-picker.dart).
       _modelSelected = preferences.selectedModel;
       _miniAppSelected = null;
-
-      // if free plan, set model to free plan
-      if (isFree) {
-        _modelSelected = ModelSelectionModalState.getFastPreset();
-      }
     }
   }
 

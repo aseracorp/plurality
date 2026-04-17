@@ -2,12 +2,14 @@
 - Knowledge base
 - Shared memory "skill"
 - Agents (sub conversations as conversatiosn)
+- code tools
 - browser tools 
 - emails tools 
-- code tools
 - ??
 
 - embedding dont cost tokens 
+
+- when error move prompt back to input 
 
 - Redesign the app using an oled black design (or white in light mode) and the gradient (238, 70, 84) > (245, 194, 86) in a subtle but relevant manner (ex. buttons and stuff but not entire messages) also the Title instead of a "Start a new Conversation" should be "Plurality AI" with Plurality in white, and AI using the gradient described earlier
 

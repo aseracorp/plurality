@@ -16,6 +16,7 @@ import 'package:pasteboard/pasteboard.dart';
 import '../../utils/types.dart';
 import '../../utils/file-types.dart';
 import '../../api/stt.dart';
+import '../../api/models_service.dart';
 import './model-picker.dart';
 
 class InputBox extends StatefulWidget {
@@ -82,6 +83,10 @@ class _InputBoxState extends State<InputBox> {
     super.initState();
     _speech = stt.SpeechToText();
     widget.messageController.addListener(_onTextChanged);
+    // Prime the models cache so SummarizeSelectedModel's vision check has data.
+    ModelsService().get().then((_) {
+      if (mounted) setState(() {});
+    }).catchError((_) {});
     if (SpeechRecognitionService().isCall) {
       _call(resuming: true);
     }
@@ -230,7 +235,7 @@ class _InputBoxState extends State<InputBox> {
   }
 
   String SummarizeSelectedModel(ModelSelected selectedModel) {
-    var ValidVisionModels = VisionModelOptions;
+    final ValidVisionModels = ModelsService().cached?.visionModelIds ?? const <String>[];
 
     String res = "";
     if (selectedModel.text != null) {

@@ -9,9 +9,12 @@ import (
 	"strconv"
 
 	"github.com/azukaar/plurality/src/ai"
+	"github.com/azukaar/plurality/src/ai_tools"
 	"github.com/azukaar/plurality/src/db"
+	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/miniapps"
 	"github.com/azukaar/plurality/src/search"
+	"github.com/azukaar/plurality/src/skills"
 	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/user"
 	"github.com/azukaar/plurality/src/utils"
@@ -28,6 +31,16 @@ func main() {
 	db.InitSQLite()
 	defer db.CloseAllUserDBs()
 	storage.Init()
+
+	// Load global server-side skills from data/skills/
+	skills.Init()
+	if skills.HasAny() {
+		ai_tools.RegisterRetrieveServerSkill()
+	}
+
+	// Start MCP servers configured in data/mcp.json
+	mcp.Init()
+	defer mcp.Shutdown()
 
 	// Initialize LiteLLM proxy for AI provider routing
 	if err := ai.InitLiteLLM(); err != nil {
@@ -47,6 +60,9 @@ func main() {
 	r.HandleFunc("/v1/chat/completions", utils.AuthMiddleware(ai.HandleOpenAIChatCompletion)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/models", utils.AuthMiddleware(ai.HandleOpenAIListModels)).Methods("GET", "OPTIONS")
 	r.HandleFunc("/v1/tools", utils.AuthMiddleware(ai.HandleListServerTools)).Methods("GET", "OPTIONS")
+
+	// Plurality rich models endpoint: OpenAI-list-compatible with embedded presets + function metadata.
+	r.HandleFunc("/models", utils.AuthMiddleware(ai.HandleListModels)).Methods("GET", "OPTIONS")
 
 	// Plurality chat (stateful, with conversation tracking and server-side tool loop)
 	r.HandleFunc("/chat", utils.AuthMiddleware(ai.HandleChat)).Methods("POST", "OPTIONS")
