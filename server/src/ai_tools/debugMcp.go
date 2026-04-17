@@ -64,7 +64,7 @@ func execDebugMCP(_ context.Context, input string, conv utils.Conversation) util
 		if params.Server == "" {
 			return utils.NewTextContent("Error: 'server' parameter is required for 'logs' mode.")
 		}
-		logs := mcp.GetMCPLogs(params.Server, conv.ConversationID)
+		logs := mcp.GetMCPLogs(params.Server, conv.ID)
 		return utils.NewTextContent(fmt.Sprintf("Logs for %s:\n%s", params.Server, logs))
 
 	default:
