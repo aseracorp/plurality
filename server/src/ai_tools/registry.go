@@ -20,6 +20,8 @@ var Registry = map[string]utils.AITool{
 	SearchConversationsTool.ToolID:     SearchConversationsTool,
 	RetrieveConversationTool.ToolID:    RetrieveConversationTool,
 	DebugMCPTool.ToolID:                DebugMCPTool,
+	ManageMCPTool.ToolID:               ManageMCPTool,
+	ShellExecTool.ToolID:               ShellExecTool,
 }
 
 // RegisterRetrieveServerSkill adds retrieve_server_skill to the registry.
@@ -91,12 +93,6 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 	// toggle the builtin in the picker.
 	if skills.HasAny() {
 		requests = append(requests, RetrieveServerSkillTool.ToolRequest)
-	}
-
-	// Force-include debug_mcp whenever MCP servers exist, so the LLM can
-	// debug crashed or failing MCP processes.
-	if mcp.HasAnyServers() {
-		requests = append(requests, DebugMCPTool.ToolRequest)
 	}
 
 	return requests

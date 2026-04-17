@@ -1,3 +1,7 @@
+- WHY ARE TOOLS HARDCODED IN THE API_models.go file ???
+
+
+
 - files tools 
 - Knowledge base
 - Shared memory "skill"

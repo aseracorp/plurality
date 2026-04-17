@@ -193,9 +193,13 @@ func (p *ProcessManager) readStdout() {
 		}
 		var resp rpcResponse
 		if err := json.Unmarshal(line, &resp); err != nil {
+			// Not valid JSON-RPC, log it as output
+			p.appendLog("[stdout] " + string(line))
 			continue
 		}
 		if resp.ID == "" {
+			// Notification or malformed response, log it
+			p.appendLog("[stdout] " + string(line))
 			continue
 		}
 		p.mu.Lock()
@@ -205,6 +209,8 @@ func (p *ProcessManager) readStdout() {
 		}
 		p.mu.Unlock()
 		if !ok {
+			// Response for unknown request, log it
+			p.appendLog("[stdout] " + string(line))
 			continue
 		}
 		if resp.Error != nil {
@@ -221,7 +227,7 @@ func (p *ProcessManager) readStderr() {
 	for scanner.Scan() {
 		line := scanner.Text()
 		utils.Log("[mcp:%s stderr] %s", p.name, line)
-		p.appendLog(line)
+		p.appendLog("[stderr] " + line)
 	}
 }
 

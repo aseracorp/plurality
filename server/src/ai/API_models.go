@@ -121,10 +121,14 @@ var BuiltinFunctions = []FunctionDef{
 	{Key: "generate_image", Label: "Image Generation", Description: "Generate images from text descriptions", Default: "on"},
 	{Key: "search_conversations", Label: "Search Conversations", Description: "Search past conversations by topic", Default: "on", Parent: "conversations"},
 	{Key: "retrieve_conversation", Label: "Retrieve Conversation", Description: "Retrieve messages from a past conversation", Default: "on", Parent: "conversations"},
+	{Key: "manage_mcp", Label: "Manage MCP", Description: "Read and edit MCP server configuration", Default: "ask", Parent: "mcp_capabilities"},
+	{Key: "debug_mcp", Label: "Debug MCP", Description: "View MCP server logs for debugging", Default: "ask", Parent: "mcp_capabilities"},
+	{Key: "shell_exec", Label: "Shell Execute", Description: "Execute shell commands on the server", Default: "ask", Parent: "mcp_capabilities"},
 }
 
 var BuiltinFunctionBundles = map[string]FunctionBundle{
-	"conversations": {Key: "conversations", Label: "Search Conversations", Description: "Search and retrieve past conversations"},
+	"conversations":    {Key: "conversations", Label: "Search Conversations", Description: "Search and retrieve past conversations"},
+	"mcp_capabilities": {Key: "mcp_capabilities", Label: "MCP Capabilities", Description: "Manage and debug MCP server integrations"},
 }
 
 // Model capability sets. These are the source of truth for what each model
