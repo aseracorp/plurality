@@ -22,14 +22,16 @@ RUN flutter pub get
 RUN flutter build web --release
 
 # Stage 2: Build the Go server
-FROM golang:1.25-alpine AS go_builder
+FROM golang:1.25 AS go_builder
 
-# Install build dependencies. sqlite-dev provides /usr/include/sqlite3.h, which
+# Install build dependencies. libsqlite3-dev provides /usr/include/sqlite3.h, which
 # sqlite-vec-go-bindings@v0.1.7-alpha.2 needs at CGO compile time — the Go
 # module zip served by proxy.golang.org does not include sqlite3.h (only
 # lib.go, sqlite-vec.c, sqlite-vec.h), so the system header is used as a
 # fallback. mattn/go-sqlite3 still provides the actual sqlite implementation.
-RUN apk add --no-cache bash curl git gcc musl-dev sqlite-dev python3 py3-pip py3-virtualenv
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash curl git gcc libc6-dev libsqlite3-dev python3 python3-pip python3-venv && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy the Go app source
 WORKDIR /app
