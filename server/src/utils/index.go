@@ -131,7 +131,7 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 		
 		// Check if the email is verified
-		emailVerified, _, err := CheckEmailVerified(idToken)
+		emailVerified, email, err := CheckEmailVerified(idToken)
 		if err != nil {
 			Error("Error checking email verification", err)
 			http.Error(w, "Error checking email verification: "+err.Error(), http.StatusInternalServerError)
@@ -141,6 +141,13 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		if !emailVerified {
 			Error("Email is not verified", nil)
 			http.Error(w, "Email is not verified", 412)
+			return
+		}
+
+		// TEMPORARY: restrict access to a single allowed email
+		if email != "azukaar@gmail.com" {
+			Error("Access restricted", nil, email)
+			http.Error(w, "Access restricted", http.StatusForbidden)
 			return
 		}
 

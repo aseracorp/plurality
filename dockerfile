@@ -84,6 +84,7 @@ RUN mkdir -p /app/users-data /app/data
 # Declare volumes
 VOLUME /app/users-data
 VOLUME /app/data
+VOLUME /root
 
 # Expose the port the server listens on
 EXPOSE 8090

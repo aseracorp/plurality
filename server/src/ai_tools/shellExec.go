@@ -80,7 +80,7 @@ func execShellExec(ctx context.Context, input string, conv utils.Conversation) u
 	// Set timeout
 	timeoutCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	cmd.WaitDelay = 60 * time.Second
+	cmd.WaitDelay = 60 * 5 * time.Second
 
 	// Run command
 	startTime := time.Now()
