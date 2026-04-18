@@ -70,18 +70,18 @@ type ModelsResponse struct {
 }
 
 var defaultSearchTools = map[string]string{
-	"search_web":            "true",
-	"place_search":          "true",
-	"visit_link":            "true",
-	"generate_image":        "true",
-	"search_conversations":  "true",
-	"retrieve_conversation": "true",
+	"search_web":                          "true",
+	"place_search":                        "true",
+	"visit_link":                          "true",
+	"generate_image":                      "true",
+	"conversations__search_conversations":  "true",
+	"conversations__retrieve_conversation": "true",
 }
 
 var defaultVisionTools = map[string]string{
-	"generate_image":        "true",
-	"search_conversations":  "true",
-	"retrieve_conversation": "true",
+	"generate_image":                      "true",
+	"conversations__search_conversations":  "true",
+	"conversations__retrieve_conversation": "true",
 }
 
 // Presets ordered by Order.
@@ -113,18 +113,20 @@ var Presets = []PresetConfig{
 }
 
 // BuiltinFunctions are the server-provided tool toggles shown in the modal.
+// Bundled tools use namespaced keys (bundle__tool) matching the names sent to
+// the LLM. Standalone tools keep bare keys.
 var BuiltinFunctions = []FunctionDef{
 	{Key: "search_web", Label: "Search Web", Description: "Search sites via Google", Default: "on"},
 	{Key: "place_search", Label: "Place Search", Description: "Search locations via Google Maps", Default: "on"},
 	{Key: "visit_link", Label: "Visit Link", Description: "Visit websites shared in the chat", Default: "on"},
 	{Key: "roll_dice", Label: "Roll Dice", Description: "Well... rolls a dice", Default: "on"},
 	{Key: "generate_image", Label: "Image Generation", Description: "Generate images from text descriptions", Default: "on"},
-	{Key: "search_conversations", Label: "Search Conversations", Description: "Search past conversations by topic", Default: "on", Parent: "conversations"},
-	{Key: "retrieve_conversation", Label: "Retrieve Conversation", Description: "Retrieve messages from a past conversation", Default: "on", Parent: "conversations"},
-	{Key: "manage_mcp", Label: "Manage MCP", Description: "Read and edit MCP server configuration", Default: "ask", Parent: "mcp_capabilities"},
-	{Key: "debug_mcp", Label: "Debug MCP", Description: "View MCP server logs for debugging", Default: "ask", Parent: "mcp_capabilities"},
-	{Key: "shell_exec", Label: "Shell Execute", Description: "Execute shell commands on the server", Default: "ask", Parent: "system_tools"},
-	{Key: "apt_install", Label: "Apt Install", Description: "Install system packages via apt-get", Default: "ask", Parent: "system_tools"},
+	{Key: "conversations__search_conversations", Label: "Search Conversations", Description: "Search past conversations by topic", Default: "on", Parent: "conversations"},
+	{Key: "conversations__retrieve_conversation", Label: "Retrieve Conversation", Description: "Retrieve messages from a past conversation", Default: "on", Parent: "conversations"},
+	{Key: "mcp_capabilities__manage_mcp", Label: "Manage MCP", Description: "Read and edit MCP server configuration", Default: "ask", Parent: "mcp_capabilities"},
+	{Key: "mcp_capabilities__debug_mcp", Label: "Debug MCP", Description: "View MCP server logs for debugging", Default: "ask", Parent: "mcp_capabilities"},
+	{Key: "system_tools__shell_exec", Label: "Shell Execute", Description: "Execute shell commands on the server", Default: "ask", Parent: "system_tools"},
+	{Key: "system_tools__apt_install", Label: "Apt Install", Description: "Install system packages via apt-get", Default: "ask", Parent: "system_tools"},
 }
 
 var BuiltinFunctionBundles = map[string]FunctionBundle{
@@ -215,7 +217,7 @@ func HandleListModels(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, t := range mcpTools {
 			functions = append(functions, FunctionDef{
-				Key:         t.Name,
+				Key:         t.NamespacedName(),
 				Label:       t.Name,
 				Description: truncate(firstLine(t.Description), 100),
 				Default:     "on",
@@ -244,7 +246,7 @@ func HandleListModels(w http.ResponseWriter, r *http.Request) {
 			for _, modelPtr := range []*utils.Model{presets[i].Models.Text, presets[i].Models.Vision} {
 				if modelPtr != nil && modelPtr.Tools != nil {
 					for _, t := range mcpTools {
-						modelPtr.Tools[t.Name] = "true"
+						modelPtr.Tools[t.NamespacedName()] = "true"
 					}
 				}
 			}

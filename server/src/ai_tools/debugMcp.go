@@ -15,6 +15,7 @@ var DebugMCPTool = utils.AITool{
 	Name:        "Debug MCP",
 	Description: "Debug MCP server processes",
 	ToolID:      "debug_mcp",
+	BundleName:  "mcp_capabilities",
 	Cost:        0,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",

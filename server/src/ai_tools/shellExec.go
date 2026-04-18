@@ -18,6 +18,7 @@ var ShellExecTool = utils.AITool{
 	Name:        "Shell Execute",
 	Description: "Execute shell commands",
 	ToolID:      "shell_exec",
+	BundleName:  "system_tools",
 	Cost:        0,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",

@@ -1,6 +1,7 @@
 package ai_tools
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/azukaar/plurality/src/mcp"
@@ -37,7 +38,15 @@ func RegisterTool(tool utils.AITool) {
 
 func GetTool(toolID string) (utils.AITool, bool) {
 	tool, ok := Registry[toolID]
-	return tool, ok
+	if ok {
+		return tool, true
+	}
+	// Strip namespace prefix for bundled builtins (e.g. "conversations__search_conversations" → "search_conversations").
+	if idx := strings.Index(toolID, mcp.NamespaceSeparator); idx >= 0 {
+		tool, ok = Registry[toolID[idx+len(mcp.NamespaceSeparator):]]
+		return tool, ok
+	}
+	return utils.AITool{}, false
 }
 
 func ShouldStripResponse(content string) bool {
@@ -55,20 +64,34 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 		if tool.ToolID == RetrieveServerSkillTool.ToolID {
 			continue // force-included below when skills exist
 		}
-		if _, ok := selected[tool.ToolID]; ok {
-			requests = append(requests, tool.ToolRequest)
+
+		// Build the selection key: namespaced for bundled tools, bare for standalone.
+		selKey := tool.ToolID
+		if tool.BundleName != "" {
+			selKey = tool.BundleName + mcp.NamespaceSeparator + tool.ToolID
+		}
+
+		if _, ok := selected[selKey]; ok {
+			req := tool.ToolRequest
+			if tool.BundleName != "" {
+				// Emit the namespaced name and enriched description to the LLM.
+				req.Function.Name = selKey
+				req.Function.Description = fmt.Sprintf("[%s] %s", tool.BundleName, req.Function.Description)
+			}
+			requests = append(requests, req)
 		}
 	}
 
-	// Server-side MCP tools (from data/mcp.json). Name collisions with
-	// ClientSideTools are resolved in the tool loop's categorizer — here
-	// we just advertise whatever is selected in model.Tools.
+	// Server-side MCP tools (from data/mcp.json). Names are already
+	// namespaced (serverName__toolName) by mcp.ToolsRequests().
 	for _, mcpReq := range mcp.ToolsRequests() {
 		if _, ok := selected[mcpReq.Function.Name]; ok {
 			requests = append(requests, mcpReq)
 		}
 	}
 
+	// Client-side tools (MCP tools from Flutter, skills). MCP tools arrive
+	// already namespaced from the client.
 	for _, tool := range ClientSideTools {
 		if _, ok := selected[tool.Name]; ok {
 			requests = append(requests, utils.ToolsRequest{

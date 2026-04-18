@@ -276,7 +276,10 @@ class MCPService {
                     tool.remove('inputSchema');
                   }
                 }
-                toolServerNames[tool["name"]] = name;
+                final nsName = '${name}__${tool["name"]}';
+              toolServerNames[nsName] = name;
+              tool["name"] = nsName;
+              tool["description"] = "[MCP server: $name] ${tool["description"] ?? ''}";
               }
               toolLists.addAll(t);
             } else {
@@ -306,8 +309,17 @@ class MCPService {
     return List<Map<String, dynamic>>.from(toolLists);
   }
 
+  /// Returns the server name for a (namespaced) tool name.
   String? getToolServerName(String toolName) {
     return toolServerNames[toolName];
+  }
+
+  /// Strips the namespace prefix from a namespaced tool name,
+  /// returning the bare name the MCP process expects.
+  static String bareToolName(String toolName) {
+    final idx = toolName.indexOf('__');
+    if (idx < 0) return toolName;
+    return toolName.substring(idx + 2);
   }
 
   getToolsForServer(String serverName) {

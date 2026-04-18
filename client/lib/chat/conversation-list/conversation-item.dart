@@ -9,6 +9,7 @@ import '../../api/service.dart';
 import '../../api/chat_service.dart';
 import '../../api/tts.dart';
 import '../../utils/types.dart';
+import '../../utils/index.dart' show formatToolDisplayName;
 import '../../utils/image_loader.dart';
 import '../../auth/account.dart';
 import '../budget.dart';
@@ -21,7 +22,7 @@ String _getToolDisplayName(String toolName) {
     // Strip {{placeholders}} since we don't have args here
     return meta['loading']!.replaceAll(RegExp(r'\{\{.*?\}\}'), '...').replaceAll('  ', ' ').trim();
   }
-  return toolName;
+  return formatToolDisplayName(toolName);
 }
 
 class ConversationItem extends StatelessWidget {

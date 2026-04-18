@@ -267,6 +267,7 @@ type AITool struct {
 	Name          string              `json:"name" bson:"name"`
 	Description   string              `json:"description" bson:"description"`
 	ToolID        string              `json:"tool_id" bson:"tool_id"`
+	BundleName    string              `json:"bundle_name,omitempty" bson:"bundle_name,omitempty"`
 	ToolRequest   ToolsRequest        `json:"tool_call" bson:"tool_call"`
 	LoadingString string              `json:"loading_string" bson:"loading_string"`
 	IconURL       string              `json:"icon_url" bson:"icon_url"`

@@ -566,7 +566,7 @@ class ChatService {
         final response = await _mcp.serverManager.sendRequest(
           serverName,
           'tools/call',
-          {'name': toolCall.function.name, 'arguments': args},
+          {'name': MCPService.bareToolName(toolCall.function.name), 'arguments': args},
           conversationId,
         );
 
@@ -662,7 +662,7 @@ class ChatService {
             );
             final response = await _mcp.serverManager.sendRequest(
               serverName, 'tools/call',
-              {'name': toolCall.function.name, 'arguments': args},
+              {'name': MCPService.bareToolName(toolCall.function.name), 'arguments': args},
               conversationId,
             );
             clientResults.add(Message.toolResult(

@@ -6,6 +6,7 @@ import '../snackbar.dart';
 import 'package:flutter/material.dart';
 import 'dart:convert';
 import '../../utils/types.dart';
+import '../../utils/index.dart' show formatToolDisplayName;
 import '../../api/api.dart';
 import '../../api/service.dart';
 import '../../api/chat_service.dart';
@@ -1314,7 +1315,7 @@ class _ToolApprovalBannerState extends State<ToolApprovalBanner> {
 
   String _displayLabel(ToolCall tc) {
     final enriched = widget.enrichToolCall(tc);
-    String label = enriched.loading.isNotEmpty ? enriched.loading : enriched.function.name;
+    String label = enriched.loading.isNotEmpty ? enriched.loading : formatToolDisplayName(enriched.function.name);
     try {
       final args = Map<String, dynamic>.from(jsonDecode(tc.function.arguments));
       args.forEach((key, value) {

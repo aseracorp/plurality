@@ -13,6 +13,7 @@ import (
 
 	"github.com/azukaar/plurality/src/ai_tools"
 	"github.com/azukaar/plurality/src/db"
+	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/utils"
 )
@@ -223,22 +224,23 @@ func HandleApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Process each server-side tool approval
+	// Process each server-side tool approval (MCP checked first, then builtins).
 	for _, approval := range payload.Approvals {
 		var toolMessage utils.Message
 		if approval.Approved {
-			tool, ok := ai_tools.GetTool(approval.ToolName)
-			if !ok {
+			args := approval.Arguments
+			if args == "" {
+				args = "{}"
+			}
+
+			if mcp.IsMCPTool(approval.ToolName) {
+				resultContent := mcp.CallTool(r.Context(), approval.ToolName, args, conversationID)
 				toolMessage = utils.Message{
-					Role: "tool", Content: utils.NewTextContent("Tool not found: " + approval.ToolName),
+					Role: "tool", Content: resultContent,
 					ToolCallID: approval.ToolCallID, Name: approval.ToolName,
 					Timestamp: time.Now().Format(time.RFC3339),
 				}
-			} else {
-				args := approval.Arguments
-				if args == "" {
-					args = "{}"
-				}
+			} else if tool, ok := ai_tools.GetTool(approval.ToolName); ok {
 				if tool.CostFunc != nil {
 					price, action := tool.CostFunc(args)
 					db.RemoveCredits(r.Context(), price, action)
@@ -248,6 +250,12 @@ func HandleApprove(w http.ResponseWriter, r *http.Request) {
 				resultContent := tool.Exec(r.Context(), args, *conversation)
 				toolMessage = utils.Message{
 					Role: "tool", Content: resultContent,
+					ToolCallID: approval.ToolCallID, Name: approval.ToolName,
+					Timestamp: time.Now().Format(time.RFC3339),
+				}
+			} else {
+				toolMessage = utils.Message{
+					Role: "tool", Content: utils.NewTextContent("Tool not found: " + approval.ToolName),
 					ToolCallID: approval.ToolCallID, Name: approval.ToolName,
 					Timestamp: time.Now().Format(time.RFC3339),
 				}

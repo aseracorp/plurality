@@ -14,12 +14,35 @@ import (
 	"github.com/azukaar/plurality/src/utils"
 )
 
+// NamespaceSeparator is used to build namespaced tool names: "server__tool".
+const NamespaceSeparator = "__"
+
+// NamespacedToolName returns "serverName__toolName".
+func NamespacedToolName(serverName, toolName string) string {
+	return serverName + NamespaceSeparator + toolName
+}
+
+// ParseNamespacedTool splits "serverName__toolName" into (serverName, toolName, true).
+// Returns ("", name, false) for bare names with no namespace.
+func ParseNamespacedTool(name string) (serverName, toolName string, ok bool) {
+	idx := strings.Index(name, NamespaceSeparator)
+	if idx < 0 {
+		return "", name, false
+	}
+	return name[:idx], name[idx+len(NamespaceSeparator):], true
+}
+
 // ToolInfo describes a single MCP tool, discovered via tools/list.
 type ToolInfo struct {
-	Name        string          // tool name as advertised by the MCP server
+	Name        string          // bare tool name as advertised by the MCP server
 	Description string
 	ServerName  string          // which mcp.json server it lives on
 	InputSchema json.RawMessage // original MCP inputSchema (JSON object)
+}
+
+// NamespacedName returns the "serverName__toolName" form.
+func (t ToolInfo) NamespacedName() string {
+	return NamespacedToolName(t.ServerName, t.Name)
 }
 
 type mcpServerConfig struct {
@@ -171,7 +194,8 @@ func Init() {
 			if t.Name == "" {
 				continue
 			}
-			tools[t.Name] = ToolInfo{
+			nsName := NamespacedToolName(name, t.Name)
+			tools[nsName] = ToolInfo{
 				Name:        t.Name,
 				Description: t.Description,
 				ServerName:  name,
@@ -277,8 +301,8 @@ func ServerDescriptions() map[string]string {
 	return out
 }
 
-// IsMCPTool reports whether the given tool name belongs to a configured
-// MCP server.
+// IsMCPTool reports whether the given (namespaced) tool name belongs to a
+// configured MCP server.
 func IsMCPTool(toolName string) bool {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -286,17 +310,19 @@ func IsMCPTool(toolName string) bool {
 	return ok
 }
 
-// ToolsRequests returns OpenAI-format tool definitions for all MCP tools.
+// ToolsRequests returns OpenAI-format tool definitions for all MCP tools,
+// using namespaced names (serverName__toolName) and enriched descriptions.
 func ToolsRequests() []utils.ToolsRequest {
 	mu.RLock()
 	defer mu.RUnlock()
 	out := make([]utils.ToolsRequest, 0, len(tools))
-	for _, t := range tools {
+	for nsName, t := range tools {
+		desc := fmt.Sprintf("[MCP server: %s] %s", t.ServerName, t.Description)
 		out = append(out, utils.ToolsRequest{
 			Type: "function",
 			Function: utils.FunctionToolsRequest{
-				Name:        t.Name,
-				Description: t.Description,
+				Name:        nsName,
+				Description: desc,
 				Parameters:  schemaToParameters(t.InputSchema),
 			},
 		})
@@ -349,8 +375,8 @@ func schemaToParameters(raw json.RawMessage) *utils.ParameterToolsRequest {
 }
 
 // CallTool dispatches a tools/call request to the MCP server that owns
-// toolName and returns the flattened text content. For stateful servers
-// the conversationID is used to route to a per-conversation process.
+// toolName (namespaced) and returns the flattened text content. For stateful
+// servers the conversationID is used to route to a per-conversation process.
 func CallTool(ctx context.Context, toolName, argsJSON, conversationID string) utils.MessageContent {
 	mu.RLock()
 	info, ok := tools[toolName]
@@ -374,8 +400,9 @@ func CallTool(ctx context.Context, toolName, argsJSON, conversationID string) ut
 		return utils.NewTextContent(fmt.Sprintf("Error: invalid arguments for %s: %v", toolName, err))
 	}
 
+	// Send the BARE tool name to the MCP process (it doesn't know about namespacing).
 	raw, callErr := pm.SendRequest("tools/call", map[string]interface{}{
-		"name":      toolName,
+		"name":      info.Name,
 		"arguments": args,
 	})
 	if callErr != nil {

@@ -15,6 +15,7 @@ var ManageMCPTool = utils.AITool{
 	Name:        "Manage MCP",
 	Description: "Read and edit MCP server configuration",
 	ToolID:      "manage_mcp",
+	BundleName:  "mcp_capabilities",
 	Cost:        0,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",

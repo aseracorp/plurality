@@ -14,6 +14,7 @@ var SearchConversationsTool = utils.AITool{
 	Name:        "Search Conversations",
 	Description: "Search past conversations by topic or keyword",
 	ToolID:      "search_conversations",
+	BundleName:  "conversations",
 	Cost:        50,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
@@ -67,6 +68,7 @@ var RetrieveConversationTool = utils.AITool{
 	Name:        "Retrieve Conversation",
 	Description: "Retrieve messages from a specific past conversation",
 	ToolID:      "retrieve_conversation",
+	BundleName:  "conversations",
 	Cost:        0,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../utils/types.dart';
+import '../../utils/index.dart' show formatToolDisplayName;
 import 'dart:convert';
 
 class ToolCallBadge extends StatelessWidget {
@@ -20,7 +21,7 @@ class ToolCallBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     String loadingString = toolCall.loading.isNotEmpty
         ? toolCall.loading
-        : toolCall.function.name;
+        : formatToolDisplayName(toolCall.function.name);
 
     // Substitute {{placeholders}} with actual argument values
     try {
@@ -81,7 +82,7 @@ class ToolCallBadge extends StatelessWidget {
             // Tool display text
             Flexible(
               child: Text(
-                loadingString.isEmpty ? toolCall.function.name : loadingString,
+                loadingString.isEmpty ? formatToolDisplayName(toolCall.function.name) : loadingString,
                 overflow: TextOverflow.ellipsis,
                 maxLines: 1,
                 style: TextStyle(
@@ -146,7 +147,7 @@ class ToolCallBadge extends StatelessWidget {
                       iconSize: 20,
                     ),
                     Text(
-                      toolCall.function.name,
+                      formatToolDisplayName(toolCall.function.name),
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(width: 28),
@@ -167,7 +168,7 @@ class ToolCallBadge extends StatelessWidget {
                 padding: const EdgeInsets.all(16.0),
                 child: SingleChildScrollView(
                   child: SelectableText(
-                    "Tool: ${toolCall.function.name}\n"
+                    "Tool: ${formatToolDisplayName(toolCall.function.name)}\n"
                     "Arguments: ${toolCall.function.arguments}\n"
                     "------------------\n"
                     "${result?.text ?? '(pending...)'}",

@@ -17,6 +17,7 @@ var AptInstallTool = utils.AITool{
 	Name:        "Apt Install",
 	Description: "Install packages via apt",
 	ToolID:      "apt_install",
+	BundleName:  "system_tools",
 	Cost:        0,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",

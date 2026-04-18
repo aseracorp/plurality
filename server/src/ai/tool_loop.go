@@ -272,15 +272,17 @@ func enrichToolCallMetadata(tc *utils.ToolCall) {
 	}
 }
 
-// categorizeToolCalls splits tool calls into server-side (builtin registry or
-// server-side MCP) and client-side.
+// categorizeToolCalls splits tool calls into server-side (server-side MCP or
+// builtin registry) and client-side. MCP is checked first so that a namespaced
+// MCP tool (e.g. "foo__search_web") is not mistakenly matched to a builtin
+// with the same bare name.
 func categorizeToolCalls(toolCalls []utils.ToolCall) (serverTools, clientTools []utils.ToolCall) {
 	for _, tc := range toolCalls {
-		if _, isBuiltin := ai_tools.GetTool(tc.Function.Name); isBuiltin {
+		if mcp.IsMCPTool(tc.Function.Name) {
 			serverTools = append(serverTools, tc)
 			continue
 		}
-		if mcp.IsMCPTool(tc.Function.Name) {
+		if _, isBuiltin := ai_tools.GetTool(tc.Function.Name); isBuiltin {
 			serverTools = append(serverTools, tc)
 			continue
 		}
@@ -290,8 +292,8 @@ func categorizeToolCalls(toolCalls []utils.ToolCall) (serverTools, clientTools [
 }
 
 // executeServerTool runs a server-side tool and handles credit deduction.
-// Server-side MCP tools are dispatched through mcp.CallTool; builtin tools
-// come from ai_tools.Registry.
+// MCP tools are checked first (so namespaced MCP names don't collide with
+// builtins); builtin tools come from ai_tools.Registry.
 func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.ToolCall, payload ChatPayload) (result utils.MessageContent) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -299,16 +301,19 @@ func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.To
 			result = utils.NewTextContent(fmt.Sprintf("Error: tool %s encountered an internal error", toolCall.Function.Name))
 		}
 	}()
+
+	// Check MCP first — namespaced names must match exactly before we
+	// try stripping the namespace for a builtin lookup.
+	if mcp.IsMCPTool(toolCall.Function.Name) {
+		args := toolCall.Function.Arguments
+		if args == "" {
+			args = "{}"
+		}
+		return mcp.CallTool(ctx, toolCall.Function.Name, args, ar.ConversationID)
+	}
+
 	tool, ok := ai_tools.GetTool(toolCall.Function.Name)
 	if !ok {
-		// Not a builtin — check MCP.
-		if mcp.IsMCPTool(toolCall.Function.Name) {
-			args := toolCall.Function.Arguments
-			if args == "" {
-				args = "{}"
-			}
-			return mcp.CallTool(ctx, toolCall.Function.Name, args, ar.ConversationID)
-		}
 		return utils.NewTextContent("Tool not found: " + toolCall.Function.Name)
 	}
 

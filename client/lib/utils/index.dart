@@ -7,6 +7,14 @@ import '../api/stub_reload_helper.dart'
     // import the web-specific implementation instead.
     if (dart.library.html) '../api/web_reload_helper.dart';
 
+/// Formats a namespaced tool name for display: "server__navigate" → "server(navigate)".
+/// Non-namespaced names are returned as-is.
+String formatToolDisplayName(String name) {
+  final idx = name.indexOf('__');
+  if (idx < 0) return name;
+  return '${name.substring(0, idx)}(${name.substring(idx + 2)})';
+}
+
 String sanitizeMessages(String message) {
   return message.replaceAll(
     RegExp(
