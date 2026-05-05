@@ -95,10 +95,12 @@ func execShellExec(ctx context.Context, input string, conv utils.Conversation) u
 		done <- cmd.Wait()
 	}()
 
+	timedOut := false
 	select {
 	case <-timeoutCtx.Done():
+		timedOut = true
 		cmd.Process.Kill()
-		return utils.NewTextContent("Error: command timed out after 60 seconds")
+		<-done
 	case err = <-done:
 	}
 
@@ -111,7 +113,11 @@ func execShellExec(ctx context.Context, input string, conv utils.Conversation) u
 		result.WriteString(fmt.Sprintf("Working directory: %s\n", params.Pwd))
 	}
 	result.WriteString(fmt.Sprintf("Duration: %s\n", duration.Round(time.Millisecond)))
-	result.WriteString(fmt.Sprintf("Exit code: %d\n", cmd.ProcessState.ExitCode()))
+	if timedOut {
+		result.WriteString("Status: TIMED OUT after 60 seconds (process killed, partial output below)\n")
+	} else {
+		result.WriteString(fmt.Sprintf("Exit code: %d\n", cmd.ProcessState.ExitCode()))
+	}
 	result.WriteString("\n--- STDOUT ---\n")
 	if stdout.Len() > 0 {
 		// Limit output to prevent huge responses
@@ -134,7 +140,7 @@ func execShellExec(ctx context.Context, input string, conv utils.Conversation) u
 		result.WriteString("(empty)")
 	}
 
-	if err != nil {
+	if err != nil && !timedOut {
 		result.WriteString(fmt.Sprintf("\n\nError: %s", err.Error()))
 	}
 

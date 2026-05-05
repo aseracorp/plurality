@@ -1,17 +1,23 @@
 # 2
+- let app select server URL !
+- tool to request extenal AI (ex. promote a request or something) - keep cost down
+- let app select server URL !
+- tool to request extenal AI (ex. promote a request or something) - keep cost down
 - Per-user everything: using a map of linux user > plurality user 
   - docker ?
 - Per-user MCP
-- basic CRON (disables client tools)
-- tool to request extenal AI (ex. promote a request or something) - keep cost down
-- "always allow this tool"
 - Agents (sub conversations as conversatiosn)
   - select sub of tools + models for each 
   - add message to another chat (agent restarting another chat)
-- Knowledge base
-- attachment cleanup ?
+- basic CRON (disables client tools)
 
 #3
+- Trim conversation to avoid errorrs (max token size)
+- Trim tool calls to avoid pulution on playwright for ex.
+- let "web visit" save to file 
+- Knowledge base
+- "always allow this tool"
+- attachment cleanup ?
 - transfer client / server as file tool
 - code tools
 - client side command 
