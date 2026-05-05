@@ -45,18 +45,20 @@ RUN ./build.sh
 # Copy litellm requirements for installation in final stage
 RUN mkdir -p build/litellm && cp litellm_requirements.txt build/litellm/
 
-# Download Lightpanda headless browser (stateful MCP server for interactive browsing)
-RUN curl -L -o build/lightpanda https://github.com/lightpanda-io/browser/releases/download/nightly/lightpanda-x86_64-linux && \
-    chmod +x build/lightpanda
-
 # Stage 3: Create the final image
 FROM debian:bookworm-slim
 
 # Install runtime dependencies (Python needed for LiteLLM proxy;
 # nodejs/npm needed for npx-based MCP servers).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates python3 python3-venv python3-pip nodejs npm && \
+    ca-certificates curl python3 python3-venv python3-pip nodejs npm && \
     rm -rf /var/lib/apt/lists/*
+
+# Pre-install Playwright MCP server and its Chromium browser with system deps.
+# Doing this at build time avoids a multi-hundred-MB download on first MCP call.
+RUN npm install -g @playwright/mcp@latest playwright && \
+    npx --yes playwright install --with-deps chromium && \
+    npm cache clean --force
 
 WORKDIR /app
 

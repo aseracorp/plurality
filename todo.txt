@@ -1,12 +1,7 @@
-# 1 
-- files tools 
-  - missing: save attachment / load attachment (attach file to convo)
-
 # 2
 - Per-user everything: using a map of linux user > plurality user 
   - docker ?
 - Per-user MCP
-- remove lightpanda, add playwright
 - basic CRON (disables client tools)
 - tool to request extenal AI (ex. promote a request or something) - keep cost down
 - "always allow this tool"

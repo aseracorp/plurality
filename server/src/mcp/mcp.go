@@ -597,17 +597,16 @@ func HasAnyServers() bool {
 }
 
 // defaultMCPConfig returns the default mcp.json content, including
-// Lightpanda if the binary is found on the system.
+// Playwright for headless browser automation.
 func defaultMCPConfig() string {
 	cfg := map[string]interface{}{
 		"mcpServers": map[string]interface{}{
-			// TODO: replace with Playwright
-			// "lightpanda": map[string]interface{}{
-			// 	"command":     "/app/lightpanda",
-			// 	"args":        []string{"mcp"},
-			// 	"stateful":    true,
-			// 	"description": "Lightpanda headless browser for interactive web browsing with JavaScript support. Only use for heavier web tasks requiring JS rendering, form interaction, or dynamic content. For simple page fetching, prefer the visit_link tool instead.",
-			// },
+			"playwright": map[string]interface{}{
+				"command":     "npx",
+				"args":        []string{"@playwright/mcp", "--headless"},
+				"stateful":    true,
+				"description": "Playwright headless browser for interactive web browsing with JavaScript support. Only use for heavier web tasks requiring JS rendering, form interaction, or dynamic content. For simple page fetching, prefer the visit_link tool instead.",
+			},
 		},
 	}
 	b, _ := json.MarshalIndent(cfg, "", "  ")
