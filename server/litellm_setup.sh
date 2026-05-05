@@ -30,5 +30,5 @@ if [ -z "$DOCKER_BUILD" ]; then
     echo ""
     echo "To start LiteLLM locally:"
     echo "  source $VENV_DIR/bin/activate"
-    echo "  litellm --config $SCRIPT_DIR/litellm_config.yaml --port 4000 --host 127.0.0.1"
+    echo "  litellm --config $SCRIPT_DIR/../data/litellm_config.yaml --port 4000 --host 127.0.0.1"
 fi

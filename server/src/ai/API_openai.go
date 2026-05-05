@@ -104,11 +104,16 @@ func HandleListServerTools(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleOpenAIListModels returns available models in OpenAI format.
+// Sourced from the litellm-driven registry; see ModelRegistry.
 func HandleOpenAIListModels(w http.ResponseWriter, r *http.Request) {
-	var models []OpenAIModelEntry
-	for _, name := range ValidModels {
+	entries := Models.All()
+	models := make([]OpenAIModelEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.Mode == "embedding" {
+			continue
+		}
 		models = append(models, OpenAIModelEntry{
-			ID:      name,
+			ID:      e.Name,
 			Object:  "model",
 			OwnedBy: "plurality",
 		})
@@ -142,7 +147,7 @@ func HandleOpenAIChatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !CheckModel(req.Model) {
+	if !Models.IsKnown(req.Model) {
 		utils.Error("[OpenAI] Unknown model", nil, req.Model)
 		http.Error(w, `{"error":{"message":"Unknown model"}}`, http.StatusBadRequest)
 		return

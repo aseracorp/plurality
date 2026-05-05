@@ -8,7 +8,6 @@
   },
   "model_selected": {
     "text": {
-      "name": "Claude/claude-3-7-sonnet",
       "tools": {
         "place_search": "true",
         "search_web": "true",

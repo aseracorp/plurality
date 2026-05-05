@@ -10,7 +10,6 @@ class ModelInfo {
   final bool vision;
   final bool imageGen;
   final bool audio;
-  final bool free;
 
   ModelInfo({
     required this.id,
@@ -18,7 +17,6 @@ class ModelInfo {
     this.vision = false,
     this.imageGen = false,
     this.audio = false,
-    this.free = false,
   });
 
   factory ModelInfo.fromJson(Map<String, dynamic> json) => ModelInfo(
@@ -27,7 +25,6 @@ class ModelInfo {
         vision: json['vision'] == true,
         imageGen: json['image_gen'] == true,
         audio: json['audio'] == true,
-        free: json['free'] == true,
       );
 }
 

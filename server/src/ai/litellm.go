@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -160,20 +159,19 @@ func watchProcess() {
 	}
 }
 
+// findConfigPath resolves litellm_config.yaml under data/, matching the
+// dataDir() convention used by auth/skills/miniapps. The DATA_DIR env var
+// takes precedence; otherwise we look in <exeDir>/data.
 func findConfigPath() string {
-	exeDir := filepath.Dir(os.Args[0])
-	candidates := []string{
-		"litellm_config.yaml",
-		"litellm/litellm_config.yaml",
-		"../litellm_config.yaml",
-		filepath.Join(exeDir, "litellm_config.yaml"),
-		filepath.Join(exeDir, "litellm", "litellm_config.yaml"),
+	data := os.Getenv("DATA_DIR")
+	if data == "" {
+		exeDir := filepath.Dir(os.Args[0])
+		data = filepath.Join(exeDir, "data")
 	}
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			abs, _ := filepath.Abs(p)
-			return abs
-		}
+	p := filepath.Join(data, "litellm_config.yaml")
+	if _, err := os.Stat(p); err == nil {
+		abs, _ := filepath.Abs(p)
+		return abs
 	}
 	return ""
 }
@@ -223,16 +221,4 @@ func findPythonBin() string {
 	return "python"
 }
 
-// liteLLMModelName strips the provider prefix from internal model names
-// so they match the LiteLLM config model_name entries.
-// e.g. "ChatGPT/gpt-5" -> "gpt-5", "Claude/claude-sonnet-4-6" -> "claude-sonnet-4-6"
-func liteLLMModelName(name string) string {
-	prefixes := []string{"ChatGPT/", "Claude/", "Gemini/"}
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(name, prefix) {
-			return strings.TrimPrefix(name, prefix)
-		}
-	}
-	return name
-}
 

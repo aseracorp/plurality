@@ -48,8 +48,8 @@ func HandleGenerateAudio(w http.ResponseWriter, r *http.Request) {
 		request.Speed = "1.0" // Default speed
 	}
 
-	if !CheckModel(request.Model) {
-		utils.Error("[HandleGenerateAudio] Unknown model %s", nil, request.Model)
+	if !Models.IsAudioModel(request.Model) {
+		utils.Error("[HandleGenerateAudio] Unknown audio model %s", nil, request.Model)
 		utils.SendHTTPError(w, "Unknown model", http.StatusBadRequest)
 		return
 	}
@@ -91,10 +91,10 @@ func HandleGenerateAudio(w http.ResponseWriter, r *http.Request) {
 }
 
 func StreamGenerateAudio(ctx context.Context, w http.ResponseWriter, input string, model string, voice string, responseFormat string, speed string) error {
-	// Define the API endpoint
-	apiURL := "https://api.together.ai/v1/audio/generations"
+	if !LiteLLMReady() {
+		return fmt.Errorf("AI proxy is not ready")
+	}
 
-	// Create the request body
 	requestBody := map[string]interface{}{
 		"input":           input,
 		"model":           model,
@@ -104,21 +104,19 @@ func StreamGenerateAudio(ctx context.Context, w http.ResponseWriter, input strin
 		"sample_rate":     44100,
 	}
 
-	// Convert request body to JSON
 	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
 		return fmt.Errorf("error marshaling request body: %v", err)
 	}
 
-	// Create the HTTP request
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewBuffer(jsonData))
+	// Route through the litellm proxy. The upstream URL and API key live in
+	// litellm_config.yaml under the model's model_info.endpoint_url.
+	req, err := http.NewRequestWithContext(ctx, "POST", LiteLLMBaseURL+"/v1/audio/speech", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("error creating request: %v", err)
 	}
 
-	// Set headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+os.Getenv("TOGETHER_API_KEY"))
 
 	// Create a client with timeout
 	client := &http.Client{

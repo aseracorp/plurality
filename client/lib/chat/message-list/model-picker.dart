@@ -218,15 +218,56 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     });
   }
 
+  /// A preset's per-field name is optional. An empty/missing name acts as a
+  /// wildcard against the current selection, matching whatever the user
+  /// already has chosen for that field.
+  static bool _presetNameMatches(String? presetName, String currentName) =>
+      presetName == null || presetName.isEmpty || presetName == currentName;
+
   String _getSelectedPresetName(List<PresetConfig> presets) {
     for (final preset in presets) {
-      if (preset.models.text?.name == _selectedModel &&
-          preset.models.vision?.name == _selectedVisionModel &&
-          preset.models.imageGen?.name == _selectedImageGenModel) {
+      if (_presetNameMatches(preset.models.text?.name, _selectedModel) &&
+          _presetNameMatches(preset.models.vision?.name, _selectedVisionModel) &&
+          _presetNameMatches(preset.models.imageGen?.name, _selectedImageGenModel)) {
         return preset.name;
       }
     }
     return '';
+  }
+
+  /// Merge a preset onto the current ModelSelected.
+  /// - A null per-field model means "preset doesn't touch this field" → keep current.
+  /// - An empty/missing name on a per-field model means "keep currently selected model".
+  /// - Tools are additive: per-key entries from the preset override the current
+  ///   value for that key, but other current entries are preserved.
+  static ModelSelected _mergePresetOnto(ModelSelected preset, ModelSelected current) {
+    return ModelSelected(
+      text: _mergeModel(preset.text, current.text),
+      vision: _mergeModel(preset.vision, current.vision),
+      imageGen: _mergeModel(preset.imageGen, current.imageGen),
+      audioGen: _mergeModel(preset.audioGen, current.audioGen),
+      voiceGen: _mergeModel(preset.voiceGen, current.voiceGen),
+      audioTranscribe: _mergeModel(preset.audioTranscribe, current.audioTranscribe),
+      videoGen: _mergeModel(preset.videoGen, current.videoGen),
+      videoVision: _mergeModel(preset.videoVision, current.videoVision),
+      code: _mergeModel(preset.code, current.code),
+    );
+  }
+
+  static Model? _mergeModel(Model? presetModel, Model? currentModel) {
+    if (presetModel == null) return currentModel;
+    final name = presetModel.name.isNotEmpty
+        ? presetModel.name
+        : (currentModel?.name ?? '');
+    final mergedTools = <String, String>{
+      ...?currentModel?.tools,
+      ...presetModel.tools,
+    };
+    return Model(
+      name: name,
+      params: presetModel.params ?? currentModel?.params,
+      tools: mergedTools,
+    );
   }
 
   void _handleTabChange() {
@@ -324,7 +365,6 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
   }
 
   Widget contentBox(BuildContext context, ModelsData data) {
-    const isFree = false;
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
 
     return _wrap(SingleChildScrollView(
@@ -357,8 +397,8 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
             child: TabBarView(
               controller: _tabController,
               children: [
-                _buildPresetsTab(data, isFree),
-                _buildCustomTab(data, isFree),
+                _buildPresetsTab(data),
+                _buildCustomTab(data),
                 _buildFunctionsTab(),
                 _buildSkillsTab(),
               ],
@@ -464,7 +504,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     ));
   }
 
-  Widget _buildPresetsTab(ModelsData data, bool isFree) {
+  Widget _buildPresetsTab(ModelsData data) {
     final selectedName = _getSelectedPresetName(data.presets);
     return ListView.separated(
       itemCount: data.presets.length,
@@ -476,7 +516,6 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
           preset,
           color.shade100,
           color,
-          isFree,
           selectedName == preset.name,
         );
       },
@@ -487,21 +526,25 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     PresetConfig preset,
     Color color,
     Color colorSelected,
-    bool isFree,
     bool isSelected,
   ) {
     return InkWell(
-      onTap: isFree
-          ? null
-          : () {
-              setState(() {
-                _selectedModel = preset.models.text?.name ?? _selectedModel;
-                _selectedVisionModel = preset.models.vision?.name ?? _selectedVisionModel;
-                _selectedImageGenModel = preset.models.imageGen?.name ?? _selectedImageGenModel;
-              });
-              widget.onModelSelected(preset.models);
-              Navigator.pop(context);
-            },
+      onTap: () {
+        final merged = _mergePresetOnto(preset.models, widget.selectedModel);
+        setState(() {
+          _selectedModel = merged.text?.name.isNotEmpty == true
+              ? merged.text!.name
+              : _selectedModel;
+          _selectedVisionModel = merged.vision?.name.isNotEmpty == true
+              ? merged.vision!.name
+              : _selectedVisionModel;
+          _selectedImageGenModel = merged.imageGen?.name.isNotEmpty == true
+              ? merged.imageGen!.name
+              : _selectedImageGenModel;
+        });
+        widget.onModelSelected(merged);
+        Navigator.pop(context);
+      },
       child: Container(
         width: double.infinity,
         padding: const EdgeInsets.all(16),
@@ -548,34 +591,28 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     );
   }
 
-  Widget _buildCustomTab(ModelsData data, bool isFree) {
+  Widget _buildCustomTab(ModelsData data) {
     return Column(
       children: [
         _buildDropdown(
           label: 'Text Model',
           value: _selectedModel,
           items: data.textModelIds,
-          onChanged: isFree
-              ? (value) {}
-              : (value) => setState(() => _selectedModel = value!),
+          onChanged: (value) => setState(() => _selectedModel = value!),
         ),
         const SizedBox(height: 16),
         _buildDropdown(
           label: 'Vision Model',
           value: _selectedVisionModel,
           items: data.visionModelIds,
-          onChanged: isFree
-              ? (value) {}
-              : (value) => setState(() => _selectedVisionModel = value!),
+          onChanged: (value) => setState(() => _selectedVisionModel = value!),
         ),
         const SizedBox(height: 16),
         _buildDropdown(
           label: 'Image Generation Model',
           value: _selectedImageGenModel,
           items: data.imageGenModelIds,
-          onChanged: isFree
-              ? (value) {}
-              : (value) => setState(() => _selectedImageGenModel = value!),
+          onChanged: (value) => setState(() => _selectedImageGenModel = value!),
         ),
       ],
     );

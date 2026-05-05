@@ -1,153 +1,39 @@
+# 1 
+- preset manager / remove fast/medium/high presets
 - Remove the together API hardcoded crap 
-- Per-user everything: using a map of linux user > plurality user 
-  - docker ?
-- Per-user MCP / skills
-
-- basic CRON (disables client tools)
-
-
-- remove lightpanda, add playwright
-
-- tool to request extenal AI (ex. promote a request or something) - keep cost down
-
+- The upload thing 
 - files tools 
   - missing: save attachment / load attachment (attach file to convo)
-  - git diff ? 
-- Allows allow "tool bundle name" option for convos
-- Agents (sub conversations as conversatiosn)
-- Knowledge base
-- preset manager
+  - edit image using path 
+  - something else ?
+- Per-user everything: using a map of linux user > plurality user 
+  - docker ?
+- Per-user MCP
 - background process tool (for commands like web servers) (simple detached flag)
+
+# 2
+- remove lightpanda, add playwright
+- client side command 
+- basic CRON (disables client tools)
+- tool to request extenal AI (ex. promote a request or something) - keep cost down
+- "always allow this tool"
+- Agents (sub conversations as conversatiosn)
+  - add message to another chat (agent restarting another chat)
+- Knowledge base
 - code tools
-- browser tools 
 - Shared memory "skill"
 
-- WHY ARE TOOLS HARDCODED IN THE API_models.go file ???
-- stop should refresh from DB
-- show disabled MCP so the AI can ask for them
-
-- embedding dont cost tokens 
-
+#3
+- browser tools 
+- self improving system prompts
 - when error move prompt back to input 
-
+- stop should refresh from DB
 - Redesign the app using an oled black design (or white in light mode) and the gradient (238, 70, 84) > (245, 194, 86) in a subtle but relevant manner (ex. buttons and stuff but not entire messages) also the Title instead of a "Start a new Conversation" should be "Plurality AI" with Plurality in white, and AI using the gradient described earlier
-
+- WHY ARE TOOLS HARDCODED IN THE API_models.go file ???
 - tables look aweful on mobile
-
 - Test client tools 
   - what happens if 2+ clients opened? 
 - When status says "open conversations has an udpate" (from a different client potentially) refresh the conversation ? (without over refreshing if current client)
-
 - notifs? 
-
 - client to compress image for vision?
-
-# Road to relese
-  - Login / Register
-		- apple
-	- publish app
-	- Subscripiton page
-	- Home page
-
-- migrate out of Together AI (it's shit!!)
-
-- CHEAPER ICON GEN (Flux 2 )
-
-# private MVP2 - bigger
-- MCP: tool call output is not always text!!
-- MCP: MCP should enable/disable the entire MCP instead of individual tools
-- MCP: implement MCP for other providers 
-- MCP: the "dynamic" arguments break because you cant mix strings and numbers
-- Fix tool_use for gpt/firework
-- Add "CODE" !! , "quizz" and  "More" in mini apps
-- Allow people to switch their plans (need to support paying without the invoice paid, in case of downgrade)
-
-- Make the icon not download on first load, instead lazy load from URL
-- search messages
-- if oral transcription too long it will be a snippet!
-- change device in call
-- local or incognito mode? or both?
-- Custom personal mini apps? (or at least placeholders)
-- Custom mini apps
-- Publish Apps each platform
 - eco mode 
-- Backend to accept new conversation that have multiple messages (seems like a bug that conversation might be missing from DB?)
-		- AHHHH may be I removed a conversation on one client but not the other!!!
-
-# More 
-- model popup should show preset when one is selected
-
-# Roadmap to public
-- Login / Register
-  - google 
-- AI Function calls 
-	- Get tool_Result to work with Toegtehr / ChatGPT ?
-	- embeds (ex. maps or calendars)
-- mini app suggest model
-- Retry button
-- refresh message/convo
-- model icons / conversation icons
-- bin doc parse / long doc integration
-- Code Assist
-- more models
-- change share to share a hosted page rather than the image / text / converastion
-- file_picker's save file for non-web?
-- History pagination or infinite scroll?
-- Claude / ChatGPT images vision
-- Add token price to titles
-- Publish Apps each platform
-- eco mode 
-- Backend to accept new conversation that have multiple messages (seems like a bug that conversation might be missing from DB?)
-		- AHHHH may be I removed a conversation on one client but not the other!!!
-
-# More 
-- model popup should show preset when one is selected
-
-# Roadmap to public
-- Login / Register
-  - google 
-  - apple
-- Settings
-  - dark mode
-  - Change Password
-  - local mode
-- Chat Conversation
-  - Save History
-  - Delete History
-  - Incognito Mode
-  - Search Chat
-  - Encryption (password protected chats)
-- Rate limiting (count token)
-- Vision $
-  - Camera Button
-- Image Gen $
-  - View Image 
-  - Save Image
-- Should have an editor view on the right side like for graph/code?
-- Voice Mode
-- Audio Gen?? $
-- Document Upload/Parse
-- Code Mode
-- Search Web
-- Graph Mode 
-- Map Mode
-- Apps
-  - Therapy
-  - Language learning
-- Code Assist 
-- API Access
-
-
-# Ideas
- - CRON jobs
- - BATCH requests (one prompt per line of a doc)
- - BATCH (for ex. subtitles)
- - Agents (background jobs)
- - Shorctuts (ex. press F9 to translate screenshot)
-
-
-# MArketing
- - contact Firework for marketing
- - affiliate
- - referral
- - Family plan

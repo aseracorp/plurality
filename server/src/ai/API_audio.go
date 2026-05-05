@@ -7,7 +7,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"os"
 	"strconv"
 
 	"github.com/go-audio/wav"
@@ -52,8 +51,8 @@ func HandleTranscribe(w http.ResponseWriter, r *http.Request) {
 		request.VadModel = "silero" // Default VAD model
 	}
 
-	if !CheckModel(request.Model) {
-		utils.Error("[HandleTranscribe] Unknown model %s", nil, request.Model)
+	if !Models.IsAudioModel(request.Model) {
+		utils.Error("[HandleTranscribe] Unknown audio model %s", nil, request.Model)
 		utils.SendHTTPError(w, "Unknown model", http.StatusBadRequest)
 		return
 	}
@@ -74,8 +73,13 @@ func HandleTranscribe(w http.ResponseWriter, r *http.Request) {
 }
 
 func TranscribeAudio(audioData []byte, model string, language string, temperature float64, responseFormat string, vadModel string) (string, error) {
-	// Define the API endpoint
-	apiURL := "https://audio-turbo.us-virginia-1.direct.fireworks.ai/v1/audio/transcriptions"
+	if !LiteLLMReady() {
+		return "", fmt.Errorf("AI proxy is not ready")
+	}
+
+	// Route through the litellm proxy. The upstream URL and API key live in
+	// litellm_config.yaml under the model's model_info.endpoint_url.
+	apiURL := LiteLLMBaseURL + "/v1/audio/transcriptions"
 
 	// create wav buffer for conversaion
 	wavBuffer := &utils.WriteSeekerInMem{}
@@ -162,9 +166,9 @@ func TranscribeAudio(audioData []byte, model string, language string, temperatur
 		return "", fmt.Errorf("error creating request: %v", err)
 	}
 
-	// Set the content type to the multipart form's content type
+	// Set the content type to the multipart form's content type. No upstream
+	// auth header — the litellm proxy injects the provider's API key.
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Authorization", "Bearer "+os.Getenv("FIREWORK_KEY"))
 
 	// Send the request
 	client := &http.Client{}

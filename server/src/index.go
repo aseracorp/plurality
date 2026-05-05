@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -54,11 +55,18 @@ func main() {
 	if err := ai.InitLiteLLM(); err != nil {
 		log.Printf("[main] WARNING: LiteLLM proxy not available: %v", err)
 		log.Printf("[main] Set LITELLM_URL env var or run litellm/setup.sh to enable AI features")
+	} else {
+		// Pull the model registry from litellm. The proxy is the single source of
+		// truth for which models exist and what they support.
+		if err := ai.InitModels(context.Background()); err != nil {
+			log.Printf("[main] WARNING: failed to load models from litellm: %v", err)
+		}
 	}
 	defer ai.ShutdownLiteLLM()
 
-	// Pass LiteLLM URL to db package for async embedding generation
+	// Pass LiteLLM URL to packages that talk to the proxy directly.
 	db.LiteLLMBaseURL = ai.LiteLLMBaseURL
+	ai_tools.LiteLLMBaseURL = ai.LiteLLMBaseURL
 
 	utils.Log("[main] Starting server on :8090")
 

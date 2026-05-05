@@ -22,10 +22,39 @@ type OpenIDConfig struct {
 	Allowlist    []string `json:"allowlist"`
 }
 
+// ShortcutModel is one model entry inside a shortcut. Tools maps tool keys
+// (e.g. "search_web") to their default state ("true" / "ask" / "false").
+type ShortcutModel struct {
+	Name  string            `json:"name"`
+	Tools map[string]string `json:"tools,omitempty"`
+}
+
+// ShortcutModels groups the per-mode model selections for a shortcut.
+type ShortcutModels struct {
+	Text     *ShortcutModel `json:"text,omitempty"`
+	Vision   *ShortcutModel `json:"vision,omitempty"`
+	ImageGen *ShortcutModel `json:"imagegen,omitempty"`
+}
+
+// Shortcut is a named bundle of model selections + tool defaults shown in the
+// picker. The names "fast", "medium", and "smart" are reserved and surfaced in
+// the UI; any extra entry is preserved on disk but ignored by the picker.
+type Shortcut struct {
+	Name    string         `json:"name"`
+	Label   string         `json:"label"`
+	Pricing string         `json:"pricing"`
+	Color   string         `json:"color"`
+	Models  ShortcutModels `json:"models"`
+}
+
 type Config struct {
 	JWTSecret string       `json:"jwt_secret"`
 	OpenID    OpenIDConfig `json:"openid"`
+	Shortcuts []Shortcut   `json:"shortcuts"`
 }
+
+// ReservedShortcutNames are the picker-visible shortcut names, in display order.
+var ReservedShortcutNames = []string{"fast", "medium", "smart"}
 
 var (
 	cfgMu sync.RWMutex
@@ -65,6 +94,7 @@ func LoadConfig() error {
 				Allowlist: []string{},
 			},
 		}
+		validateShortcuts(&cfg)
 		if err := writeConfigLocked(); err != nil {
 			return err
 		}
@@ -75,14 +105,19 @@ func LoadConfig() error {
 		if err := json.Unmarshal(data, &loaded); err != nil {
 			return err
 		}
+		needsWrite := false
 		if loaded.JWTSecret == "" {
 			loaded.JWTSecret = randomHex(32)
-			cfg = loaded
+			needsWrite = true
+		}
+		if validateShortcuts(&loaded) {
+			needsWrite = true
+		}
+		cfg = loaded
+		if needsWrite {
 			if err := writeConfigLocked(); err != nil {
 				return err
 			}
-		} else {
-			cfg = loaded
 		}
 	}
 
@@ -178,4 +213,120 @@ func randomHex(n int) string {
 		utils.Error("[Auth] randomHex failed", err)
 	}
 	return hex.EncodeToString(b)
+}
+
+// defaultShortcutTools is the on-by-default tool set for the standard chat shortcuts.
+var defaultShortcutTools = map[string]string{
+	"search_web":                           "true",
+	"place_search":                         "true",
+	"visit_link":                           "true",
+	"generate_image":                       "true",
+	"conversations__search_conversations":  "true",
+	"conversations__retrieve_conversation": "true",
+}
+
+// defaultShortcutVisionTools is a slimmer set used when the vision model is
+// distinct from the text model — drops web/place/link search to keep cost down.
+var defaultShortcutVisionTools = map[string]string{
+	"generate_image":                       "true",
+	"conversations__search_conversations":  "true",
+	"conversations__retrieve_conversation": "true",
+}
+
+// defaultShortcuts returns baked-in definitions for the three reserved names.
+func defaultShortcuts() map[string]Shortcut {
+	cloneTools := func(src map[string]string) map[string]string {
+		out := make(map[string]string, len(src))
+		for k, v := range src {
+			out[k] = v
+		}
+		return out
+	}
+
+	return map[string]Shortcut{
+		"fast": {
+			Name: "fast", Label: "Fast and low cost", Pricing: "$", Color: "green",
+			Models: ShortcutModels{
+				Text:     &ShortcutModel{Name: "claude-haiku-4-6", Tools: cloneTools(defaultShortcutTools)},
+				Vision:   &ShortcutModel{Name: "claude-haiku-4-6", Tools: cloneTools(defaultShortcutTools)},
+				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.2-dev"},
+			},
+		},
+		"medium": {
+			Name: "medium", Label: "Recommended", Pricing: "$$", Color: "blue",
+			Models: ShortcutModels{
+				Text:     &ShortcutModel{Name: "qwen3p6-plus", Tools: cloneTools(defaultShortcutTools)},
+				Vision:   &ShortcutModel{Name: "qwen3p6-plus", Tools: cloneTools(defaultShortcutTools)},
+				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.2-dev"},
+			},
+		},
+		"smart": {
+			Name: "smart", Label: "Best quality but slow", Pricing: "$$$", Color: "purple",
+			Models: ShortcutModels{
+				Text:     &ShortcutModel{Name: "claude-sonnet-4-6", Tools: cloneTools(defaultShortcutTools)},
+				Vision:   &ShortcutModel{Name: "claude-sonnet-4-6", Tools: cloneTools(defaultShortcutVisionTools)},
+				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.2-pro"},
+			},
+		},
+	}
+}
+
+// validateShortcuts ensures the three reserved names exist and appear first
+// (in fast → medium → smart order). Custom entries trail. Returns true when
+// the slice was mutated, signalling the caller to persist the config.
+func validateShortcuts(c *Config) bool {
+	defaults := defaultShortcuts()
+	mutated := false
+
+	// Index the existing entries by lowercased name; preserve insertion order
+	// for any custom entries we encounter.
+	byName := map[string]int{}
+	var customOrder []int
+	for i, s := range c.Shortcuts {
+		key := strings.ToLower(strings.TrimSpace(s.Name))
+		c.Shortcuts[i].Name = key
+		byName[key] = i
+		isReserved := false
+		for _, r := range ReservedShortcutNames {
+			if key == r {
+				isReserved = true
+				break
+			}
+		}
+		if !isReserved {
+			customOrder = append(customOrder, i)
+		}
+	}
+
+	// Build the new ordered list: reserved first (filling in defaults), then customs.
+	newList := make([]Shortcut, 0, len(c.Shortcuts)+len(ReservedShortcutNames))
+	for _, name := range ReservedShortcutNames {
+		if idx, ok := byName[name]; ok {
+			newList = append(newList, c.Shortcuts[idx])
+		} else {
+			utils.Log("[Auth] shortcut %q missing, injecting default", name)
+			newList = append(newList, defaults[name])
+			mutated = true
+		}
+	}
+	for _, idx := range customOrder {
+		newList = append(newList, c.Shortcuts[idx])
+	}
+
+	if !mutated {
+		// Still need to detect re-ordering or name normalisation as a mutation.
+		if len(newList) != len(c.Shortcuts) {
+			mutated = true
+		} else {
+			for i := range newList {
+				if newList[i].Name != c.Shortcuts[i].Name {
+					mutated = true
+					break
+				}
+			}
+		}
+	}
+
+	c.Shortcuts = newList
+	return mutated
 }

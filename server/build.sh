@@ -30,13 +30,15 @@ fi
 # echo "Building for Windows..."
 # GOOS=windows GOARCH=amd64 go build -o build/Plurality.exe src/index.go
 
-# Copy LiteLLM files needed at runtime
+# Copy LiteLLM runtime code (proxy script + setup helpers). The YAML config is
+# user-editable and lives under data/, not next to the binary.
 mkdir -p build/litellm
-cp litellm_config.yaml litellm_proxy.py litellm_requirements.txt litellm_setup.sh build/litellm/
+cp litellm_proxy.py litellm_requirements.txt litellm_setup.sh build/litellm/
 
-# Seed default mini-app presets if the user hasn't set their own
+# Seed user-editable defaults if they don't already exist (cp -n: never clobber).
 mkdir -p build/data/presets
 cp -n data/presets/*.json build/data/presets/ 2>/dev/null || true
+cp -n data/litellm_config.yaml build/data/litellm_config.yaml 2>/dev/null || true
 
 echo "Build complete. Binaries are in the 'build' directory."
 echo "Linux binary: build/Plurality"

@@ -27,15 +27,16 @@ go build -tags "fts5" -o build\Plurality.exe .\src
 
 if errorlevel 1 goto :error
 
-REM Copy LiteLLM files needed at runtime
+REM Copy LiteLLM runtime code (proxy script + setup helpers). The YAML config
+REM is user-editable and lives under data\, not next to the binary.
 if not exist build\litellm mkdir build\litellm
-copy litellm_config.yaml build\litellm\
 copy litellm_proxy.py build\litellm\
 copy litellm_requirements.txt build\litellm\
 copy litellm_setup.bat build\litellm\
 
-REM Seed default mini-app presets (skip files that already exist)
+REM Seed user-editable defaults if they don't already exist (skip clobber).
 if not exist build\data\presets mkdir build\data\presets
 xcopy /Y /D data\presets\*.json build\data\presets\ >nul 2>&1
+if not exist build\data\litellm_config.yaml copy data\litellm_config.yaml build\data\
 
 echo Success!

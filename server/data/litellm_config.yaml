@@ -1,0 +1,92 @@
+model_list:
+  # OpenAI
+  - model_name: "gpt-5.2"
+    litellm_params:
+      model: "gpt-5.2"
+      api_key: "os.environ/CHATGPT_API_KEY"
+    model_info:
+      mode: "chat"
+      supports_vision: true
+      supports_function_calling: true
+  - model_name: "gpt-5-mini"
+    litellm_params:
+      model: "gpt-5-mini"
+      api_key: "os.environ/CHATGPT_API_KEY"
+    model_info:
+      mode: "chat"
+      supports_vision: true
+      supports_function_calling: true
+
+  # Claude
+  - model_name: "claude-haiku-4-6"
+    litellm_params:
+      model: "anthropic/claude-haiku-4-6"
+      api_key: "os.environ/CLAUDE_API_KEY"
+    model_info:
+      mode: "chat"
+      supports_vision: true
+      supports_function_calling: true
+  - model_name: "claude-sonnet-4-6"
+    litellm_params:
+      model: "anthropic/claude-sonnet-4-6"
+      api_key: "os.environ/CLAUDE_API_KEY"
+    model_info:
+      mode: "chat"
+      supports_vision: true
+      supports_function_calling: true
+
+  # Fireworks
+  - model_name: "qwen3p6-plus"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/qwen3p6-plus"
+      api_key: "os.environ/FIREWORK_KEY"
+    model_info:
+      mode: "chat"
+      supports_vision: true
+      supports_function_calling: true
+
+  # Image generation
+  - model_name: "black-forest-labs/FLUX.2-dev"
+    litellm_params:
+      model: "together_ai/black-forest-labs/FLUX.2-dev"
+      api_key: "os.environ/TOGETHER_API_KEY"
+    model_info:
+      mode: "image_generation"
+      endpoint_url: "https://api.together.xyz/v1/images/generations"
+  - model_name: "black-forest-labs/FLUX.2-pro"
+    litellm_params:
+      model: "together_ai/black-forest-labs/FLUX.2-pro"
+      api_key: "os.environ/TOGETHER_API_KEY"
+    model_info:
+      mode: "image_generation"
+      endpoint_url: "https://api.together.xyz/v1/images/generations"
+
+  # Audio
+  - model_name: "cartesia/sonic"
+    litellm_params:
+      model: "together_ai/cartesia/sonic"
+      api_key: "os.environ/TOGETHER_API_KEY"
+    model_info:
+      mode: "audio_speech"
+      endpoint_url: "https://api.together.ai/v1/audio/generations"
+  - model_name: "whisper-v3-turbo"
+    litellm_params:
+      model: "fireworks_ai/whisper-v3-turbo"
+      api_key: "os.environ/FIREWORK_KEY"
+    model_info:
+      mode: "audio_transcription"
+      endpoint_url: "https://audio-turbo.us-virginia-1.direct.fireworks.ai/v1/audio/transcriptions"
+
+  # Embedding (for conversation search)
+  - model_name: "text-embedding-3-small"
+    litellm_params:
+      model: "text-embedding-3-small"
+      api_key: "os.environ/CHATGPT_API_KEY"
+    model_info:
+      mode: "embedding"
+
+general_settings:
+  drop_params: true
+
+litellm_settings:
+  drop_params: true

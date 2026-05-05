@@ -26,6 +26,6 @@ uv pip install --python "%VENV_DIR%\Scripts\python.exe" -r "%SCRIPT_DIR%litellm_
 echo.
 echo Setup complete. To start LiteLLM locally:
 echo   %VENV_DIR%\Scripts\activate.bat
-echo   litellm --config %SCRIPT_DIR%litellm_config.yaml --port 4000 --host 127.0.0.1
+echo   litellm --config %SCRIPT_DIR%..\data\litellm_config.yaml --port 4000 --host 127.0.0.1
 
 endlocal

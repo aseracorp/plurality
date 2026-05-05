@@ -3,8 +3,8 @@ package ai
 import (
 	"encoding/json"
 	"net/http"
-	"sort"
 
+	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/skills"
 	"github.com/azukaar/plurality/src/utils"
@@ -17,7 +17,6 @@ type ModelInfo struct {
 	ID       string `json:"id"`
 	Object   string `json:"object"`
 	OwnedBy  string `json:"owned_by"`
-	Free     bool   `json:"free,omitempty"`
 	Text     bool   `json:"text,omitempty"`
 	Vision   bool   `json:"vision,omitempty"`
 	ImageGen bool   `json:"image_gen,omitempty"`
@@ -69,48 +68,6 @@ type ModelsResponse struct {
 	Skills          []SkillDef                `json:"skills,omitempty"`
 }
 
-var defaultSearchTools = map[string]string{
-	"search_web":                           "true",
-	"place_search":                         "true",
-	"visit_link":                           "true",
-	"generate_image":                       "true",
-	"conversations__search_conversations":  "true",
-	"conversations__retrieve_conversation": "true",
-}
-
-var defaultVisionTools = map[string]string{
-	"generate_image":                       "true",
-	"conversations__search_conversations":  "true",
-	"conversations__retrieve_conversation": "true",
-}
-
-// Presets ordered by Order.
-var Presets = []PresetConfig{
-	{
-		Name: "Fast", Label: "Fast and low cost", Pricing: "$", Color: "green", Order: 0,
-		Models: utils.ModelSelected{
-			Text:     &utils.Model{Name: "Gemini/gemini-2.5-flash", Tools: defaultSearchTools},
-			Vision:   &utils.Model{Name: "Gemini/gemini-2.5-flash", Tools: defaultSearchTools},
-			ImageGen: &utils.Model{Name: "black-forest-labs/FLUX.2-dev"},
-		},
-	},
-	{
-		Name: "Balanced", Label: "Recommended", Pricing: "$$", Color: "blue", Order: 1,
-		Models: utils.ModelSelected{
-			Text:     &utils.Model{Name: "qwen3p6-plus", Tools: defaultSearchTools},
-			Vision:   &utils.Model{Name: "qwen3p6-plus", Tools: defaultSearchTools},
-			ImageGen: &utils.Model{Name: "black-forest-labs/FLUX.2-dev"},
-		},
-	},
-	{
-		Name: "Smart", Label: "Best quality but slow", Pricing: "$$$", Color: "purple", Order: 2,
-		Models: utils.ModelSelected{
-			Text:     &utils.Model{Name: "glm-5p1", Tools: defaultSearchTools},
-			Vision:   &utils.Model{Name: "qwen3p6-plus", Tools: defaultVisionTools},
-			ImageGen: &utils.Model{Name: "black-forest-labs/FLUX.2-pro"},
-		},
-	},
-}
 
 // BuiltinFunctions are the server-provided tool toggles shown in the modal.
 // Bundled tools use namespaced keys (bundle__tool) matching the names sent to
@@ -138,48 +95,72 @@ var BuiltinFunctionBundles = map[string]FunctionBundle{
 	"filesystem_server": {Key: "filesystem_server", Label: "Server Filesystem", Description: "Read and write files on the server"},
 }
 
-// Model capability sets. These are the source of truth for what each model
-// supports; the client uses them to filter dropdowns.
-var imageGenModels = map[string]bool{
-	"black-forest-labs/FLUX.2-dev": true,
-	"black-forest-labs/FLUX.2-pro": true,
-}
-
-var audioModels = map[string]bool{
-	"whisper-v3-turbo": true,
-	"cartesia/sonic":   true,
-}
-
+// buildModelInfoList projects the litellm-driven registry into the client-facing
+// ModelInfo shape. Capability flags come from the model_info blocks in
+// litellm_config.yaml; the embedding model is hidden from the picker.
 func buildModelInfoList() []ModelInfo {
-	visionSet := make(map[string]bool, len(ValidVisionModels))
-	for _, m := range ValidVisionModels {
-		visionSet[m] = true
-	}
-
-	out := make([]ModelInfo, 0, len(ValidModels))
-	for _, name := range ValidModels {
-		info := ModelInfo{ID: name, Object: "model", OwnedBy: "plurality", Free: true}
-		switch {
-		case imageGenModels[name]:
+	entries := Models.All()
+	out := make([]ModelInfo, 0, len(entries))
+	for _, e := range entries {
+		if e.Mode == "embedding" {
+			continue
+		}
+		info := ModelInfo{ID: e.Name, Object: "model", OwnedBy: "plurality"}
+		switch e.Mode {
+		case "image_generation":
 			info.ImageGen = true
-		case audioModels[name]:
+		case "audio_speech", "audio_transcription":
 			info.Audio = true
 		default:
 			info.Text = true
-			if visionSet[name] {
-				info.Vision = true
-			}
+			info.Vision = e.SupportsVision
 		}
 		out = append(out, info)
 	}
 	return out
 }
 
+// orderedPresets projects the picker-visible shortcuts from auth.Config into
+// the client-facing PresetConfig shape. Only entries whose Name matches one of
+// auth.ReservedShortcutNames ("fast", "medium", "smart") are surfaced — extras
+// in the config file are kept on disk but invisible to the UI. Order matches
+// auth.ReservedShortcutNames; the validator already enforces presence.
 func orderedPresets() []PresetConfig {
-	out := make([]PresetConfig, len(Presets))
-	copy(out, Presets)
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Order < out[j].Order })
+	shortcuts := auth.GetConfig().Shortcuts
+	byName := make(map[string]auth.Shortcut, len(shortcuts))
+	for _, s := range shortcuts {
+		byName[s.Name] = s
+	}
+
+	out := make([]PresetConfig, 0, len(auth.ReservedShortcutNames))
+	for i, name := range auth.ReservedShortcutNames {
+		s, ok := byName[name]
+		if !ok {
+			continue
+		}
+		out = append(out, PresetConfig{
+			Name:    s.Name,
+			Label:   s.Label,
+			Pricing: s.Pricing,
+			Color:   s.Color,
+			Order:   i,
+			Models: utils.ModelSelected{
+				Text:     toUtilsModel(s.Models.Text),
+				Vision:   toUtilsModel(s.Models.Vision),
+				ImageGen: toUtilsModel(s.Models.ImageGen),
+			},
+		})
+	}
 	return out
+}
+
+// toUtilsModel converts an auth.ShortcutModel into utils.Model. Returns nil
+// when the source is nil so optional fields stay optional in the JSON.
+func toUtilsModel(m *auth.ShortcutModel) *utils.Model {
+	if m == nil {
+		return nil
+	}
+	return &utils.Model{Name: m.Name, Tools: m.Tools}
 }
 
 // HandleListModels is OpenAI-list-compatible with added {presets, functions,

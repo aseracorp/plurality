@@ -42,7 +42,7 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 
 	utils.Log("[Attachments] Found %d attachment(s) in conversation", len(index.Items))
 
-	isAction := CheckActionModel(model.Name)
+	isAction := Models.IsActionModel(model.Name)
 
 	// Count user messages from the end to determine how many user messages
 	// have been sent since each point in the conversation.

@@ -17,6 +17,24 @@ import (
 	"github.com/azukaar/plurality/src/utils"
 )
 
+// legacyModelPrefixes were used by an older Go-side naming scheme; the
+// canonical names now live in litellm_config.yaml without any prefix.
+var legacyModelPrefixes = []string{"ChatGPT/", "Claude/", "Gemini/"}
+
+// stripLegacyPrefix normalises a model name in place by removing any of the
+// legacy provider prefixes carried by older conversations.
+func stripLegacyPrefix(m *utils.Model) {
+	if m == nil {
+		return
+	}
+	for _, p := range legacyModelPrefixes {
+		if strings.HasPrefix(m.Name, p) {
+			m.Name = strings.TrimPrefix(m.Name, p)
+			return
+		}
+	}
+}
+
 // HandleChat is the unified endpoint for sending messages and tool results.
 // It creates an ActiveRequest, launches the LLM loop in a goroutine, and
 // connects the HTTP client as an SSE listener.
@@ -35,12 +53,19 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if payload.ModelSelected.Text == nil || !CheckModel(payload.ModelSelected.Text.Name) {
+	// Compatibility shim: older conversations may carry "ChatGPT/", "Claude/", or
+	// "Gemini/" prefixes from when the Go side maintained its own naming scheme.
+	// Strip them so they match the bare names that come from the litellm config.
+	stripLegacyPrefix(payload.ModelSelected.Text)
+	stripLegacyPrefix(payload.ModelSelected.Vision)
+	stripLegacyPrefix(payload.ModelSelected.ImageGen)
+
+	if payload.ModelSelected.Text == nil || !Models.IsKnown(payload.ModelSelected.Text.Name) {
 		utils.Error("[HandleChat] Unknown text model", nil)
 		http.Error(w, "Unknown text model", http.StatusBadRequest)
 		return
 	}
-	if payload.ModelSelected.Vision != nil && !CheckModel(payload.ModelSelected.Vision.Name) {
+	if payload.ModelSelected.Vision != nil && !Models.IsKnown(payload.ModelSelected.Vision.Name) {
 		utils.Error("[HandleChat] Unknown vision model", nil)
 		http.Error(w, "Unknown vision model", http.StatusBadRequest)
 		return
