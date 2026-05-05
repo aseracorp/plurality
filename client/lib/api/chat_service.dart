@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:plurality/api/MCP.dart';
 import 'package:plurality/api/skills_service.dart';
+import 'package:plurality/api/filesystem_service.dart';
+import 'package:plurality/api/storage.dart';
 
 import '../utils/types.dart';
 import 'api.dart';
@@ -115,6 +117,19 @@ class ChatService {
   final ApiService _api = ApiService();
   final MCPService _mcp = MCPService();
   final SkillsService _skills = SkillsService();
+  final FilesystemService _filesystem = FilesystemService();
+
+  /// Returns the absolute path of the folder the user has attached to the
+  /// conversation, or null if none. Used to (a) gate sending the device-side
+  /// filesystem tool definitions to the LLM, and (b) sandbox client-side
+  /// filesystem tool execution.
+  String? _attachedFolderFor(String conversationId) {
+    if (conversationId.isEmpty) return null;
+    final conv = ConversationStorage.getConversation(conversationId);
+    final p = conv?.attachedFolderPath;
+    if (p == null || p.isEmpty) return null;
+    return p;
+  }
 
   /// Active SSE stream subscriptions per conversation.
   final Map<String, StreamSubscription> _activeStreams = {};
@@ -198,6 +213,7 @@ class ChatService {
 
     try {
       final skillNames = _skills.getSkillNames();
+      final attachedFolder = _attachedFolderFor(conversationId);
       final stream = await _api.postChat(
         conversationId: conversationId,
         modelSelected: modelSelected,
@@ -206,8 +222,10 @@ class ChatService {
         clientSideTools: [
           ..._mcp.getToolList(),
           if (skillNames.isNotEmpty) _skills.getToolDefinition(),
+          if (attachedFolder != null) ..._filesystem.getToolDefinitions(),
         ],
         availableSkills: skillNames,
+        hasAttachedFolder: attachedFolder != null,
       );
       _connectSSE(conversationId, stream, modelSelected);
     } catch (e) {
@@ -240,6 +258,7 @@ class ChatService {
 
     try {
       final skillNames = _skills.getSkillNames();
+      final attachedFolder = _attachedFolderFor(conversationId);
       final stream = await _api.postChat(
         conversationId: conversationId,
         modelSelected: modelSelected,
@@ -247,8 +266,10 @@ class ChatService {
         clientSideTools: [
           ..._mcp.getToolList(),
           if (skillNames.isNotEmpty) _skills.getToolDefinition(),
+          if (attachedFolder != null) ..._filesystem.getToolDefinitions(),
         ],
         availableSkills: skillNames,
+        hasAttachedFolder: attachedFolder != null,
       );
       _connectSSE(conversationId, stream, modelSelected);
     } catch (e) {
@@ -548,6 +569,27 @@ class ChatService {
           continue;
         }
 
+        // Device-side filesystem tools (sandboxed to the conversation's
+        // attached folder).
+        if (toolCall.function.name == FilesystemService.readToolName ||
+            toolCall.function.name == FilesystemService.writeToolName) {
+          final args = jsonDecode(
+            toolCall.function.arguments.isEmpty
+                ? '{}'
+                : toolCall.function.arguments,
+          ) as Map<String, dynamic>;
+          final root = _attachedFolderFor(conversationId);
+          final result = toolCall.function.name == FilesystemService.readToolName
+              ? await _filesystem.executeFsRead(root, args)
+              : await _filesystem.executeFsWrite(root, args);
+          results.add(Message.toolResult(
+            toolCallId: toolCall.id,
+            name: toolCall.function.name,
+            result: result,
+          ));
+          continue;
+        }
+
         final serverName = _mcp.getToolServerName(toolCall.function.name);
         if (serverName == null) {
           results.add(Message.toolResult(
@@ -699,6 +741,7 @@ class ChatService {
       // Then approve server tools (this relaunches the loop + SSE)
       try {
         final skillNames = _skills.getSkillNames();
+        final attachedFolder = _attachedFolderFor(conversationId);
         final stream = await _api.approveTools(
           conversationId: conversationId,
           approvals: serverApprovals,
@@ -706,8 +749,10 @@ class ChatService {
           clientSideTools: [
             ..._mcp.getToolList(),
             if (skillNames.isNotEmpty) _skills.getToolDefinition(),
+            if (attachedFolder != null) ..._filesystem.getToolDefinitions(),
           ],
           availableSkills: skillNames,
+          hasAttachedFolder: attachedFolder != null,
         );
         _connectSSE(conversationId, stream, modelSelected);
       } catch (e) {

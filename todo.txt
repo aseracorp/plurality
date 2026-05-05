@@ -1,15 +1,22 @@
-- WHY ARE TOOLS HARDCODED IN THE API_models.go file ???
-- stop should refresh from DB
-
+# release? 
+- Remove Firebase
+- Remove Mongo
+- budget
 
 - files tools 
-- Knowledge base
-- Shared memory "skill"
+  - missing: save attachment / load attachment (attach file to convo)
+  - git diff ? 
+- Allows allow "tool bundle name" option for convos
 - Agents (sub conversations as conversatiosn)
+- Knowledge base
+- background process tool (for commands like web servers) (simple detached flag)
 - code tools
 - browser tools 
-- emails tools 
-- ??
+- Shared memory "skill"
+
+- WHY ARE TOOLS HARDCODED IN THE API_models.go file ???
+- stop should refresh from DB
+- show disabled MCP so the AI can ask for them
 
 - embedding dont cost tokens 
 

@@ -94,9 +94,13 @@ model_list:
     litellm_params:
       model: "fireworks_ai/accounts/fireworks/models/qwen3p6-plus"
       api_key: "os.environ/FIREWORK_KEY"
-  - model_name: "qwen3-30b-a3b-instruct-2507"
+  - model_name: "qwen3-vl-30b-a3b-thinking"
     litellm_params:
-      model: "fireworks_ai/accounts/fireworks/models/qwen3-30b-a3b-instruct-2507"
+      model: "fireworks_ai/accounts/fireworks/models/qwen3-vl-30b-a3b-thinking"
+      api_key: "os.environ/FIREWORK_KEY"
+  - model_name: "qwen3-vl-30b-a3b-instruct"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/qwen3-vl-30b-a3b-instruct"
       api_key: "os.environ/FIREWORK_KEY"
   - model_name: "qwen3p5-397b-a17b"
     litellm_params:

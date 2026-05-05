@@ -394,6 +394,13 @@ class Conversation extends HiveObject {
   @HiveField(10)
   String stateString;
 
+  /// Absolute path on this device of a folder the user has "attached" to the
+  /// conversation. While set, the LLM gets the device-side filesystem tools
+  /// (filesystem_client__fs_read/write) sandboxed to this directory. Local
+  /// only — never sent to the server (the server just learns a folder is set).
+  @HiveField(11)
+  String? attachedFolderPath;
+
   ConversationState get state => conversationStateFromString(stateString);
   set state(ConversationState value) => stateString = value.name;
 
@@ -408,6 +415,7 @@ class Conversation extends HiveObject {
     this.folder,
     this.icon,
     String? stateString,
+    this.attachedFolderPath,
   }) : createdAt = createdAt ?? DateTime.now(),
        stateString = stateString ?? 'idle';
 

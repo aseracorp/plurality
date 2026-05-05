@@ -56,23 +56,32 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		}
 	}
 
-	if len(payload.AvailableSkills) > 0 {
-		skillsList := strings.Join(payload.AvailableSkills, ", ")
-		systemPrompt += "\n\nYou have access to the following local skills: " + skillsList +
-			". When a user's request matches one of these skills, use the retrieve_skill tool to load the skill's instructions before responding. " +
-			"Call retrieve_skill with the skill_name parameter. You can optionally specify a file_name to retrieve a specific file from the skill folder (defaults to SKILL.md)."
-	}
+	isActionModel := CheckActionModel(model.Name)
 
-	if serverSkillNames := skills.Names(); len(serverSkillNames) > 0 {
-		serverSkillsList := strings.Join(serverSkillNames, ", ")
-		systemPrompt += "\n\nYou have access to the following server-shared skills: " + serverSkillsList +
-			". When a user's request matches one of these skills, use the retrieve_server_skill tool to load the skill's instructions before responding. " +
-			"Call retrieve_server_skill with the skill_name parameter. You can optionally specify a file_name to retrieve a specific file from the skill folder (defaults to SKILL.md)."
-	}
+	if isActionModel {
+		if len(payload.AvailableSkills) > 0 {
+			skillsList := strings.Join(payload.AvailableSkills, ", ")
+			systemPrompt += "\n\nYou have access to the following local skills: " + skillsList +
+				". When a user's request matches one of these skills, use the retrieve_skill tool to load the skill's instructions before responding. " +
+				"Call retrieve_skill with the skill_name parameter. You can optionally specify a file_name to retrieve a specific file from the skill folder (defaults to SKILL.md)."
+		}
 
-	// Append MCP server descriptions configured in mcp.json.
-	for serverName, desc := range mcp.ServerDescriptions() {
-		systemPrompt += "\n\n[" + serverName + "] " + desc
+		if serverSkillNames := skills.Names(); len(serverSkillNames) > 0 {
+			serverSkillsList := strings.Join(serverSkillNames, ", ")
+			systemPrompt += "\n\nYou have access to the following server-shared skills: " + serverSkillsList +
+				". When a user's request matches one of these skills, use the retrieve_server_skill tool to load the skill's instructions before responding. " +
+				"Call retrieve_server_skill with the skill_name parameter. You can optionally specify a file_name to retrieve a specific file from the skill folder (defaults to SKILL.md)."
+		}
+
+		// Append MCP server descriptions configured in mcp.json.
+		for serverName, desc := range mcp.ServerDescriptions() {
+			systemPrompt += "\n\n[" + serverName + "] " + desc
+		}
+
+		// Append a compact summary of disabled tools so the LLM can suggest enabling them.
+		if disabledSummary := ai_tools.GetDisabledToolsSummary(model, payload.ClientSideTools); disabledSummary != "" {
+			systemPrompt += "\n\n" + disabledSummary
+		}
 	}
 
 	if !LiteLLMReady() {
@@ -109,9 +118,11 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		StreamOptions: &StreamOptions{IncludeUsage: true},
 	}
 
-	ait := ai_tools.GetRequests(model, payload.ClientSideTools, hasAttachments, hasDocAttachments)
-	if CheckActionModel(model.Name) && len(ait) > 0 {
-		requestData.Tools = ait
+	if isActionModel {
+		ait := ai_tools.GetRequests(model, payload.ClientSideTools, hasAttachments, hasDocAttachments, payload.HasAttachedFolder)
+		if len(ait) > 0 {
+			requestData.Tools = ait
+		}
 	}
 
 	// Rough credit check — actual usage will be deducted from the streaming response

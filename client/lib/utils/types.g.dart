@@ -240,13 +240,14 @@ class ConversationAdapter extends TypeAdapter<Conversation> {
       folder: fields[8] as String?,
       icon: fields[9] as String?,
       stateString: fields[10] as String?,
+      attachedFolderPath: fields[11] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, Conversation obj) {
     writer
-      ..writeByte(10)
+      ..writeByte(11)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(2)
@@ -266,7 +267,9 @@ class ConversationAdapter extends TypeAdapter<Conversation> {
       ..writeByte(9)
       ..write(obj.icon)
       ..writeByte(10)
-      ..write(obj.stateString);
+      ..write(obj.stateString)
+      ..writeByte(11)
+      ..write(obj.attachedFolderPath);
   }
 
   @override
@@ -394,7 +397,10 @@ class ModelAdapter extends TypeAdapter<Model> {
     return Model(
       name: fields[0] as String,
       params: (fields[1] as Map?)?.cast<String, String>(),
-      tools: fields[2] == null ? const {} : (fields[2] as Map).cast<String, String>(),
+      tools:
+          fields[2] == null
+              ? const {}
+              : (fields[2] as Map).cast<String, String>(),
     );
   }
 

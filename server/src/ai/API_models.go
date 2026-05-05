@@ -127,12 +127,15 @@ var BuiltinFunctions = []FunctionDef{
 	{Key: "mcp_capabilities__debug_mcp", Label: "Debug MCP", Description: "View MCP server logs for debugging", Default: "ask", Parent: "mcp_capabilities"},
 	{Key: "system_tools__shell_exec", Label: "Shell Execute", Description: "Execute shell commands on the server", Default: "ask", Parent: "system_tools"},
 	{Key: "system_tools__apt_install", Label: "Apt Install", Description: "Install system packages via apt-get", Default: "ask", Parent: "system_tools"},
+	{Key: "filesystem_server__fs_read", Label: "Read Files (Server)", Description: "List, find, and read files on the server", Default: "ask", Parent: "filesystem_server"},
+	{Key: "filesystem_server__fs_write", Label: "Write Files (Server)", Description: "Edit, copy, move, delete files on the server", Default: "ask", Parent: "filesystem_server"},
 }
 
 var BuiltinFunctionBundles = map[string]FunctionBundle{
 	"conversations":    {Key: "conversations", Label: "Search Conversations", Description: "Search and retrieve past conversations"},
 	"mcp_capabilities": {Key: "mcp_capabilities", Label: "MCP Capabilities", Description: "Manage and debug MCP server integrations"},
 	"system_tools":     {Key: "system_tools", Label: "System Tools", Description: "Execute commands and install packages on the server"},
+	"filesystem_server": {Key: "filesystem_server", Label: "Server Filesystem", Description: "Read and write files on the server"},
 }
 
 // Model capability sets. These are the source of truth for what each model

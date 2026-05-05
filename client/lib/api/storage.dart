@@ -224,4 +224,25 @@ class ConversationStorage {
 
     return conversation;
   }
+
+  /// Set the device-side folder attached to the conversation. Pass null/""
+  /// to detach. Local-only — never round-trips to the server (the server only
+  /// learns a folder is attached via the chat payload's has_attached_folder
+  /// flag).
+  static Future<Conversation?> updateAttachedFolderPath(
+    String id,
+    String? attachedFolderPath,
+  ) async {
+    final conversation = getConversation(id);
+    if (conversation == null) return null;
+
+    conversation.attachedFolderPath =
+        (attachedFolderPath != null && attachedFolderPath.isNotEmpty)
+            ? attachedFolderPath
+            : null;
+
+    await saveConversation(conversation);
+
+    return conversation;
+  }
 }

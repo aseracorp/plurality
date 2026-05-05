@@ -153,8 +153,12 @@ func GetPriceFromTokenUsage(reqType int, provider int, model utils.Model, usage 
 			} else if reqType == TEXT_OUTPUT {
 				price = usage * 3.00
 			}
-		} else if model.Name == "qwen3-30b-a3b-instruct-2507" {
-			price = usage * 0.90
+		} else if model.Name == "qwen3-vl-30b-a3b-thinking"  || model.Name == "qwen3-vl-30b-a3b-instruct" {
+			if reqType == TEXT_INPUT {
+				price = usage * 0.15
+			} else if reqType == TEXT_OUTPUT {
+				price = usage * 0.6
+			}
 		} else if model.Name == "qwen3p5-397b-a17b" {
 			if reqType == TEXT_INPUT {
 				price = usage * 0.22

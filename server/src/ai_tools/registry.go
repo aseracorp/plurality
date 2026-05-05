@@ -24,6 +24,8 @@ var Registry = map[string]utils.AITool{
 	ManageMCPTool.ToolID:               ManageMCPTool,
 	ShellExecTool.ToolID:               ShellExecTool,
 	AptInstallTool.ToolID:              AptInstallTool,
+	FsServerReadTool.ToolID:            FsServerReadTool,
+	FsServerWriteTool.ToolID:           FsServerWriteTool,
 }
 
 // RegisterRetrieveServerSkill adds retrieve_server_skill to the registry.
@@ -53,7 +55,7 @@ func ShouldStripResponse(content string) bool {
 	return strings.HasPrefix(content, "base64,")
 }
 
-func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest, hasAttachments bool, hasDocumentAttachments bool) []utils.ToolsRequest {
+func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest, hasAttachments bool, hasDocumentAttachments bool, hasAttachedFolder bool) []utils.ToolsRequest {
 	var requests []utils.ToolsRequest
 	var selected = model.Tools
 
@@ -119,5 +121,68 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 		requests = append(requests, RetrieveServerSkillTool.ToolRequest)
 	}
 
+	// Force-include the device-side filesystem tools whenever the user has
+	// attached a local folder to the conversation. Schema-only — the server
+	// doesn't execute them, the client does.
+	if hasAttachedFolder {
+		requests = append(requests, FsClientReadToolRequest)
+		requests = append(requests, FsClientWriteToolRequest)
+	}
+
 	return requests
+}
+
+// truncateWords returns the first n words of s, appending "..." if truncated.
+func truncateWords(s string, n int) string {
+	words := strings.Fields(s)
+	if len(words) <= n {
+		return s
+	}
+	return strings.Join(words[:n], " ") + "..."
+}
+
+// GetDisabledToolsSummary returns a compact text listing all tools that are
+// available but not enabled in model.Tools. The LLM can use this to suggest
+// enabling tools. Only the name and first 20 words of description are included
+// to minimise token usage.
+func GetDisabledToolsSummary(model utils.Model, ClientSideTools []utils.FunctionToolsRequest) string {
+	selected := model.Tools
+	var lines []string
+
+	// Builtin tools
+	for _, tool := range Registry {
+		if tool.ToolID == ConversationAttachmentsTool.ToolID || tool.ToolID == ReadDocumentTool.ToolID || tool.ToolID == SearchDocumentTool.ToolID {
+			continue
+		}
+		if tool.ToolID == RetrieveServerSkillTool.ToolID {
+			continue
+		}
+		selKey := tool.ToolID
+		if tool.BundleName != "" {
+			selKey = tool.BundleName + mcp.NamespaceSeparator + tool.ToolID
+		}
+		if _, ok := selected[selKey]; !ok {
+			lines = append(lines, fmt.Sprintf("- %s: %s", selKey, truncateWords(tool.ToolRequest.Function.Description, 20)))
+		}
+	}
+
+	// Server-side MCP tools
+	for _, mcpReq := range mcp.ToolsRequests() {
+		if _, ok := selected[mcpReq.Function.Name]; !ok {
+			lines = append(lines, fmt.Sprintf("- %s: %s", mcpReq.Function.Name, truncateWords(mcpReq.Function.Description, 20)))
+		}
+	}
+
+	// Client-side tools
+	for _, tool := range ClientSideTools {
+		if _, ok := selected[tool.Name]; !ok {
+			lines = append(lines, fmt.Sprintf("- %s: %s", tool.Name, truncateWords(tool.Description, 20)))
+		}
+	}
+
+	if len(lines) == 0 {
+		return ""
+	}
+
+	return "The following tools are available but currently disabled. If you need one, ask the user to enable it:\n" + strings.Join(lines, "\n")
 }

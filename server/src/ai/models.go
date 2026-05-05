@@ -29,7 +29,8 @@ var ValidModels = []string{
 	"kimi-k2p5",
 	"glm-5p1",
 	"minimax-m2p5",
-	"qwen3-30b-a3b-instruct-2507",
+	"qwen3-vl-30b-a3b-thinking",
+	"qwen3-vl-30b-a3b-instruct",
 	"qwen3p5-397b-a17b",
 
 	// Image generation models
@@ -94,6 +95,8 @@ var ValidActionModels = []string{
 	"Claude/claude-opus-4-6",
 
 	// Fireworks models
+	"qwen3-vl-30b-a3b-thinking",
+	"qwen3-vl-30b-a3b-instruct",
 	"llama4-scout-instruct-basic",
 	"llama4-maverick-instruct-basic",
 	"deepseek-r1",

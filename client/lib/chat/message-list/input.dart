@@ -8,6 +8,8 @@ import 'dart:async';
 import 'model-picker.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter/foundation.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:path/path.dart' as p;
 import 'attachments.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:cross_file/cross_file.dart';
@@ -17,6 +19,7 @@ import '../../utils/types.dart';
 import '../../utils/file-types.dart';
 import '../../api/stt.dart';
 import '../../api/models_service.dart';
+import '../../api/storage.dart';
 import './model-picker.dart';
 
 class InputBox extends StatefulWidget {
@@ -77,6 +80,49 @@ class _InputBoxState extends State<InputBox> {
   bool _isDragging = false;
   final FocusNode _pasteDetectorFocusNode = FocusNode();
   StreamSubscription? _subscription;
+
+  /// Cached attached folder for the current conversation, refreshed each
+  /// rebuild so the chip reflects what's stored in Hive.
+  String? _attachedFolderPath;
+
+  bool get _supportsFolderPicker =>
+      !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+
+  void _refreshAttachedFolder() {
+    if (widget.conversationId.isEmpty) {
+      _attachedFolderPath = null;
+      return;
+    }
+    final conv = ConversationStorage.getConversation(widget.conversationId);
+    _attachedFolderPath = conv?.attachedFolderPath;
+  }
+
+  Future<void> _attachFolder() async {
+    if (widget.conversationId.isEmpty) return;
+    try {
+      final selected = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'Attach a folder to this conversation',
+      );
+      if (selected == null || selected.isEmpty) return;
+      final canonical = p.canonicalize(selected);
+      await ConversationStorage.updateAttachedFolderPath(
+        widget.conversationId,
+        canonical,
+      );
+      if (mounted) setState(() => _attachedFolderPath = canonical);
+    } catch (e) {
+      debugPrint('[InputBox] folder attach failed: $e');
+    }
+  }
+
+  Future<void> _detachFolder() async {
+    if (widget.conversationId.isEmpty) return;
+    await ConversationStorage.updateAttachedFolderPath(
+      widget.conversationId,
+      null,
+    );
+    if (mounted) setState(() => _attachedFolderPath = null);
+  }
 
   @override
   void initState() {
@@ -516,6 +562,42 @@ class _InputBoxState extends State<InputBox> {
     return mimeTypes[ext];
   }
 
+  Widget _folderAttachButton(Color primaryColor) {
+    if (!_supportsFolderPicker || widget.conversationId.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    _refreshAttachedFolder();
+    final attached = _attachedFolderPath;
+    if (attached == null) {
+      return IconButton(
+        tooltip: 'Attach a folder for the AI to read/write',
+        onPressed: _attachFolder,
+        icon: Icon(Icons.create_new_folder_outlined, color: primaryColor),
+      );
+    }
+    final name = p.basename(attached);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: InputChip(
+        avatar: Icon(Icons.folder, size: 16, color: primaryColor),
+        label: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 120),
+          child: Text(
+            name,
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
+            style: const TextStyle(fontSize: 11),
+          ),
+        ),
+        tooltip: attached,
+        onDeleted: _detachFolder,
+        deleteIconColor: primaryColor,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+      ),
+    );
+  }
+
   Widget getPlus(Color primaryColor) {
     return Row(
       children: [
@@ -621,6 +703,10 @@ class _InputBoxState extends State<InputBox> {
           },
           icon: Icon(Icons.call, color: primaryColor),
         ),
+
+        // Folder attach button (desktop only) — sandbox for the device-side
+        // filesystem tools.
+        _folderAttachButton(primaryColor),
 
         SizedBox(width: 8),
 
