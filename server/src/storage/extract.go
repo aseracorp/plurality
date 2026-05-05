@@ -9,7 +9,9 @@ import (
 	"github.com/azukaar/plurality/src/utils"
 )
 
-const maxBlobSize = 100 * 1024 * 1024 // 100MB
+// MaxBlobSize is the maximum size of any single blob accepted by the storage
+// layer (data URIs in messages or files uploaded via /upload). 100MB.
+const MaxBlobSize = 100 * 1024 * 1024
 
 // ExtractBlobsFromMessage scans a Message's ContentParts for data: URIs,
 // saves them to disk, and replaces the URL with the internal path.
@@ -30,8 +32,8 @@ func ExtractBlobsFromMessage(userID string, msg *utils.Message) error {
 				utils.Error("[Storage] Failed to extract image blob", err)
 				continue
 			}
-			if len(data) > maxBlobSize {
-				return fmt.Errorf("blob exceeds maximum size of %d bytes", maxBlobSize)
+			if len(data) > MaxBlobSize {
+				return fmt.Errorf("blob exceeds maximum size of %d bytes", MaxBlobSize)
 			}
 			_ = mimeType
 			urlPath, err := SaveBlob(userID, data, ext)
@@ -48,8 +50,8 @@ func ExtractBlobsFromMessage(userID string, msg *utils.Message) error {
 				utils.Error("[Storage] Failed to extract document blob", err)
 				continue
 			}
-			if len(data) > maxBlobSize {
-				return fmt.Errorf("blob exceeds maximum size of %d bytes", maxBlobSize)
+			if len(data) > MaxBlobSize {
+				return fmt.Errorf("blob exceeds maximum size of %d bytes", MaxBlobSize)
 			}
 			urlPath, err := SaveBlob(userID, data, ext)
 			if err != nil {

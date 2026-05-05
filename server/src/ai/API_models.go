@@ -68,7 +68,6 @@ type ModelsResponse struct {
 	Skills          []SkillDef                `json:"skills,omitempty"`
 }
 
-
 // BuiltinFunctions are the server-provided tool toggles shown in the modal.
 // Bundled tools use namespaced keys (bundle__tool) matching the names sent to
 // the LLM. Standalone tools keep bare keys.

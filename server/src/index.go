@@ -134,6 +134,7 @@ func main() {
 
 	// Attachment file serving (authenticated)
 	r.HandleFunc("/attachments/{userId}/{month}/{filename}", auth.AuthMiddleware(storage.ServeAttachment)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/upload", auth.AuthMiddleware(storage.HandleUpload)).Methods("POST", "OPTIONS")
 
 	r.HandleFunc("/check", auth.AuthMiddleware(
 		func(w http.ResponseWriter, r *http.Request) {

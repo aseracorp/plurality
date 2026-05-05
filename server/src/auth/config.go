@@ -247,8 +247,8 @@ func defaultShortcuts() map[string]Shortcut {
 		"fast": {
 			Name: "fast", Label: "Fast and low cost", Pricing: "$", Color: "green",
 			Models: ShortcutModels{
-				Text:     &ShortcutModel{Name: "claude-haiku-4-6", Tools: cloneTools(defaultShortcutTools)},
-				Vision:   &ShortcutModel{Name: "claude-haiku-4-6", Tools: cloneTools(defaultShortcutTools)},
+				Text:     &ShortcutModel{Name: "qwen3-vl-30b-a3b-instruct", Tools: cloneTools(defaultShortcutTools)},
+				Vision:   &ShortcutModel{Name: "qwen3-vl-30b-a3b-instruct", Tools: cloneTools(defaultShortcutTools)},
 				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.2-dev"},
 			},
 		},
@@ -263,8 +263,8 @@ func defaultShortcuts() map[string]Shortcut {
 		"smart": {
 			Name: "smart", Label: "Best quality but slow", Pricing: "$$$", Color: "purple",
 			Models: ShortcutModels{
-				Text:     &ShortcutModel{Name: "claude-sonnet-4-6", Tools: cloneTools(defaultShortcutTools)},
-				Vision:   &ShortcutModel{Name: "claude-sonnet-4-6", Tools: cloneTools(defaultShortcutVisionTools)},
+				Text:     &ShortcutModel{Name: "claude-opus-4-7", Tools: cloneTools(defaultShortcutTools)},
+				Vision:   &ShortcutModel{Name: "claude-opus-4-7", Tools: cloneTools(defaultShortcutVisionTools)},
 				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.2-pro"},
 			},
 		},

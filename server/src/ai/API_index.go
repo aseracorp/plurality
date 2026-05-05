@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/azukaar/plurality/src/ai_tools"
+	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/storage"
@@ -119,7 +120,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Select model based on content (text vs vision)
-	model := SelectModel(payload.ModelSelected, conversation.Messages)
+	model := SelectModel(payload.ModelSelected, conversation)
 
 	// Create the ActiveRequest with a cancelable context that carries the userID
 	persistCtx := CopyUserContext(r)
@@ -297,7 +298,7 @@ func HandleApprove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Relaunch LLM loop
-	model := SelectModel(payload.ModelSelected, conversation.Messages)
+	model := SelectModel(payload.ModelSelected, *conversation)
 	persistCtx := CopyUserContext(r)
 	activeRequest := NewActiveRequest(conversation.ID, conversation.UserID, model, payload.ModelSelected)
 	cancelCtx, cancelFunc := context.WithCancel(persistCtx)
@@ -426,6 +427,27 @@ func API_HandleConversation(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// fastShortcutModels returns the text and imagegen model names from the "fast"
+// shortcut in data/config.json, with hardcoded fallbacks if the shortcut or a
+// specific slot is missing.
+func fastShortcutModels() (textModel, imageModel string) {
+	textModel = "qwen3-vl-30b-a3b-instruct"
+	imageModel = "black-forest-labs/FLUX.2-dev"
+	for _, s := range auth.GetConfig().Shortcuts {
+		if s.Name != "fast" {
+			continue
+		}
+		if s.Models.Text != nil && s.Models.Text.Name != "" {
+			textModel = s.Models.Text.Name
+		}
+		if s.Models.ImageGen != nil && s.Models.ImageGen.Name != "" {
+			imageModel = s.Models.ImageGen.Name
+		}
+		break
+	}
+	return
+}
+
 // generateTitleAndIcon generates a title and icon for a conversation and persists them.
 // Returns the generated title and icon (base64), or an error.
 func generateTitleAndIcon(ctx context.Context, conversation utils.Conversation) (string, string, error) {
@@ -445,13 +467,15 @@ func generateTitleAndIcon(ctx context.Context, conversation utils.Conversation) 
 		titlePayload = titlePayload[:500]
 	}
 
-	title, err := GenerateTitleForMessage(titlePayload)
+	textModel, imageModel := fastShortcutModels()
+
+	title, err := GenerateTitleForMessage(titlePayload, textModel)
 	if err != nil {
 		return "", "", fmt.Errorf("generating title: %w", err)
 	}
 
 	iconPrompt := "Simple illustration, visual, " + title
-	iconData, err := GenerateIconForConversation(iconPrompt)
+	iconData, err := GenerateIconForConversation(iconPrompt, imageModel)
 	if err != nil {
 		return "", "", fmt.Errorf("generating icon: %w", err)
 	}
@@ -490,9 +514,9 @@ func API_HandleTitleGeneration(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"title": title, "icon": iconData})
 }
 
-func GenerateIconForConversation(prompt string) (string, error) {
+func GenerateIconForConversation(prompt, model string) (string, error) {
 	request := ImageGenerationRequest{
-		Model:          "black-forest-labs/FLUX.2-dev",
+		Model:          model,
 		Prompt:         prompt,
 		Width:          128,
 		Height:         128,

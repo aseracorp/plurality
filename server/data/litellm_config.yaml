@@ -18,22 +18,31 @@ model_list:
       supports_function_calling: true
 
   # Claude
-  - model_name: "claude-haiku-4-6"
+  - model_name: "claude-haiku-4-7"
     litellm_params:
-      model: "anthropic/claude-haiku-4-6"
+      model: "anthropic/claude-haiku-4-7"
       api_key: "os.environ/CLAUDE_API_KEY"
     model_info:
       mode: "chat"
       supports_vision: true
       supports_function_calling: true
-  - model_name: "claude-sonnet-4-6"
+  - model_name: "claude-sonnet-4-7"
     litellm_params:
-      model: "anthropic/claude-sonnet-4-6"
+      model: "anthropic/claude-sonnet-4-7"
       api_key: "os.environ/CLAUDE_API_KEY"
     model_info:
       mode: "chat"
       supports_vision: true
       supports_function_calling: true
+  - model_name: "claude-opus-4-7"
+    litellm_params:
+      model: "anthropic/claude-opus-4-7"
+      api_key: "os.environ/CLAUDE_API_KEY"
+    model_info:
+      mode: "chat"
+      supports_vision: true
+      supports_function_calling: true
+
 
   # Fireworks
   - model_name: "qwen3p6-plus"
@@ -43,6 +52,24 @@ model_list:
     model_info:
       mode: "chat"
       supports_vision: true
+      supports_function_calling: true
+
+  - model_name: "glm-5p1"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/glm-5p1"
+      api_key: "os.environ/FIREWORK_KEY"
+    model_info:
+      mode: "chat"
+      supports_vision: false
+      supports_function_calling: true
+      
+  - model_name: "qwen3-vl-30b-a3b-instruct"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/qwen3-vl-30b-a3b-instruct"
+      api_key: "os.environ/FIREWORK_KEY"
+    model_info:
+      mode: "chat"
+      supports_vision: false
       supports_function_calling: true
 
   # Image generation

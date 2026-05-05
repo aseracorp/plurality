@@ -18,6 +18,15 @@ func IsDocumentType(partType string) bool {
 	return DocumentExtensions[partType]
 }
 
+// SupportedExts returns the list of document extensions the server can parse.
+func SupportedExts() []string {
+	exts := make([]string, 0, len(DocumentExtensions))
+	for k := range DocumentExtensions {
+		exts = append(exts, k)
+	}
+	return exts
+}
+
 // SearchMatch holds a single regex match result from a document.
 type SearchMatch struct {
 	Page    int    `json:"page,omitempty"`

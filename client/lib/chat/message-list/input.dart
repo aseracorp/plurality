@@ -38,6 +38,9 @@ class InputBox extends StatefulWidget {
   final FocusNode inputFocusNode;
   final void Function(Attachment? attachment) removeAttachment;
   final void Function(Attachment attachment) addAttachment;
+  /// Attach a local file (picker, drop, paste). The handler decides routing:
+  /// image → inline, text/code → snippet, otherwise → /upload.
+  final Future<void> Function(XFile xFile) attachFile;
   final void Function() handleStop;
   final bool isMobile;
   final ModelSelected selectedModel;
@@ -58,6 +61,7 @@ class InputBox extends StatefulWidget {
     required this.isMobile,
     required this.attachments,
     required this.addAttachment,
+    required this.attachFile,
     this.conversationId = '',
     this.placeholder = 'Message...',
     required this.removeAttachment,
@@ -352,16 +356,8 @@ class _InputBoxState extends State<InputBox> {
     try {
       final files = await Pasteboard.files();
       if (files.isNotEmpty) {
-        for (final file in files) {
-          final xFile = XFile(file);
-          final String fileName = xFile.name;
-          final String fileExt = fileName.split('.').last.toLowerCase();
-
-          if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].contains(fileExt)) {
-            await _processDroppedImage(xFile);
-          } else {
-            await _processDroppedFile(xFile, fileExt);
-          }
+        for (final filePath in files) {
+          await widget.attachFile(XFile(filePath));
         }
         return;
       }
@@ -446,120 +442,23 @@ class _InputBoxState extends State<InputBox> {
     }
   }
 
-  // Process dropped files
-  Future<void> _handleDroppedFiles(List<XFile> files) async {
+  /// Hand each dropped/pasted XFile off to the parent's single attach helper.
+  Future<void> _attachAllFiles(Iterable<XFile> files) async {
     for (final file in files) {
-      final String fileName = file.name;
-      final String fileExt = fileName.split('.').last.toLowerCase();
-
-      // Check if it's an image file
-      if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].contains(fileExt)) {
-        await _processDroppedImage(file);
-      } else {
-        await _processDroppedFile(file, fileExt);
+      try {
+        await widget.attachFile(file);
+      } catch (e) {
+        print('Error attaching file ${file.name}: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to attach ${file.name}'),
+              showCloseIcon: true,
+            ),
+          );
+        }
       }
     }
-  }
-
-  // Process dropped images
-  Future<void> _processDroppedImage(XFile file) async {
-    try {
-      final bytes = await file.readAsBytes();
-      final mimeType = _getMimeType(file.name) ?? 'image/jpeg';
-      final base64Data = base64Encode(bytes);
-
-      setState(() {
-        // Remove existing image attachments because we only support one image for now
-        widget.attachments.removeWhere((a) => a.type == 'image_url');
-        widget.addAttachment(
-          Attachment(
-            type: 'image_url',
-            content: 'data:$mimeType;base64,$base64Data',
-          ),
-        );
-      });
-    } catch (e) {
-      print('Error processing dropped image: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Failed to process image'),
-          showCloseIcon: true,
-        ),
-      );
-    }
-  }
-
-  // Process dropped files
-  Future<void> _processDroppedFile(XFile file, String fileExt) async {
-    try {
-      if (textFileExtensions.contains(fileExt)) {
-        final bytes = await file.readAsBytes();
-        final text = utf8.decode(bytes);
-        widget.addAttachment(
-          Attachment(
-            type: 'snippet',
-            filename: file.name,
-            ext: fileExt,
-            content: text,
-          ),
-        );
-      } else if (documentFileExtensions.contains(fileExt)) {
-        final bytes = await file.readAsBytes();
-        final base64Data = base64Encode(bytes);
-        final mimeType = _getMimeType(file.name) ?? 'application/octet-stream';
-        final attType = documentTypeExts.contains(fileExt) ? fileExt : 'file';
-
-        widget.addAttachment(
-          Attachment(
-            type: attType,
-            filename: file.name,
-            ext: fileExt,
-            content: 'data:$mimeType;base64,$base64Data',
-          ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Unsupported file type: .$fileExt'),
-            showCloseIcon: true,
-          ),
-        );
-      }
-    } catch (e) {
-      print('Error processing dropped file: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Failed to process file'),
-          showCloseIcon: true,
-        ),
-      );
-    }
-  }
-
-  // Helper to get MIME type from file extension
-  String? _getMimeType(String fileName) {
-    final ext = fileName.split('.').last.toLowerCase();
-    final mimeTypes = {
-      'jpg': 'image/jpeg',
-      'jpeg': 'image/jpeg',
-      'png': 'image/png',
-      'gif': 'image/gif',
-      'webp': 'image/webp',
-      'bmp': 'image/bmp',
-      'txt': 'text/plain',
-      'md': 'text/markdown',
-      'pdf': 'application/pdf',
-      'doc': 'application/msword',
-      'docx':
-          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'xls': 'application/vnd.ms-excel',
-      'xlsx':
-          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'ppt': 'application/vnd.ms-powerpoint',
-      'pptx':
-          'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    };
-    return mimeTypes[ext];
   }
 
   Widget _folderAttachButton(Color primaryColor) {
@@ -787,7 +686,7 @@ class _InputBoxState extends State<InputBox> {
     // Wrap with DropTarget for drag & drop functionality
     return DropTarget(
       onDragDone: (detail) {
-        _handleDroppedFiles(detail.files);
+        _attachAllFiles(detail.files);
       },
       onDragEntered: (detail) {
         setState(() {

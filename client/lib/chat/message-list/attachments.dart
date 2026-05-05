@@ -120,20 +120,26 @@ class AttachmentViewer extends StatelessWidget {
 
   Widget _buildDocumentCard(BuildContext context, {required IconData icon, required Color iconColor, required Color bgColor, required Color borderColor}) {
     final filename = attachment.filename ?? 'document.${attachment.ext ?? 'bin'}';
+    final isUploading = attachment.uploading;
+    final hasError = attachment.uploadError != null;
+    final effectiveBorderColor = hasError ? Colors.red.shade400 : borderColor;
     return Stack(
       children: [
         Padding(
           padding: const EdgeInsets.only(right: 8.0),
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: editMode ? null : () => _downloadFile(context),
+            onTap: (editMode || isUploading || hasError) ? null : () => _downloadFile(context),
             child: Container(
               width: mini ? 10 : 100,
               height: mini ? 10 : 100,
               decoration: BoxDecoration(
                 color: bgColor,
                 borderRadius: BorderRadius.circular(8.0),
-                border: Border.all(color: borderColor),
+                border: Border.all(
+                  color: effectiveBorderColor,
+                  width: hasError ? 2.0 : 1.0,
+                ),
               ),
               padding: const EdgeInsets.all(8.0),
               child: Column(
@@ -149,7 +155,7 @@ class AttachmentViewer extends StatelessWidget {
                       maxLines: 2,
                       textAlign: TextAlign.center,
                     ),
-                  if (!mini && !editMode) ...[
+                  if (!mini && !editMode && !isUploading && !hasError) ...[
                     const SizedBox(height: 2),
                     Icon(Icons.download, color: Colors.grey[500], size: 14),
                   ],
@@ -158,6 +164,31 @@ class AttachmentViewer extends StatelessWidget {
             ),
           ),
         ),
+        if (isUploading)
+          Positioned.fill(
+            right: 8.0,
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.6),
+                borderRadius: BorderRadius.circular(8.0),
+              ),
+              alignment: Alignment.center,
+              child: SizedBox(
+                width: mini ? 8 : 24,
+                height: mini ? 8 : 24,
+                child: CircularProgressIndicator(strokeWidth: 2.0),
+              ),
+            ),
+          ),
+        if (!isUploading && hasError && !mini)
+          Positioned(
+            left: 4,
+            bottom: 4,
+            child: Tooltip(
+              message: attachment.uploadError ?? 'Upload failed',
+              child: Icon(Icons.error_outline, color: Colors.red.shade400, size: 16),
+            ),
+          ),
         if (editMode)
           Positioned(
             right: 0,

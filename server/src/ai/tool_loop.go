@@ -35,7 +35,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		default:
 		}
 
-		model := SelectModel(payload.ModelSelected, conversation.Messages)
+		model := SelectModel(payload.ModelSelected, conversation)
 		ar.Model = model
 
 		ar.ResetBuffer()
@@ -329,14 +329,24 @@ func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.To
 		return utils.NewTextContent("Error: could not load conversation data")
 	}
 
-	// Inject user's selected image model into args if applicable
-	if tool.ToolID == "generate_image" && payload.ModelSelected.ImageGen != nil && payload.ModelSelected.ImageGen.Name != "" {
+	// Inject user's selected image model and the fs_read gate into args.
+	// The gate flag tells the image tool's Exec it's allowed to honor a 'path'
+	// argument — required because the schema-only gate in GetRequests can be
+	// bypassed by a hallucinated parameter.
+	if tool.ToolID == "generate_image" {
 		var argsMap map[string]string
 		if err := json.Unmarshal([]byte(args), &argsMap); err == nil {
 			if argsMap == nil {
 				argsMap = make(map[string]string)
 			}
-			argsMap["model"] = payload.ModelSelected.ImageGen.Name
+			if payload.ModelSelected.ImageGen != nil && payload.ModelSelected.ImageGen.Name != "" {
+				argsMap["model"] = payload.ModelSelected.ImageGen.Name
+			}
+			if payload.ModelSelected.Text != nil {
+				if _, ok := payload.ModelSelected.Text.Tools["filesystem_server"+mcp.NamespaceSeparator+"fs_read"]; ok {
+					argsMap["_fs_read_enabled"] = "true"
+				}
+			}
 			if newArgs, err := json.Marshal(argsMap); err == nil {
 				args = string(newArgs)
 			}

@@ -86,18 +86,33 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 				continue
 			}
 
-			// Never strip tiny attachments (< 1KB)
-			if att.Size < 3*kb {
-				newParts = append(newParts, part)
-				continue
-			}
-
-			// Determine staleness threshold based on attachment size
-			threshold := 3
-			if att.Size > 50*kb {
-				threshold = 1
-			} else if att.Size > 25*kb {
-				threshold = 2
+			// Images use role-based staleness: user-uploaded and explicit
+			// conversation_attachments recalls are visible only on their active
+			// turn (threshold 1); assistant/tool-side images are stripped
+			// immediately (threshold 0) — the LLM must call
+			// conversation_attachments to actually see them.
+			//
+			// Non-image attachments keep size-based thresholds and the
+			// "tiny attachments are always cheap to keep" guard.
+			var threshold int
+			if part.Type == "image_url" {
+				isRecall := msg.Role == "tool" && msg.Name == "conversation_attachments"
+				if msg.Role == "user" || isRecall {
+					threshold = 1
+				} else {
+					threshold = 0
+				}
+			} else {
+				if att.Size < 3*kb {
+					newParts = append(newParts, part)
+					continue
+				}
+				threshold = 3
+				if att.Size > 50*kb {
+					threshold = 1
+				} else if att.Size > 25*kb {
+					threshold = 2
+				}
 			}
 
 			if msgsSince < threshold {

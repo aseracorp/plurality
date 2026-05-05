@@ -6,13 +6,20 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 
 	"github.com/azukaar/plurality/src/utils"
 )
+
+const imagePathMaxBytes = 10 * 1024 * 1024 // 10 MB
 
 // LiteLLMBaseURL is the URL of the local litellm proxy. Set by main from
 // ai.LiteLLMBaseURL during bootstrap to avoid an import cycle with the ai
@@ -27,7 +34,7 @@ var ImageGenTool = utils.AITool{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
 			Name:        "generate_image",
-			Description: "Generate or edit an image from a text description. Write a detailed prompt covering style, composition, and subject. To edit an existing image, pass its attachment ID in the 'image' parameter.",
+			Description: "Generate or edit an image from a text description. Write a detailed prompt covering style, composition, and subject. To edit an existing image, pass its attachment ID in the 'attachment' parameter.",
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{
@@ -35,9 +42,9 @@ var ImageGenTool = utils.AITool{
 						Type:        "string",
 						Description: "Detailed image generation prompt",
 					},
-					"image": {
+					"attachment": {
 						Type:        "string",
-						Description: "Optional attachment ID (e.g. 'att_0') to edit an existing image",
+						Description: "Optional attachment ID from the conversation (e.g. 'att_0') to edit. This is an ID, NOT a file path.",
 					},
 				},
 				Required: []string{"prompt"},
@@ -72,37 +79,33 @@ var ImageGenTool = utils.AITool{
 		// 	steps = 28
 		// }
 
-		// Resolve input image attachment if provided (for image editing)
-		imageID := params["image"]
+		// Resolve input image (either attachment ID or server-side path).
+		attachmentID := params["attachment"]
+		imagePath := params["path"]
 		var inputImageURI string
 		width, height := 1024, 768
-		if imageID != "" {
-			uri, ratio, resolveErr := ResolveAttachmentImage(imageID, conv)
+
+		if attachmentID != "" && imagePath != "" {
+			return utils.NewTextContent("Error: provide only one of 'attachment' or 'path', not both")
+		}
+
+		if imagePath != "" {
+			if params["_fs_read_enabled"] != "true" {
+				return utils.NewTextContent("Error: 'path' requires the file read tool to be enabled")
+			}
+			uri, ratio, resolveErr := loadImageFromPath(imagePath)
+			if resolveErr != nil {
+				return utils.NewTextContent(fmt.Sprintf("Error reading image from path: %s", resolveErr.Error()))
+			}
+			inputImageURI = uri
+			width, height = computeOutputDims(ratio)
+		} else if attachmentID != "" {
+			uri, ratio, resolveErr := ResolveAttachmentImage(attachmentID, conv)
 			if resolveErr != nil {
 				return utils.NewTextContent(fmt.Sprintf("Error resolving image attachment: %s", resolveErr.Error()))
 			}
 			inputImageURI = uri
-			// Compute output dimensions preserving the source aspect ratio
-			// while keeping total pixels in the same ballpark (~786K pixels)
-			targetPixels := 1024.0 * 768.0
-			h := int(math.Sqrt(targetPixels / ratio))
-			w := int(float64(h) * ratio)
-			// Round to nearest multiple of 16, clamp to [256, 2048]
-			w = (w + 8) / 16 * 16
-			h = (h + 8) / 16 * 16
-			if w < 256 {
-				w = 256
-			}
-			if w > 2048 {
-				w = 2048
-			}
-			if h < 256 {
-				h = 256
-			}
-			if h > 2048 {
-				h = 2048
-			}
-			width, height = w, h
+			width, height = computeOutputDims(ratio)
 		}
 
 		// Build request
@@ -192,4 +195,76 @@ var ImageGenTool = utils.AITool{
 			},
 		})
 	},
+}
+
+// computeOutputDims preserves the source aspect ratio while keeping total
+// pixels around 1024x768, rounded to multiples of 16 and clamped to [256, 2048].
+func computeOutputDims(ratio float64) (int, int) {
+	targetPixels := 1024.0 * 768.0
+	h := int(math.Sqrt(targetPixels / ratio))
+	w := int(float64(h) * ratio)
+	w = (w + 8) / 16 * 16
+	h = (h + 8) / 16 * 16
+	if w < 256 {
+		w = 256
+	}
+	if w > 2048 {
+		w = 2048
+	}
+	if h < 256 {
+		h = 256
+	}
+	if h > 2048 {
+		h = 2048
+	}
+	return w, h
+}
+
+// loadImageFromPath reads a server-side image file and returns it as a data
+// URI plus its aspect ratio (width / height). Reuses resolveServerPath from
+// filesystem_server.go for '~'/relative path handling.
+func loadImageFromPath(p string) (string, float64, error) {
+	resolved, errMsg := resolveServerPath(p)
+	if errMsg != "" {
+		return "", 0, fmt.Errorf("%s", errMsg)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", 0, err
+	}
+	if info.IsDir() {
+		return "", 0, fmt.Errorf("path is a directory: %s", resolved)
+	}
+	if info.Size() > imagePathMaxBytes {
+		return "", 0, fmt.Errorf("file too large: %d bytes (max %d)", info.Size(), imagePathMaxBytes)
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		return "", 0, err
+	}
+	mimeType := sniffImageMime(data)
+	if mimeType == "" {
+		return "", 0, fmt.Errorf("file does not appear to be a supported image (PNG/JPEG/WebP/GIF)")
+	}
+	aspect := 4.0 / 3.0
+	if cfg, _, decErr := image.DecodeConfig(bytes.NewReader(data)); decErr == nil && cfg.Width > 0 && cfg.Height > 0 {
+		aspect = float64(cfg.Width) / float64(cfg.Height)
+	}
+	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data), aspect, nil
+}
+
+func sniffImageMime(b []byte) string {
+	if len(b) >= 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF {
+		return "image/jpeg"
+	}
+	if len(b) >= 4 && string(b[:4]) == "\x89PNG" {
+		return "image/png"
+	}
+	if len(b) >= 12 && string(b[:4]) == "RIFF" && string(b[8:12]) == "WEBP" {
+		return "image/webp"
+	}
+	if len(b) >= 6 && (string(b[:6]) == "GIF87a" || string(b[:6]) == "GIF89a") {
+		return "image/gif"
+	}
+	return ""
 }

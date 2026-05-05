@@ -477,6 +477,34 @@ class APIException implements Exception {
   String toString() => message;
 }
 
+// --- Upload (POST /upload response) ---
+
+class UploadResult {
+  final String url;
+  final String filename;
+  final String ext;
+  final String type;
+  final int size;
+
+  UploadResult({
+    required this.url,
+    required this.filename,
+    required this.ext,
+    required this.type,
+    required this.size,
+  });
+
+  factory UploadResult.fromJson(Map<String, dynamic> json) {
+    return UploadResult(
+      url: json['url'] as String,
+      filename: json['filename'] as String? ?? '',
+      ext: json['ext'] as String? ?? '',
+      type: json['type'] as String? ?? 'file',
+      size: (json['size'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
 // --- Attachments (for input UI) ---
 
 @HiveType(typeId: 5)
@@ -493,12 +521,37 @@ class Attachment {
   @HiveField(3)
   final String? ext;
 
+  // Transient UI state. Not persisted to Hive, not sent in toJson.
+  final bool uploading;
+  final String? uploadError;
+
   Attachment({
     required this.type,
     required this.content,
     this.filename,
     this.ext,
+    this.uploading = false,
+    this.uploadError,
   });
+
+  Attachment copyWith({
+    String? type,
+    String? content,
+    String? filename,
+    String? ext,
+    bool? uploading,
+    String? uploadError,
+    bool clearUploadError = false,
+  }) {
+    return Attachment(
+      type: type ?? this.type,
+      content: content ?? this.content,
+      filename: filename ?? this.filename,
+      ext: ext ?? this.ext,
+      uploading: uploading ?? this.uploading,
+      uploadError: clearUploadError ? null : (uploadError ?? this.uploadError),
+    );
+  }
 
   Map<String, dynamic> toJson() => {
     'type': type,

@@ -157,4 +157,3 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	}
 	w.Write(data)
 }
-

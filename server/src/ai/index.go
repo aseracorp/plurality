@@ -295,10 +295,16 @@ func convertMessagesToOpenAI(messages []utils.Message, _ utils.Model) ([]Standar
 
 // SelectModel picks the vision model if any message contains images and the
 // current text model doesn't already support vision; otherwise returns the text model.
-func SelectModel(modelSelected utils.ModelSelected, messages []utils.Message) utils.Model {
-	if modelSelected.Vision != nil && modelSelected.Text != nil {
-		for _, message := range messages {
-			if message.HasImages() && !Models.IsVisionModel(modelSelected.Text.Name) {
+//
+// Evaluation runs on the post-strip ephemeral view (PrepareMessagesForAI) so
+// that an image which has been stripped from the actual payload doesn't trigger
+// a vision swap — otherwise we'd pay for the vision model on text-only turns.
+func SelectModel(modelSelected utils.ModelSelected, conv utils.Conversation) utils.Model {
+	if modelSelected.Vision != nil && modelSelected.Text != nil &&
+		!Models.IsVisionModel(modelSelected.Text.Name) {
+		prepared, _, _ := PrepareMessagesForAI(conv.Messages, *modelSelected.Text)
+		for _, m := range prepared {
+			if m.HasImages() {
 				utils.Log("Vision model selected: %s", modelSelected.Vision.Name)
 				return *modelSelected.Vision
 			}
@@ -354,8 +360,9 @@ func GenerateImage(request ImageGenerationRequest) ([]byte, error) {
 }
 
 // GenerateTitleForMessage generates a short title for a conversation
-// using the LiteLLM proxy.
-func GenerateTitleForMessage(message string) (string, error) {
+// using the LiteLLM proxy. The model name is supplied by the caller — typically
+// the "fast" shortcut's text model from data/config.json.
+func GenerateTitleForMessage(message, model string) (string, error) {
 	if !LiteLLMReady() {
 		return "", fmt.Errorf("AI proxy is not ready")
 	}
@@ -374,7 +381,7 @@ func GenerateTitleForMessage(message string) (string, error) {
 	maxTokens := 30
 	temperature := 0.3
 	requestData := StandardChatRequest{
-		Model:       "claude-haiku-4-6",
+		Model:       model,
 		Messages:    msgReqList,
 		MaxTokens:   &maxTokens,
 		Temperature: &temperature,

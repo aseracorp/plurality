@@ -80,6 +80,31 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 				req.Function.Name = selKey
 				req.Function.Description = fmt.Sprintf("[%s] %s", tool.BundleName, req.Function.Description)
 			}
+			// When the file read tool is also enabled, expose a 'path' option on
+			// the image tool so agents can edit images directly off the server FS.
+			// When it's not enabled, hint that the capability exists so the LLM
+			// can ask the user to enable it.
+			if tool.ToolID == ImageGenTool.ToolID {
+				if _, fsReadEnabled := selected["filesystem_server"+mcp.NamespaceSeparator+"fs_read"]; fsReadEnabled {
+					// Deep-copy Properties — req is a shallow copy of the registry
+					// entry and shares the underlying map.
+					oldProps := req.Function.Parameters.Properties
+					newProps := make(map[string]utils.PropertyParameterToolsRequest, len(oldProps)+1)
+					for k, v := range oldProps {
+						newProps[k] = v
+					}
+					newProps["path"] = utils.PropertyParameterToolsRequest{
+						Type:        "string",
+						Description: "Optional absolute or '~/'-prefixed server file path to load as the source image for editing. Mutually exclusive with 'attachment'.",
+					}
+					newParams := *req.Function.Parameters
+					newParams.Properties = newProps
+					req.Function.Parameters = &newParams
+					req.Function.Description += " You may also pass 'path' to load a server-side file as the source image (instead of an 'attachment' ID)."
+				} else {
+					req.Function.Description += " (Note: editing an image directly from a server file path is also supported, but requires the user to enable the 'Read Files (Server)' tool — ask the user to enable it if they want to edit a file by path.)"
+				}
+			}
 			requests = append(requests, req)
 		}
 	}

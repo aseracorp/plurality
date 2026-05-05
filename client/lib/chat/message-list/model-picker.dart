@@ -422,7 +422,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
                       Process.run('xdg-open', [appDocumentDirectory]);
                     }
                   },
-                  child: const Text('Edit MCP File (BETA)'),
+                  child: const Text('Edit MCP File'),
                 ),
               TextButton(
                 onPressed: () => Navigator.pop(context),

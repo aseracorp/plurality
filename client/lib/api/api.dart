@@ -73,6 +73,33 @@ class ApiService {
     }
   }
 
+  /// Upload a file to /upload. Returns the internal attachment URL plus metadata.
+  /// Used for non-image, non-text attachments (PDFs, docx, zips, etc.) so the
+  /// AI agent can act on the original file via read_document and friends.
+  Future<UploadResult> uploadAttachment({
+    required String filename,
+    required Uint8List bytes,
+  }) async {
+    final token = await _authService.getCurrentUserToken();
+    if (token == null) {
+      throw APIException('User not authenticated', statusCode: 401);
+    }
+
+    final req = http.MultipartRequest('POST', Uri.parse('$baseUrl/upload'));
+    req.headers['Authorization'] = 'Bearer $token';
+    req.files.add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
+
+    final streamed = await req.send();
+    final body = await streamed.stream.bytesToString();
+    if (streamed.statusCode != 200) {
+      throw APIException(
+        body.isNotEmpty ? body : 'Upload failed',
+        statusCode: streamed.statusCode,
+      );
+    }
+    return UploadResult.fromJson(jsonDecode(body));
+  }
+
   /// Search conversations via server-side FTS5 + vector search.
   /// Returns conversation IDs ranked by relevance.
   Future<List<String>> searchConversations(String query) async {

@@ -16,6 +16,8 @@ import '../../api/preferences_provider.dart';
 import 'AnimatedMessageBox.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:cross_file/cross_file.dart';
+import 'package:mime/mime.dart';
 import 'package:top_snackbar_flutter/top_snack_bar.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'image.dart';
@@ -349,48 +351,113 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         type: FileType.custom,
         allowedExtensions: textFileExtensions + documentFileExtensions,
       );
-
       if (result != null) {
-        final PlatformFile file = result.files.single;
-        final xFile = file.xFile;
-        final mimeType = file.extension ?? 'binary/octet-stream';
-        // if is in textFileExtensions see as snippet
-
-        if (textFileExtensions.contains(mimeType)) {
-          final bytes = await xFile.readAsBytes();
-          final text = utf8.decode(bytes);
-          setState(() {
-            attachments.add(
-              Attachment(
-                type: 'snippet',
-                filename: file.name,
-                ext: mimeType,
-                content: text,
-              ),
-            );
-          });
-        } else {
-          final bytes = await xFile.readAsBytes();
-          final base64Data = base64Encode(bytes);
-          final attType = documentTypeExts.contains(mimeType) ? mimeType : 'file';
-
-          setState(() {
-            attachments.add(
-              Attachment(
-                type: attType,
-                filename: file.name,
-                ext: mimeType,
-                content: 'data:$mimeType;base64,$base64Data',
-              ),
-            );
-          });
-        }
+        await _attachFile(result.files.single.xFile);
       }
     } catch (e) {
       print('Error picking file: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Failed to pick file'),
+          showCloseIcon: true,
+        ),
+      );
+    }
+  }
+
+  /// Single entry point for attaching a local file from any source
+  /// (file picker, drag-and-drop, paste). Routes by extension:
+  /// image → inline data URI, text/code → inline snippet, otherwise → /upload.
+  Future<void> _attachFile(XFile xFile) async {
+    final filename = xFile.name;
+    final dotIdx = filename.lastIndexOf('.');
+    final ext = dotIdx >= 0 ? filename.substring(dotIdx + 1).toLowerCase() : '';
+
+    if (imageFileExtensions.contains(ext)) {
+      final bytes = await xFile.readAsBytes();
+      final mimeType = lookupMimeType(filename, headerBytes: bytes) ?? 'image/jpeg';
+      final base64Data = base64Encode(bytes);
+      setState(() {
+        // Only one image at a time.
+        attachments.removeWhere((a) => a.type == 'image_url');
+        attachments.add(
+          Attachment(
+            type: 'image_url',
+            content: 'data:$mimeType;base64,$base64Data',
+          ),
+        );
+      });
+      return;
+    }
+
+    if (textFileExtensions.contains(ext)) {
+      final bytes = await xFile.readAsBytes();
+      final text = utf8.decode(bytes);
+      setState(() {
+        attachments.add(
+          Attachment(
+            type: 'snippet',
+            filename: filename,
+            ext: ext,
+            content: text,
+          ),
+        );
+      });
+      return;
+    }
+
+    await _uploadAttachment(xFile, filename, ext);
+  }
+
+  /// Upload a non-image, non-text attachment to /upload and add it to the
+  /// composer state. Shows a spinner placeholder until the upload settles.
+  Future<void> _uploadAttachment(XFile xFile, String filename, String ext) async {
+    final attType = documentTypeExts.contains(ext) ? ext : 'file';
+    final placeholder = Attachment(
+      type: attType,
+      filename: filename,
+      ext: ext,
+      content: '',
+      uploading: true,
+    );
+    setState(() {
+      attachments.add(placeholder);
+    });
+
+    try {
+      final bytes = await xFile.readAsBytes();
+      final result = await _apiService.uploadAttachment(
+        filename: filename,
+        bytes: bytes,
+      );
+      if (!mounted) return;
+      setState(() {
+        final idx = attachments.indexOf(placeholder);
+        if (idx >= 0) {
+          attachments[idx] = placeholder.copyWith(
+            type: result.type,
+            content: result.url,
+            ext: result.ext.isNotEmpty ? result.ext : ext,
+            uploading: false,
+            clearUploadError: true,
+          );
+        }
+      });
+    } catch (e) {
+      print('Error uploading attachment: $e');
+      if (!mounted) return;
+      setState(() {
+        final idx = attachments.indexOf(placeholder);
+        if (idx >= 0) {
+          attachments[idx] = placeholder.copyWith(
+            uploading: false,
+            uploadError: e.toString(),
+          );
+        }
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to upload "$filename"'),
           showCloseIcon: true,
         ),
       );
@@ -408,6 +475,25 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
   /// Create a Message from user input and delegate to ChatService.
   Future<void> _submitMessage(String? userMessage) async {
+    // Refuse to submit while any attachment is still uploading or has errored.
+    if (attachments.any((a) => a.uploading)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please wait for uploads to finish'),
+          showCloseIcon: true,
+        ),
+      );
+      return;
+    }
+    if (attachments.any((a) => a.uploadError != null)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Remove failed uploads before sending'),
+          showCloseIcon: true,
+        ),
+      );
+      return;
+    }
     _needsBottomMargin = false;
     final conversationsNotifier = ref.read(conversationsProvider.notifier);
 
@@ -1083,6 +1169,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
               isMobile: widget.isMobile,
               messageController: _messageController,
               addAttachment: _addAttachment,
+              attachFile: _attachFile,
               onSend: _handleSubmit,
               isLoading: isProcessing,
               handleStop: _handleStop,

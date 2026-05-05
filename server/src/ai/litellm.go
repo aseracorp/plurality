@@ -220,5 +220,3 @@ func findPythonBin() string {
 	}
 	return "python"
 }
-
-
