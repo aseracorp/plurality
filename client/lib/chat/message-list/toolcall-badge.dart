@@ -3,19 +3,20 @@ import '../../utils/types.dart';
 import '../../utils/index.dart' show formatToolDisplayName;
 import 'dart:convert';
 import 'fs_write_diff.dart';
+import 'fs_read_attach.dart';
 
 class ToolCallBadge extends StatelessWidget {
   final ToolCall toolCall;
   final VoidCallback? onTap;
   final bool isLoading;
-  final ContentPart? result;
+  final Message? resultMessage;
 
   const ToolCallBadge({
     Key? key,
     required this.toolCall,
     this.onTap,
     this.isLoading = false,
-    this.result,
+    this.resultMessage,
   }) : super(key: key);
 
   @override
@@ -44,6 +45,13 @@ class ToolCallBadge extends StatelessWidget {
       argumentsJson: toolCall.function.arguments,
       context: context,
       maxHeight: 220,
+    );
+
+    final inlineReadAttach = buildFsReadAttach(
+      toolName: toolCall.function.name,
+      argumentsJson: toolCall.function.arguments,
+      resultMessage: resultMessage,
+      context: context,
     );
 
     final chip = Container(
@@ -132,6 +140,14 @@ class ToolCallBadge extends StatelessWidget {
                 child: inlineDiff,
               ),
             ],
+            if (inlineReadAttach != null) ...[
+              const SizedBox(height: 6),
+              FractionallySizedBox(
+                widthFactor: 0.5,
+                alignment: Alignment.centerLeft,
+                child: inlineReadAttach,
+              ),
+            ],
           ],
         ),
       ),
@@ -162,7 +178,7 @@ class ToolCallBadge extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           SelectableText(
-            result?.text ?? '(pending...)',
+            resultMessage?.textContent ?? '(pending...)',
             style: TextStyle(
               fontSize: 13.0,
               fontFamily: 'monospace',
@@ -177,7 +193,7 @@ class ToolCallBadge extends StatelessWidget {
       "Tool: ${formatToolDisplayName(toolCall.function.name)}\n"
       "Arguments: ${toolCall.function.arguments}\n"
       "------------------\n"
-      "${result?.text ?? '(pending...)'}",
+      "${resultMessage?.textContent ?? '(pending...)'}",
       style: TextStyle(
         fontSize: 14.0,
         color: isDarkMode ? Colors.white : Colors.black,

@@ -31,6 +31,7 @@ import './MiniAppForm.dart';
 import 'middle-click.dart';
 import 'package:super_sliver_list/super_sliver_list.dart';
 import 'toolcall-badge.dart';
+import 'fs_read_attach.dart' show isFsReadAttachCall;
 import 'fs_write_diff.dart';
 
 class ChatInterface extends ConsumerStatefulWidget {
@@ -824,11 +825,18 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         ToolCallBadge(
           toolCall: displayToolCall,
           isLoading: isProcessing && index >= visibleMessageCount - 1 && toolResultMessage == null,
-          result: toolResultMessage != null ? ContentPart(type: 'text', text: parsed.text) : null,
+          resultMessage: toolResultMessage,
         ),
       ];
 
-      if (toolCall.function.name != 'conversation_attachments') {
+      // read_attach renders its own attachment preview inside the badge —
+      // skip the default image-preview pass to avoid duplicate display.
+      final isReadAttach = isFsReadAttachCall(
+        toolCall.function.name,
+        toolCall.function.arguments,
+      );
+
+      if (toolCall.function.name != 'conversation_attachments' && !isReadAttach) {
         for (final url in parsed.images) {
           widgets.add(ImagePreviewComponent(imageUrl: url, mini: mini));
         }

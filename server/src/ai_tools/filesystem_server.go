@@ -3,6 +3,7 @@ package ai_tools
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/azukaar/plurality/src/docsupport"
+	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -31,14 +34,14 @@ var FsServerReadTool = utils.AITool{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
 			Name:        "fs_read",
-			Description: "Read filesystem on the server. Set 'op' to one of: list (directory entries), find (recursive name pattern match), read (whole file as text), read_segment (line range of a text file), stat (file metadata).",
+			Description: "Read filesystem on the server. Set 'op' to one of: list (directory entries), find (recursive name pattern match), read (whole file as text), read_segment (line range of a text file), stat (file metadata), read_attach (load a file as a conversation attachment so the user can download it and the assistant can reference it as 'att_N' on later turns).",
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{
 					"op": {
 						Type:        "string",
-						Description: "Operation: list | find | read | read_segment | stat",
-						Enum:        []string{"list", "find", "read", "read_segment", "stat"},
+						Description: "Operation: list | find | read | read_segment | stat | read_attach",
+						Enum:        []string{"list", "find", "read", "read_segment", "stat", "read_attach"},
 					},
 					"path": {
 						Type:        "string",
@@ -80,14 +83,14 @@ var FsServerWriteTool = utils.AITool{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
 			Name:        "fs_write",
-			Description: "Modify the server filesystem. Set 'op' to one of: create (write a new file, fails if exists), edit (search-and-replace inside an existing file), copy, move, delete, mkdir.",
+			Description: "Modify the server filesystem. Set 'op' to one of: create (write a new file, fails if exists), edit (search-and-replace inside an existing file), copy, move, delete, mkdir, save_attach (write a conversation attachment — e.g. a generated image or uploaded file — to a path on disk).",
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{
 					"op": {
 						Type:        "string",
-						Description: "Operation: create | edit | copy | move | delete | mkdir",
-						Enum:        []string{"create", "edit", "copy", "move", "delete", "mkdir"},
+						Description: "Operation: create | edit | copy | move | delete | mkdir | save_attach",
+						Enum:        []string{"create", "edit", "copy", "move", "delete", "mkdir", "save_attach"},
 					},
 					"path": {
 						Type:        "string",
@@ -108,6 +111,14 @@ var FsServerWriteTool = utils.AITool{
 					"new_text": {
 						Type:        "string",
 						Description: "For 'edit': replacement text.",
+					},
+					"attachment_id": {
+						Type:        "string",
+						Description: "For 'save_attach': conversation attachment ID (e.g. 'att_0') identifying the attachment to write to disk.",
+					},
+					"overwrite": {
+						Type:        "string",
+						Description: "For 'save_attach': 'true' to overwrite an existing file at 'path'. Defaults to 'false' (refuses to overwrite).",
 					},
 				},
 				Required: []string{"op", "path"},
@@ -152,6 +163,8 @@ func execFsServerRead(ctx context.Context, input string, conv utils.Conversation
 		return utils.NewTextContent(fsReadSegment(path, start, end))
 	case "stat":
 		return utils.NewTextContent(fsStat(path))
+	case "read_attach":
+		return fsReadAttach(path, conv)
 	default:
 		return utils.NewTextContent(fmt.Sprintf("Error: unknown op %q", op))
 	}
@@ -209,6 +222,10 @@ func execFsServerWrite(ctx context.Context, input string, conv utils.Conversatio
 		return utils.NewTextContent(fsDelete(path))
 	case "mkdir":
 		return utils.NewTextContent(fsMkdir(path))
+	case "save_attach":
+		attachmentID, _ := parsed["attachment_id"].(string)
+		overwrite := strings.EqualFold(asString(parsed["overwrite"]), "true")
+		return utils.NewTextContent(fsSaveAttach(path, attachmentID, overwrite, conv))
 	default:
 		return utils.NewTextContent(fmt.Sprintf("Error: unknown op %q", op))
 	}
@@ -569,6 +586,158 @@ func fsMkdir(path string) string {
 		return fmt.Sprintf("Error: %s", err)
 	}
 	return fmt.Sprintf("Created directory %s", path)
+}
+
+// fsReadAttach reads a file and emits it as a conversation attachment so the
+// user can download it and the assistant can reference it on later turns. For
+// images and supported document formats we emit a data: URI and let the tool
+// loop's blob extraction persist it; for arbitrary binaries we save manually
+// and emit a "file" content part with the resulting /attachments/... URL.
+func fsReadAttach(path string, conv utils.Conversation) utils.MessageContent {
+	info, err := os.Stat(path)
+	if err != nil {
+		return utils.NewTextContent(fmt.Sprintf("Error: %s", err))
+	}
+	if info.IsDir() {
+		return utils.NewTextContent(fmt.Sprintf("Error: %q is a directory; read_attach requires a file", path))
+	}
+	if info.Size() > storage.MaxBlobSize {
+		return utils.NewTextContent(fmt.Sprintf("Error: file too large: %d bytes (max %d)", info.Size(), storage.MaxBlobSize))
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return utils.NewTextContent(fmt.Sprintf("Error: %s", err))
+	}
+
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
+	imageMime := sniffImageMime(data)
+	if imageMime != "" {
+		switch imageMime {
+		case "image/png":
+			ext = "png"
+		case "image/jpeg":
+			ext = "jpg"
+		case "image/webp":
+			ext = "webp"
+		case "image/gif":
+			ext = "gif"
+		}
+	} else if ext == "" {
+		ext = "bin"
+	}
+
+	filename := filepath.Base(path)
+	b64 := base64.StdEncoding.EncodeToString(data)
+
+	var attachmentPart utils.ContentPart
+	switch {
+	case imageMime != "":
+		attachmentPart = utils.ContentPart{
+			Type:     "image_url",
+			ImageURL: &utils.ContentImageURL{URL: "data:" + imageMime + ";base64," + b64},
+			Filename: filename,
+		}
+	case docsupport.IsDocumentType(ext):
+		attachmentPart = utils.ContentPart{
+			Type:     ext,
+			Text:     "data:" + mimeFromExt(ext) + ";base64," + b64,
+			Filename: filename,
+		}
+	default:
+		url, saveErr := storage.SaveBlob(conv.UserID, data, ext)
+		if saveErr != nil {
+			return utils.NewTextContent(fmt.Sprintf("Error saving attachment: %s", saveErr))
+		}
+		attachmentPart = utils.ContentPart{
+			Type:     "file",
+			Text:     url,
+			Filename: filename,
+		}
+	}
+
+	return utils.NewPartsContent([]utils.ContentPart{
+		attachmentPart,
+		{
+			Type: "text",
+			Text: fmt.Sprintf("Attached %s (%d bytes) from %s", filename, len(data), path),
+		},
+	})
+}
+
+// fsSaveAttach writes a conversation attachment to disk at the given path. The
+// attachment is resolved by ID via ResolveAttachment, which returns either a
+// data: URI (for binaries / images / documents) or plain text (for snippets).
+// Refuses to overwrite an existing file unless overwrite=true.
+func fsSaveAttach(path, attachmentID string, overwrite bool, conv utils.Conversation) string {
+	if attachmentID == "" {
+		return "Error: 'attachment_id' is required for save_attach"
+	}
+
+	content, meta, err := ResolveAttachment(attachmentID, conv)
+	if err != nil {
+		return fmt.Sprintf("Error: %s", err)
+	}
+
+	var data []byte
+	if strings.HasPrefix(content, "data:") {
+		decoded, _, _, decodeErr := storage.ExtractBlobFromDataURI(content)
+		if decodeErr != nil {
+			return fmt.Sprintf("Error decoding attachment: %s", decodeErr)
+		}
+		data = decoded
+	} else {
+		data = []byte(content)
+	}
+
+	if !overwrite {
+		if _, statErr := os.Stat(path); statErr == nil {
+			return fmt.Sprintf("Error: %q already exists. Set 'overwrite'=\"true\" to replace.", path)
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Sprintf("Error creating parent directory: %s", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Sprintf("Error writing file: %s", err)
+	}
+
+	filename := ""
+	if meta != nil {
+		filename = meta.Filename
+	}
+	if filename != "" {
+		return fmt.Sprintf("Saved attachment %s (%s, %d bytes) to %s", attachmentID, filename, len(data), path)
+	}
+	return fmt.Sprintf("Saved attachment %s (%d bytes) to %s", attachmentID, len(data), path)
+}
+
+// mimeFromExt returns a MIME type for the small set of extensions that can be
+// emitted as inline data: URIs by read_attach. The blob extractor needs a
+// recognisable MIME to map back to the right on-disk extension; falls back to
+// application/octet-stream for anything unexpected.
+func mimeFromExt(ext string) string {
+	switch ext {
+	case "png":
+		return "image/png"
+	case "jpg", "jpeg":
+		return "image/jpeg"
+	case "webp":
+		return "image/webp"
+	case "gif":
+		return "image/gif"
+	case "pdf":
+		return "application/pdf"
+	case "docx":
+		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	case "xlsx":
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case "pptx":
+		return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 // --- arg coercion helpers ---

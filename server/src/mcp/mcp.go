@@ -601,12 +601,13 @@ func HasAnyServers() bool {
 func defaultMCPConfig() string {
 	cfg := map[string]interface{}{
 		"mcpServers": map[string]interface{}{
-			"lightpanda": map[string]interface{}{
-				"command":     "/app/lightpanda",
-				"args":        []string{"mcp"},
-				"stateful":    true,
-				"description": "Lightpanda headless browser for interactive web browsing with JavaScript support. Only use for heavier web tasks requiring JS rendering, form interaction, or dynamic content. For simple page fetching, prefer the visit_link tool instead.",
-			},
+			// TODO: replace with Playwright
+			// "lightpanda": map[string]interface{}{
+			// 	"command":     "/app/lightpanda",
+			// 	"args":        []string{"mcp"},
+			// 	"stateful":    true,
+			// 	"description": "Lightpanda headless browser for interactive web browsing with JavaScript support. Only use for heavier web tasks requiring JS rendering, form interaction, or dynamic content. For simple page fetching, prefer the visit_link tool instead.",
+			// },
 		},
 	}
 	b, _ := json.MarshalIndent(cfg, "", "  ")
