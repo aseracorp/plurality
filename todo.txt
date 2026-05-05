@@ -2,6 +2,8 @@
 - Remove Firebase
 - Remove Mongo
 - budget
+- mini apps > preset 
+- basic CRON 
 
 - files tools 
   - missing: save attachment / load attachment (attach file to convo)
@@ -61,6 +63,17 @@
 - local or incognito mode? or both?
 - Custom personal mini apps? (or at least placeholders)
 - Custom mini apps
+- Publish Apps each platform
+- eco mode 
+- Backend to accept new conversation that have multiple messages (seems like a bug that conversation might be missing from DB?)
+		- AHHHH may be I removed a conversation on one client but not the other!!!
+
+# More 
+- model popup should show preset when one is selected
+
+# Roadmap to public
+- Login / Register
+  - google 
 - AI Function calls 
 	- Get tool_Result to work with Toegtehr / ChatGPT ?
 	- embeds (ex. maps or calendars)

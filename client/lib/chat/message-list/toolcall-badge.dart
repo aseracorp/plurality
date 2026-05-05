@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../utils/types.dart';
 import '../../utils/index.dart' show formatToolDisplayName;
 import 'dart:convert';
+import 'fs_write_diff.dart';
 
 class ToolCallBadge extends StatelessWidget {
   final ToolCall toolCall;
@@ -38,76 +39,148 @@ class ToolCallBadge extends StatelessWidget {
         .replaceAll('  ', ' ')
         .trim();
 
+    final inlineDiff = buildFsWriteDiff(
+      toolName: toolCall.function.name,
+      argumentsJson: toolCall.function.arguments,
+      context: context,
+      maxHeight: 220,
+    );
+
+    final chip = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Icon — from base64 if available, else fallback
+          if (toolCall.iconURL.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: Image.memory(
+                  base64Decode(toolCall.iconURL),
+                  width: 18,
+                  fit: BoxFit.cover,
+                  cacheWidth: 18,
+                  gaplessPlayback: true,
+                ),
+              ),
+            )
+          else
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Icon(
+                Icons.extension,
+                size: 16,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+
+          // Tool display text
+          Flexible(
+            child: Text(
+              loadingString.isEmpty ? formatToolDisplayName(toolCall.function.name) : loadingString,
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w500,
+                fontSize: 14,
+              ),
+            ),
+          ),
+
+          // Loading indicator
+          if (isLoading)
+            Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+
     return GestureDetector(
       onTap: () => _showPreviewModal(context),
       child: Container(
         margin: const EdgeInsets.only(bottom: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5),
-          ),
-        ),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Icon — from base64 if available, else fallback
-            if (toolCall.iconURL.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: Image.memory(
-                    base64Decode(toolCall.iconURL),
-                    width: 18,
-                    fit: BoxFit.cover,
-                    cacheWidth: 18,
-                    gaplessPlayback: true,
-                  ),
-                ),
-              )
-            else
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: Icon(
-                  Icons.extension,
-                  size: 16,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
+            Align(alignment: Alignment.centerLeft, child: chip),
+            if (inlineDiff != null) ...[
+              const SizedBox(height: 6),
+              FractionallySizedBox(
+                widthFactor: 0.5,
+                alignment: Alignment.centerLeft,
+                child: inlineDiff,
               ),
-
-            // Tool display text
-            Flexible(
-              child: Text(
-                loadingString.isEmpty ? formatToolDisplayName(toolCall.function.name) : loadingString,
-                overflow: TextOverflow.ellipsis,
-                maxLines: 1,
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  fontWeight: FontWeight.w500,
-                  fontSize: 14,
-                ),
-              ),
-            ),
-
-            // Loading indicator
-            if (isLoading)
-              Padding(
-                padding: const EdgeInsets.only(left: 8),
-                child: SizedBox(
-                  width: 12,
-                  height: 12,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
+            ],
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildPreviewBody(BuildContext context, bool isDarkMode) {
+    final diff = buildFsWriteDiff(
+      toolName: toolCall.function.name,
+      argumentsJson: toolCall.function.arguments,
+      context: context,
+      maxHeight: MediaQuery.of(context).size.height * 0.45,
+    );
+
+    if (diff != null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          diff,
+          const SizedBox(height: 12),
+          Text(
+            'Result',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: isDarkMode ? Colors.white70 : Colors.black54,
+            ),
+          ),
+          const SizedBox(height: 4),
+          SelectableText(
+            result?.text ?? '(pending...)',
+            style: TextStyle(
+              fontSize: 13.0,
+              fontFamily: 'monospace',
+              color: isDarkMode ? Colors.white : Colors.black,
+            ),
+          ),
+        ],
+      );
+    }
+
+    return SelectableText(
+      "Tool: ${formatToolDisplayName(toolCall.function.name)}\n"
+      "Arguments: ${toolCall.function.arguments}\n"
+      "------------------\n"
+      "${result?.text ?? '(pending...)'}",
+      style: TextStyle(
+        fontSize: 14.0,
+        color: isDarkMode ? Colors.white : Colors.black,
       ),
     );
   }
@@ -167,16 +240,7 @@ class ToolCallBadge extends StatelessWidget {
                 ),
                 padding: const EdgeInsets.all(16.0),
                 child: SingleChildScrollView(
-                  child: SelectableText(
-                    "Tool: ${formatToolDisplayName(toolCall.function.name)}\n"
-                    "Arguments: ${toolCall.function.arguments}\n"
-                    "------------------\n"
-                    "${result?.text ?? '(pending...)'}",
-                    style: TextStyle(
-                      fontSize: 14.0,
-                      color: isDarkMode ? Colors.white : Colors.black,
-                    ),
-                  ),
+                  child: _buildPreviewBody(context, isDarkMode),
                 ),
               ),
             ],

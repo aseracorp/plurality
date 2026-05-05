@@ -30,6 +30,7 @@ import './MiniAppForm.dart';
 import 'middle-click.dart';
 import 'package:super_sliver_list/super_sliver_list.dart';
 import 'toolcall-badge.dart';
+import 'fs_write_diff.dart';
 
 class ChatInterface extends ConsumerStatefulWidget {
   final String conversationId;
@@ -1303,6 +1304,22 @@ class ToolApprovalBanner extends StatefulWidget {
 class _ToolApprovalBannerState extends State<ToolApprovalBanner> {
   final Map<String, bool> _decisions = {};
 
+  /// Per-tool scroll controllers so each args strip has its own Scrollbar.
+  /// Lazily created in [_argsScrollController] and disposed on unmount.
+  final Map<String, ScrollController> _argsControllers = {};
+
+  ScrollController _argsScrollController(String toolCallId) {
+    return _argsControllers.putIfAbsent(toolCallId, () => ScrollController());
+  }
+
+  @override
+  void dispose() {
+    for (final c in _argsControllers.values) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
   String _formatArgs(String argsJson) {
     try {
       final args = Map<String, dynamic>.from(jsonDecode(argsJson));
@@ -1464,24 +1481,50 @@ class _ToolApprovalBannerState extends State<ToolApprovalBanner> {
                             ),
                         ],
                       ),
-                      if (argsFormatted.isNotEmpty) ...[
+                      if (() {
+                        final diff = buildFsWriteDiff(
+                          toolName: tc.function.name,
+                          argumentsJson: tc.function.arguments,
+                          context: context,
+                          maxHeight: 220,
+                        );
+                        return diff != null;
+                      }()) ...[
+                        const SizedBox(height: 6),
+                        Builder(builder: (context) {
+                          final diff = buildFsWriteDiff(
+                            toolName: tc.function.name,
+                            argumentsJson: tc.function.arguments,
+                            context: context,
+                            maxHeight: 220,
+                          )!;
+                          return diff;
+                        }),
+                      ] else if (argsFormatted.isNotEmpty) ...[
                         const SizedBox(height: 6),
                         ConstrainedBox(
-                          constraints: const BoxConstraints(maxHeight: 50),
-                          child: SingleChildScrollView(
-                            child: Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.5),
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                              child: Text(
-                                argsFormatted,
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontFamily: 'monospace',
-                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          constraints: const BoxConstraints(maxHeight: 70),
+                          child: Scrollbar(
+                            controller: _argsScrollController(tc.id),
+                            thumbVisibility: true,
+                            thickness: 4,
+                            radius: const Radius.circular(2),
+                            child: SingleChildScrollView(
+                              controller: _argsScrollController(tc.id),
+                              child: Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.5),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  argsFormatted,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontFamily: 'monospace',
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                  ),
                                 ),
                               ),
                             ),
