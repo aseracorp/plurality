@@ -11,9 +11,7 @@ import (
 	"os"
 	"strings"
 	"time"
-	// "encoding/base64"
 
-	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -50,62 +48,13 @@ func HandleGenerateAudio(w http.ResponseWriter, r *http.Request) {
 		request.Speed = "1.0" // Default speed
 	}
 
-	// Check plan permissions
-	planName, err := db.GetPlanName(r.Context())
-	if err != nil {
-		utils.Error("[HandleGenerateAudio] Error getting plan name", err)
-		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+	if !CheckModel(request.Model) {
+		utils.Error("[HandleGenerateAudio] Unknown model %s", nil, request.Model)
+		utils.SendHTTPError(w, "Unknown model", http.StatusBadRequest)
 		return
 	}
 
-	if !CheckModel(request.Model, planName) {
-		utils.Error("[HandleGenerateAudio] Invalid model %s", nil, request.Model)
-		utils.SendHTTPError(w, "Invalid model", http.StatusBadRequest)
-		return
-	}
-
-	// Calculate price based on input text length
-	// This is a placeholder - adjust pricing logic as needed
-	inputLength := len(request.Input)
-	priceToken := float64(inputLength) * 65.00 / 1000000.00 // Example pricing
-	if priceToken < 0.01 {
-		priceToken = 0.01 // Minimum price
-	}
-
-	canPerform, err := db.CheckSufficientCredits(r.Context(), priceToken)
-	if err != nil {
-		utils.Error("[HandleGenerateAudio] Error checking credits", err)
-		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if !canPerform {
-		utils.Error("[HandleGenerateAudio] Insufficient credits", nil)
-		utils.SendHTTPError(w, "Insufficient credits", http.StatusPaymentRequired)
-		return
-	}
-
-	utils.Log("[HandleGenerateAudio] Generating audio with model %s for %f credits", request.Model, priceToken)
-
-	// Remove credits before processing
-	_, err = db.RemoveCredits(r.Context(), priceToken, utils.UserAction{
-		Type:     TTS,
-		Provider: TOGETHER,
-		Model: utils.Model{
-			Name: request.Model,
-			Params: map[string]string{
-				"voice":           request.Voice,
-				"response_format": request.ResponseFormat,
-				"speed":           request.Speed,
-			},
-		},
-	})
-
-	if err != nil {
-		utils.Error("[HandleGenerateAudio] Error removing credits", err)
-		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	utils.Log("[HandleGenerateAudio] Generating audio with model %s", request.Model)
 
 	// Set up streaming response
 	// Determine content type based on response format
@@ -128,7 +77,7 @@ func HandleGenerateAudio(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Stream the audio generation
-	err = StreamGenerateAudio(ctx, w, request.Input, request.Model, request.Voice, request.ResponseFormat, request.Speed)
+	err := StreamGenerateAudio(ctx, w, request.Input, request.Model, request.Voice, request.ResponseFormat, request.Speed)
 	if err != nil {
 		// If an error occurs during streaming, we can't send a proper error response
 		// since we've already started sending the response

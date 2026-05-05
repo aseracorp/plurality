@@ -44,11 +44,11 @@ func WriteSSEEvent(w http.ResponseWriter, event SSEEvent) error {
 // No content, no tool args, no results — just enough for UI indicators.
 type StatusEvent struct {
 	ConversationID string `json:"conversation_id"`
-	State          string `json:"state"`                        // "processing", "idle", "waiting_for_tool"
-	Activity       string `json:"activity,omitempty"`            // "typing", "tool_use"
-	ToolName       string `json:"tool_name,omitempty"`           // only when activity is "tool_use"
-	Title          string `json:"title,omitempty"`               // set when title is generated server-side
-	Icon           string `json:"icon,omitempty"`                // set when icon is generated server-side
+	State          string `json:"state"`               // "processing", "idle", "waiting_for_tool"
+	Activity       string `json:"activity,omitempty"`  // "typing", "tool_use"
+	ToolName       string `json:"tool_name,omitempty"` // only when activity is "tool_use"
+	Title          string `json:"title,omitempty"`     // set when title is generated server-side
+	Icon           string `json:"icon,omitempty"`      // set when icon is generated server-side
 }
 
 // WriteStatusEvent serializes a StatusEvent and writes it as SSE.

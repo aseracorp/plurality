@@ -47,14 +47,6 @@ var ValidModels = []string{
 	"cartesia/sonic",
 }
 
-var ValidFreeModels = []string{
-	"llama4-scout-instruct-basic",
-	"Gemini/gemini-2.5-flash-lite",
-	"black-forest-labs/FLUX.2-dev",
-	"whisper-v3-turbo",
-	"cartesia/sonic",
-}
-
 var ValidVisionModels = []string{
 	// Claude
 	"Claude/claude-haiku-4-6",
@@ -125,17 +117,8 @@ func CheckActionModel(modelName string) bool {
 	return false
 }
 
-// CheckModel checks if a given model name is in the ValidModels list
-func CheckModel(modelName string, planName string) bool {
-	if planName == "Free" {
-		for _, validModel := range ValidFreeModels {
-			if validModel == modelName {
-				return true
-			}
-		}
-		return false
-	}
-
+// CheckModel reports whether the given model name is one of the configured ValidModels.
+func CheckModel(modelName string) bool {
 	for _, validModel := range ValidModels {
 		if validModel == modelName {
 			return true

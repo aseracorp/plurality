@@ -343,14 +343,6 @@ func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.To
 		}
 	}
 
-	// Deduct credits
-	if tool.CostFunc != nil {
-		price, action := tool.CostFunc(args)
-		db.RemoveCredits(ctx, price, action)
-	} else if tool.Cost > 0 {
-		db.RemoveCredits(ctx, float64(tool.Cost), utils.UserAction{Type: TOOL_USE, Provider: NONE})
-	}
-
 	return tool.Exec(ctx, args, *conv)
 }
 

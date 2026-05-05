@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/azukaar/plurality/src/ai_tools"
-	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -36,10 +35,10 @@ type OpenAIChatResponse struct {
 }
 
 type OpenAIChatChoice struct {
-	Index        int            `json:"index"`
-	Message      *OpenAIMsg     `json:"message,omitempty"`
-	Delta        *OpenAIDelta   `json:"delta,omitempty"`
-	FinishReason *string        `json:"finish_reason"`
+	Index        int          `json:"index"`
+	Message      *OpenAIMsg   `json:"message,omitempty"`
+	Delta        *OpenAIDelta `json:"delta,omitempty"`
+	FinishReason *string      `json:"finish_reason"`
 }
 
 type OpenAIMsg struct {
@@ -49,16 +48,16 @@ type OpenAIMsg struct {
 }
 
 type OpenAIDelta struct {
-	Role      string           `json:"role,omitempty"`
-	Content   string           `json:"content,omitempty"`
+	Role      string            `json:"role,omitempty"`
+	Content   string            `json:"content,omitempty"`
 	ToolCalls []OpenAIToolDelta `json:"tool_calls,omitempty"`
 }
 
 type OpenAIToolDelta struct {
-	Index    int               `json:"index"`
-	ID       string            `json:"id,omitempty"`
-	Type     string            `json:"type,omitempty"`
-	Function *OpenAIFnDelta    `json:"function,omitempty"`
+	Index    int            `json:"index"`
+	ID       string         `json:"id,omitempty"`
+	Type     string         `json:"type,omitempty"`
+	Function *OpenAIFnDelta `json:"function,omitempty"`
 }
 
 type OpenAIFnDelta struct {
@@ -143,16 +142,9 @@ func HandleOpenAIChatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate model
-	planName, err := db.GetPlanName(r.Context())
-	if err != nil {
-		utils.Error("[OpenAI] Error getting plan name", err)
-		http.Error(w, fmt.Sprintf(`{"error":{"message":"%s"}}`, err.Error()), http.StatusInternalServerError)
-		return
-	}
-	if !CheckModel(req.Model, planName) {
-		utils.Error("[OpenAI] Invalid model for plan", nil, req.Model)
-		http.Error(w, `{"error":{"message":"Invalid model for your plan"}}`, http.StatusBadRequest)
+	if !CheckModel(req.Model) {
+		utils.Error("[OpenAI] Unknown model", nil, req.Model)
+		http.Error(w, `{"error":{"message":"Unknown model"}}`, http.StatusBadRequest)
 		return
 	}
 
@@ -188,13 +180,8 @@ func HandleOpenAIChatCompletion(w http.ResponseWriter, r *http.Request) {
 	// Call LLM
 	response, _, err := SendChatCompletion(r.Context(), model, conversation, payload)
 	if err != nil {
-		statusCode := http.StatusInternalServerError
-		errLower := strings.ToLower(err.Error())
-		if strings.Contains(errLower, "insufficient credits") {
-			statusCode = http.StatusPaymentRequired
-		}
 		utils.Error("[OpenAI] Chat completion error", err)
-		http.Error(w, fmt.Sprintf(`{"error":{"message":"%s"}}`, err.Error()), statusCode)
+		http.Error(w, fmt.Sprintf(`{"error":{"message":"%s"}}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 

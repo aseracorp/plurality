@@ -1,8 +1,13 @@
 @echo off
 REM Create build directory if it doesn't exist
 if not exist build mkdir build
-REM Clean build directory
-if exist build\* del /Q build\*
+REM Clean build artifacts but preserve user data (build\data, build\users-data).
+for %%F in (build\*) do (
+    del /Q "%%F"
+)
+for /D %%D in (build\*) do (
+    if /I not "%%~nxD"=="data" if /I not "%%~nxD"=="users-data" rmdir /S /Q "%%D"
+)
 
 REM Build for Windows
 echo Building for Windows...
@@ -18,7 +23,7 @@ for /f "delims=" %%i in ('go list -m -f "{{.Dir}}" github.com/mattn/go-sqlite3')
 for /f "delims=" %%i in ('go list -m -f "{{.Dir}}" github.com/asg017/sqlite-vec-go-bindings') do set SQLVEC_DIR=%%i\cgo
 set CGO_CFLAGS=-DSQLITE_CORE -I%MATTN_DIR% -I%SQLVEC_DIR%
 
-go build -tags "fts5" -o build\Plurality.exe src\index.go src\stripe.go
+go build -tags "fts5" -o build\Plurality.exe .\src
 
 if errorlevel 1 goto :error
 
@@ -28,5 +33,9 @@ copy litellm_config.yaml build\litellm\
 copy litellm_proxy.py build\litellm\
 copy litellm_requirements.txt build\litellm\
 copy litellm_setup.bat build\litellm\
+
+REM Seed default mini-app presets (skip files that already exist)
+if not exist build\data\presets mkdir build\data\presets
+xcopy /Y /D data\presets\*.json build\data\presets\ >nul 2>&1
 
 echo Success!

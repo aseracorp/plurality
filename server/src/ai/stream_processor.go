@@ -88,41 +88,15 @@ func (sp *StreamProcessor) buildAssistantMessage() utils.Message {
 	return message
 }
 
-// finalizeCredits deducts credits and saves the message to DB.
-// Uses LiteLLM's response_cost (dollars) converted to credits (1M credits = $1).
-// Falls back to manual price table if LiteLLM didn't provide cost.
-func (sp *StreamProcessor) finalizeCredits(ctx context.Context) utils.Message {
-	provider := ProviderFromModelName(sp.model.Name)
-
-	var totalCredits float64
-	if sp.request.ResponseCost > 0 {
-		totalCredits = sp.request.ResponseCost * 1_000_000
-		utils.Log("[StreamProcessor] LiteLLM cost for %s: $%.6f (%d prompt + %d completion tokens) = %.2f credits",
-			sp.model.Name, sp.request.ResponseCost, sp.request.PromptTokens, sp.request.CompletionTokens, totalCredits)
-	} else {
-		inputPrice := GetPriceFromTokenUsage(TEXT_INPUT, provider, sp.model, float64(sp.request.PromptTokens))
-		outputPrice := GetPriceFromTokenUsage(TEXT_OUTPUT, provider, sp.model, float64(sp.request.CompletionTokens))
-		totalCredits = inputPrice + outputPrice
-		utils.Error("[StreamProcessor] LiteLLM did not return response_cost, falling back to manual price table for model", nil, sp.model.Name)
-	}
-
-	// Store the credit cost (not raw token count) so the UI displays the right value
-	sp.request.TokenUsage = int(totalCredits)
+// finalizeStream stores total tokens on the active request and persists the
+// assistant message. No credit accounting in self-hosted mode.
+func (sp *StreamProcessor) finalizeStream(ctx context.Context) utils.Message {
+	sp.request.TokenUsage = sp.request.PromptTokens + sp.request.CompletionTokens
 
 	message := sp.buildAssistantMessage()
 
-	_, _, err := db.PushMessage(ctx, sp.conversation, message)
-	if err != nil {
+	if _, _, err := db.PushMessage(ctx, sp.conversation, message); err != nil {
 		utils.Error("[StreamProcessor] Error saving assistant message to DB", err)
-	}
-
-	_, err = db.RemoveCredits(ctx, totalCredits, utils.UserAction{
-		Type:     TEXT_OUTPUT,
-		Provider: provider,
-		Model:    sp.model,
-	})
-	if err != nil {
-		utils.MajorError("[StreamProcessor] Error deducting credits", err)
 	}
 
 	return message
@@ -148,7 +122,7 @@ func (sp *StreamProcessor) ProcessStandardStream(ctx context.Context, response i
 		jsonData := strings.TrimPrefix(line, "data: ")
 
 		if jsonData == "[DONE]" {
-			return sp.finalizeCredits(ctx), nil
+			return sp.finalizeStream(ctx), nil
 		}
 
 		var chunk AIChunk

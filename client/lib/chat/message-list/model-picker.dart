@@ -6,7 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:plurality/api/MCP.dart';
 import 'package:plurality/api/models_service.dart';
 import 'package:plurality/api/skills_service.dart';
-import '../../api/balance.dart';
 import '../../utils/types.dart';
 
 class ModelSelectionModal extends ConsumerStatefulWidget {
@@ -237,27 +236,6 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
   }
 
   void _checkAndSetDefaultModels(ModelsData data) {
-    final balanceState = ref.read(balanceProvider);
-    final balance = balanceState.value;
-    final isFree = balance?.planName == 'Free';
-
-    final fast = data.fastPreset;
-    if (isFree && fast != null) {
-      final fastText = fast.models.text?.name;
-      final fastVision = fast.models.vision?.name;
-      final fastImage = fast.models.imageGen?.name;
-      if (_selectedVisionModel != fastVision ||
-          _selectedImageGenModel != fastImage ||
-          _selectedModel != fastText) {
-        setState(() {
-          _selectedModel = fastText ?? _selectedModel;
-          _selectedVisionModel = fastVision ?? _selectedVisionModel;
-          _selectedImageGenModel = fastImage ?? _selectedImageGenModel;
-        });
-        widget.onModelSelected(fast.models);
-      }
-    }
-
     if (!data.textModelIds.contains(_selectedModel) && data.textModelIds.isNotEmpty) {
       setState(() => _selectedModel = data.textModelIds.first);
     }
@@ -346,9 +324,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
   }
 
   Widget contentBox(BuildContext context, ModelsData data) {
-    final balanceState = ref.watch(balanceProvider);
-    final balance = balanceState.value;
-    final isFree = balance?.planName == 'Free';
+    const isFree = false;
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
 
     return _wrap(SingleChildScrollView(
@@ -389,22 +365,6 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
             ),
           ),
 
-          if (isFree)
-            Container(
-              margin: const EdgeInsets.only(top: 16),
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.red.shade100,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.red),
-              ),
-              child: const Text(
-                "Only subscribers can change the models, free users are restricted to the currently selected models",
-                style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
-                textAlign: TextAlign.center,
-              ),
-            ),
-
           const SizedBox(height: 24),
 
           Row(
@@ -431,9 +391,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
               const SizedBox(width: 8),
               if (_currentTabIndex == 1 || _currentTabIndex == 2 || _currentTabIndex == 3)
                 ElevatedButton(
-                  onPressed: isFree
-                      ? null
-                      : () {
+                  onPressed: () {
                           final Map<String, String> toolsMap = {};
                           for (final function in _functions) {
                             final mode = function['enabled'] as String;

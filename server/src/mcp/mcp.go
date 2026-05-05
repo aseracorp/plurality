@@ -34,7 +34,7 @@ func ParseNamespacedTool(name string) (serverName, toolName string, ok bool) {
 
 // ToolInfo describes a single MCP tool, discovered via tools/list.
 type ToolInfo struct {
-	Name        string          // bare tool name as advertised by the MCP server
+	Name        string // bare tool name as advertised by the MCP server
 	Description string
 	ServerName  string          // which mcp.json server it lives on
 	InputSchema json.RawMessage // original MCP inputSchema (JSON object)
@@ -64,14 +64,14 @@ type convProcess struct {
 
 var (
 	mu          sync.RWMutex
-	processes   = map[string]*ProcessManager{}          // shared (non-stateful) servers
-	tools       = map[string]ToolInfo{}                 // toolName -> info
+	processes   = map[string]*ProcessManager{} // shared (non-stateful) servers
+	tools       = map[string]ToolInfo{}        // toolName -> info
 	initialized bool
 
 	// Stateful MCP: per-conversation process isolation.
-	statefulConfigs    = map[string]mcpServerConfig{}                  // serverName -> config (for lazy spawning)
-	convProcesses      = map[string]map[string]*convProcess{}          // conversationID -> serverName -> process
-	serverDescriptions = map[string]string{}                           // serverName -> description from mcp.json
+	statefulConfigs    = map[string]mcpServerConfig{}         // serverName -> config (for lazy spawning)
+	convProcesses      = map[string]map[string]*convProcess{} // conversationID -> serverName -> process
+	serverDescriptions = map[string]string{}                  // serverName -> description from mcp.json
 )
 
 // dataDir returns the configured data dir (env DATA_DIR, default ./data

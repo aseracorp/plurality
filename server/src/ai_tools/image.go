@@ -16,38 +16,9 @@ import (
 )
 
 var ImageGenTool = utils.AITool{
-	Name:                      "Image Generation",
-	Description:               "Generate an image from a text description using AI image generation",
-	ToolID:                    "generate_image",
-	Cost:                      0,
-	CostFunc: func(args string) (float64, utils.UserAction) {
-		var params map[string]string
-		json.Unmarshal([]byte(args), &params)
-
-		model := params["model"]
-		if model == "" {
-			model = "black-forest-labs/FLUX.2-dev"
-		}
-
-		steps := 4
-		if model == "black-forest-labs/FLUX.2-pro" {
-			steps = 28
-		}
-
-		pixels := 1024 * 768
-		basePrice := float64(pixels) / 1000000.0
-
-		var price float64
-		if model == "black-forest-labs/FLUX.2-dev" {
-			price = basePrice * 2702.70 * (1.0 / 4.0 * float64(steps))
-		} else if model == "black-forest-labs/FLUX.2-pro" {
-			price = basePrice * 25000.0 * (1.0 / 28.0 * float64(steps))
-		} else {
-			price = basePrice * 2702.70 * (1.0 / 4.0 * float64(steps))
-		}
-
-		return price, utils.UserAction{Type: 3, Provider: 2} // IMAGE_GEN, TOGETHER
-	},
+	Name:        "Image Generation",
+	Description: "Generate an image from a text description using AI image generation",
+	ToolID:      "generate_image",
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
@@ -120,10 +91,18 @@ var ImageGenTool = utils.AITool{
 			// Round to nearest multiple of 16, clamp to [256, 2048]
 			w = (w + 8) / 16 * 16
 			h = (h + 8) / 16 * 16
-			if w < 256 { w = 256 }
-			if w > 2048 { w = 2048 }
-			if h < 256 { h = 256 }
-			if h > 2048 { h = 2048 }
+			if w < 256 {
+				w = 256
+			}
+			if w > 2048 {
+				w = 2048
+			}
+			if h < 256 {
+				h = 256
+			}
+			if h > 2048 {
+				h = 2048
+			}
 			width, height = w, h
 		}
 

@@ -12,7 +12,6 @@ import '../../utils/types.dart';
 import '../../utils/index.dart' show formatToolDisplayName;
 import '../../utils/image_loader.dart';
 import '../../auth/account.dart';
-import '../budget.dart';
 import 'conversation-list.dart';
 
 String _getToolDisplayName(String toolName) {

@@ -3,43 +3,36 @@ package user
 import (
 	"context"
 	"errors"
+
+	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/utils"
 )
 
-// DeleteUser deletes a user from Firebase
+// DeleteUser removes the authenticated user's per-user SQLite data, attachment
+// files, and (for local users) the entry in data/user.json. OpenID-only users
+// have no account row to remove.
 func DeleteUser(ctx context.Context) error {
-	userID, ok := ctx.Value("userID").(string)
-	if !ok {
+	username, ok := ctx.Value("userID").(string)
+	if !ok || username == "" {
 		return errors.New("user ID not found in request context")
 	}
 
-	// Verify Firebase Auth client is initialized
-	if utils.FirebaseAuth == nil {
-		return errors.New("Firebase Auth client not initialized")
+	if _, err := db.DeleteAllConversations(ctx, username); err != nil {
+		utils.Error("[DeleteUser] error deleting conversations", err)
 	}
 
-	// Delete all conversations first
-	deletedCount, err := db.DeleteAllConversations(ctx, userID)
-	if err != nil {
-		utils.Error("[DeleteUser] Error deleting user conversations", err)
+	if err := auth.DeleteUserData(ctx, username); err != nil {
+		utils.Error("[DeleteUser] error deleting user data dir", err)
 	}
 
-	// Delete balance
-	err = db.DeleteBalance(ctx)
-	if err != nil {
-		utils.Error("[DeleteUser] Error deleting user balance", err)
+	if auth.UserExists(username) {
+		if err := auth.RemoveUser(username); err != nil {
+			utils.Error("[DeleteUser] error removing local user", err)
+			return err
+		}
 	}
 
-	utils.Log("[DeleteUser] Deleted %d conversations for user", deletedCount)
-
-	// Delete the Firebase user record
-	err = utils.FirebaseAuth.DeleteUser(ctx, userID)
-	if err != nil {
-		utils.Error("[DeleteUser] Error deleting Firebase user", err)
-	}
-
-	utils.Log("[DeleteUser] Successfully deleted user ID: %s from Firebase", userID)
-
+	utils.Log("[DeleteUser] removed user %s", username)
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/azukaar/plurality/src/ai"
 	"github.com/azukaar/plurality/src/ai_tools"
+	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/miniapps"
@@ -25,9 +26,13 @@ import (
 func main() {
 	godotenv.Load()
 
-	// Initialize Firebase Auth
-	utils.InitFirebase()
-	db.InitDB()
+	// CLI subcommands (adduser / removeuser / listusers) short-circuit before
+	// the server starts.
+	if handled, code := auth.HandleCLI(os.Args[1:]); handled {
+		os.Exit(code)
+	}
+
+	auth.Init()
 	db.InitSQLite()
 	defer db.CloseAllUserDBs()
 	storage.Init()
@@ -37,6 +42,9 @@ func main() {
 	if skills.HasAny() {
 		ai_tools.RegisterRetrieveServerSkill()
 	}
+
+	// Load mini app presets from data/presets/
+	miniapps.LoadBuiltins()
 
 	// Start MCP servers configured in data/mcp.json
 	mcp.Init()
@@ -56,55 +64,60 @@ func main() {
 
 	r := mux.NewRouter()
 
+	// --- Auth (no middleware on login/methods; everything else requires JWT) ---
+	r.HandleFunc("/auth/methods", auth.HandleAuthMethods).Methods("GET", "OPTIONS")
+	r.HandleFunc("/auth/login", auth.HandleLogin).Methods("POST", "OPTIONS")
+	r.HandleFunc("/auth/openid/start", auth.HandleOIDCStart).Methods("GET")
+	r.HandleFunc("/auth/openid/callback", auth.HandleOIDCCallback).Methods("GET")
+	r.HandleFunc("/auth/openid/exchange", auth.HandleOIDCExchange).Methods("POST", "OPTIONS")
+	r.HandleFunc("/auth/me", auth.AuthMiddleware(auth.HandleMe)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/auth/logout", auth.AuthMiddleware(auth.HandleLogout)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/auth/change-password", auth.AuthMiddleware(auth.HandleChangePassword)).Methods("POST", "OPTIONS")
+
 	// OpenAI-compatible API (stateless, for generic clients)
-	r.HandleFunc("/v1/chat/completions", utils.AuthMiddleware(ai.HandleOpenAIChatCompletion)).Methods("POST", "OPTIONS")
-	r.HandleFunc("/v1/models", utils.AuthMiddleware(ai.HandleOpenAIListModels)).Methods("GET", "OPTIONS")
-	r.HandleFunc("/v1/tools", utils.AuthMiddleware(ai.HandleListServerTools)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/v1/chat/completions", auth.AuthMiddleware(ai.HandleOpenAIChatCompletion)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/v1/models", auth.AuthMiddleware(ai.HandleOpenAIListModels)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/v1/tools", auth.AuthMiddleware(ai.HandleListServerTools)).Methods("GET", "OPTIONS")
 
 	// Plurality rich models endpoint: OpenAI-list-compatible with embedded presets + function metadata.
-	r.HandleFunc("/models", utils.AuthMiddleware(ai.HandleListModels)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/models", auth.AuthMiddleware(ai.HandleListModels)).Methods("GET", "OPTIONS")
 
 	// Plurality chat (stateful, with conversation tracking and server-side tool loop)
-	r.HandleFunc("/chat", utils.AuthMiddleware(ai.HandleChat)).Methods("POST", "OPTIONS")
-	r.HandleFunc("/chat/stream/{id}", utils.AuthMiddleware(ai.HandleStreamReconnect)).Methods("GET", "OPTIONS")
-	r.HandleFunc("/chat/cancel/{id}", utils.AuthMiddleware(ai.HandleCancel)).Methods("POST", "OPTIONS")
-	r.HandleFunc("/chat/approve/{id}", utils.AuthMiddleware(ai.HandleApprove)).Methods("POST", "OPTIONS")
-	r.HandleFunc("/status/stream", utils.AuthMiddleware(ai.HandleStatusStream)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/chat", auth.AuthMiddleware(ai.HandleChat)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/chat/stream/{id}", auth.AuthMiddleware(ai.HandleStreamReconnect)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/chat/cancel/{id}", auth.AuthMiddleware(ai.HandleCancel)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/chat/approve/{id}", auth.AuthMiddleware(ai.HandleApprove)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/status/stream", auth.AuthMiddleware(ai.HandleStatusStream)).Methods("GET", "OPTIONS")
 
 	// Conversations
-	r.HandleFunc("/conversations", utils.AuthMiddleware(ai.API_ListConversation)).Methods("GET", "OPTIONS")
-	r.HandleFunc("/conversation/{id}", utils.AuthMiddleware(ai.API_HandleConversation)).Methods("GET", "PUT", "DELETE", "OPTIONS")
-	r.HandleFunc("/set-conversation-folder/{id}", utils.AuthMiddleware(ai.API_UpdateConversationFolder)).Methods("POST", "OPTIONS")
-	r.HandleFunc("/rename-conversation/{id}", utils.AuthMiddleware(ai.API_UpdateConversationTitle)).Methods("POST", "OPTIONS")
-	r.HandleFunc("/generate-title/{id}", utils.AuthMiddleware(ai.API_HandleTitleGeneration)).Methods("GET", "OPTIONS")
-	r.HandleFunc("/balance", utils.AuthMiddleware(ai.API_GetUserBalance)).Methods("GET", "OPTIONS")
-	r.HandleFunc("/transcribe", utils.AuthMiddleware(ai.HandleTranscribe)).Methods("POST", "OPTIONS")
-	r.HandleFunc("/generate-audio", utils.AuthMiddleware(ai.HandleGenerateAudio)).Methods("POST", "OPTIONS")
-	r.HandleFunc("/delete-user", utils.AuthMiddleware(user.API_DeleteUser)).Methods("DELETE", "OPTIONS")
+	r.HandleFunc("/conversations", auth.AuthMiddleware(ai.API_ListConversation)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/conversation/{id}", auth.AuthMiddleware(ai.API_HandleConversation)).Methods("GET", "PUT", "DELETE", "OPTIONS")
+	r.HandleFunc("/set-conversation-folder/{id}", auth.AuthMiddleware(ai.API_UpdateConversationFolder)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/rename-conversation/{id}", auth.AuthMiddleware(ai.API_UpdateConversationTitle)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/generate-title/{id}", auth.AuthMiddleware(ai.API_HandleTitleGeneration)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/transcribe", auth.AuthMiddleware(ai.HandleTranscribe)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/generate-audio", auth.AuthMiddleware(ai.HandleGenerateAudio)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/delete-user", auth.AuthMiddleware(user.API_DeleteUser)).Methods("DELETE", "OPTIONS")
 
 	// Search
-	r.HandleFunc("/search", utils.AuthMiddleware(handleSearch)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/search", auth.AuthMiddleware(handleSearch)).Methods("GET", "OPTIONS")
 
-	r.HandleFunc("/miniapps", utils.AuthMiddleware(miniapps.API_ListMiniApps)).Methods("GET")
-	r.HandleFunc("/miniapps/pinned", utils.AuthMiddleware(miniapps.API_GetUserPinnedMiniApps)).Methods("GET")
-	// r.HandleFunc("/miniapps/{id}", utils.AuthMiddleware(miniapps.API_HandleMiniApp)).Methods("GET", "DELETE")
-	// r.HandleFunc("/miniapps", utils.AuthMiddleware(miniapps.API_CreateMiniApp)).Methods("POST")
-	r.HandleFunc("/miniapps/{id}", utils.AuthMiddleware(miniapps.API_UpdateMiniApp)).Methods("PUT")
-	r.HandleFunc("/miniapps/{id}/pin", utils.AuthMiddleware(miniapps.API_PinMiniApp)).Methods("POST")
-	r.HandleFunc("/miniapps/{id}/unpin", utils.AuthMiddleware(miniapps.API_UnpinMiniApp)).Methods("POST")
-	// r.HandleFunc("/miniapps/{id}/use", utils.AuthMiddleware(miniapps.API_UseMiniApp)).Methods("POST")
+	// Mini apps (file-backed)
+	r.HandleFunc("/miniapps", auth.AuthMiddleware(miniapps.API_ListMiniApps)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/miniapps", auth.AuthMiddleware(miniapps.API_CreateMiniApp)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/miniapps/pinned", auth.AuthMiddleware(miniapps.API_GetUserPinnedMiniApps)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/miniapps/{id}", auth.AuthMiddleware(miniapps.API_HandleMiniApp)).Methods("GET", "DELETE", "OPTIONS")
+	r.HandleFunc("/miniapps/{id}", auth.AuthMiddleware(miniapps.API_UpdateMiniApp)).Methods("PUT")
+	r.HandleFunc("/miniapps/{id}/pin", auth.AuthMiddleware(miniapps.API_PinMiniApp)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/miniapps/{id}/unpin", auth.AuthMiddleware(miniapps.API_UnpinMiniApp)).Methods("POST", "OPTIONS")
 
 	r.HandleFunc("/download/{file}",
 		func(w http.ResponseWriter, r *http.Request) {
-			// if the file is windows-latest.ext, or linux-latest.ext, or macos-latest.ext, then return the file as a download
 			vars := mux.Vars(r)
 			file := vars["file"]
 			if file == "windows-latest.exe" || file == "linux-latest.zip" || file == "macos-latest.dmg" {
-				// Set the content type to application/octet-stream
 				w.Header().Set("Content-Type", "application/octet-stream")
-				// Set the content disposition to attachment
 				w.Header().Set("Content-Disposition", "attachment; filename="+file)
-				// Serve the file
 				http.ServeFile(w, r, filepath.Join("web", file))
 			} else {
 				http.NotFound(w, r)
@@ -112,11 +125,9 @@ func main() {
 		}).Methods("GET")
 
 	// Attachment file serving (authenticated)
-	r.HandleFunc("/attachments/{userId}/{month}/{filename}", utils.AuthMiddleware(storage.ServeAttachment)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/attachments/{userId}/{month}/{filename}", auth.AuthMiddleware(storage.ServeAttachment)).Methods("GET", "OPTIONS")
 
-	r.HandleFunc("/stripe-webhook", HandleStripeWebhook).Methods("POST")
-
-	r.HandleFunc("/check", utils.AuthMiddleware(
+	r.HandleFunc("/check", auth.AuthMiddleware(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("OK"))
@@ -132,26 +143,21 @@ func main() {
 	// CORS middleware wrapper for the entire router
 	corsMiddleware := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Set CORS headers
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
 
-			// Handle preflight OPTIONS requests
 			if r.Method == "OPTIONS" {
 				w.WriteHeader(http.StatusOK)
 				return
 			}
 
-			// Proceed to the next handler
 			next.ServeHTTP(w, r)
 		})
 	}
 
-	// Apply the CORS middleware to all routes
 	http.Handle("/", corsMiddleware(r))
 
-	// Start server
 	log.Printf("Server starting on port 8090...")
 	log.Fatal(http.ListenAndServe(":8090", nil))
 }

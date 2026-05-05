@@ -1,11 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../auth/auth-service.dart';
 import '../api/api.dart';
 import '../api/preferences_provider.dart';
-import 'dart:convert';
 import 'dart:io' show Platform;
 
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -21,41 +19,65 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _isLoading = false;
   String? _errorMessage;
 
-  // Get current user email
-  String get _userEmail {
-    final user = FirebaseAuth.instance.currentUser;
-    return user?.email ?? 'Not logged in';
-  }
+  String get _userEmail =>
+      _authService.currentUser?.username ?? 'Not logged in';
 
-  // Handle password reset
   Future<void> _resetPassword() async {
+    final oldCtl = TextEditingController();
+    final newCtl = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Change Password'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: oldCtl,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: 'Current password'),
+            ),
+            TextField(
+              controller: newCtl,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: 'New password'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Change'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
-
     try {
-      await FirebaseAuth.instance.sendPasswordResetEmail(email: _userEmail);
+      await _authService.changePassword(oldCtl.text, newCtl.text);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Password reset email sent. Check your inbox.'),
+            content: Text('Password changed.'),
             backgroundColor: Colors.green,
           ),
         );
       }
     } catch (e) {
       if (mounted) {
-        setState(() {
-          _errorMessage = 'Failed to send reset email: ${e.toString()}';
-        });
+        setState(() => _errorMessage = 'Failed: ${e.toString()}');
       }
     } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -280,7 +302,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           // Password reset button
                           SettingsButton(
                             icon: Icons.lock_reset,
-                            label: 'Reset Password',
+                            label: 'Change Password',
                             onTap: _resetPassword,
                             color: colorScheme.primary,
                           ),

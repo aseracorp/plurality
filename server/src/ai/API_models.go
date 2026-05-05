@@ -70,16 +70,16 @@ type ModelsResponse struct {
 }
 
 var defaultSearchTools = map[string]string{
-	"search_web":                          "true",
-	"place_search":                        "true",
-	"visit_link":                          "true",
-	"generate_image":                      "true",
+	"search_web":                           "true",
+	"place_search":                         "true",
+	"visit_link":                           "true",
+	"generate_image":                       "true",
 	"conversations__search_conversations":  "true",
 	"conversations__retrieve_conversation": "true",
 }
 
 var defaultVisionTools = map[string]string{
-	"generate_image":                      "true",
+	"generate_image":                       "true",
 	"conversations__search_conversations":  "true",
 	"conversations__retrieve_conversation": "true",
 }
@@ -132,9 +132,9 @@ var BuiltinFunctions = []FunctionDef{
 }
 
 var BuiltinFunctionBundles = map[string]FunctionBundle{
-	"conversations":    {Key: "conversations", Label: "Search Conversations", Description: "Search and retrieve past conversations"},
-	"mcp_capabilities": {Key: "mcp_capabilities", Label: "MCP Capabilities", Description: "Manage and debug MCP server integrations"},
-	"system_tools":     {Key: "system_tools", Label: "System Tools", Description: "Execute commands and install packages on the server"},
+	"conversations":     {Key: "conversations", Label: "Search Conversations", Description: "Search and retrieve past conversations"},
+	"mcp_capabilities":  {Key: "mcp_capabilities", Label: "MCP Capabilities", Description: "Manage and debug MCP server integrations"},
+	"system_tools":      {Key: "system_tools", Label: "System Tools", Description: "Execute commands and install packages on the server"},
 	"filesystem_server": {Key: "filesystem_server", Label: "Server Filesystem", Description: "Read and write files on the server"},
 }
 
@@ -155,14 +155,10 @@ func buildModelInfoList() []ModelInfo {
 	for _, m := range ValidVisionModels {
 		visionSet[m] = true
 	}
-	freeSet := make(map[string]bool, len(ValidFreeModels))
-	for _, m := range ValidFreeModels {
-		freeSet[m] = true
-	}
 
 	out := make([]ModelInfo, 0, len(ValidModels))
 	for _, name := range ValidModels {
-		info := ModelInfo{ID: name, Object: "model", OwnedBy: "plurality", Free: freeSet[name]}
+		info := ModelInfo{ID: name, Object: "model", OwnedBy: "plurality", Free: true}
 		switch {
 		case imageGenModels[name]:
 			info.ImageGen = true

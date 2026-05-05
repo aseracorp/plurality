@@ -8,8 +8,8 @@ const rrfK = 60
 // Results are grouped by ConversationID, taking the best-scoring entry per conversation.
 // Returns conversations sorted by descending RRF score.
 func RRFMerge(lists ...[]ScoredResult) []ScoredResult {
-	scores := make(map[string]float64)        // conversation_id -> total RRF score
-	bestSource := make(map[string]string)      // conversation_id -> best source_id
+	scores := make(map[string]float64)    // conversation_id -> total RRF score
+	bestSource := make(map[string]string) // conversation_id -> best source_id
 
 	for _, list := range lists {
 		for rank, r := range list {

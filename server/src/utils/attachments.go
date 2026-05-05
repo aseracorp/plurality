@@ -12,12 +12,12 @@ import (
 // extracted from conversation messages.
 type AttachmentMeta struct {
 	ID           string `json:"id"`
-	Type         string `json:"type"`                    // "image_url", "snippet", "file"
-	Filename     string `json:"filename,omitempty"`       // original filename if available
-	Ext          string `json:"ext,omitempty"`            // file extension or MIME type
-	Size         int    `json:"size"`                     // byte length of the content string
-	MessageIndex int    `json:"message_index"`            // position in Messages array
-	PartIndex    int    `json:"part_index"`               // position within the message's content parts
+	Type         string `json:"type"`               // "image_url", "snippet", "file"
+	Filename     string `json:"filename,omitempty"` // original filename if available
+	Ext          string `json:"ext,omitempty"`      // file extension or MIME type
+	Size         int    `json:"size"`               // byte length of the content string
+	MessageIndex int    `json:"message_index"`      // position in Messages array
+	PartIndex    int    `json:"part_index"`         // position within the message's content parts
 }
 
 // AttachmentIndex is a runtime-built index of all attachments in a conversation.

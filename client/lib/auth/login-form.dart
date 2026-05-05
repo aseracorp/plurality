@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import './auth-service.dart';
 import '../api/service.dart';
 
 class LoginForm extends ConsumerStatefulWidget {
-  final Function(String email, String password) onSubmit;
+  final Function(String username, String password) onSubmit;
   final String error;
   final bool loading;
 
@@ -23,46 +22,50 @@ class LoginForm extends ConsumerStatefulWidget {
 class _LoginFormState extends ConsumerState<LoginForm> {
   final AuthService _authService = AuthService();
   final _formKey = GlobalKey<FormState>();
-  String email = '';
+  String username = '';
   String password = '';
+  AuthMethods? _methods;
+  bool _openidLoading = false;
+  String? _openidError;
 
-  resetConv() {
+  @override
+  void initState() {
+    super.initState();
+    _loadMethods();
+  }
+
+  Future<void> _loadMethods() async {
+    final m = await _authService.getAuthMethods();
+    if (mounted) setState(() => _methods = m);
+  }
+
+  void _resetConv() {
     final conversationsNotifier = ref.read(conversationsProvider.notifier);
     conversationsNotifier.deleteAllConversations();
   }
 
-  // Method to handle password reset
-  void _resetPassword(BuildContext context) async {
-    if (email.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Please enter your email first'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return;
-    }
-
+  Future<void> _handleOpenID() async {
+    final methods = _methods;
+    if (methods == null) return;
+    setState(() {
+      _openidLoading = true;
+      _openidError = null;
+    });
     try {
-      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Password reset email sent. Check your inbox.'),
-          backgroundColor: Colors.green,
-        ),
-      );
+      _resetConv();
+      await _authService.signInWithOpenID(methods);
+      if (mounted) Navigator.of(context).pushReplacementNamed('/');
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error: ${e.toString()}'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      if (mounted) setState(() => _openidError = e.toString());
+    } finally {
+      if (mounted) setState(() => _openidLoading = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final showOpenId = _methods?.openidReady == true;
+    final disabled = widget.loading || _openidLoading;
     return Form(
       key: _formKey,
       child: Column(
@@ -70,7 +73,7 @@ class _LoginFormState extends ConsumerState<LoginForm> {
           SizedBox(height: 20.0),
           TextFormField(
             decoration: InputDecoration(
-              hintText: 'Email',
+              hintText: 'Username',
               filled: true,
               enabledBorder: OutlineInputBorder(
                 borderSide: BorderSide(color: Colors.white, width: 2.0),
@@ -79,10 +82,9 @@ class _LoginFormState extends ConsumerState<LoginForm> {
                 borderSide: BorderSide(color: Colors.blue, width: 2.0),
               ),
             ),
-            validator: (val) => val!.isEmpty ? 'Enter an email' : null,
-            onChanged: (val) {
-              setState(() => email = val);
-            },
+            validator: (val) =>
+                val == null || val.isEmpty ? 'Enter a username' : null,
+            onChanged: (val) => setState(() => username = val),
           ),
           SizedBox(height: 20.0),
           TextFormField(
@@ -96,68 +98,60 @@ class _LoginFormState extends ConsumerState<LoginForm> {
                 borderSide: BorderSide(color: Colors.blue, width: 2.0),
               ),
             ),
-            validator:
-                (val) =>
-                    val!.length < 6 ? 'Enter a password 6+ chars long' : null,
+            validator: (val) =>
+                val == null || val.length < 4 ? 'Enter a password (4+ chars)' : null,
             obscureText: true,
-            onChanged: (val) {
-              setState(() => password = val);
-            },
+            onChanged: (val) => setState(() => password = val),
           ),
           SizedBox(height: 12.0),
-          Text(
-            widget.error,
-            style: TextStyle(color: Colors.red, fontSize: 14.0),
-          ),
+          if (widget.error.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8.0),
+              child: Text(
+                widget.error,
+                style: TextStyle(color: Colors.red, fontSize: 14.0),
+              ),
+            ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: Theme.of(context).colorScheme.primary,
               foregroundColor: Theme.of(context).colorScheme.onPrimary,
             ),
-            child: Text('Sign In With Email'),
-            onPressed:
-                widget.loading
-                    ? null
-                    : () {
-                      if (_formKey.currentState!.validate()) {
-                        resetConv();
-                        widget.onSubmit(email, password);
-                      }
-                    },
+            child: Text('Sign In'),
+            onPressed: disabled
+                ? null
+                : () {
+                    if (_formKey.currentState!.validate()) {
+                      _resetConv();
+                      widget.onSubmit(username, password);
+                    }
+                  },
           ),
-          SizedBox(height: 20.0),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Theme.of(context).colorScheme.primary,
-              foregroundColor: Theme.of(context).colorScheme.onPrimary,
+          if (showOpenId) ...[
+            SizedBox(height: 20.0),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.secondary,
+                foregroundColor: Theme.of(context).colorScheme.onSecondary,
+              ),
+              child: _openidLoading
+                  ? const SizedBox(
+                      height: 16,
+                      width: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Text('Sign In With OpenID'),
+              onPressed: disabled ? null : _handleOpenID,
             ),
-            child: Text('Sign In With Google'),
-            onPressed:
-                widget.loading
-                    ? null
-                    : () async {
-                      resetConv();
-                      await _authService.signInWithGoogle();
-                      Navigator.pushNamed(context, '/');
-                    },
-          ),
-          SizedBox(height: 20.0),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              TextButton(
-                child: Text('Register With Email'),
-                onPressed: () {
-                  resetConv();
-                  Navigator.pushNamed(context, '/register');
-                },
+            if (_openidError != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8.0),
+                child: Text(
+                  _openidError!,
+                  style: const TextStyle(color: Colors.red, fontSize: 14.0),
+                ),
               ),
-              TextButton(
-                child: Text('Forgot Password'),
-                onPressed: () => _resetPassword(context),
-              ),
-            ],
-          ),
+          ],
         ],
       ),
     );

@@ -106,7 +106,7 @@ func searchNewsFromSources(keyword string, country string, language string) []Ne
 		apiURL = fmt.Sprintf("https://newsapi.org/v2/top-headlines?pageSize=20&language=%s&apiKey=%s", language, apiKey)
 	}
 
-	utils.Debug("API URL: ", apiURL)
+	utils.Debug("API URL: %s", apiURL)
 
 	if country != "" {
 		apiURL = fmt.Sprintf("%s&country=%s", apiURL, country)
@@ -177,7 +177,7 @@ func formatNewsResults(articles []NewsArticle, keyword string) string {
 	if keyword != "" {
 		result.WriteString(fmt.Sprintf("# News Results for '%s'\n\n", keyword))
 	} else {
-		result.WriteString(fmt.Sprintf("# Latest %s News\n\n"))
+		result.WriteString("# Latest News\n\n")
 	}
 
 	// Check if we found any articles

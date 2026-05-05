@@ -4,7 +4,6 @@ import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 import '../auth/auth-service.dart';
 import '../utils/types.dart';
-import './balance.dart';
 import 'package:path_provider/path_provider.dart';
 import './stt.dart';
 import 'package:flutter/material.dart';

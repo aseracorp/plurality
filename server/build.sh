@@ -1,8 +1,10 @@
 #!/bin/bash
 
-# Create build directory if it doesn't exist
+# Create build directory if it doesn't exist. We deliberately do NOT wipe
+# build/ wholesale — build/data/ holds user-owned config (user.json,
+# config.json, mcp.json, presets, skills) and must survive rebuilds.
 mkdir -p build
-rm -rf build/*
+find build -mindepth 1 -maxdepth 1 ! -name 'data' ! -name 'users-data' -exec rm -rf {} +
 
 # Build for Linux
 echo "Building for Linux..."
@@ -19,7 +21,7 @@ SQLVEC_DIR=$(go list -m -f '{{.Dir}}' github.com/asg017/sqlite-vec-go-bindings)/
 # without these. Valid on glibc too (macro substitution yields self-typedefs).
 export CGO_CFLAGS="-DSQLITE_CORE -Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int64_t=uint64_t -I${MATTN_DIR} -I${SQLVEC_DIR}"
 
-if ! CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags "fts5" -o build/Plurality src/index.go src/stripe.go; then
+if ! CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags "fts5" -o build/Plurality ./src; then
   echo "Linux build failed. Exiting..."
   exit 1
 fi
@@ -31,6 +33,10 @@ fi
 # Copy LiteLLM files needed at runtime
 mkdir -p build/litellm
 cp litellm_config.yaml litellm_proxy.py litellm_requirements.txt litellm_setup.sh build/litellm/
+
+# Seed default mini-app presets if the user hasn't set their own
+mkdir -p build/data/presets
+cp -n data/presets/*.json build/data/presets/ 2>/dev/null || true
 
 echo "Build complete. Binaries are in the 'build' directory."
 echo "Linux binary: build/Plurality"

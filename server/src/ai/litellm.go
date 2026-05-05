@@ -236,14 +236,3 @@ func liteLLMModelName(name string) string {
 	return name
 }
 
-// ProviderFromModelName returns the provider constant based on model name prefix.
-func ProviderFromModelName(name string) int {
-	if strings.HasPrefix(name, "ChatGPT/") {
-		return OPENAI
-	} else if strings.HasPrefix(name, "Claude/") {
-		return CLAUDE
-	} else if strings.HasPrefix(name, "Gemini/") {
-		return GOOGLE
-	}
-	return TOGETHER
-}

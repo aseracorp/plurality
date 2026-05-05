@@ -12,7 +12,6 @@ import '../../api/service.dart';
 import '../../api/chat_service.dart';
 import '../../api/tts.dart';
 import '../../api/mini-apps.dart';
-import '../../api/balance.dart';
 import '../../api/preferences_provider.dart';
 import 'AnimatedMessageBox.dart';
 import 'package:image_picker/image_picker.dart';
@@ -242,17 +241,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     try {
       conversationsNotifier.loadConversation(id);
     } catch (e) {
-      // if APINeedEmailVerify
-      // show email verify page
-
-      if (e.toString().contains('APINeedEmailVerify')) {
-        Navigator.of(context).pushNamed('/verify-email');
-      } else {
-        SnackBar(
-          content: Text('Failed to load conversation: $e'),
-          showCloseIcon: true,
-        );
-      }
+      SnackBar(
+        content: Text('Failed to load conversation: $e'),
+        showCloseIcon: true,
+      );
     }
   }
 
@@ -418,7 +410,6 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   Future<void> _submitMessage(String? userMessage) async {
     _needsBottomMargin = false;
     final conversationsNotifier = ref.read(conversationsProvider.notifier);
-    final balanceNotifier = ref.read(balanceProvider.notifier);
 
     // Build the user message
     Message? newMessage;
@@ -499,7 +490,6 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       }
 
       if (!mounted) return;
-      balanceNotifier.refresh();
       if (!widget.isMobile) {
         Future.delayed(Duration(milliseconds: 150), () {
           if (mounted) _inputFocusNode.requestFocus();

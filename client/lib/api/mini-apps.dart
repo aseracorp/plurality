@@ -1,16 +1,12 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:flutter/foundation.dart';
 import '../auth/auth-service.dart';
 import '../utils/types.dart';
 
 class MiniAppsService {
   static final MiniAppsService _instance = MiniAppsService._internal();
   final AuthService _authService = AuthService();
-  final String _baseUrl =
-      kReleaseMode
-          ? 'https://app.plurality-ai.com'
-          : 'http://192.168.1.102:8090';
+  String get _baseUrl => AuthService.baseUrl;
 
   // Factory constructor to return the same instance every time
   factory MiniAppsService() {
@@ -24,15 +20,15 @@ class MiniAppsService {
   Future<List<MiniApp>> getAllMiniApps() async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
+      String? token = await _authService.getCurrentUserToken();
+      if (token == null) {
         throw Exception('User not authenticated');
       }
 
       // Make the GET request
       final response = await http.get(
         Uri.parse('$_baseUrl/miniapps'),
-        headers: {'Authorization': 'Bearer $firebaseToken'},
+        headers: {'Authorization': 'Bearer $token'},
       );
 
       // Process the response
@@ -51,8 +47,6 @@ class MiniAppsService {
           }
         }
         return miniApps;
-      } else if (response.statusCode == 412) {
-        throw APINeedEmailVerify();
       } else {
         throw APIException(
           'Failed to fetch mini-apps: ${response.reasonPhrase}',
@@ -61,7 +55,6 @@ class MiniAppsService {
       }
     } catch (e) {
       if (e is APIException) rethrow;
-      if (e is APINeedEmailVerify) rethrow;
       throw APIException('API request failed: $e');
     }
   }
@@ -70,15 +63,15 @@ class MiniAppsService {
   Future<List<MiniApp>> getUserPinnedMiniApps() async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
+      String? token = await _authService.getCurrentUserToken();
+      if (token == null) {
         throw Exception('User not authenticated');
       }
 
       // Make the GET request
       final response = await http.get(
         Uri.parse('$_baseUrl/miniapps/pinned'),
-        headers: {'Authorization': 'Bearer $firebaseToken'},
+        headers: {'Authorization': 'Bearer $token'},
       );
 
       // Process the response
@@ -95,8 +88,6 @@ class MiniAppsService {
           }
         }
         return pinnedMiniApps;
-      } else if (response.statusCode == 412) {
-        throw APINeedEmailVerify();
       } else {
         throw APIException(
           'Failed to fetch pinned mini-apps: ${response.reasonPhrase}',
@@ -105,7 +96,6 @@ class MiniAppsService {
       }
     } catch (e) {
       if (e is APIException) rethrow;
-      if (e is APINeedEmailVerify) rethrow;
       throw APIException('API request failed: $e');
     }
   }
@@ -114,15 +104,15 @@ class MiniAppsService {
   Future<MiniApp> getMiniAppById(String miniAppId) async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
+      String? token = await _authService.getCurrentUserToken();
+      if (token == null) {
         throw Exception('User not authenticated');
       }
 
       // Make the GET request
       final response = await http.get(
         Uri.parse('$_baseUrl/miniapps/$miniAppId'),
-        headers: {'Authorization': 'Bearer $firebaseToken'},
+        headers: {'Authorization': 'Bearer $token'},
       );
 
       // Process the response
@@ -146,8 +136,8 @@ class MiniAppsService {
   Future<MiniApp> createMiniApp(MiniApp miniApp) async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
+      String? token = await _authService.getCurrentUserToken();
+      if (token == null) {
         throw Exception('User not authenticated');
       }
 
@@ -156,7 +146,7 @@ class MiniAppsService {
         Uri.parse('$_baseUrl/miniapps'),
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer $firebaseToken',
+          'Authorization': 'Bearer $token',
         },
         body: jsonEncode(miniApp.toJson()),
       );
@@ -182,8 +172,8 @@ class MiniAppsService {
   Future<MiniApp> updateMiniApp(String miniAppId, MiniApp miniApp) async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
+      String? token = await _authService.getCurrentUserToken();
+      if (token == null) {
         throw Exception('User not authenticated');
       }
 
@@ -192,7 +182,7 @@ class MiniAppsService {
         Uri.parse('$_baseUrl/miniapps/$miniAppId'),
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer $firebaseToken',
+          'Authorization': 'Bearer $token',
         },
         body: jsonEncode(miniApp.toJson()),
       );
@@ -218,15 +208,15 @@ class MiniAppsService {
   Future<void> deleteMiniApp(String miniAppId) async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
+      String? token = await _authService.getCurrentUserToken();
+      if (token == null) {
         throw Exception('User not authenticated');
       }
 
       // Make the DELETE request
       final response = await http.delete(
         Uri.parse('$_baseUrl/miniapps/$miniAppId'),
-        headers: {'Authorization': 'Bearer $firebaseToken'},
+        headers: {'Authorization': 'Bearer $token'},
       );
 
       // Process the response
@@ -248,15 +238,15 @@ class MiniAppsService {
   Future<void> pinMiniApp(String miniAppId) async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
+      String? token = await _authService.getCurrentUserToken();
+      if (token == null) {
         throw Exception('User not authenticated');
       }
 
       // Make the POST request
       final response = await http.post(
         Uri.parse('$_baseUrl/miniapps/$miniAppId/pin'),
-        headers: {'Authorization': 'Bearer $firebaseToken'},
+        headers: {'Authorization': 'Bearer $token'},
       );
 
       // Process the response
@@ -278,15 +268,15 @@ class MiniAppsService {
   Future<void> unpinMiniApp(String miniAppId) async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
+      String? token = await _authService.getCurrentUserToken();
+      if (token == null) {
         throw Exception('User not authenticated');
       }
 
       // Make the POST request
       final response = await http.post(
         Uri.parse('$_baseUrl/miniapps/$miniAppId/unpin'),
-        headers: {'Authorization': 'Bearer $firebaseToken'},
+        headers: {'Authorization': 'Bearer $token'},
       );
 
       // Process the response
@@ -304,44 +294,6 @@ class MiniAppsService {
     }
   }
 
-  // Use a mini-app to create a conversation
-  Future<Conversation> useMiniApp(
-    String miniAppId,
-    Map<String, dynamic> formInputs,
-  ) async {
-    try {
-      // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
-        throw Exception('User not authenticated');
-      }
-
-      // Make the POST request
-      final response = await http.post(
-        Uri.parse('$_baseUrl/miniapps/$miniAppId/use'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $firebaseToken',
-        },
-        body: jsonEncode(formInputs),
-      );
-
-      // Process the response
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        final decodedResponse = utf8.decode(response.bodyBytes);
-        final json = jsonDecode(decodedResponse);
-        return Conversation.fromJson(json);
-      } else {
-        throw APIException(
-          'Failed to use mini-app: ${response.reasonPhrase}',
-          statusCode: response.statusCode,
-        );
-      }
-    } catch (e) {
-      if (e is APIException) rethrow;
-      throw APIException('API request failed: $e');
-    }
-  }
 }
 
 class APIException implements Exception {
@@ -352,8 +304,4 @@ class APIException implements Exception {
 
   @override
   String toString() => 'APIException: $message (Status code: $statusCode)';
-}
-
-class APINeedEmailVerify implements Exception {
-  final String message = 'Email verification required';
 }

@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-
-	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // --- OpenAI-Compatible Message Types ---
@@ -19,7 +17,7 @@ type ContentImageURL struct {
 // ContentPart represents one element of a multi-part content array.
 // Used when a message contains mixed content (text + images).
 type ContentPart struct {
-	Type     string           `json:"type"`                       // "text", "image_url", "snippet", "file", "pdf", "docx", "xlsx", "pptx"
+	Type     string           `json:"type"` // "text", "image_url", "snippet", "file", "pdf", "docx", "xlsx", "pptx"
 	Text     string           `json:"text,omitempty"`
 	ImageURL *ContentImageURL `json:"image_url,omitempty"`
 	Filename string           `json:"filename,omitempty"`
@@ -125,10 +123,10 @@ type FunctionCall struct {
 // events for live display but NOT persisted to DB.
 type ToolCall struct {
 	ID       string       `json:"id"`
-	Type     string       `json:"type"`                    // "function"
+	Type     string       `json:"type"` // "function"
 	Function FunctionCall `json:"function"`
-	Loading  string       `json:"loading,omitempty"`        // transient: display template
-	IconURL  string       `json:"icon_url,omitempty"`       // transient: base64 icon
+	Loading  string       `json:"loading,omitempty"`  // transient: display template
+	IconURL  string       `json:"icon_url,omitempty"` // transient: base64 icon
 }
 
 // Message is an OpenAI-compatible message.
@@ -136,11 +134,11 @@ type ToolCall struct {
 // Content is a MessageContent that is internally always []ContentPart.
 // Use TextContent() and ContentParts() for access.
 type Message struct {
-	Role       string         `json:"role"`                           // "system", "user", "assistant", "tool"
+	Role       string         `json:"role"` // "system", "user", "assistant", "tool"
 	Content    MessageContent `json:"content,omitempty"`
-	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`           // assistant only
-	ToolCallID string         `json:"tool_call_id,omitempty"`         // tool role only
-	Name       string         `json:"name,omitempty"`                 // tool role only
+	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`   // assistant only
+	ToolCallID string         `json:"tool_call_id,omitempty"` // tool role only
+	Name       string         `json:"name,omitempty"`         // tool role only
 
 	// Metadata — stored in DB, not sent to LLMs
 	Timestamp   string `json:"timestamp,omitempty"`
@@ -171,9 +169,9 @@ const (
 // --- Model & Configuration ---
 
 type Model struct {
-	Name   string            `json:"name,omitempty" bson:"name,omitempty"`
-	Params map[string]string `json:"params,omitempty" bson:"params,omitempty"`
-	Tools  map[string]string `json:"tools,omitempty" bson:"tools,omitempty"`
+	Name   string            `json:"name,omitempty"`
+	Params map[string]string `json:"params,omitempty"`
+	Tools  map[string]string `json:"tools,omitempty"`
 }
 
 type ModelSelected struct {
@@ -203,36 +201,28 @@ type Conversation struct {
 	Icon          string            `json:"icon"`
 }
 
-// --- Billing ---
-
-type UserAction struct {
-	Type     int   `bson:"type"`
-	Provider int   `bson:"provider"`
-	Model    Model `bson:"model"`
-}
-
 // --- MiniApps ---
 
 type MiniAppInput struct {
-	Name        string   `json:"name" bson:"name"`
-	Description string   `json:"description" bson:"description"`
-	Type        string   `json:"type" bson:"type"`
-	Options     []string `json:"options" bson:"options"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Type        string   `json:"type"`
+	Options     []string `json:"options"`
 }
 
 type MiniApp struct {
-	ID                      primitive.ObjectID `json:"id,omitempty" bson:"_id,omitempty"`
-	Name                    string             `json:"name" bson:"name"`
-	Description             string             `json:"description" bson:"description"`
-	IconURL                 string             `json:"icon_url" bson:"icon_url"`
-	Author                  string             `json:"author" bson:"author"`
-	Prompt                  map[string]string  `json:"-" bson:"prompt"`
-	ModelSelected           ModelSelected      `json:"model_selected" bson:"model_selected"`
-	Inputs                  []MiniAppInput     `json:"inputs" bson:"inputs"`
-	InitialMessage          map[string]string  `json:"initial_message" bson:"initial_message"`
-	InputPlaceholderMessage map[string]string  `json:"input_placeholder_message" bson:"input_placeholder_message"`
-	Form                    string             `json:"form" bson:"form"`
-	Placeholder             string             `json:"placeholder" bson:"placeholder"`
+	ID                      string            `json:"id,omitempty"`
+	Name                    string            `json:"name"`
+	Description             string            `json:"description"`
+	IconURL                 string            `json:"icon_url"`
+	Author                  string            `json:"author"`
+	Prompt                  map[string]string `json:"-"`
+	ModelSelected           ModelSelected     `json:"model_selected"`
+	Inputs                  []MiniAppInput    `json:"inputs"`
+	InitialMessage          map[string]string `json:"initial_message"`
+	InputPlaceholderMessage map[string]string `json:"input_placeholder_message"`
+	Form                    string            `json:"form"`
+	Placeholder             string            `json:"placeholder"`
 }
 
 // --- Tool Definitions (for LLM function calling) ---
@@ -262,17 +252,18 @@ type PropertyParameterToolsRequest struct {
 }
 
 // AITool is a server-side tool registered in the tool registry.
+//
+// Cost is retained as an inert field so existing tool literals still compile,
+// but it has no effect now that the credit/billing system is removed.
 type AITool struct {
-	ID            primitive.ObjectID  `json:"id,omitempty" bson:"_id,omitempty"`
-	Name          string              `json:"name" bson:"name"`
-	Description   string              `json:"description" bson:"description"`
-	ToolID        string              `json:"tool_id" bson:"tool_id"`
-	BundleName    string              `json:"bundle_name,omitempty" bson:"bundle_name,omitempty"`
-	ToolRequest   ToolsRequest        `json:"tool_call" bson:"tool_call"`
-	LoadingString string              `json:"loading_string" bson:"loading_string"`
-	IconURL       string              `json:"icon_url" bson:"icon_url"`
-	Author        string              `json:"author" bson:"author"`
-	Exec func(context.Context, string, Conversation) MessageContent `json:"-"`
-	Cost int                                       `json:"cost" bson:"cost"`
-	CostFunc                func(string) (float64, UserAction) `json:"-"`
+	Name          string                                                     `json:"name"`
+	Description   string                                                     `json:"description"`
+	ToolID        string                                                     `json:"tool_id"`
+	BundleName    string                                                     `json:"bundle_name,omitempty"`
+	ToolRequest   ToolsRequest                                               `json:"tool_call"`
+	LoadingString string                                                     `json:"loading_string"`
+	IconURL       string                                                     `json:"icon_url"`
+	Author        string                                                     `json:"author"`
+	Cost          int                                                        `json:"-"`
+	Exec          func(context.Context, string, Conversation) MessageContent `json:"-"`
 }

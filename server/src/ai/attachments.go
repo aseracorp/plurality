@@ -182,7 +182,6 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 		}
 	}
 
-
 	// Move image parts from tool results into user messages so the AI can see them.
 	// LLM APIs don't support images inside tool results — only in user messages.
 	// This only modifies the ephemeral copy, not the DB.

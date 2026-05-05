@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 
 	"github.com/azukaar/plurality/src/ai_tools"
 	"github.com/azukaar/plurality/src/db"
@@ -36,15 +35,14 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate plan and model access
-	planName, err := db.GetPlanName(r.Context())
-	if err != nil {
-		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
+	if payload.ModelSelected.Text == nil || !CheckModel(payload.ModelSelected.Text.Name) {
+		utils.Error("[HandleChat] Unknown text model", nil)
+		http.Error(w, "Unknown text model", http.StatusBadRequest)
 		return
 	}
-	if !CheckModel(payload.ModelSelected.Text.Name, planName) || !CheckModel(payload.ModelSelected.Vision.Name, planName) {
-		utils.Error("[HandleChat] Invalid model for plan", nil)
-		http.Error(w, "Invalid model for your plan", http.StatusBadRequest)
+	if payload.ModelSelected.Vision != nil && !CheckModel(payload.ModelSelected.Vision.Name) {
+		utils.Error("[HandleChat] Unknown vision model", nil)
+		http.Error(w, "Unknown vision model", http.StatusBadRequest)
 		return
 	}
 
@@ -55,7 +53,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	if payload.ConversationID == "" {
 		partialConversation.Title = "New Chat"
 	}
-	if payload.MiniApp.ID != primitive.NilObjectID {
+	if payload.MiniApp.ID != "" {
 		partialConversation.MiniApp = &payload.MiniApp
 	}
 
@@ -203,10 +201,10 @@ func HandleApprove(w http.ResponseWriter, r *http.Request) {
 			Arguments  string `json:"arguments"`
 			Approved   bool   `json:"approved"`
 		} `json:"approvals"`
-		ModelSelected   utils.ModelSelected          `json:"model_selected"`
-		ClientSideTools []utils.FunctionToolsRequest `json:"client_side_tools"`
-		AvailableSkills []string                     `json:"available_skills,omitempty"`
-		HasAttachedFolder bool                       `json:"has_attached_folder,omitempty"`
+		ModelSelected     utils.ModelSelected          `json:"model_selected"`
+		ClientSideTools   []utils.FunctionToolsRequest `json:"client_side_tools"`
+		AvailableSkills   []string                     `json:"available_skills,omitempty"`
+		HasAttachedFolder bool                         `json:"has_attached_folder,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		utils.SendHTTPError(w, "Invalid request body", http.StatusBadRequest)
@@ -242,12 +240,6 @@ func HandleApprove(w http.ResponseWriter, r *http.Request) {
 					Timestamp: time.Now().Format(time.RFC3339),
 				}
 			} else if tool, ok := ai_tools.GetTool(approval.ToolName); ok {
-				if tool.CostFunc != nil {
-					price, action := tool.CostFunc(args)
-					db.RemoveCredits(r.Context(), price, action)
-				} else if tool.Cost > 0 {
-					db.RemoveCredits(r.Context(), float64(tool.Cost), utils.UserAction{Type: TOOL_USE, Provider: NONE})
-				}
 				resultContent := tool.Exec(r.Context(), args, *conversation)
 				toolMessage = utils.Message{
 					Role: "tool", Content: resultContent,
@@ -450,8 +442,6 @@ func generateTitleAndIcon(ctx context.Context, conversation utils.Conversation) 
 		return "", "", fmt.Errorf("updating metadata: %w", err)
 	}
 
-	db.RemoveCredits(ctx, 100, utils.UserAction{Type: TITLE, Provider: NONE, Model: utils.Model{}})
-
 	return title, iconURL, nil
 }
 
@@ -504,17 +494,6 @@ func GenerateIconForConversation(prompt string) (string, error) {
 	}
 
 	return "", fmt.Errorf("no image data returned")
-}
-
-func API_GetUserBalance(w http.ResponseWriter, r *http.Request) {
-	balance, err := db.GetUserBalance(r.Context())
-	if err != nil {
-		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(balance)
 }
 
 func API_UpdateConversationFolder(w http.ResponseWriter, r *http.Request) {

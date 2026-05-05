@@ -1,9 +1,14 @@
-# release? 
-- Remove Firebase
-- Remove Mongo
-- budget
-- mini apps > preset 
-- basic CRON 
+- Remove the together API hardcoded crap 
+- Per-user everything: using a map of linux user > plurality user 
+  - docker ?
+- Per-user MCP / skills
+
+- basic CRON (disables client tools)
+
+
+- remove lightpanda, add playwright
+
+- tool to request extenal AI (ex. promote a request or something) - keep cost down
 
 - files tools 
   - missing: save attachment / load attachment (attach file to convo)
@@ -11,6 +16,7 @@
 - Allows allow "tool bundle name" option for convos
 - Agents (sub conversations as conversatiosn)
 - Knowledge base
+- preset manager
 - background process tool (for commands like web servers) (simple detached flag)
 - code tools
 - browser tools 

@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	fsServerMaxReadBytes  = 200 * 1024 // 200 KB cap on file reads
+	fsServerMaxReadBytes   = 200 * 1024 // 200 KB cap on file reads
 	fsServerMaxListEntries = 500
 	fsServerMaxFindResults = 500
 )

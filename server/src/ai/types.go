@@ -8,13 +8,13 @@ import (
 
 type ImageGenerationRequest struct {
 	ConversationID string `json:"conversation_id"`
-	Model          string             `json:"model"`
-	Prompt         string             `json:"prompt"`
-	Width          int                `json:"width"`
-	Height         int                `json:"height"`
-	Steps          int                `json:"steps"`
-	N              int                `json:"n"`
-	ResponseFormat string             `json:"response_format"`
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	Width          int    `json:"width"`
+	Height         int    `json:"height"`
+	Steps          int    `json:"steps"`
+	N              int    `json:"n"`
+	ResponseFormat string `json:"response_format"`
 }
 
 type ImageGenerationResponse struct {

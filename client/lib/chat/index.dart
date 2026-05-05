@@ -7,7 +7,6 @@ import '../api/service.dart';
 import '../api/api.dart';
 import '../utils/types.dart';
 import '../auth/account.dart';
-import './budget.dart';
 import 'conversation-list/conversation-list.dart';
 import 'dart:convert';
 import 'dart:math';
@@ -50,10 +49,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    _apiService.CheckVerifyEmail(
-      () => {Navigator.pushNamed(context, '/verify-email')},
-    );
-
     checkVersion().then((value) {
       if (value) {
         showDialog(
@@ -164,16 +159,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ),
         ),
         'content': SettingsScreen(),
-        'hiddenOnDesktop': true,
-      },
-      {
-        'icon': BalanceProgressCircle(
-          isClickable: false,
-          isMobile: widget.isMobile,
-          backgroundColor: widget.isMobile ? Colors.grey : Colors.white,
-        ),
-        'label': Text('Budget'),
-        'content': BudgetScreen(),
         'hiddenOnDesktop': true,
       },
     ];
@@ -357,8 +342,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      BalanceProgressCircle(),
-                      Divider(),
                       IconButton(
                         icon: Icon(Icons.account_circle, color: Colors.white),
                         onPressed: () async {

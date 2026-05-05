@@ -21,7 +21,7 @@ var ConversationAttachmentsTool = utils.AITool{
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
-			Name: "conversation_attachments",
+			Name:        "conversation_attachments",
 			Description: "Retrieve conversation attachments omitted for context savings. Mode 'list': returns metadata. Mode 'get': retrieves up to 5 attachments with optional byte-range slicing.",
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",

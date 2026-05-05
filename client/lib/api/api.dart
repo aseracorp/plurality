@@ -1,19 +1,14 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:http/http.dart' as http;
-import 'package:flutter/foundation.dart';
 import '../auth/auth-service.dart';
 import '../utils/types.dart';
-import './balance.dart';
 import './sse_event.dart';
-import 'dart:io';
 
 class ApiService {
   static final ApiService _instance = ApiService._internal();
   final AuthService _authService = AuthService();
-  static final String baseUrl =
-      kReleaseMode
-          ? 'https://app.plurality-ai.com'
-          : 'http://192.168.1.102:8090';
+  static String get baseUrl => AuthService.baseUrl;
 
   // Factory constructor to return the same instance every time
   factory ApiService() {
@@ -23,23 +18,6 @@ class ApiService {
   // Private constructor used by the factory constructor
   ApiService._internal();
 
-  Future<void> CheckVerifyEmail(Function redirect) async {
-    String? firebaseToken = await _authService.getCurrentUserToken();
-
-    if (firebaseToken == null) {
-      throw Exception('User not authenticated');
-    }
-
-    final response = await http.get(
-      Uri.parse('$baseUrl/check'),
-      headers: {'Authorization': 'Bearer $firebaseToken'},
-    );
-
-    if (response.statusCode == 412) {
-      redirect();
-    }
-  }
-
   // Generic method to send authenticated POST requests
   Future<Map<String, dynamic>> sendPostRequest({
     required String endpoint,
@@ -47,9 +25,9 @@ class ApiService {
   }) async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
+      String? token = await _authService.getCurrentUserToken();
 
-      if (firebaseToken == null) {
+      if (token == null) {
         throw Exception('User not authenticated');
       }
 
@@ -58,7 +36,7 @@ class ApiService {
         Uri.parse('$baseUrl/$endpoint'),
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer $firebaseToken',
+          'Authorization': 'Bearer $token',
         },
         body: jsonEncode(body),
       );
@@ -78,14 +56,14 @@ class ApiService {
 
   /// Fetch raw bytes for an internal attachment URL (e.g. /attachments/uid/month/file.pdf).
   Future<Uint8List> fetchAttachmentBytes(String urlPath) async {
-    String? firebaseToken = await _authService.getCurrentUserToken();
-    if (firebaseToken == null) {
+    String? token = await _authService.getCurrentUserToken();
+    if (token == null) {
       throw Exception('User not authenticated');
     }
 
     final response = await http.get(
       Uri.parse('$baseUrl$urlPath'),
-      headers: {'Authorization': 'Bearer $firebaseToken'},
+      headers: {'Authorization': 'Bearer $token'},
     );
 
     if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -98,14 +76,14 @@ class ApiService {
   /// Search conversations via server-side FTS5 + vector search.
   /// Returns conversation IDs ranked by relevance.
   Future<List<String>> searchConversations(String query) async {
-    String? firebaseToken = await _authService.getCurrentUserToken();
-    if (firebaseToken == null) {
+    String? token = await _authService.getCurrentUserToken();
+    if (token == null) {
       throw Exception('User not authenticated');
     }
 
     final response = await http.get(
       Uri.parse('$baseUrl/search?q=${Uri.encodeQueryComponent(query)}'),
-      headers: {'Authorization': 'Bearer $firebaseToken'},
+      headers: {'Authorization': 'Bearer $token'},
     );
 
     if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -288,15 +266,15 @@ class ApiService {
   Future<List<Conversation>> getConversations() async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
+      String? token = await _authService.getCurrentUserToken();
+      if (token == null) {
         throw Exception('User not authenticated');
       }
 
       // Make the GET request
       final response = await http.get(
         Uri.parse('$baseUrl/conversations'),
-        headers: {'Authorization': 'Bearer $firebaseToken'},
+        headers: {'Authorization': 'Bearer $token'},
       );
 
       // Process the response
@@ -314,8 +292,6 @@ class ApiService {
           }
         }
         return conversations;
-      } else if (response.statusCode == 412) {
-        throw APINeedEmailVerify();
       } else {
         throw APIException(
           'Failed to fetch conversations: ${response.reasonPhrase}',
@@ -324,7 +300,6 @@ class ApiService {
       }
     } catch (e) {
       if (e is APIException) rethrow;
-      if (e is APINeedEmailVerify) rethrow;
       throw APIException('API request failed: $e');
     }
   }
@@ -332,15 +307,15 @@ class ApiService {
   Future<void> deleteConversation(String conversationID) async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
+      String? token = await _authService.getCurrentUserToken();
+      if (token == null) {
         throw Exception('User not authenticated');
       }
 
       // Make the DELETE request
       final response = await http.delete(
         Uri.parse('$baseUrl/conversation/$conversationID'),
-        headers: {'Authorization': 'Bearer $firebaseToken'},
+        headers: {'Authorization': 'Bearer $token'},
       );
 
       // Process the response
@@ -362,14 +337,14 @@ class ApiService {
   Future<Conversation?> getConversation(String conversationID) async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
+      String? token = await _authService.getCurrentUserToken();
+      if (token == null) {
         throw Exception('User not authenticated');
       }
       // Make the GET request
       final response = await http.get(
         Uri.parse('$baseUrl/conversation/$conversationID'),
-        headers: {'Authorization': 'Bearer $firebaseToken'},
+        headers: {'Authorization': 'Bearer $token'},
       );
       // Process the response
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -394,14 +369,14 @@ class ApiService {
   Future<Map<String, dynamic>> generateTitle(String conversationID) async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
+      String? token = await _authService.getCurrentUserToken();
+      if (token == null) {
         throw Exception('User not authenticated');
       }
       // Make the GET request
       final response = await http.get(
         Uri.parse('$baseUrl/generate-title/$conversationID'),
-        headers: {'Authorization': 'Bearer $firebaseToken'},
+        headers: {'Authorization': 'Bearer $token'},
       );
       // Process the response
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -423,51 +398,19 @@ class ApiService {
     }
   }
 
-  Future<Balance> getBalance() async {
-    try {
-      // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
-        throw Exception('User not authenticated');
-      }
-      // Make the GET request
-      final response = await http.get(
-        Uri.parse('$baseUrl/balance'),
-        headers: {'Authorization': 'Bearer $firebaseToken'},
-      );
-      // Process the response
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        final decodedResponse = utf8.decode(response.bodyBytes);
-        final json = jsonDecode(decodedResponse);
-        return Balance.fromJson(json);
-      } else if (response.statusCode == 412) {
-        throw APINeedEmailVerify();
-      } else {
-        throw APIException(
-          'Failed to get balance: ${response.reasonPhrase}',
-          statusCode: response.statusCode,
-        );
-      }
-    } catch (e) {
-      if (e is APIException) rethrow;
-      if (e is APINeedEmailVerify) rethrow;
-      throw APIException('API request failed: $e');
-    }
-  }
-
   // call DELETE /delete-user
 
   Future<void> deleteUser() async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
+      String? token = await _authService.getCurrentUserToken();
+      if (token == null) {
         throw Exception('User not authenticated');
       }
       // Make the DELETE request
       final response = await http.delete(
         Uri.parse('$baseUrl/delete-user'),
-        headers: {'Authorization': 'Bearer $firebaseToken'},
+        headers: {'Authorization': 'Bearer $token'},
       );
       // Process the response
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -490,8 +433,8 @@ class ApiService {
   ) async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
+      String? token = await _authService.getCurrentUserToken();
+      if (token == null) {
         throw Exception("User not authenticated");
       }
 
@@ -503,7 +446,7 @@ class ApiService {
         Uri.parse("$baseUrl/rename-conversation/$conversationID"),
         headers: {
           "Content-Type": "application/json",
-          "Authorization": "Bearer $firebaseToken",
+          "Authorization": "Bearer $token",
         },
         body: jsonEncode(requestBody),
       );
@@ -530,8 +473,8 @@ class ApiService {
   ) async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
+      String? token = await _authService.getCurrentUserToken();
+      if (token == null) {
         throw Exception('User not authenticated');
       }
 
@@ -543,7 +486,7 @@ class ApiService {
         Uri.parse('$baseUrl/set-conversation-folder/$conversationID'),
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer $firebaseToken',
+          'Authorization': 'Bearer $token',
         },
         body: jsonEncode(requestBody),
       );
@@ -572,15 +515,15 @@ class ApiService {
   }) async {
     try {
       // Get authentication token
-      String? firebaseToken = await _authService.getCurrentUserToken();
-      if (firebaseToken == null) {
+      String? token = await _authService.getCurrentUserToken();
+      if (token == null) {
         throw Exception('User not authenticated');
       }
 
       // Create the request
       final request = http.Request('POST', Uri.parse('$baseUrl/transcribe'));
       request.headers['Content-Type'] = 'application/json';
-      request.headers['Authorization'] = 'Bearer $firebaseToken';
+      request.headers['Authorization'] = 'Bearer $token';
 
       // Prepare request body
       request.body = jsonEncode({
@@ -629,6 +572,3 @@ class ImageResult {
   ImageResult(this.base64, this.time);
 }
 
-class APINeedEmailVerify implements Exception {
-  final String message = 'Email verification required';
-}
