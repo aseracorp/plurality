@@ -43,6 +43,16 @@ func webhookExtSuffix() string {
 	return ""
 }
 
+// portExtSuffix returns the PORT_EXT advertisement appended to system prompts
+// when the env var is set, otherwise empty. PORT_EXT lists the ports that are
+// exposed externally so the AI knows which ports it can bind servers to.
+func portExtSuffix() string {
+	if v := os.Getenv("PORT_EXT"); v != "" {
+		return "\n\nThe following ports are exposed externally and available for you to bind servers to: " + v
+	}
+	return ""
+}
+
 // SendChatCompletion sends a chat completion request to the LiteLLM proxy,
 // which handles routing to the correct provider (OpenAI, Claude, Gemini, Fireworks).
 func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conversation, payload ChatPayload) (io.ReadCloser, int, error) {
@@ -115,7 +125,8 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 			strconv.Itoa(int(time.Now().Month())) +
 			"/" +
 			strconv.Itoa(time.Now().Year()) +
-			webhookExtSuffix()),
+			webhookExtSuffix() +
+			portExtSuffix()),
 	}
 
 	allMessages := append([]utils.Message{systemMsg}, conv.Messages...)

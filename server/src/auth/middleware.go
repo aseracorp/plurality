@@ -9,8 +9,7 @@ import (
 )
 
 // AuthMiddleware verifies a JWT in the Authorization header and injects
-// userID=username into the request context. Drop-in replacement for the
-// previous Firebase middleware; same context key.
+// userID=username into the request context.
 func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")

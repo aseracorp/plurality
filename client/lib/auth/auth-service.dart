@@ -233,10 +233,6 @@ class AuthService {
 
   bool isUserLoggedIn() => _current != null;
 
-  /// No-op shim kept for compatibility with code that used to refresh the
-  /// Firebase ID token after email verification.
-  Future<void> forceRefresh() async {}
-
   String _decodeError(http.Response resp) {
     final body = resp.body.trim();
     if (body.isEmpty) return 'request failed (${resp.statusCode})';
