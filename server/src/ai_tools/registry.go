@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/skills"
 	"github.com/azukaar/plurality/src/utils"
@@ -29,6 +30,7 @@ var Registry = map[string]utils.AITool{
 	LongTaskTool.ToolID:                LongTaskTool,
 	ListPresetsTool.ToolID:             ListPresetsTool,
 	WaitTool.ToolID:                    WaitTool,
+	NotifyTool.ToolID:                  NotifyTool,
 }
 
 // RegisterRetrieveServerSkill adds retrieve_server_skill to the registry.
@@ -81,6 +83,9 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 		}
 		if tool.ToolID == WaitTool.ToolID {
 			continue // force-included unconditionally below
+		}
+		if tool.ToolID == NotifyTool.ToolID {
+			continue // force-included below only when NTFY is configured
 		}
 
 		// Build the selection key: namespaced for bundled tools, bare for standalone.
@@ -167,6 +172,13 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 	// agent after the requested delay.
 	requests = append(requests, WaitTool.ToolRequest)
 
+	// Force-include send_notification iff the admin has configured an NTFY
+	// server in config.json (or NTFY_* env vars). When unconfigured, the LLM
+	// never sees it.
+	if auth.NotificationsEnabled() {
+		requests = append(requests, NotifyTool.ToolRequest)
+	}
+
 	// Force-include the device-side filesystem tools whenever the user has
 	// attached a local folder to the conversation (signalled by a non-empty
 	// ModelSelected.ClientFolderPath). Schema-only — the server doesn't
@@ -205,6 +217,9 @@ func GetDisabledToolsSummary(model utils.Model, ClientSideTools []utils.Function
 			continue
 		}
 		if tool.ToolID == WaitTool.ToolID {
+			continue
+		}
+		if tool.ToolID == NotifyTool.ToolID {
 			continue
 		}
 		selKey := tool.ToolID

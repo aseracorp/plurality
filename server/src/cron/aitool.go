@@ -27,7 +27,7 @@ var Tool = utils.AITool{
 				Properties: map[string]utils.PropertyParameterToolsRequest{
 					"action":    {Type: "string", Description: "One of: list, create, delete, run, toggle"},
 					"schedule":  {Type: "string", Description: "5-field cron expression (m h dom mon dow). Required for create. Optional for update via toggle/etc not supported here."},
-					"prompt":    {Type: "string", Description: "Prompt to run when the schedule fires. Required for create."},
+					"prompt":    {Type: "string", Description: "Prompt to run when the schedule fires. Required for create. Make this prompt very explicit about what needs to be done, especially including whether or not the user should be notified upon completion"},
 					"preset_id": {Type: "string", Description: "Preset/miniapp ID to use. Optional on create (defaults to default-background-agent). Use list_presets to discover IDs."},
 					"id":        {Type: "string", Description: "Cron uuid. Required for delete/run/toggle."},
 					"enabled":   {Type: "boolean", Description: "Required for toggle: true to enable, false to disable."},

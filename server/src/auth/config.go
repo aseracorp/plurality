@@ -60,11 +60,21 @@ type WebhookConfig struct {
 	PerWebhookPerMinute int `json:"per_webhook_per_minute"`
 }
 
+// NotificationsConfig configures the optional NTFY-based "send_notification"
+// tool. When NtfyURL and Topic are both set, the tool is force-included in
+// every LLM tool list; otherwise it's hidden entirely.
+type NotificationsConfig struct {
+	NtfyURL string `json:"ntfy_url"`
+	Topic   string `json:"topic"`
+	Token   string `json:"token"`
+}
+
 type Config struct {
-	JWTSecret string        `json:"jwt_secret"`
-	OpenID    OpenIDConfig  `json:"openid"`
-	Shortcuts []Shortcut    `json:"shortcuts"`
-	Webhook   WebhookConfig `json:"webhook"`
+	JWTSecret     string              `json:"jwt_secret"`
+	OpenID        OpenIDConfig        `json:"openid"`
+	Shortcuts     []Shortcut          `json:"shortcuts"`
+	Webhook       WebhookConfig       `json:"webhook"`
+	Notifications NotificationsConfig `json:"notifications"`
 }
 
 const (
@@ -192,6 +202,21 @@ func applyEnvOverrides() {
 		}
 		cfg.OpenID.Allowlist = out
 	}
+	if v := os.Getenv("NTFY_URL"); v != "" {
+		cfg.Notifications.NtfyURL = v
+	}
+	if v := os.Getenv("NTFY_TOPIC"); v != "" {
+		cfg.Notifications.Topic = v
+	}
+	if v := os.Getenv("NTFY_TOKEN"); v != "" {
+		cfg.Notifications.Token = v
+	}
+}
+
+func NotificationsEnabled() bool {
+	cfgMu.RLock()
+	defer cfgMu.RUnlock()
+	return cfg.Notifications.NtfyURL != "" && cfg.Notifications.Topic != ""
 }
 
 func GetConfig() Config {

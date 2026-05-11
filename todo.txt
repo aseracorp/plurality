@@ -1,5 +1,4 @@
 # 2
-- let app select server URL !
 - Per-user everything: using a map of linux user > plurality user 
   - Per-user MCP
   - docker ?
@@ -8,6 +7,7 @@
   - select sub of tools + models for each 
   - add message to another chat (agent restarting another chat)
 - Notifications
+- client tools are defined in the sever???
 - Client lock (if client tools used and such for remote )
 - Preset can set shortcut (fast/medium/smart)
 - UI to manage presets / shortcuts?
