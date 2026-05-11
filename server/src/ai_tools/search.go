@@ -13,10 +13,14 @@ import (
 )
 
 var SearchTool = utils.AITool{
-	Name:        "Search",
-	Description: "Search on the internet via Google",
-	ToolID:      "search_web",
-	Cost:        100,
+	Name:              "Search",
+	Description:       "Search on the internet via Google",
+	ToolID:            "search_web",
+	Cost:              100,
+	PickerLabel:       "Search Web",
+	PickerDescription: "Search sites via Google",
+	PickerDefault:     "on",
+	PickerOrder:       10,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{

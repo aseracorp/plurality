@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/azukaar/plurality/src/ai_tools"
@@ -83,6 +84,14 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 
 		// If no tool calls, we're done
 		if len(assistantMessage.ToolCalls) == 0 {
+			// If a long_task list still has outstanding items, inject a
+			// synthetic tool result that reminds the LLM to keep going.
+			// Returns true when a reminder was injected — in that case we
+			// loop back to the LLM instead of going idle.
+			if injectLongTaskReminder(ctx, ar, &conversation) {
+				continue
+			}
+
 			utils.Log("[LLMLoop] No tool calls, setting idle and broadcasting done")
 			ar.setState(ctx, utils.StateIdle)
 			ar.BroadcastStatus("", "")
@@ -388,4 +397,106 @@ func (ar *ActiveRequest) flushPartialResponse(ctx context.Context, conversation 
 func (ar *ActiveRequest) cleanup(ctx context.Context) {
 	RequestRegistry.Remove(ar.ConversationID)
 	ar.CloseAllClients()
+}
+
+// injectLongTaskReminder checks the latest long_task state and, when there are
+// unfinished tasks and the reminder cap hasn't been hit, appends a synthetic
+// assistant + tool message pair to the conversation so the LLM sees the open
+// list on the next iteration. Returns true when a reminder was injected.
+//
+// The synthetic pair is necessary because OpenAI rejects a 'tool' role
+// message that doesn't immediately follow an 'assistant' message with a
+// matching tool_calls[].id — so we manufacture both halves.
+func injectLongTaskReminder(ctx context.Context, ar *ActiveRequest, conv *utils.Conversation) bool {
+	state := ai_tools.ReadLongTaskState(conv.Messages)
+	if !state.HasOutstanding() {
+		return false
+	}
+	if state.RemindersUsed >= ai_tools.LongTaskMaxReminders {
+		utils.Log("[LLMLoop] long_task reminder cap (%d) reached, going idle with %d open task(s)", ai_tools.LongTaskMaxReminders, openCount(state))
+		return false
+	}
+
+	state.RemindersUsed++
+	open := openTitles(state)
+	state.Nudge = fmt.Sprintf(
+		"You still have %d outstanding task(s): %s. Continue working on them. If they can no longer be completed, call long_task with operation='clear'.",
+		len(open),
+		strings.Join(open, "; "),
+	)
+	resultBody := ai_tools.FormatStateJSON(state)
+
+	syntheticID := fmt.Sprintf("longtask_reminder_%d", time.Now().UnixNano())
+	tc := utils.ToolCall{
+		ID:   syntheticID,
+		Type: "function",
+		Function: utils.FunctionCall{
+			Name:      "long_task",
+			Arguments: `{"operation":"_reminder"}`,
+		},
+	}
+	enrichToolCallMetadata(&tc)
+
+	assistantMsg := utils.Message{
+		Role:      "assistant",
+		ToolCalls: []utils.ToolCall{tc},
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+	toolMsg := utils.Message{
+		Role:       "tool",
+		Content:    utils.NewTextContent(resultBody),
+		ToolCallID: syntheticID,
+		Name:       "long_task",
+		Timestamp:  time.Now().Format(time.RFC3339),
+	}
+
+	updated, _, err := db.PushMessage(ctx, *conv, assistantMsg)
+	if err != nil {
+		utils.Error("[LLMLoop] long_task reminder: failed to push assistant msg", err)
+		return false
+	}
+	updated, _, err = db.PushMessage(ctx, updated, toolMsg)
+	if err != nil {
+		utils.Error("[LLMLoop] long_task reminder: failed to push tool msg", err)
+		return false
+	}
+	*conv = updated
+
+	ar.Broadcast(SSEEvent{
+		Type:           "tool_use",
+		ToolCall:       &tc,
+		IsServer:       true,
+		ConversationID: ar.ConversationID,
+	})
+	ar.Broadcast(SSEEvent{
+		Type:           "tool_result",
+		ToolCallID:     syntheticID,
+		ToolName:       "long_task",
+		ToolResult:     resultBody,
+		IsServer:       true,
+		ConversationID: ar.ConversationID,
+	})
+
+	utils.Log("[LLMLoop] long_task reminder injected (%d/%d), %d open task(s)", state.RemindersUsed, ai_tools.LongTaskMaxReminders, len(open))
+	return true
+}
+
+func openTitles(s ai_tools.LongTaskState) []string {
+	out := make([]string, 0, len(s.Tasks))
+	for _, t := range s.Tasks {
+		if !t.Done {
+			out = append(out, t.ID+": "+t.Title)
+		}
+	}
+	return out
+}
+
+func openCount(s ai_tools.LongTaskState) int {
+	n := 0
+	for _, t := range s.Tasks {
+		if !t.Done {
+			n++
+		}
+	}
+	return n
 }

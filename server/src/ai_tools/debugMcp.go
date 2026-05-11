@@ -12,11 +12,15 @@ import (
 
 // DebugMCPTool allows the AI to inspect MCP server logs for debugging.
 var DebugMCPTool = utils.AITool{
-	Name:        "Debug MCP",
-	Description: "Debug MCP server processes",
-	ToolID:      "debug_mcp",
-	BundleName:  "mcp_capabilities",
-	Cost:        0,
+	Name:              "Debug MCP",
+	Description:       "Debug MCP server processes",
+	ToolID:            "debug_mcp",
+	BundleName:        "mcp_capabilities",
+	Cost:              0,
+	PickerLabel:       "Debug MCP",
+	PickerDescription: "View MCP server logs for debugging",
+	PickerDefault:     "ask",
+	PickerOrder:       100,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{

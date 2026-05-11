@@ -3,7 +3,10 @@ package ai
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
+	"strings"
 
+	"github.com/azukaar/plurality/src/ai_tools"
 	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/skills"
@@ -68,23 +71,49 @@ type ModelsResponse struct {
 	Skills          []SkillDef                `json:"skills,omitempty"`
 }
 
-// BuiltinFunctions are the server-provided tool toggles shown in the modal.
-// Bundled tools use namespaced keys (bundle__tool) matching the names sent to
-// the LLM. Standalone tools keep bare keys.
-var BuiltinFunctions = []FunctionDef{
-	{Key: "search_web", Label: "Search Web", Description: "Search sites via Google", Default: "on"},
-	{Key: "place_search", Label: "Place Search", Description: "Search locations via Google Maps", Default: "on"},
-	{Key: "visit_link", Label: "Visit Link", Description: "Visit websites shared in the chat", Default: "on"},
-	{Key: "roll_dice", Label: "Roll Dice", Description: "Well... rolls a dice", Default: "on"},
-	{Key: "generate_image", Label: "Image Generation", Description: "Generate images from text descriptions", Default: "on"},
-	{Key: "conversations__search_conversations", Label: "Search Conversations", Description: "Search past conversations by topic", Default: "on", Parent: "conversations"},
-	{Key: "conversations__retrieve_conversation", Label: "Retrieve Conversation", Description: "Retrieve messages from a past conversation", Default: "on", Parent: "conversations"},
-	{Key: "mcp_capabilities__manage_mcp", Label: "Manage MCP", Description: "Read and edit MCP server configuration", Default: "ask", Parent: "mcp_capabilities"},
-	{Key: "mcp_capabilities__debug_mcp", Label: "Debug MCP", Description: "View MCP server logs for debugging", Default: "ask", Parent: "mcp_capabilities"},
-	{Key: "system_tools__shell_exec", Label: "Shell Execute", Description: "Execute shell commands on the server", Default: "ask", Parent: "system_tools"},
-	{Key: "system_tools__apt_install", Label: "Apt Install", Description: "Install system packages via apt-get", Default: "ask", Parent: "system_tools"},
-	{Key: "filesystem_server__fs_read", Label: "Read Files (Server)", Description: "List, find, and read files on the server", Default: "ask", Parent: "filesystem_server"},
-	{Key: "filesystem_server__fs_write", Label: "Write Files (Server)", Description: "Edit, copy, move, delete files on the server", Default: "ask", Parent: "filesystem_server"},
+// BuiltinFunctionsFromRegistry derives the picker tool list from the builtin
+// tool registry. A tool is included when its PickerDefault is non-empty;
+// tools meant to be force-included (e.g. conversation_attachments) leave it
+// empty and stay hidden from the toggle UI. Results are sorted by PickerOrder
+// then ToolID for stability.
+func BuiltinFunctionsFromRegistry() []FunctionDef {
+	out := make([]FunctionDef, 0, len(ai_tools.Registry))
+	for _, t := range ai_tools.Registry {
+		if t.PickerDefault == "" {
+			continue
+		}
+		key := t.ToolID
+		if t.BundleName != "" {
+			key = t.BundleName + mcp.NamespaceSeparator + t.ToolID
+		}
+		out = append(out, FunctionDef{
+			Key:         key,
+			Label:       t.PickerLabel,
+			Description: t.PickerDescription,
+			Default:     t.PickerDefault,
+			Parent:      t.BundleName,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		// Tie-break on key so equal orders (or all zeros) still produce a
+		// deterministic listing.
+		ti, _ := ai_tools.Registry[trimBundlePrefix(out[i].Key)]
+		tj, _ := ai_tools.Registry[trimBundlePrefix(out[j].Key)]
+		if ti.PickerOrder != tj.PickerOrder {
+			return ti.PickerOrder < tj.PickerOrder
+		}
+		return out[i].Key < out[j].Key
+	})
+	return out
+}
+
+// trimBundlePrefix strips an optional 'bundle__' prefix from a namespaced
+// picker key so it matches the bare ToolID used as the registry index.
+func trimBundlePrefix(key string) string {
+	if idx := strings.Index(key, mcp.NamespaceSeparator); idx >= 0 {
+		return key[idx+len(mcp.NamespaceSeparator):]
+	}
+	return key
 }
 
 var BuiltinFunctionBundles = map[string]FunctionBundle{
@@ -165,8 +194,9 @@ func toUtilsModel(m *auth.ShortcutModel) *utils.Model {
 // HandleListModels is OpenAI-list-compatible with added {presets, functions,
 // function_bundles, skills} root-level fields for rich clients.
 func HandleListModels(w http.ResponseWriter, r *http.Request) {
-	functions := make([]FunctionDef, 0, len(BuiltinFunctions)+8)
-	functions = append(functions, BuiltinFunctions...)
+	builtinFns := BuiltinFunctionsFromRegistry()
+	functions := make([]FunctionDef, 0, len(builtinFns)+8)
+	functions = append(functions, builtinFns...)
 
 	bundles := map[string]FunctionBundle{}
 	for k, v := range BuiltinFunctionBundles {

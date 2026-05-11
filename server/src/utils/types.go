@@ -266,4 +266,12 @@ type AITool struct {
 	Author        string                                                     `json:"author"`
 	Cost          int                                                        `json:"-"`
 	Exec          func(context.Context, string, Conversation) MessageContent `json:"-"`
+
+	// Picker metadata — fields used by HandleListModels to drive the UI tool
+	// picker. A tool with PickerDefault == "" is hidden from the picker (used
+	// for force-included tools like conversation_attachments).
+	PickerLabel       string `json:"-"`
+	PickerDescription string `json:"-"`
+	PickerDefault     string `json:"-"` // "on", "ask", "off", or "" (hidden)
+	PickerOrder       int    `json:"-"`
 }

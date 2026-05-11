@@ -15,11 +15,15 @@ import (
 
 // ShellExecTool allows the AI to execute shell commands.
 var ShellExecTool = utils.AITool{
-	Name:        "Shell Execute",
-	Description: "Execute shell commands",
-	ToolID:      "shell_exec",
-	BundleName:  "system_tools",
-	Cost:        0,
+	Name:              "Shell Execute",
+	Description:       "Execute shell commands",
+	ToolID:            "shell_exec",
+	BundleName:        "system_tools",
+	Cost:              0,
+	PickerLabel:       "Shell Execute",
+	PickerDescription: "Execute shell commands on the server",
+	PickerDefault:     "ask",
+	PickerOrder:       110,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{

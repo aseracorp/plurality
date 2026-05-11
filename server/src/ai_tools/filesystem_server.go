@@ -25,11 +25,15 @@ const (
 
 // FsServerReadTool exposes find/list/read/read_segment/stat over the server filesystem.
 var FsServerReadTool = utils.AITool{
-	Name:        "Read Files (Server)",
-	Description: "List, find, read files on the server",
-	ToolID:      "fs_read",
-	BundleName:  "filesystem_server",
-	Cost:        0,
+	Name:              "Read Files (Server)",
+	Description:       "List, find, read files on the server",
+	ToolID:            "fs_read",
+	BundleName:        "filesystem_server",
+	Cost:              0,
+	PickerLabel:       "Read Files (Server)",
+	PickerDescription: "List, find, and read files on the server",
+	PickerDefault:     "ask",
+	PickerOrder:       130,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
@@ -74,11 +78,15 @@ var FsServerReadTool = utils.AITool{
 
 // FsServerWriteTool exposes create/edit/copy/move/delete/mkdir over the server filesystem.
 var FsServerWriteTool = utils.AITool{
-	Name:        "Write Files (Server)",
-	Description: "Edit, copy, move, delete files on the server",
-	ToolID:      "fs_write",
-	BundleName:  "filesystem_server",
-	Cost:        0,
+	Name:              "Write Files (Server)",
+	Description:       "Edit, copy, move, delete files on the server",
+	ToolID:            "fs_write",
+	BundleName:        "filesystem_server",
+	Cost:              0,
+	PickerLabel:       "Write Files (Server)",
+	PickerDescription: "Edit, copy, move, delete files on the server",
+	PickerDefault:     "ask",
+	PickerOrder:       140,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{

@@ -11,11 +11,15 @@ import (
 )
 
 var SearchConversationsTool = utils.AITool{
-	Name:        "Search Conversations",
-	Description: "Search past conversations by topic or keyword",
-	ToolID:      "search_conversations",
-	BundleName:  "conversations",
-	Cost:        50,
+	Name:              "Search Conversations",
+	Description:       "Search past conversations by topic or keyword",
+	ToolID:            "search_conversations",
+	BundleName:        "conversations",
+	Cost:              50,
+	PickerLabel:       "Search Conversations",
+	PickerDescription: "Search past conversations by topic",
+	PickerDefault:     "on",
+	PickerOrder:       70,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
@@ -65,11 +69,15 @@ var SearchConversationsTool = utils.AITool{
 }
 
 var RetrieveConversationTool = utils.AITool{
-	Name:        "Retrieve Conversation",
-	Description: "Retrieve messages from a specific past conversation",
-	ToolID:      "retrieve_conversation",
-	BundleName:  "conversations",
-	Cost:        0,
+	Name:              "Retrieve Conversation",
+	Description:       "Retrieve messages from a specific past conversation",
+	ToolID:            "retrieve_conversation",
+	BundleName:        "conversations",
+	Cost:              0,
+	PickerLabel:       "Retrieve Conversation",
+	PickerDescription: "Retrieve messages from a past conversation",
+	PickerDefault:     "on",
+	PickerOrder:       80,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{

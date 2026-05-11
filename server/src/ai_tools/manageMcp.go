@@ -12,11 +12,15 @@ import (
 
 // ManageMCPTool allows the AI to read and edit the MCP configuration.
 var ManageMCPTool = utils.AITool{
-	Name:        "Manage MCP",
-	Description: "Read and edit MCP server configuration",
-	ToolID:      "manage_mcp",
-	BundleName:  "mcp_capabilities",
-	Cost:        0,
+	Name:              "Manage MCP",
+	Description:       "Read and edit MCP server configuration",
+	ToolID:            "manage_mcp",
+	BundleName:        "mcp_capabilities",
+	Cost:              0,
+	PickerLabel:       "Manage MCP",
+	PickerDescription: "Read and edit MCP server configuration",
+	PickerDefault:     "ask",
+	PickerOrder:       90,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{

@@ -4,6 +4,7 @@ import '../../utils/index.dart' show formatToolDisplayName;
 import 'dart:convert';
 import 'fs_write_diff.dart';
 import 'fs_read_attach.dart';
+import 'long_task_badge.dart';
 
 class ToolCallBadge extends StatelessWidget {
   final ToolCall toolCall;
@@ -21,13 +22,16 @@ class ToolCallBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    String loadingString = toolCall.loading.isNotEmpty
-        ? toolCall.loading
-        : formatToolDisplayName(toolCall.function.name);
+    String loadingString =
+        toolCall.loading.isNotEmpty
+            ? toolCall.loading
+            : formatToolDisplayName(toolCall.function.name);
 
     // Substitute {{placeholders}} with actual argument values
     try {
-      var args = Map<String, dynamic>.from(jsonDecode(toolCall.function.arguments));
+      var args = Map<String, dynamic>.from(
+        jsonDecode(toolCall.function.arguments),
+      );
       args.forEach((key, value) {
         if (value is! String) value = value.toString();
         loadingString = loadingString.replaceAll('{{$key}}', value);
@@ -35,10 +39,11 @@ class ToolCallBadge extends StatelessWidget {
     } catch (_) {}
 
     // Remove any remaining unresolved {{placeholders}}
-    loadingString = loadingString
-        .replaceAll(RegExp(r'\{\{.*?\}\}'), '')
-        .replaceAll('  ', ' ')
-        .trim();
+    loadingString =
+        loadingString
+            .replaceAll(RegExp(r'\{\{.*?\}\}'), '')
+            .replaceAll('  ', ' ')
+            .trim();
 
     final inlineDiff = buildFsWriteDiff(
       toolName: toolCall.function.name,
@@ -50,6 +55,12 @@ class ToolCallBadge extends StatelessWidget {
     final inlineReadAttach = buildFsReadAttach(
       toolName: toolCall.function.name,
       argumentsJson: toolCall.function.arguments,
+      resultMessage: resultMessage,
+      context: context,
+    );
+
+    final inlineLongTask = buildLongTaskChecklist(
+      toolName: toolCall.function.name,
       resultMessage: resultMessage,
       context: context,
     );
@@ -95,7 +106,9 @@ class ToolCallBadge extends StatelessWidget {
           // Tool display text
           Flexible(
             child: Text(
-              loadingString.isEmpty ? formatToolDisplayName(toolCall.function.name) : loadingString,
+              loadingString.isEmpty
+                  ? formatToolDisplayName(toolCall.function.name)
+                  : loadingString,
               overflow: TextOverflow.ellipsis,
               maxLines: 1,
               style: TextStyle(
@@ -146,6 +159,14 @@ class ToolCallBadge extends StatelessWidget {
                 widthFactor: 0.5,
                 alignment: Alignment.centerLeft,
                 child: inlineReadAttach,
+              ),
+            ],
+            if (inlineLongTask != null) ...[
+              const SizedBox(height: 6),
+              FractionallySizedBox(
+                widthFactor: 0.5,
+                alignment: Alignment.centerLeft,
+                child: inlineLongTask,
               ),
             ],
           ],

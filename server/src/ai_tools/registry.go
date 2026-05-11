@@ -26,6 +26,7 @@ var Registry = map[string]utils.AITool{
 	AptInstallTool.ToolID:              AptInstallTool,
 	FsServerReadTool.ToolID:            FsServerReadTool,
 	FsServerWriteTool.ToolID:           FsServerWriteTool,
+	LongTaskTool.ToolID:                LongTaskTool,
 }
 
 // RegisterRetrieveServerSkill adds retrieve_server_skill to the registry.

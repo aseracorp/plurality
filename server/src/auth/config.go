@@ -221,6 +221,7 @@ var defaultShortcutTools = map[string]string{
 	"place_search":                         "true",
 	"visit_link":                           "true",
 	"generate_image":                       "true",
+	"long_task":                            "true",
 	"conversations__search_conversations":  "true",
 	"conversations__retrieve_conversation": "true",
 }
@@ -229,6 +230,7 @@ var defaultShortcutTools = map[string]string{
 // distinct from the text model — drops web/place/link search to keep cost down.
 var defaultShortcutVisionTools = map[string]string{
 	"generate_image":                       "true",
+	"long_task":                            "true",
 	"conversations__search_conversations":  "true",
 	"conversations__retrieve_conversation": "true",
 }

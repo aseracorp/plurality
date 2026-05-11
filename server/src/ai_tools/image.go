@@ -27,9 +27,13 @@ const imagePathMaxBytes = 10 * 1024 * 1024 // 10 MB
 var LiteLLMBaseURL = "http://127.0.0.1:4000"
 
 var ImageGenTool = utils.AITool{
-	Name:        "Image Generation",
-	Description: "Generate an image from a text description using AI image generation",
-	ToolID:      "generate_image",
+	Name:              "Image Generation",
+	Description:       "Generate an image from a text description using AI image generation",
+	ToolID:            "generate_image",
+	PickerLabel:       "Image Generation",
+	PickerDescription: "Generate images from text descriptions",
+	PickerDefault:     "on",
+	PickerOrder:       50,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{

@@ -14,11 +14,15 @@ import (
 
 // AptInstallTool allows the AI to install packages via apt.
 var AptInstallTool = utils.AITool{
-	Name:        "Apt Install",
-	Description: "Install packages via apt",
-	ToolID:      "apt_install",
-	BundleName:  "system_tools",
-	Cost:        0,
+	Name:              "Apt Install",
+	Description:       "Install packages via apt",
+	ToolID:            "apt_install",
+	BundleName:        "system_tools",
+	Cost:              0,
+	PickerLabel:       "Apt Install",
+	PickerDescription: "Install system packages via apt-get",
+	PickerDefault:     "ask",
+	PickerOrder:       120,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
