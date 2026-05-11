@@ -1,7 +1,15 @@
-# Multi-stage build for efficiency
+# Multi-stage, multi-arch build (linux/amd64, linux/arm64).
+#
+# Build with buildx:
+#   docker buildx create --use --name plurality-builder   # one-time
+#   docker buildx build --platform linux/amd64,linux/arm64 -t <tag> --push .
+#
+# Cross-arch stages run under QEMU emulation, so expect non-native builds to
+# be significantly slower than a native one. The Flutter stage is pinned to
+# $BUILDPLATFORM because its output (web assets) is arch-independent.
 
 # Stage 1: Build the Flutter web app
-FROM dart:stable AS flutter_builder
+FROM --platform=$BUILDPLATFORM dart:stable AS flutter_builder
 
 # Install Flutter
 RUN apt-get update && apt-get install -y curl git unzip xz-utils zip libglu1-mesa
@@ -22,7 +30,12 @@ RUN flutter pub get
 RUN flutter build web --release
 
 # Stage 2: Build the Go server
+# Runs on the *target* platform (no --platform override) so CGO links against
+# the matching libc/libsqlite3 for that arch. buildx auto-selects the right
+# golang:1.25 image variant per platform.
 FROM golang:1.25 AS go_builder
+ARG TARGETOS
+ARG TARGETARCH
 
 # Install build dependencies. libsqlite3-dev provides /usr/include/sqlite3.h, which
 # sqlite-vec-go-bindings@v0.1.7-alpha.2 needs at CGO compile time — the Go
@@ -38,9 +51,10 @@ WORKDIR /app
 COPY server/ ./server/
 WORKDIR /app/server
 
-# Build the Go application (build.sh sets its own CGO_CFLAGS)
+# Build the Go application (build.sh sets its own CGO_CFLAGS).
+# GOOS/GOARCH come from buildx's per-target args.
 RUN chmod +x build.sh
-RUN ./build.sh
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} ./build.sh
 
 # Copy litellm requirements for installation in final stage
 RUN mkdir -p build/litellm && cp litellm_requirements.txt build/litellm/

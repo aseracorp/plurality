@@ -6,8 +6,12 @@
 mkdir -p build
 find build -mindepth 1 -maxdepth 1 ! -name 'data' ! -name 'users-data' -exec rm -rf {} +
 
-# Build for Linux
-echo "Building for Linux..."
+# Build for Linux. GOOS/GOARCH can be overridden by the caller (e.g. the
+# Dockerfile passes buildx's TARGETOS/TARGETARCH for multi-arch builds);
+# default to linux/amd64 for plain local builds.
+GOOS=${GOOS:-linux}
+GOARCH=${GOARCH:-amd64}
+echo "Building for ${GOOS}/${GOARCH}..."
 # sqlite-vec CGO: define SQLITE_CORE so sqlite-vec uses sqlite3.h (not
 # sqlite3ext.h, which turns sqlite3_auto_extension into an unparseable macro
 # for cgo). Include mattn/go-sqlite3 and the sqlite-vec cgo dir on the include
@@ -21,8 +25,8 @@ SQLVEC_DIR=$(go list -m -f '{{.Dir}}' github.com/asg017/sqlite-vec-go-bindings)/
 # without these. Valid on glibc too (macro substitution yields self-typedefs).
 export CGO_CFLAGS="-DSQLITE_CORE -Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int64_t=uint64_t -I${MATTN_DIR} -I${SQLVEC_DIR}"
 
-if ! CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags "fts5" -o build/Plurality ./src; then
-  echo "Linux build failed. Exiting..."
+if ! CGO_ENABLED=1 GOOS=$GOOS GOARCH=$GOARCH go build -tags "fts5" -o build/Plurality ./src; then
+  echo "Build for ${GOOS}/${GOARCH} failed. Exiting..."
   exit 1
 fi
 
@@ -41,4 +45,4 @@ cp -n data/presets/*.json build/data/presets/ 2>/dev/null || true
 cp -n data/litellm_config.yaml build/data/litellm_config.yaml 2>/dev/null || true
 
 echo "Build complete. Binaries are in the 'build' directory."
-echo "Linux binary: build/Plurality"
+echo "${GOOS}/${GOARCH} binary: build/Plurality"
