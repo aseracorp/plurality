@@ -12,6 +12,7 @@ import (
 	"github.com/azukaar/plurality/src/ai"
 	"github.com/azukaar/plurality/src/ai_tools"
 	"github.com/azukaar/plurality/src/auth"
+	"github.com/azukaar/plurality/src/cron"
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/miniapps"
@@ -68,6 +69,11 @@ func main() {
 	db.LiteLLMBaseURL = ai.LiteLLMBaseURL
 	ai_tools.LiteLLMBaseURL = ai.LiteLLMBaseURL
 
+	// CRON scheduler: rebuild every user's jobs from disk and start the loop.
+	cron.Init()
+	ai_tools.RegisterTool(cron.Tool)
+	defer cron.Shutdown()
+
 	utils.Log("[main] Starting server on :8090")
 
 	r := mux.NewRouter()
@@ -106,6 +112,13 @@ func main() {
 	r.HandleFunc("/transcribe", auth.AuthMiddleware(ai.HandleTranscribe)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/generate-audio", auth.AuthMiddleware(ai.HandleGenerateAudio)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/delete-user", auth.AuthMiddleware(user.API_DeleteUser)).Methods("DELETE", "OPTIONS")
+
+	// CRON scheduled prompts
+	r.HandleFunc("/crons", auth.AuthMiddleware(cron.API_ListCrons)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/crons", auth.AuthMiddleware(cron.API_CreateCron)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/crons/{id}", auth.AuthMiddleware(cron.API_UpdateCron)).Methods("PUT", "OPTIONS")
+	r.HandleFunc("/crons/{id}", auth.AuthMiddleware(cron.API_DeleteCron)).Methods("DELETE", "OPTIONS")
+	r.HandleFunc("/crons/{id}/run", auth.AuthMiddleware(cron.API_RunCron)).Methods("POST", "OPTIONS")
 
 	// Search
 	r.HandleFunc("/search", auth.AuthMiddleware(handleSearch)).Methods("GET", "OPTIONS")

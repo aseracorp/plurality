@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'fs_write_diff.dart';
 import 'fs_read_attach.dart';
 import 'long_task_badge.dart';
+import 'wait_badge.dart';
 
 class ToolCallBadge extends StatelessWidget {
   final ToolCall toolCall;
@@ -65,6 +66,12 @@ class ToolCallBadge extends StatelessWidget {
       context: context,
     );
 
+    final inlineWait = buildWaitBadge(
+      toolName: toolCall.function.name,
+      resultMessage: resultMessage,
+      context: context,
+    );
+
     final chip = Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
@@ -103,20 +110,29 @@ class ToolCallBadge extends StatelessWidget {
               ),
             ),
 
-          // Tool display text
+          // Tool display text — dynamic countdown for wait tools, static otherwise
           Flexible(
-            child: Text(
-              loadingString.isEmpty
-                  ? formatToolDisplayName(toolCall.function.name)
-                  : loadingString,
-              overflow: TextOverflow.ellipsis,
-              maxLines: 1,
-              style: TextStyle(
+            child: () {
+              final chipStyle = TextStyle(
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
                 fontWeight: FontWeight.w500,
                 fontSize: 14,
-              ),
-            ),
+              );
+              final waitLabel = buildWaitChipLabel(
+                toolName: toolCall.function.name,
+                resultMessage: resultMessage,
+                style: chipStyle,
+              );
+              if (waitLabel != null) return waitLabel;
+              return Text(
+                loadingString.isEmpty
+                    ? formatToolDisplayName(toolCall.function.name)
+                    : loadingString,
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+                style: chipStyle,
+              );
+            }(),
           ),
 
           // Loading indicator
@@ -167,6 +183,14 @@ class ToolCallBadge extends StatelessWidget {
                 widthFactor: 0.5,
                 alignment: Alignment.centerLeft,
                 child: inlineLongTask,
+              ),
+            ],
+            if (inlineWait != null) ...[
+              const SizedBox(height: 6),
+              FractionallySizedBox(
+                widthFactor: 0.5,
+                alignment: Alignment.centerLeft,
+                child: inlineWait,
               ),
             ],
           ],

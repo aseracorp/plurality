@@ -46,6 +46,12 @@ class InputBox extends StatefulWidget {
   final ModelSelected selectedModel;
   final bool submitButton;
   final bool allowEmptyMessage;
+  /// When [conversationId] is empty, the InputBox has no conversation to bind
+  /// the attached folder to. The parent supplies the staged path here and
+  /// listens via [onPendingAttachedFolderChanged]; once the conversation is
+  /// created, the parent is responsible for persisting it to storage.
+  final String? pendingAttachedFolder;
+  final void Function(String?)? onPendingAttachedFolderChanged;
 
   const InputBox({
     Key? key,
@@ -69,6 +75,8 @@ class InputBox extends StatefulWidget {
     required this.submitButton,
     required this.allowEmptyMessage,
     this.validator,
+    this.pendingAttachedFolder,
+    this.onPendingAttachedFolderChanged,
   }) : super(key: key);
 
   @override
@@ -94,7 +102,7 @@ class _InputBoxState extends State<InputBox> {
 
   void _refreshAttachedFolder() {
     if (widget.conversationId.isEmpty) {
-      _attachedFolderPath = null;
+      _attachedFolderPath = widget.pendingAttachedFolder;
       return;
     }
     final conv = ConversationStorage.getConversation(widget.conversationId);
@@ -102,17 +110,20 @@ class _InputBoxState extends State<InputBox> {
   }
 
   Future<void> _attachFolder() async {
-    if (widget.conversationId.isEmpty) return;
     try {
       final selected = await FilePicker.platform.getDirectoryPath(
         dialogTitle: 'Attach a folder to this conversation',
       );
       if (selected == null || selected.isEmpty) return;
       final canonical = p.canonicalize(selected);
-      await ConversationStorage.updateAttachedFolderPath(
-        widget.conversationId,
-        canonical,
-      );
+      if (widget.conversationId.isEmpty) {
+        widget.onPendingAttachedFolderChanged?.call(canonical);
+      } else {
+        await ConversationStorage.updateAttachedFolderPath(
+          widget.conversationId,
+          canonical,
+        );
+      }
       if (mounted) setState(() => _attachedFolderPath = canonical);
     } catch (e) {
       debugPrint('[InputBox] folder attach failed: $e');
@@ -120,11 +131,14 @@ class _InputBoxState extends State<InputBox> {
   }
 
   Future<void> _detachFolder() async {
-    if (widget.conversationId.isEmpty) return;
-    await ConversationStorage.updateAttachedFolderPath(
-      widget.conversationId,
-      null,
-    );
+    if (widget.conversationId.isEmpty) {
+      widget.onPendingAttachedFolderChanged?.call(null);
+    } else {
+      await ConversationStorage.updateAttachedFolderPath(
+        widget.conversationId,
+        null,
+      );
+    }
     if (mounted) setState(() => _attachedFolderPath = null);
   }
 
@@ -462,7 +476,7 @@ class _InputBoxState extends State<InputBox> {
   }
 
   Widget _folderAttachButton(Color primaryColor) {
-    if (!_supportsFolderPicker || widget.conversationId.isEmpty) {
+    if (!_supportsFolderPicker) {
       return const SizedBox.shrink();
     }
     _refreshAttachedFolder();

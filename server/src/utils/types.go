@@ -199,6 +199,7 @@ type Conversation struct {
 	MiniApp       *MiniApp          `json:"mini_app,omitempty"`
 	Folder        string            `json:"folder"`
 	Icon          string            `json:"icon"`
+	CronJobID     string            `json:"cron_job_id,omitempty"`
 }
 
 // --- MiniApps ---

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
@@ -36,7 +37,8 @@ CREATE TABLE IF NOT EXISTS conversations (
 	state           TEXT NOT NULL DEFAULT 'idle',
 	mini_app        TEXT,
 	folder          TEXT NOT NULL DEFAULT '',
-	icon            TEXT NOT NULL DEFAULT ''
+	icon            TEXT NOT NULL DEFAULT '',
+	cron_job_id     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -117,12 +119,36 @@ func GetUserDB(userID string) (*sql.DB, error) {
 		return nil, fmt.Errorf("creating schema: %w", err)
 	}
 
+	if err := ensureColumn(db, "conversations", "cron_job_id", "TEXT"); err != nil {
+		utils.Error("[SQLite] migration cron_job_id failed", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_conversations_cron_job_id ON conversations(cron_job_id)`); err != nil {
+		utils.Error("[SQLite] creating idx_conversations_cron_job_id failed", err)
+	}
+
 	actual, _ := userDBs.LoadOrStore(userID, db)
 	if actual.(*sql.DB) != db {
 		db.Close()
 	}
 
 	return actual.(*sql.DB), nil
+}
+
+// ensureColumn adds a column to an existing table if it does not yet exist.
+// SQLite has no "ALTER TABLE ... ADD COLUMN IF NOT EXISTS", so we just attempt
+// the ALTER and swallow the "duplicate column" error that signals it's already
+// there. This avoids a separate PRAGMA query that would compete for the lone
+// connection on SetMaxOpenConns(1) databases.
+func ensureColumn(db *sql.DB, table, column, decl string) error {
+	_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, decl))
+	if err == nil {
+		utils.Log("[SQLite] migration: added %s.%s", table, column)
+		return nil
+	}
+	if strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return err
 }
 
 // CloseAllUserDBs closes every cached user database. Call on shutdown.

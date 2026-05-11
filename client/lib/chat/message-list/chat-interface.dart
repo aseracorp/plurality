@@ -33,6 +33,7 @@ import 'package:super_sliver_list/super_sliver_list.dart';
 import 'toolcall-badge.dart';
 import 'fs_read_attach.dart' show isFsReadAttachCall;
 import 'fs_write_diff.dart';
+import 'wait_badge.dart' show isHiddenWaitResume, isHiddenWaitResumeMessage;
 
 class ChatInterface extends ConsumerStatefulWidget {
   final String conversationId;
@@ -87,6 +88,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   MiniApp? _miniAppSelected;
 
   String _miniAppPrePrompt = '';
+
+  /// Folder selected from the home-page input before the conversation exists.
+  /// Persisted to the new conversation's storage entry once it's created.
+  String? _pendingAttachedFolder;
 
   /// Observable session state from ChatService.
   late ValueNotifier<ChatSessionState> _session;
@@ -566,12 +571,16 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         message: newMessage,
         modelSelected: _modelSelected,
         miniApp: _miniAppSelected,
+        attachedFolderForNewConversation: _pendingAttachedFolder,
       );
 
       // For new conversations: navigate to the real conversation and return.
       // ChatService holds the SSE stream — this widget disposes cleanly.
-      // Title is generated server-side automatically.
+      // Title is generated server-side automatically. The pending folder (if
+      // any) is persisted by chat_service before the completer fires, so by
+      // this point the new conversation's storage entry already has it.
       if (isNew && resolvedId != null && resolvedId.isNotEmpty) {
+        _pendingAttachedFolder = null;
         if (mounted) widget.setConversationID?.call(resolvedId, true);
         return;
       }
@@ -811,7 +820,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   }) {
     if (!message.hasToolCalls) return [];
     return message.toolCalls!
-        .where((tc) => !excludeIds.contains(tc.id))
+        .where((tc) => !excludeIds.contains(tc.id) && !isHiddenWaitResume(tc))
         .expand((toolCall) {
       final toolResultMessage = allMessagesForLookup
           .where((m) => m.role == 'tool' && m.toolCallId == toolCall.id)
@@ -878,6 +887,9 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     // Skip any DB message whose content is already rendered by the streaming section.
     var visibleMessages = messages.where((m) {
       if (m.role == 'tool') return false;
+      // Synthetic "Timer is done" assistant messages exist only as a hook for
+      // the LLM — they have no user-facing payload.
+      if (isHiddenWaitResumeMessage(m)) return false;
       if (!hasStreamingContent) return true;
       // Skip assistant messages that are fully covered by streaming items
       if (m.role == 'assistant') {
@@ -1190,6 +1202,12 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
               allowEmptyMessage: _miniAppPrePrompt != "",
               attachments: attachments,
               conversationId: widget.conversationId,
+              pendingAttachedFolder: widget.conversationId.isEmpty
+                  ? _pendingAttachedFolder
+                  : null,
+              onPendingAttachedFolderChanged: widget.conversationId.isEmpty
+                  ? (path) => setState(() => _pendingAttachedFolder = path)
+                  : null,
               submitButton:
                   _miniAppSelected != null && widget.conversationId.isEmpty,
               placeholder:
@@ -1257,7 +1275,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
     newMessageScreen = Center(
       child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: 1200),
+        constraints: BoxConstraints(maxWidth: 1000),
         child: newMessageScreen,
       ),
     );

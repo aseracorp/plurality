@@ -1,17 +1,22 @@
 # 2
 - let app select server URL !
 - tool to request extenal AI (ex. promote a request or something) - keep cost down
-- let app select server URL !
-- tool to request extenal AI (ex. promote a request or something) - keep cost down
 - Per-user everything: using a map of linux user > plurality user 
+  - Per-user MCP
   - docker ?
-- Per-user MCP
 - Agents (sub conversations as conversatiosn)
   - select sub of tools + models for each 
   - add message to another chat (agent restarting another chat)
-- basic CRON (disables client tools)
+- Notifications
+- Client lock (if client tools used and such for remote )
+- Preset can set shortcut (fast/medium/smart)
+- UI to manage presets / shortcuts?
+- Webhooks
 
 #3
+- Add a way for AI to include pre-made prompt in the message (like "click here to know more" > paste the prompt "tell me more about X")
+- forced tool : calculator
+- chart? Mermaid? 
 - Trim conversation to avoid errorrs (max token size)
 - Trim tool calls to avoid pulution on playwright for ex.
 - let "web visit" save to file 

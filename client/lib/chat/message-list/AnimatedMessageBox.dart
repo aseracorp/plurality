@@ -251,11 +251,28 @@ class _AnimatedMessageBoxState extends State<AnimatedMessageBox>
                       h4: TextStyle(fontSize: widget.mini ? 4 : 16),
                       h5: TextStyle(fontSize: widget.mini ? 4 : 14),
                       h6: TextStyle(fontSize: widget.mini ? 4 : 12),
-                      blockquote: TextStyle(fontSize: widget.mini ? 3 : 16, height: widget.mini ? 1.0 : 1.5),
+                      blockquote: TextStyle(
+                        color: (widget.isBot ? botFG : Colors.white).withOpacity(0.75),
+                        fontSize: widget.mini ? 3 : 16,
+                        height: widget.mini ? 1.0 : 1.5,
+                        fontStyle: FontStyle.italic,
+                      ),
                       listBullet: TextStyle(fontSize: widget.mini ? 3 : 16),
-                      blockquotePadding: EdgeInsets.symmetric(
-                        horizontal: widget.mini ? 2 : 8,
-                        vertical: widget.mini ? 1 : 4,
+                      blockquotePadding: EdgeInsets.only(
+                        left: widget.mini ? 4 : 12,
+                        right: widget.mini ? 2 : 8,
+                        top: widget.mini ? 1 : 4,
+                        bottom: widget.mini ? 1 : 4,
+                      ),
+                      blockquoteDecoration: BoxDecoration(
+                        color: (widget.isBot ? botFG : Colors.white).withOpacity(0.06),
+                        border: Border(
+                          left: BorderSide(
+                            color: (widget.isBot ? botFG : Colors.white).withOpacity(0.35),
+                            width: widget.mini ? 1 : 3,
+                          ),
+                        ),
+                        borderRadius: BorderRadius.circular(widget.mini ? 1 : 4),
                       ),
                       listBulletPadding: EdgeInsets.only(
                         left: widget.mini ? 0 : (MediaQuery.of(context).size.width >= 600 ? 8 : 2),

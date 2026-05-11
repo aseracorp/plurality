@@ -27,6 +27,8 @@ var Registry = map[string]utils.AITool{
 	FsServerReadTool.ToolID:            FsServerReadTool,
 	FsServerWriteTool.ToolID:           FsServerWriteTool,
 	LongTaskTool.ToolID:                LongTaskTool,
+	ListPresetsTool.ToolID:             ListPresetsTool,
+	WaitTool.ToolID:                    WaitTool,
 }
 
 // RegisterRetrieveServerSkill adds retrieve_server_skill to the registry.
@@ -66,6 +68,9 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 		}
 		if tool.ToolID == RetrieveServerSkillTool.ToolID {
 			continue // force-included below when skills exist
+		}
+		if tool.ToolID == WaitTool.ToolID {
+			continue // force-included unconditionally below
 		}
 
 		// Build the selection key: namespaced for bundled tools, bare for standalone.
@@ -147,6 +152,11 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 		requests = append(requests, RetrieveServerSkillTool.ToolRequest)
 	}
 
+	// Force-include the wait tool unconditionally. The user cannot disable it
+	// from the picker; the tool_loop detects calls to it and reschedules the
+	// agent after the requested delay.
+	requests = append(requests, WaitTool.ToolRequest)
+
 	// Force-include the device-side filesystem tools whenever the user has
 	// attached a local folder to the conversation. Schema-only — the server
 	// doesn't execute them, the client does.
@@ -181,6 +191,9 @@ func GetDisabledToolsSummary(model utils.Model, ClientSideTools []utils.Function
 			continue
 		}
 		if tool.ToolID == RetrieveServerSkillTool.ToolID {
+			continue
+		}
+		if tool.ToolID == WaitTool.ToolID {
 			continue
 		}
 		selKey := tool.ToolID

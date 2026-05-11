@@ -195,6 +195,28 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			}
 		}
 
+		// If a wait tool was called, pause the loop in place until the timer
+		// elapses (or the request is cancelled), then inject a 'Timer is done'
+		// signal and loop back to the LLM. Done in-place rather than handed
+		// off to a separate goroutine so the existing ActiveRequest and its
+		// SSE clients stay attached for the resume.
+		waitSeconds := 0
+		for _, tc := range serverTools {
+			if tc.Function.Name == ai_tools.WaitToolID {
+				if s := ai_tools.ParseWaitSeconds(tc.Function.Arguments); s > waitSeconds {
+					waitSeconds = s
+				}
+			}
+		}
+		if waitSeconds > 0 && !cancelled {
+			utils.Log("[LLMLoop] wait tool called for %ds — pausing loop in place", waitSeconds)
+			if !pauseForWait(ctx, ar, &conversation, waitSeconds) {
+				ar.flushPartialResponse(ctx, conversation)
+				return
+			}
+			continue
+		}
+
 		// If cancelled, also fill in results for ask-server and client-side tools, then stop
 		if cancelled {
 			allRemaining := append(askServerTools, clientTools...)
@@ -499,4 +521,84 @@ func openCount(s ai_tools.LongTaskState) int {
 		}
 	}
 	return n
+}
+
+// pauseForWait sleeps the LLM loop in place until the requested duration has
+// elapsed, then appends a synthetic assistant + tool message pair carrying a
+// "Timer is done" result so the LLM sees a fresh signal on the next iteration.
+//
+// Returns true on normal completion, false if the request was cancelled
+// mid-wait (in which case the caller should bail out of the loop).
+//
+// Running in-place keeps the same ActiveRequest, goroutine and SSE clients
+// attached across the wait — anything broadcast here streams live to the
+// open chat. The synthetic pair mirrors the long_task reminder shape because
+// OpenAI rejects a 'tool' role message that doesn't immediately follow an
+// 'assistant' message with a matching tool_call.id, so we manufacture both
+// halves.
+func pauseForWait(ctx context.Context, ar *ActiveRequest, conv *utils.Conversation, seconds int) bool {
+	select {
+	case <-time.After(time.Duration(seconds) * time.Second):
+	case <-ar.Ctx.Done():
+		return false
+	}
+
+	resumeID := fmt.Sprintf("wait_resume_%d", time.Now().UnixNano())
+	resumeTC := utils.ToolCall{
+		ID:   resumeID,
+		Type: "function",
+		Function: utils.FunctionCall{
+			Name:      ai_tools.WaitToolID,
+			Arguments: fmt.Sprintf(`{"seconds":%d,"_resume":true}`, seconds),
+		},
+	}
+	enrichToolCallMetadata(&resumeTC)
+
+	resumeBody, _ := json.Marshal(map[string]interface{}{
+		"completed":       true,
+		"elapsed_seconds": seconds,
+		"status":          "Timer is done. Continue with your task.",
+	})
+
+	assistantMsg := utils.Message{
+		Role:      "assistant",
+		ToolCalls: []utils.ToolCall{resumeTC},
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+	toolMsg := utils.Message{
+		Role:       "tool",
+		Content:    utils.NewTextContent(string(resumeBody)),
+		ToolCallID: resumeID,
+		Name:       ai_tools.WaitToolID,
+		Timestamp:  time.Now().Format(time.RFC3339),
+	}
+
+	updated, _, err := db.PushMessage(ctx, *conv, assistantMsg)
+	if err != nil {
+		utils.Error("[Wait] failed to push synthetic assistant message", err)
+		return false
+	}
+	updated, _, err = db.PushMessage(ctx, updated, toolMsg)
+	if err != nil {
+		utils.Error("[Wait] failed to push synthetic tool result", err)
+		return false
+	}
+	*conv = updated
+
+	ar.Broadcast(SSEEvent{
+		Type:           "tool_use",
+		ToolCall:       &resumeTC,
+		IsServer:       true,
+		ConversationID: ar.ConversationID,
+	})
+	ar.Broadcast(SSEEvent{
+		Type:           "tool_result",
+		ToolCallID:     resumeID,
+		ToolName:       ai_tools.WaitToolID,
+		ToolResult:     string(resumeBody),
+		IsServer:       true,
+		ConversationID: ar.ConversationID,
+	})
+
+	return true
 }

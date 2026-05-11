@@ -191,6 +191,23 @@ func toUtilsModel(m *auth.ShortcutModel) *utils.Model {
 	return &utils.Model{Name: m.Name, Tools: m.Tools}
 }
 
+// ShortcutModelSelected returns the ModelSelected from a named shortcut in
+// data/config.json (e.g. "fast", "smart"). Returns an empty struct when the
+// shortcut is missing — callers layer their own defaults.
+func ShortcutModelSelected(name string) utils.ModelSelected {
+	for _, s := range auth.GetConfig().Shortcuts {
+		if s.Name != name {
+			continue
+		}
+		return utils.ModelSelected{
+			Text:     toUtilsModel(s.Models.Text),
+			Vision:   toUtilsModel(s.Models.Vision),
+			ImageGen: toUtilsModel(s.Models.ImageGen),
+		}
+	}
+	return utils.ModelSelected{}
+}
+
 // HandleListModels is OpenAI-list-compatible with added {presets, functions,
 // function_bundles, skills} root-level fields for rich clients.
 func HandleListModels(w http.ResponseWriter, r *http.Request) {

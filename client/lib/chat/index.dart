@@ -7,6 +7,7 @@ import '../api/service.dart';
 import '../api/api.dart';
 import '../utils/types.dart';
 import '../auth/account.dart';
+import '../cron/cron-list.dart';
 import 'conversation-list/conversation-list.dart';
 import 'dart:convert';
 import 'dart:math';
@@ -140,6 +141,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           conversations,
           widget.isMobile,
         ),
+      },
+      {
+        'icon': Icon(
+          Icons.schedule,
+          color:
+              widget.isMobile
+                  ? Theme.of(context).colorScheme.primary
+                  : Colors.white,
+        ),
+        'label': Text(
+          'Schedules',
+          style: TextStyle(
+            color:
+                widget.isMobile
+                    ? Theme.of(context).colorScheme.primary
+                    : Colors.white,
+          ),
+        ),
+        'content': const CronListScreen(),
       },
       {
         'icon': Icon(
@@ -346,7 +366,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         icon: Icon(Icons.account_circle, color: Colors.white),
                         onPressed: () async {
                           setState(() {
-                            _selectedIndex = 2;
+                            _selectedIndex = 3;
                           });
                         },
                       ),

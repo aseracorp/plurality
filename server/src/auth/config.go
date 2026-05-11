@@ -222,6 +222,8 @@ var defaultShortcutTools = map[string]string{
 	"visit_link":                           "true",
 	"generate_image":                       "true",
 	"long_task":                            "true",
+	"manage_cron":                          "true",
+	"list_presets":                         "true",
 	"conversations__search_conversations":  "true",
 	"conversations__retrieve_conversation": "true",
 }
@@ -231,6 +233,8 @@ var defaultShortcutTools = map[string]string{
 var defaultShortcutVisionTools = map[string]string{
 	"generate_image":                       "true",
 	"long_task":                            "true",
+	"manage_cron":                          "true",
+	"list_presets":                         "true",
 	"conversations__search_conversations":  "true",
 	"conversations__retrieve_conversation": "true",
 }

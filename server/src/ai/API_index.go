@@ -11,7 +11,6 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/azukaar/plurality/src/ai_tools"
-	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/storage"
@@ -433,17 +432,12 @@ func API_HandleConversation(w http.ResponseWriter, r *http.Request) {
 func fastShortcutModels() (textModel, imageModel string) {
 	textModel = "qwen3-vl-30b-a3b-instruct"
 	imageModel = "black-forest-labs/FLUX.2-dev"
-	for _, s := range auth.GetConfig().Shortcuts {
-		if s.Name != "fast" {
-			continue
-		}
-		if s.Models.Text != nil && s.Models.Text.Name != "" {
-			textModel = s.Models.Text.Name
-		}
-		if s.Models.ImageGen != nil && s.Models.ImageGen.Name != "" {
-			imageModel = s.Models.ImageGen.Name
-		}
-		break
+	ms := ShortcutModelSelected("fast")
+	if ms.Text != nil && ms.Text.Name != "" {
+		textModel = ms.Text.Name
+	}
+	if ms.ImageGen != nil && ms.ImageGen.Name != "" {
+		imageModel = ms.ImageGen.Name
 	}
 	return
 }

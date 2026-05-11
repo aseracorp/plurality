@@ -200,6 +200,10 @@ class ChatService {
     required Message message,
     required ModelSelected modelSelected,
     MiniApp? miniApp,
+    /// Folder selected in the home-page input before the conversation exists.
+    /// Used only when [conversationId] is empty — otherwise the folder is
+    /// read from the conversation's storage record.
+    String? attachedFolderForNewConversation,
   }) async {
     final session = getSession(conversationId);
     session.value = const ChatSessionState(state: ConversationState.processing);
@@ -209,11 +213,22 @@ class ChatService {
     if (isNew) {
       idCompleter = Completer<String?>();
       _pendingIdCompleters[conversationId] = idCompleter;
+      if (attachedFolderForNewConversation != null &&
+          attachedFolderForNewConversation.isNotEmpty) {
+        _pendingFoldersForNewConv[conversationId] =
+            attachedFolderForNewConversation;
+      } else {
+        _pendingFoldersForNewConv.remove(conversationId);
+      }
     }
 
     try {
       final skillNames = _skills.getSkillNames();
-      final attachedFolder = _attachedFolderFor(conversationId);
+      final attachedFolder = isNew
+          ? (attachedFolderForNewConversation?.isNotEmpty == true
+              ? attachedFolderForNewConversation
+              : null)
+          : _attachedFolderFor(conversationId);
       final stream = await _api.postChat(
         conversationId: conversationId,
         modelSelected: modelSelected,
@@ -426,13 +441,28 @@ class ChatService {
       final realId = event.conversationId;
       session.value = session.value.copyWith(resolvedConversationId: realId);
 
-      // Create the conversation in local state
+      // Create the conversation in local state, then attach any folder the
+      // user staged from the home input. Chained off the same Future so the
+      // folder write lands AFTER the conversation exists in storage; the
+      // completer fires only after both succeed so consumers awaiting
+      // sendMessage see a fully-hydrated conversation.
+      final pendingFolder = _pendingFoldersForNewConv.remove(conversationId);
+      Future<void>? creation;
       if (modelSelected != null) {
-        _conversationsNotifier?.createConversation(
-          id: realId,
-          title: event.title ?? 'New Chat',
-          modelSelected: modelSelected,
-        );
+        creation = _conversationsNotifier
+            ?.createConversation(
+              id: realId,
+              title: event.title ?? 'New Chat',
+              modelSelected: modelSelected,
+            )
+            .then((_) async {
+          if (pendingFolder != null && pendingFolder.isNotEmpty) {
+            await ConversationStorage.updateAttachedFolderPath(
+              realId,
+              pendingFolder,
+            );
+          }
+        });
       }
 
       // Re-key the session and stream under the real ID
@@ -442,10 +472,20 @@ class ChatService {
         _activeStreams[realId] = _activeStreams.remove(conversationId)!;
       }
 
-      // Complete the pending ID completer so the UI can navigate
+      // Complete the pending ID completer so the UI can navigate. Wait for
+      // the creation+folder chain first so storage is consistent by the time
+      // the caller navigates to the new conversation.
       final completer = _pendingIdCompleters.remove(conversationId);
       if (completer != null && !completer.isCompleted) {
-        completer.complete(realId);
+        if (creation != null) {
+          creation.then((_) {
+            if (!completer.isCompleted) completer.complete(realId);
+          }).catchError((_) {
+            if (!completer.isCompleted) completer.complete(realId);
+          });
+        } else {
+          completer.complete(realId);
+        }
       }
 
       conversationId = realId;

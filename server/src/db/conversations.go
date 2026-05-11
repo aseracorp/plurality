@@ -154,7 +154,7 @@ func ListConversations(ctx context.Context) ([]utils.Conversation, error) {
 	}
 
 	rows, err := db.Query(
-		`SELECT id, title, last_message_at, model_selected, state, mini_app, folder, icon
+		`SELECT id, title, last_message_at, model_selected, state, mini_app, folder, icon, cron_job_id
 		 FROM conversations ORDER BY last_message_at DESC`,
 	)
 	if err != nil {
@@ -290,6 +290,30 @@ func UpdateConversationFolder(ctx context.Context, id string, folder string) err
 	return nil
 }
 
+// SetConversationCronJobID records which CRON job (uuid) started a conversation.
+func SetConversationCronJobID(ctx context.Context, conversationID, cronJobID string) error {
+	userID, ok := ctx.Value("userID").(string)
+	if !ok {
+		return errors.New("user ID not found in request context")
+	}
+
+	db, err := GetUserDB(userID)
+	if err != nil {
+		return err
+	}
+
+	res, err := db.Exec(`UPDATE conversations SET cron_job_id = ? WHERE id = ?`, cronJobID, conversationID)
+	if err != nil {
+		return err
+	}
+
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return errors.New("conversation not found")
+	}
+	return nil
+}
+
 // UpdateConversationState sets the processing state of a conversation.
 func UpdateConversationState(ctx context.Context, conversationID string, state utils.ConversationState) error {
 	userID, ok := ctx.Value("userID").(string)
@@ -327,7 +351,7 @@ func GetActiveConversationsForUser(ctx context.Context) ([]utils.Conversation, e
 	}
 
 	rows, err := db.Query(
-		`SELECT id, title, last_message_at, model_selected, state, mini_app, folder, icon
+		`SELECT id, title, last_message_at, model_selected, state, mini_app, folder, icon, cron_job_id
 		 FROM conversations WHERE state != ?`, string(utils.StateIdle),
 	)
 	if err != nil {
@@ -425,6 +449,7 @@ func scanConversation(rows *sql.Rows) (utils.Conversation, error) {
 	var modelSelectedJSON string
 	var stateStr string
 	var miniAppJSON *string
+	var cronJobID *string
 
 	err := rows.Scan(
 		&conv.ID,
@@ -435,6 +460,7 @@ func scanConversation(rows *sql.Rows) (utils.Conversation, error) {
 		&miniAppJSON,
 		&conv.Folder,
 		&conv.Icon,
+		&cronJobID,
 	)
 	if err != nil {
 		return conv, err
@@ -444,6 +470,9 @@ func scanConversation(rows *sql.Rows) (utils.Conversation, error) {
 	conv.ModelSelected = unmarshalModelSelected(modelSelectedJSON)
 	conv.State = utils.ConversationState(stateStr)
 	conv.MiniApp = unmarshalMiniApp(miniAppJSON)
+	if cronJobID != nil {
+		conv.CronJobID = *cronJobID
+	}
 
 	return conv, nil
 }
@@ -456,9 +485,10 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 	var modelSelectedJSON string
 	var stateStr string
 	var miniAppJSON *string
+	var cronJobID *string
 
 	err := db.QueryRow(
-		`SELECT id, title, last_message_at, model_selected, state, mini_app, folder, icon
+		`SELECT id, title, last_message_at, model_selected, state, mini_app, folder, icon, cron_job_id
 		 FROM conversations WHERE id = ?`, id,
 	).Scan(
 		&conv.ID,
@@ -469,6 +499,7 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 		&miniAppJSON,
 		&conv.Folder,
 		&conv.Icon,
+		&cronJobID,
 	)
 	if err != nil {
 		return nil, err
@@ -478,6 +509,9 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 	conv.ModelSelected = unmarshalModelSelected(modelSelectedJSON)
 	conv.State = utils.ConversationState(stateStr)
 	conv.MiniApp = unmarshalMiniApp(miniAppJSON)
+	if cronJobID != nil {
+		conv.CronJobID = *cronJobID
+	}
 
 	// Load messages
 	msgRows, err := db.Query(
