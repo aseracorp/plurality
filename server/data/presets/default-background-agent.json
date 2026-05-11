@@ -2,10 +2,42 @@
   "name": "Default Background Agent",
   "description": "Default preset used by scheduled CRON jobs - runs autonomously with no user in the loop.",
   "author": "system",
+  "complexity": "medium",
   "prompt": {
     "en": "You are running as a scheduled background agent. There is no user reading along in real time - your output will be reviewed later from a list of past conversations. Work autonomously to complete the task in the prompt. Do not ask clarifying questions; make a reasonable choice and proceed. Use available tools as needed. When you are done, give a single concise summary message that captures what you did and any important findings. If you feel this is a task that the user want to be notified about, send them a notification."
   },
-  "model_selected": {},
+  "model_selected": {
+    "text": {
+      "tools": {
+        	"search_web":                           "true",
+        	"place_search":                         "true",
+        	"visit_link":                           "true",
+        	"generate_image":                       "true",
+        	"long_task":                            "true",
+        	"manage_cron":                          "true",
+        	"manage_webhook":                       "true",
+        	"list_presets":                         "true",
+        	"conversations__search_conversations":  "true",
+        	"filesystem_server": "true",
+        	"system_tools": "true",
+        	"conversations__retrieve_conversation": "true"
+      },
+      "vision": {
+        	"search_web":                           "true",
+        	"place_search":                         "true",
+        	"visit_link":                           "true",
+        	"generate_image":                       "true",
+        	"long_task":                            "true",
+        	"manage_cron":                          "true",
+        	"manage_webhook":                       "true",
+        	"list_presets":                         "true",
+        	"conversations__search_conversations":  "true",
+        	"filesystem_server": "true",
+        	"system_tools": "true",
+        	"conversations__retrieve_conversation": "true"
+      },
+    }
+  },
   "inputs": [],
   "initial_message": {"en": ""},
   "input_placeholder_message": null,

@@ -448,13 +448,14 @@ class MiniAppAdapter extends TypeAdapter<MiniApp> {
       initialMessage: (fields[7] as Map?)?.cast<String, String>(),
       form: fields[8] as String,
       placeholder: fields[9] == null ? '' : fields[9] as String,
+      complexity: fields[10] == null ? '' : fields[10] as String,
     );
   }
 
   @override
   void write(BinaryWriter writer, MiniApp obj) {
     writer
-      ..writeByte(10)
+      ..writeByte(11)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -474,7 +475,9 @@ class MiniAppAdapter extends TypeAdapter<MiniApp> {
       ..writeByte(8)
       ..write(obj.form)
       ..writeByte(9)
-      ..write(obj.placeholder);
+      ..write(obj.placeholder)
+      ..writeByte(10)
+      ..write(obj.complexity);
   }
 
   @override

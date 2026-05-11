@@ -232,6 +232,10 @@ type MiniApp struct {
 	InputPlaceholderMessage map[string]string `json:"input_placeholder_message"`
 	Form                    string            `json:"form"`
 	Placeholder             string            `json:"placeholder"`
+	// Complexity picks the base shortcut for the preset's models when
+	// fields aren't pinned in ModelSelected: "low" -> fast, "medium" -> medium,
+	// "high" -> smart. Empty/unknown values default to "medium".
+	Complexity string `json:"complexity,omitempty"`
 }
 
 // --- Tool Definitions (for LLM function calling) ---

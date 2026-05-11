@@ -1,5 +1,6 @@
 # 2
-- Need a skill to runing background tasks that start with server (ex. how to start them without starting on host?)
+- AI galere a faire des webhook en local sur le bon port
+- Setting shortcut preset (ex. fast) does not set tools!
 - Per-user everything: using a map of linux user > plurality user 
   - Per-user MCP
   - docker ?

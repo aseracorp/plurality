@@ -239,7 +239,8 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
   /// - A null per-field model means "preset doesn't touch this field" → keep current.
   /// - An empty/missing name on a per-field model means "keep currently selected model".
   /// - Tools are additive: per-key entries from the preset override the current
-  ///   value for that key, but other current entries are preserved.
+  ///   value for that key, but other current entries are preserved. A preset
+  ///   value of "false" subtracts the key from the resulting set.
   static ModelSelected _mergePresetOnto(ModelSelected preset, ModelSelected current) {
     return ModelSelected(
       text: _mergeModel(preset.text, current.text),
@@ -259,10 +260,14 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     final name = presetModel.name.isNotEmpty
         ? presetModel.name
         : (currentModel?.name ?? '');
-    final mergedTools = <String, String>{
-      ...?currentModel?.tools,
-      ...presetModel.tools,
-    };
+    final mergedTools = <String, String>{...?currentModel?.tools};
+    presetModel.tools.forEach((key, value) {
+      if (value == 'false') {
+        mergedTools.remove(key);
+      } else {
+        mergedTools[key] = value;
+      }
+    });
     return Model(
       name: name,
       params: presetModel.params ?? currentModel?.params,

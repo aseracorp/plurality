@@ -792,6 +792,11 @@ class MiniApp {
   @HiveField(9)
   final String placeholder;
 
+  /// "low" / "medium" / "high" — maps to the fast/medium/smart shortcuts when
+  /// the preset doesn't pin specific models. Empty defaults to "medium".
+  @HiveField(10)
+  final String complexity;
+
   MiniApp({
     required this.id,
     required this.name,
@@ -803,6 +808,7 @@ class MiniApp {
     this.initialMessage,
     required this.form,
     this.placeholder = '',
+    this.complexity = '',
   });
 
   factory MiniApp.fromJson(Map<String, dynamic> json) {
@@ -824,6 +830,7 @@ class MiniApp {
               : [],
       form: json['form'] ?? '',
       placeholder: json['placeholder'] ?? '',
+      complexity: json['complexity'] as String? ?? '',
     );
 
     try {
@@ -851,6 +858,7 @@ class MiniApp {
     'initial_message': initialMessage,
     'form': form,
     'placeholder': placeholder,
+    'complexity': complexity,
   };
 }
 

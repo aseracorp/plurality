@@ -271,23 +271,30 @@ func randomHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
-// defaultShortcutTools is the on-by-default tool set for the standard chat shortcuts.
-var defaultShortcutTools = map[string]string{
+// defaultShortcutFastTools is the slim on-by-default tool set for the "fast" shortcut.
+var defaultShortcutFastTools = map[string]string{
+	"conversations__retrieve_conversation": "true",
+	"conversations__search_conversations":  "true",
+	"generate_image":                       "true",
+	"place_search":                         "true",
+	"search_web":                           "true",
+	"visit_link":                           "true",
+}
+
+// defaultShortcutMediumTools is the on-by-default tool set for the "medium" shortcut.
+var defaultShortcutMediumTools = map[string]string{
+	"search_web":     "true",
+	"place_search":   "true",
+	"visit_link":     "true",
+	"generate_image": "true",
+	"long_task":      "true",
+}
+
+// defaultShortcutSmartTools is the full on-by-default tool set for the "smart" shortcut.
+var defaultShortcutSmartTools = map[string]string{
 	"search_web":                           "true",
 	"place_search":                         "true",
 	"visit_link":                           "true",
-	"generate_image":                       "true",
-	"long_task":                            "true",
-	"manage_cron":                          "true",
-	"manage_webhook":                       "true",
-	"list_presets":                         "true",
-	"conversations__search_conversations":  "true",
-	"conversations__retrieve_conversation": "true",
-}
-
-// defaultShortcutVisionTools is a slimmer set used when the vision model is
-// distinct from the text model — drops web/place/link search to keep cost down.
-var defaultShortcutVisionTools = map[string]string{
 	"generate_image":                       "true",
 	"long_task":                            "true",
 	"manage_cron":                          "true",
@@ -311,24 +318,24 @@ func defaultShortcuts() map[string]Shortcut {
 		"fast": {
 			Name: "fast", Label: "Fast and low cost", Pricing: "$", Color: "green",
 			Models: ShortcutModels{
-				Text:     &ShortcutModel{Name: "qwen3-vl-30b-a3b-instruct", Tools: cloneTools(defaultShortcutTools)},
-				Vision:   &ShortcutModel{Name: "qwen3-vl-30b-a3b-instruct", Tools: cloneTools(defaultShortcutTools)},
+				Text:     &ShortcutModel{Name: "qwen3-vl-30b-a3b-instruct", Tools: cloneTools(defaultShortcutFastTools)},
+				Vision:   &ShortcutModel{Name: "qwen3-vl-30b-a3b-instruct", Tools: cloneTools(defaultShortcutFastTools)},
 				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.2-dev"},
 			},
 		},
 		"medium": {
 			Name: "medium", Label: "Recommended", Pricing: "$$", Color: "blue",
 			Models: ShortcutModels{
-				Text:     &ShortcutModel{Name: "qwen3p6-plus", Tools: cloneTools(defaultShortcutTools)},
-				Vision:   &ShortcutModel{Name: "qwen3p6-plus", Tools: cloneTools(defaultShortcutTools)},
+				Text:     &ShortcutModel{Name: "qwen3p6-plus", Tools: cloneTools(defaultShortcutMediumTools)},
+				Vision:   &ShortcutModel{Name: "qwen3p6-plus", Tools: cloneTools(defaultShortcutMediumTools)},
 				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.2-dev"},
 			},
 		},
 		"smart": {
 			Name: "smart", Label: "Best quality but slow", Pricing: "$$$", Color: "purple",
 			Models: ShortcutModels{
-				Text:     &ShortcutModel{Name: "claude-opus-4-7", Tools: cloneTools(defaultShortcutTools)},
-				Vision:   &ShortcutModel{Name: "claude-opus-4-7", Tools: cloneTools(defaultShortcutVisionTools)},
+				Text:     &ShortcutModel{Name: "glm-5p1", Tools: cloneTools(defaultShortcutSmartTools)},
+				Vision:   &ShortcutModel{Name: "qwen3p6-plus", Tools: cloneTools(defaultShortcutSmartTools)},
 				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.2-pro"},
 			},
 		},
