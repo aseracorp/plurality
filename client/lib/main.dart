@@ -20,6 +20,7 @@ final authStateProvider = StreamProvider<User?>((ref) {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await AuthService.loadServerUrl();
   await ConversationStorage.init();
   debugPaintSizeEnabled = false;
 

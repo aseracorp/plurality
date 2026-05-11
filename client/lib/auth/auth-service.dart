@@ -34,9 +34,46 @@ class AuthService {
 
   static const _tokenKey = 'plurality_jwt';
   static const _usernameKey = 'plurality_username';
+  static const _serverUrlKey = 'plurality_server_url';
 
-  static String get baseUrl =>
-      kReleaseMode ? 'https://app.plurality-ai.com' : 'http://192.168.1.102:8090';
+  static String _nativeServerUrl = '';
+
+  /// Base URL for all backend requests.
+  /// - Web: the origin that served the JS, so the app always talks to its own host.
+  /// - Native: a user-supplied URL persisted in SharedPreferences (empty until set).
+  static String get baseUrl => kIsWeb ? Uri.base.origin : _nativeServerUrl;
+
+  /// True when [baseUrl] is usable. On web this is always true; on native it
+  /// requires the user to have set a server URL via the login screen.
+  static bool get isConfigured => kIsWeb || _nativeServerUrl.isNotEmpty;
+
+  /// Current native server URL (empty on web or when unset).
+  static String get nativeServerUrl => _nativeServerUrl;
+
+  /// Load the saved native server URL into memory. Must be awaited from main()
+  /// before any code reads [baseUrl].
+  static Future<void> loadServerUrl() async {
+    if (kIsWeb) return;
+    final prefs = await SharedPreferences.getInstance();
+    _nativeServerUrl = prefs.getString(_serverUrlKey) ?? '';
+  }
+
+  /// Persist a new native server URL. Trims whitespace and strips a trailing
+  /// slash. If the URL is changing, any cached token for the previous server is
+  /// wiped so we don't leak credentials across servers.
+  static Future<void> setServerUrl(String url) async {
+    if (kIsWeb) return;
+    var normalized = url.trim();
+    while (normalized.endsWith('/')) {
+      normalized = normalized.substring(0, normalized.length - 1);
+    }
+    if (normalized == _nativeServerUrl) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_tokenKey);
+    await prefs.remove(_usernameKey);
+    await prefs.setString(_serverUrlKey, normalized);
+    _nativeServerUrl = normalized;
+  }
 
   final StreamController<User?> _stateController =
       StreamController<User?>.broadcast();
@@ -56,6 +93,10 @@ class AuthService {
 
   Future<void> _bootstrap() async {
     _bootstrapped = true;
+    if (!isConfigured) {
+      _current = null;
+      return;
+    }
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString(_tokenKey);
     final username = prefs.getString(_usernameKey);
