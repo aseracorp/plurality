@@ -1,5 +1,5 @@
 # 2
-- EXT_DOMAIN for webhook to system prompt
+- Need a skill to runing background tasks that start with server (ex. how to start them without starting on host?)
 - Per-user everything: using a map of linux user > plurality user 
   - Per-user MCP
   - docker ?

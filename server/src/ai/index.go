@@ -38,7 +38,7 @@ func baseSystemPrompt() string {
 // prompts when the env var is set, otherwise empty.
 func webhookExtSuffix() string {
 	if v := os.Getenv("WEBHOOK_EXT"); v != "" {
-		return "\n\nThe current exposed domain for webhooks is: " + v
+		return "\n\nThe current exposed domain for webhooks is: " + v + " for external webhooks. Local ones can use localhost."
 	}
 	return ""
 }
@@ -103,6 +103,10 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		// Append MCP server descriptions configured in mcp.json.
 		for serverName, desc := range mcp.ServerDescriptions() {
 			systemPrompt += "\n\n[" + serverName + "] " + desc
+		}
+
+		if mode, ok := model.Tools["filesystem_server__fs_write"]; ok && mode != "" && mode != "off" && mode != "false" {
+			systemPrompt += "\n\nStartup scripts: any *.sh file you place in ~/.plurality/startup/ will be launched automatically with `nohup` on every server boot, with stdout/stderr going to <script>.sh.log next to it. Use this for long-running background processes you want to survive restarts. The ~/.plurality directory is persistent."
 		}
 
 		// Append a compact summary of disabled tools so the LLM can suggest enabling them.

@@ -75,7 +75,7 @@ FROM debian:bookworm-slim
 # Node 22 LTS via NodeSource — Debian bookworm's packaged nodejs is 18.x,
 # which is past end-of-life and too old for several MCP servers.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl gnupg git python3 python3-venv python3-pip && \
+    ca-certificates curl gnupg git python3 python3-venv python3-pip tini && \
     mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
@@ -119,5 +119,6 @@ VOLUME /root
 # Expose the port the server listens on
 EXPOSE 8090
 
-# Run the server
+# Run the server under tini so PID 1 reaps zombies and forwards signals
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/app/Plurality"]

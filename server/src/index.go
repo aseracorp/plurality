@@ -18,6 +18,7 @@ import (
 	"github.com/azukaar/plurality/src/miniapps"
 	"github.com/azukaar/plurality/src/search"
 	"github.com/azukaar/plurality/src/skills"
+	"github.com/azukaar/plurality/src/startup"
 	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/user"
 	"github.com/azukaar/plurality/src/utils"
@@ -36,6 +37,7 @@ func main() {
 	}
 
 	auth.Init()
+	startup.Run()
 	db.InitSQLite()
 	defer db.CloseAllUserDBs()
 	storage.Init()
