@@ -434,6 +434,13 @@ func injectLongTaskReminder(ctx context.Context, ar *ActiveRequest, conv *utils.
 	if !state.HasOutstanding() {
 		return false
 	}
+	// A paused list intentionally suppresses the nudge loop — the AI chose
+	// to defer the work and any reminder mechanism (cron, user follow-up)
+	// is handled outside this loop.
+	if state.Paused {
+		utils.Log("[LLMLoop] long_task is paused (reason=%q), skipping reminder with %d open task(s)", state.PauseReason, openCount(state))
+		return false
+	}
 	if state.RemindersUsed >= ai_tools.LongTaskMaxReminders {
 		utils.Log("[LLMLoop] long_task reminder cap (%d) reached, going idle with %d open task(s)", ai_tools.LongTaskMaxReminders, openCount(state))
 		return false
@@ -442,7 +449,7 @@ func injectLongTaskReminder(ctx context.Context, ar *ActiveRequest, conv *utils.
 	state.RemindersUsed++
 	open := openTitles(state)
 	state.Nudge = fmt.Sprintf(
-		"You still have %d outstanding task(s): %s. Continue working on them. If they can no longer be completed, call long_task with operation='clear'.",
+		"You still have %d outstanding task(s): %s. Continue working on them. If they can no longer be completed, call long_task with operation='clear'. If you are unable to complete them right now, call long_task with operation='pause' to pause them and set a reminder for later. You can also use \"wait\" tool if the blocker is time eg. waiting for process to complete, or a particular time.",
 		len(open),
 		strings.Join(open, "; "),
 	)

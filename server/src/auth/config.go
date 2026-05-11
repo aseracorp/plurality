@@ -47,11 +47,30 @@ type Shortcut struct {
 	Models  ShortcutModels `json:"models"`
 }
 
-type Config struct {
-	JWTSecret string       `json:"jwt_secret"`
-	OpenID    OpenIDConfig `json:"openid"`
-	Shortcuts []Shortcut   `json:"shortcuts"`
+// WebhookConfig holds rate-limit knobs for the public webhook trigger
+// endpoint. Both limits are evaluated per source IP (honouring
+// X-Forwarded-For); zero/negative means "use the default".
+type WebhookConfig struct {
+	// PerClientPerMinute caps requests from one IP across ALL webhooks in
+	// 60s. Crossing this trips a permanent in-memory block until restart.
+	// Default: 200.
+	PerClientPerMinute int `json:"per_client_per_minute"`
+	// PerWebhookPerMinute caps requests from one IP to one webhook ID in
+	// 60s. Exceeding returns 429 with Retry-After. Default: 10.
+	PerWebhookPerMinute int `json:"per_webhook_per_minute"`
 }
+
+type Config struct {
+	JWTSecret string        `json:"jwt_secret"`
+	OpenID    OpenIDConfig  `json:"openid"`
+	Shortcuts []Shortcut    `json:"shortcuts"`
+	Webhook   WebhookConfig `json:"webhook"`
+}
+
+const (
+	defaultPerClientPerMinute  = 200
+	defaultPerWebhookPerMinute = 10
+)
 
 // ReservedShortcutNames are the picker-visible shortcut names, in display order.
 var ReservedShortcutNames = []string{"fast", "medium", "smart"}
@@ -93,6 +112,10 @@ func LoadConfig() error {
 				Enabled:   false,
 				Allowlist: []string{},
 			},
+			Webhook: WebhookConfig{
+				PerClientPerMinute:  defaultPerClientPerMinute,
+				PerWebhookPerMinute: defaultPerWebhookPerMinute,
+			},
 		}
 		validateShortcuts(&cfg)
 		if err := writeConfigLocked(); err != nil {
@@ -111,6 +134,14 @@ func LoadConfig() error {
 			needsWrite = true
 		}
 		if validateShortcuts(&loaded) {
+			needsWrite = true
+		}
+		if loaded.Webhook.PerClientPerMinute <= 0 {
+			loaded.Webhook.PerClientPerMinute = defaultPerClientPerMinute
+			needsWrite = true
+		}
+		if loaded.Webhook.PerWebhookPerMinute <= 0 {
+			loaded.Webhook.PerWebhookPerMinute = defaultPerWebhookPerMinute
 			needsWrite = true
 		}
 		cfg = loaded

@@ -40,20 +40,36 @@ Widget? buildLongTaskChecklist({
           .map((m) => Map<String, dynamic>.from(m))
           .toList();
 
-  return _LongTaskChecklist(tasks: tasks, nudge: state['nudge'] as String?);
+  return _LongTaskChecklist(
+    tasks: tasks,
+    // hasNudge is true when the server appended a reminder to this snapshot.
+    // The raw nudge text is the full LLM prompt and isn't user-facing — we
+    // show our own short summary instead.
+    hasNudge: (state['nudge'] as String?)?.isNotEmpty ?? false,
+    paused: state['paused'] == true,
+    pauseReason: state['pause_reason'] as String?,
+  );
 }
 
 class _LongTaskChecklist extends StatelessWidget {
   final List<Map<String, dynamic>> tasks;
-  final String? nudge;
+  final bool hasNudge;
+  final bool paused;
+  final String? pauseReason;
 
-  const _LongTaskChecklist({required this.tasks, this.nudge});
+  const _LongTaskChecklist({
+    required this.tasks,
+    this.hasNudge = false,
+    this.paused = false,
+    this.pauseReason,
+  });
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final doneCount = tasks.where((t) => t['done'] == true).length;
     final total = tasks.length;
+    final openCount = total - doneCount;
 
     return Container(
       padding: const EdgeInsets.all(10),
@@ -69,11 +85,40 @@ class _LongTaskChecklist extends StatelessWidget {
           if (total > 0)
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                children: [
+                  Text(
+                    'Tasks  $doneCount / $total',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  if (paused) ...[
+                    const SizedBox(width: 6),
+                    Icon(Icons.pause_circle, size: 14, color: scheme.tertiary),
+                    const SizedBox(width: 2),
+                    Text(
+                      'Paused',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: scheme.tertiary,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          if (paused && pauseReason != null && pauseReason!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
               child: Text(
-                'Tasks  $doneCount / $total',
+                pauseReason!,
                 style: TextStyle(
                   fontSize: 12,
-                  fontWeight: FontWeight.w600,
+                  fontStyle: FontStyle.italic,
                   color: scheme.onSurfaceVariant,
                 ),
               ),
@@ -93,11 +138,13 @@ class _LongTaskChecklist extends StatelessWidget {
               done: t['done'] == true,
             ),
           ),
-          if (nudge != null && nudge!.isNotEmpty)
+          if (hasNudge && openCount > 0)
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Text(
-                nudge!,
+                openCount == 1
+                    ? 'The assistant still has 1 outstanding task.'
+                    : 'The assistant still has $openCount outstanding tasks.',
                 style: TextStyle(
                   fontSize: 12,
                   fontStyle: FontStyle.italic,

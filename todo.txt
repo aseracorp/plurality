@@ -1,4 +1,5 @@
 # 2
+- If cannot do task, cancel them! (ex. need user interaction)
 - let app select server URL !
 - Per-user everything: using a map of linux user > plurality user 
   - Per-user MCP
@@ -14,6 +15,8 @@
 - Webhooks
 
 #3
+- Tool to ask user QCM
+- Recvover: check last X emssages for timers without rsults, or outstadnding task lists
 - Add a way for AI to include pre-made prompt in the message (like "click here to know more" > paste the prompt "tell me more about X")
 - forced tool : calculator
 - chart? Mermaid? 

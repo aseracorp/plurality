@@ -79,7 +79,6 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   final List<Attachment> attachments = [];
 
   bool _isNearBottom = true;
-  bool _hasScrolledToUserMessage = false;
   bool _needsBottomMargin = false;
   bool _closeMessageWarning = false;
 
@@ -154,7 +153,6 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       _loadConversation(widget.conversationId);
 
       setState(() {
-        _hasScrolledToUserMessage = false;
         _needsBottomMargin = false;
         _closeMessageWarning = false;
       });
@@ -175,36 +173,8 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       );
     }
 
-    // One-time: when streaming starts, scroll user message to top and enable bottom margin
-    if (state.state == ConversationState.processing && !_hasScrolledToUserMessage) {
-      _hasScrolledToUserMessage = true;
-      _needsBottomMargin = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || !_listController.isAttached || !_mainScrollController.hasClients) return;
-
-        final conversationsState = ref.read(conversationsProvider);
-        final currentConversation = conversationsState.conversations.firstWhere(
-          (conv) => conv.id == widget.conversationId,
-          orElse: () => Conversation(
-            id: widget.conversationId, title: '', messages: [],
-            lastMessageAt: DateTime.now(), modelSelected: _modelSelected,
-          ),
-        );
-        final visibleMessages = currentConversation.messages.where((m) => m.role != 'tool').toList();
-        final lastUserIndex = visibleMessages.lastIndexWhere((m) => m.role == 'user');
-        if (lastUserIndex < 0) return;
-
-        _listController.jumpToItem(
-          index: lastUserIndex,
-          scrollController: _mainScrollController,
-          alignment: 0.0,
-        );
-      });
-    }
-
-    // Reset when streaming ends and focus the input (skip on mobile to avoid virtual keyboard pop-up)
+    // Focus the input when streaming ends (skip on mobile to avoid virtual keyboard pop-up)
     if (state.state != ConversationState.processing) {
-      _hasScrolledToUserMessage = false;
       if (!widget.isMobile) {
         Future.delayed(Duration(milliseconds: 150), () {
           if (mounted) _inputFocusNode.requestFocus();
@@ -496,7 +466,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
       );
       return;
     }
-    _needsBottomMargin = false;
+    _needsBottomMargin = true;
     final conversationsNotifier = ref.read(conversationsProvider.notifier);
 
     // Build the user message
@@ -556,6 +526,36 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         conversationId: widget.conversationId,
         message: newMessage,
       );
+
+      // Scroll the user's message to the top of the viewport, once per submit.
+      // Done here (not on state transitions) so multi-turn tool/AI events
+      // don't yank the scroll position around between turns.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted ||
+            !_listController.isAttached ||
+            !_mainScrollController.hasClients) return;
+
+        final conversationsState = ref.read(conversationsProvider);
+        final currentConversation = conversationsState.conversations.firstWhere(
+          (conv) => conv.id == widget.conversationId,
+          orElse: () => Conversation(
+            id: widget.conversationId, title: '', messages: [],
+            lastMessageAt: DateTime.now(), modelSelected: _modelSelected,
+          ),
+        );
+        final visibleMessages = currentConversation.messages
+            .where((m) => m.role != 'tool')
+            .toList();
+        final lastUserIndex =
+            visibleMessages.lastIndexWhere((m) => m.role == 'user');
+        if (lastUserIndex < 0) return;
+
+        _listController.jumpToItem(
+          index: lastUserIndex,
+          scrollController: _mainScrollController,
+          alignment: 0.0,
+        );
+      });
     }
 
     try {

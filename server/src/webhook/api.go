@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gorilla/mux"
@@ -161,8 +162,23 @@ func API_RotateWebhookToken(w http.ResponseWriter, r *http.Request) {
 //   - 202 on success (LLM run started asynchronously)
 //   - 401 for any auth failure (unknown ID, disabled, bad/missing token)
 //   - 413 if the body exceeds maxBodyBytes
+//   - 429 if rate-limited (per-IP-per-webhook or per-IP global). Per-webhook
+//     overruns include a Retry-After header; an IP that has crossed the
+//     global threshold gets 429 permanently until the server restarts.
 func API_TriggerWebhook(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
+
+	// Rate-limit FIRST — before body read, before disk hit, before token
+	// compare. A flood of bad requests from one IP should cost us nothing.
+	ip := clientIP(r)
+	allowed, retryAfter, _ := CheckRate(ip, id)
+	if !allowed {
+		if retryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())+1))
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+		return
+	}
 
 	// Token: header takes priority over query so a caller can override a
 	// URL token by passing a header. Both are stripped before payload

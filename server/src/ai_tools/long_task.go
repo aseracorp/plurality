@@ -29,11 +29,16 @@ type LongTaskState struct {
 	Tasks         []LongTaskItem `json:"tasks"`
 	RemindersUsed int            `json:"reminders_used"`
 	Nudge         string         `json:"nudge,omitempty"`
+	// Paused suppresses the end-of-turn reminder loop. The task list itself
+	// stays intact so the AI can resume it later. PauseReason is a short
+	// free-text explanation surfaced to the user in the badge.
+	Paused      bool   `json:"paused,omitempty"`
+	PauseReason string `json:"pause_reason,omitempty"`
 }
 
 var LongTaskTool = utils.AITool{
 	Name:              "Long Task",
-	Description:       "Maintain a checklist of subtasks for multi-step requests. Call 'set' once at the start with the full plan, then 'complete' tasks as you finish each one. If you stop while items are still open, the system will remind you to keep going — call 'clear' if you genuinely cannot or should not continue.",
+	Description:       "Maintain a checklist of subtasks for multi-step requests. Call 'set' once at the start with the full plan, then 'complete' tasks as you finish each one. If you stop while items are still open, the system will remind you to keep going — call 'clear' to drop them, or 'pause' (with optional 'reason') if you can't continue right now but want to come back later. Use 'resume' to re-enable a paused list.",
 	ToolID:            "long_task",
 	Cost:              0,
 	PickerLabel:       "Long Task",
@@ -44,14 +49,14 @@ var LongTaskTool = utils.AITool{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
 			Name:        "long_task",
-			Description: "Manage a persistent checklist of subtasks. Use this for any request that involves more than one step so progress stays visible. Operations: 'set' replaces the entire list, 'add' appends, 'complete' marks ids done, 'remove' deletes ids, 'clear' wipes everything. Whenever you finish a turn with unfinished tasks the system will inject a reminder telling you to keep working.",
+			Description: "Manage a persistent checklist of subtasks. Use this for any request that involves more than one step so progress stays visible. Operations: 'set' replaces the entire list, 'add' appends, 'complete' marks ids done, 'remove' deletes ids, 'clear' wipes everything, 'pause' suspends the reminder loop while keeping the list intact (use when you genuinely cannot continue right now — e.g. blocked on user input or an external event — and want to come back to it later; combine with manage_cron if you need an automatic wake-up), 'resume' re-enables a paused list. Whenever you finish a turn with unfinished, non-paused tasks the system will inject a reminder telling you to keep working.",
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{
 					"operation": {
 						Type:        "string",
 						Description: "Operation to perform on the checklist.",
-						Enum:        []string{"set", "add", "complete", "remove", "clear"},
+						Enum:        []string{"set", "add", "complete", "remove", "clear", "pause", "resume"},
 					},
 					"titles": {
 						Type:        "string",
@@ -60,6 +65,10 @@ var LongTaskTool = utils.AITool{
 					"ids": {
 						Type:        "string",
 						Description: "JSON array of task ids. Required for 'complete' and 'remove'. Example: [\"t1\",\"t2\"]. Ids are returned by the tool when you 'set' or 'add' tasks.",
+					},
+					"reason": {
+						Type:        "string",
+						Description: "Optional short reason for 'pause' — e.g. \"waiting on user reply\" or \"blocked on deploy at 5pm\". Shown to the user.",
 					},
 				},
 				Required: []string{"operation"},
@@ -113,6 +122,7 @@ func execLongTask(_ context.Context, input string, conv utils.Conversation) util
 		Operation string `json:"operation"`
 		Titles    string `json:"titles"`
 		IDs       string `json:"ids"`
+		Reason    string `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
 		return utils.NewTextContent(fmt.Sprintf("Error parsing parameters: %s", err.Error()))
@@ -142,8 +152,11 @@ func execLongTask(_ context.Context, input string, conv utils.Conversation) util
 			})
 			nextID++
 		}
-		// Reset reminders when the list is reset.
+		// Reset reminders + pause flag when the list is reset — a fresh
+		// 'set' is always an active plan.
 		state.RemindersUsed = 0
+		state.Paused = false
+		state.PauseReason = ""
 
 	case "add":
 		titles, err := decodeStringArray(params.Titles)
@@ -210,9 +223,29 @@ func execLongTask(_ context.Context, input string, conv utils.Conversation) util
 	case "clear":
 		state.Tasks = []LongTaskItem{}
 		state.RemindersUsed = 0
+		state.Paused = false
+		state.PauseReason = ""
+
+	case "pause":
+		if len(state.Tasks) == 0 {
+			return errResult("No task list to pause. Call 'set' first.")
+		}
+		if !state.HasOutstanding() {
+			return errResult("All tasks are already done — nothing to pause.")
+		}
+		state.Paused = true
+		state.PauseReason = strings.TrimSpace(params.Reason)
+		// Reset the reminder count so that a later 'resume' starts with a
+		// fresh budget of nudges.
+		state.RemindersUsed = 0
+
+	case "resume":
+		state.Paused = false
+		state.PauseReason = ""
+		state.RemindersUsed = 0
 
 	default:
-		return errResult(fmt.Sprintf("Unknown operation %q. Use one of: set, add, complete, remove, clear.", params.Operation))
+		return errResult(fmt.Sprintf("Unknown operation %q. Use one of: set, add, complete, remove, clear, pause, resume.", params.Operation))
 	}
 
 	return utils.NewTextContent(FormatStateJSON(state))
