@@ -154,7 +154,7 @@ func ListConversations(ctx context.Context) ([]utils.Conversation, error) {
 	}
 
 	rows, err := db.Query(
-		`SELECT id, title, last_message_at, model_selected, state, mini_app, folder, icon, cron_job_id
+		`SELECT id, title, last_message_at, model_selected, state, mini_app, folder, icon, trigger_type, trigger_id
 		 FROM conversations ORDER BY last_message_at DESC`,
 	)
 	if err != nil {
@@ -290,8 +290,10 @@ func UpdateConversationFolder(ctx context.Context, id string, folder string) err
 	return nil
 }
 
-// SetConversationCronJobID records which CRON job (uuid) started a conversation.
-func SetConversationCronJobID(ctx context.Context, conversationID, cronJobID string) error {
+// SetConversationTrigger records what triggered a conversation (e.g.
+// triggerType="cron", triggerID=<cron uuid>). Used by the cron and webhook
+// packages — kept generic so a third trigger type doesn't add a column.
+func SetConversationTrigger(ctx context.Context, conversationID, triggerType, triggerID string) error {
 	userID, ok := ctx.Value("userID").(string)
 	if !ok {
 		return errors.New("user ID not found in request context")
@@ -302,7 +304,10 @@ func SetConversationCronJobID(ctx context.Context, conversationID, cronJobID str
 		return err
 	}
 
-	res, err := db.Exec(`UPDATE conversations SET cron_job_id = ? WHERE id = ?`, cronJobID, conversationID)
+	res, err := db.Exec(
+		`UPDATE conversations SET trigger_type = ?, trigger_id = ? WHERE id = ?`,
+		triggerType, triggerID, conversationID,
+	)
 	if err != nil {
 		return err
 	}
@@ -351,7 +356,7 @@ func GetActiveConversationsForUser(ctx context.Context) ([]utils.Conversation, e
 	}
 
 	rows, err := db.Query(
-		`SELECT id, title, last_message_at, model_selected, state, mini_app, folder, icon, cron_job_id
+		`SELECT id, title, last_message_at, model_selected, state, mini_app, folder, icon, trigger_type, trigger_id
 		 FROM conversations WHERE state != ?`, string(utils.StateIdle),
 	)
 	if err != nil {
@@ -449,7 +454,8 @@ func scanConversation(rows *sql.Rows) (utils.Conversation, error) {
 	var modelSelectedJSON string
 	var stateStr string
 	var miniAppJSON *string
-	var cronJobID *string
+	var triggerType *string
+	var triggerID *string
 
 	err := rows.Scan(
 		&conv.ID,
@@ -460,7 +466,8 @@ func scanConversation(rows *sql.Rows) (utils.Conversation, error) {
 		&miniAppJSON,
 		&conv.Folder,
 		&conv.Icon,
-		&cronJobID,
+		&triggerType,
+		&triggerID,
 	)
 	if err != nil {
 		return conv, err
@@ -470,8 +477,11 @@ func scanConversation(rows *sql.Rows) (utils.Conversation, error) {
 	conv.ModelSelected = unmarshalModelSelected(modelSelectedJSON)
 	conv.State = utils.ConversationState(stateStr)
 	conv.MiniApp = unmarshalMiniApp(miniAppJSON)
-	if cronJobID != nil {
-		conv.CronJobID = *cronJobID
+	if triggerType != nil {
+		conv.TriggerType = *triggerType
+	}
+	if triggerID != nil {
+		conv.TriggerID = *triggerID
 	}
 
 	return conv, nil
@@ -485,10 +495,11 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 	var modelSelectedJSON string
 	var stateStr string
 	var miniAppJSON *string
-	var cronJobID *string
+	var triggerType *string
+	var triggerID *string
 
 	err := db.QueryRow(
-		`SELECT id, title, last_message_at, model_selected, state, mini_app, folder, icon, cron_job_id
+		`SELECT id, title, last_message_at, model_selected, state, mini_app, folder, icon, trigger_type, trigger_id
 		 FROM conversations WHERE id = ?`, id,
 	).Scan(
 		&conv.ID,
@@ -499,7 +510,8 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 		&miniAppJSON,
 		&conv.Folder,
 		&conv.Icon,
-		&cronJobID,
+		&triggerType,
+		&triggerID,
 	)
 	if err != nil {
 		return nil, err
@@ -509,8 +521,11 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 	conv.ModelSelected = unmarshalModelSelected(modelSelectedJSON)
 	conv.State = utils.ConversationState(stateStr)
 	conv.MiniApp = unmarshalMiniApp(miniAppJSON)
-	if cronJobID != nil {
-		conv.CronJobID = *cronJobID
+	if triggerType != nil {
+		conv.TriggerType = *triggerType
+	}
+	if triggerID != nil {
+		conv.TriggerID = *triggerID
 	}
 
 	// Load messages

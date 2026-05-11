@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/cron-service.dart';
 import '../api/mini-apps.dart';
 import '../utils/types.dart';
+import '../widgets/preset_dropdown.dart';
 
 const _defaultPresetId = 'default-background-agent';
 
@@ -117,19 +118,10 @@ class _CronListScreenState extends ConsumerState<CronListScreen> {
                       minLines: 2,
                     ),
                     const SizedBox(height: 12),
-                    DropdownButtonFormField<String>(
-                      initialValue: selectedPreset,
-                      decoration: const InputDecoration(labelText: 'Preset'),
-                      items: [
-                        for (final p in presets)
-                          DropdownMenuItem(
-                            value: p.id,
-                            child: Text(p.name),
-                          ),
-                      ],
-                      onChanged: (v) {
-                        if (v != null) setLocal(() => selectedPreset = v);
-                      },
+                    PresetDropdown(
+                      value: selectedPreset,
+                      presetsFuture: _presetsFuture,
+                      onChanged: (v) => setLocal(() => selectedPreset = v),
                     ),
                   ],
                 ),

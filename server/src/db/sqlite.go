@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS conversations (
 	mini_app        TEXT,
 	folder          TEXT NOT NULL DEFAULT '',
 	icon            TEXT NOT NULL DEFAULT '',
-	cron_job_id     TEXT
+	trigger_type    TEXT,
+	trigger_id      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -119,11 +120,14 @@ func GetUserDB(userID string) (*sql.DB, error) {
 		return nil, fmt.Errorf("creating schema: %w", err)
 	}
 
-	if err := ensureColumn(db, "conversations", "cron_job_id", "TEXT"); err != nil {
-		utils.Error("[SQLite] migration cron_job_id failed", err)
+	if err := ensureColumn(db, "conversations", "trigger_type", "TEXT"); err != nil {
+		utils.Error("[SQLite] migration trigger_type failed", err)
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_conversations_cron_job_id ON conversations(cron_job_id)`); err != nil {
-		utils.Error("[SQLite] creating idx_conversations_cron_job_id failed", err)
+	if err := ensureColumn(db, "conversations", "trigger_id", "TEXT"); err != nil {
+		utils.Error("[SQLite] migration trigger_id failed", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_conversations_trigger ON conversations(trigger_type, trigger_id)`); err != nil {
+		utils.Error("[SQLite] creating idx_conversations_trigger failed", err)
 	}
 
 	actual, _ := userDBs.LoadOrStore(userID, db)

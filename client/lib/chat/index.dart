@@ -8,6 +8,7 @@ import '../api/api.dart';
 import '../utils/types.dart';
 import '../auth/account.dart';
 import '../cron/cron-list.dart';
+import '../webhook/webhook-list.dart';
 import 'conversation-list/conversation-list.dart';
 import 'dart:convert';
 import 'dart:math';
@@ -160,6 +161,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ),
         ),
         'content': const CronListScreen(),
+      },
+      {
+        'icon': Icon(
+          Icons.webhook,
+          color:
+              widget.isMobile
+                  ? Theme.of(context).colorScheme.primary
+                  : Colors.white,
+        ),
+        'label': Text(
+          'Webhooks',
+          style: TextStyle(
+            color:
+                widget.isMobile
+                    ? Theme.of(context).colorScheme.primary
+                    : Colors.white,
+          ),
+        ),
+        'content': const WebhookListScreen(),
       },
       {
         'icon': Icon(

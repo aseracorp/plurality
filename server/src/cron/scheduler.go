@@ -6,12 +6,13 @@ import (
 
 	"github.com/go-co-op/gocron/v2"
 
+	"github.com/azukaar/plurality/src/jobs"
 	"github.com/azukaar/plurality/src/utils"
 )
 
 var (
-	sched gocron.Scheduler
-	jobs  sync.Map // map[jobID]gocron.Job
+	sched     gocron.Scheduler
+	scheduled sync.Map // map[jobID]gocron.Job
 )
 
 // Init builds the scheduler, walks every user's cron.json on disk, and
@@ -25,7 +26,7 @@ func Init() {
 	}
 	sched = s
 
-	for _, userID := range listUserIDsOnDisk() {
+	for _, userID := range jobs.ListUserIDsOnDisk(cronFile) {
 		userJobs, err := LoadAll(userID)
 		if err != nil {
 			utils.Error("[Cron] loading user "+userID, err)
@@ -72,14 +73,14 @@ func RegisterJob(userID string, job CronJob) error {
 	if err != nil {
 		return err
 	}
-	jobs.Store(job.ID, g)
+	scheduled.Store(job.ID, g)
 	return nil
 }
 
 // UnregisterJob removes the gocron task for a CronJob ID, if any. No-op when
 // missing.
 func UnregisterJob(jobID string) {
-	v, ok := jobs.LoadAndDelete(jobID)
+	v, ok := scheduled.LoadAndDelete(jobID)
 	if !ok {
 		return
 	}

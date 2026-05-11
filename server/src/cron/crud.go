@@ -7,6 +7,8 @@ import (
 
 	"github.com/go-co-op/gocron/v2"
 	"github.com/google/uuid"
+
+	"github.com/azukaar/plurality/src/jobs"
 )
 
 // validateSchedule checks the cron expression parses with gocron's 5-field
@@ -38,16 +40,18 @@ func Create(userID, schedule, prompt, presetID string) (CronJob, error) {
 		return CronJob{}, err
 	}
 	if presetID == "" {
-		presetID = DefaultPresetID
+		presetID = jobs.DefaultPresetID
 	}
 
 	job := CronJob{
-		ID:        uuid.NewString(),
-		Schedule:  schedule,
-		Prompt:    prompt,
-		PresetID:  presetID,
-		Enabled:   true,
-		CreatedAt: time.Now().UTC(),
+		Base: jobs.Base{
+			ID:        uuid.NewString(),
+			Prompt:    prompt,
+			PresetID:  presetID,
+			Enabled:   true,
+			CreatedAt: time.Now().UTC(),
+		},
+		Schedule: schedule,
 	}
 
 	list, err := LoadAll(userID)

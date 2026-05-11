@@ -21,6 +21,7 @@ import (
 	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/user"
 	"github.com/azukaar/plurality/src/utils"
+	"github.com/azukaar/plurality/src/webhook"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
 )
@@ -74,6 +75,11 @@ func main() {
 	ai_tools.RegisterTool(cron.Tool)
 	defer cron.Shutdown()
 
+	// Webhooks: rebuild the in-memory ID -> userID index from disk.
+	webhook.Init()
+	ai_tools.RegisterTool(webhook.Tool)
+	defer webhook.Shutdown()
+
 	utils.Log("[main] Starting server on :8090")
 
 	r := mux.NewRouter()
@@ -119,6 +125,16 @@ func main() {
 	r.HandleFunc("/crons/{id}", auth.AuthMiddleware(cron.API_UpdateCron)).Methods("PUT", "OPTIONS")
 	r.HandleFunc("/crons/{id}", auth.AuthMiddleware(cron.API_DeleteCron)).Methods("DELETE", "OPTIONS")
 	r.HandleFunc("/crons/{id}/run", auth.AuthMiddleware(cron.API_RunCron)).Methods("POST", "OPTIONS")
+
+	// Webhooks: authenticated CRUD + public trigger endpoint.
+	r.HandleFunc("/webhooks", auth.AuthMiddleware(webhook.API_ListWebhooks)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/webhooks", auth.AuthMiddleware(webhook.API_CreateWebhook)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/webhooks/{id}", auth.AuthMiddleware(webhook.API_UpdateWebhook)).Methods("PUT", "OPTIONS")
+	r.HandleFunc("/webhooks/{id}", auth.AuthMiddleware(webhook.API_DeleteWebhook)).Methods("DELETE", "OPTIONS")
+	r.HandleFunc("/webhooks/{id}/rotate", auth.AuthMiddleware(webhook.API_RotateWebhookToken)).Methods("POST", "OPTIONS")
+
+	// PUBLIC trigger endpoint — token in URL or header IS the auth. No AuthMiddleware.
+	r.HandleFunc("/webhook/{id}", webhook.API_TriggerWebhook).Methods("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
 
 	// Search
 	r.HandleFunc("/search", auth.AuthMiddleware(handleSearch)).Methods("GET", "OPTIONS")
