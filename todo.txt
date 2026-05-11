@@ -1,4 +1,5 @@
 # 2
+- EXT_DOMAIN for webhook to system prompt
 - Per-user everything: using a map of linux user > plurality user 
   - Per-user MCP
   - docker ?
