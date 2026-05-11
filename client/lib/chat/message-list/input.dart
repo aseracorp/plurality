@@ -19,7 +19,6 @@ import '../../utils/types.dart';
 import '../../utils/file-types.dart';
 import '../../api/stt.dart';
 import '../../api/models_service.dart';
-import '../../api/storage.dart';
 import './model-picker.dart';
 
 class InputBox extends StatefulWidget {
@@ -46,12 +45,6 @@ class InputBox extends StatefulWidget {
   final ModelSelected selectedModel;
   final bool submitButton;
   final bool allowEmptyMessage;
-  /// When [conversationId] is empty, the InputBox has no conversation to bind
-  /// the attached folder to. The parent supplies the staged path here and
-  /// listens via [onPendingAttachedFolderChanged]; once the conversation is
-  /// created, the parent is responsible for persisting it to storage.
-  final String? pendingAttachedFolder;
-  final void Function(String?)? onPendingAttachedFolderChanged;
 
   const InputBox({
     Key? key,
@@ -75,8 +68,6 @@ class InputBox extends StatefulWidget {
     required this.submitButton,
     required this.allowEmptyMessage,
     this.validator,
-    this.pendingAttachedFolder,
-    this.onPendingAttachedFolderChanged,
   }) : super(key: key);
 
   @override
@@ -93,21 +84,8 @@ class _InputBoxState extends State<InputBox> {
   final FocusNode _pasteDetectorFocusNode = FocusNode();
   StreamSubscription? _subscription;
 
-  /// Cached attached folder for the current conversation, refreshed each
-  /// rebuild so the chip reflects what's stored in Hive.
-  String? _attachedFolderPath;
-
   bool get _supportsFolderPicker =>
       !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
-
-  void _refreshAttachedFolder() {
-    if (widget.conversationId.isEmpty) {
-      _attachedFolderPath = widget.pendingAttachedFolder;
-      return;
-    }
-    final conv = ConversationStorage.getConversation(widget.conversationId);
-    _attachedFolderPath = conv?.attachedFolderPath;
-  }
 
   Future<void> _attachFolder() async {
     try {
@@ -116,30 +94,18 @@ class _InputBoxState extends State<InputBox> {
       );
       if (selected == null || selected.isEmpty) return;
       final canonical = p.canonicalize(selected);
-      if (widget.conversationId.isEmpty) {
-        widget.onPendingAttachedFolderChanged?.call(canonical);
-      } else {
-        await ConversationStorage.updateAttachedFolderPath(
-          widget.conversationId,
-          canonical,
-        );
-      }
-      if (mounted) setState(() => _attachedFolderPath = canonical);
+      widget.setSelectedModel(
+        widget.selectedModel.copyWith(clientFolderPath: canonical),
+      );
     } catch (e) {
       debugPrint('[InputBox] folder attach failed: $e');
     }
   }
 
-  Future<void> _detachFolder() async {
-    if (widget.conversationId.isEmpty) {
-      widget.onPendingAttachedFolderChanged?.call(null);
-    } else {
-      await ConversationStorage.updateAttachedFolderPath(
-        widget.conversationId,
-        null,
-      );
-    }
-    if (mounted) setState(() => _attachedFolderPath = null);
+  void _detachFolder() {
+    widget.setSelectedModel(
+      widget.selectedModel.copyWith(clientFolderPath: null),
+    );
   }
 
   @override
@@ -479,9 +445,8 @@ class _InputBoxState extends State<InputBox> {
     if (!_supportsFolderPicker) {
       return const SizedBox.shrink();
     }
-    _refreshAttachedFolder();
-    final attached = _attachedFolderPath;
-    if (attached == null) {
+    final attached = widget.selectedModel.clientFolderPath;
+    if (attached == null || attached.isEmpty) {
       return IconButton(
         tooltip: 'Attach a folder for the AI to read/write',
         onPressed: _attachFolder,

@@ -226,10 +226,9 @@ func HandleApprove(w http.ResponseWriter, r *http.Request) {
 			Arguments  string `json:"arguments"`
 			Approved   bool   `json:"approved"`
 		} `json:"approvals"`
-		ModelSelected     utils.ModelSelected          `json:"model_selected"`
-		ClientSideTools   []utils.FunctionToolsRequest `json:"client_side_tools"`
-		AvailableSkills   []string                     `json:"available_skills,omitempty"`
-		HasAttachedFolder bool                         `json:"has_attached_folder,omitempty"`
+		ModelSelected   utils.ModelSelected          `json:"model_selected"`
+		ClientSideTools []utils.FunctionToolsRequest `json:"client_side_tools"`
+		AvailableSkills []string                     `json:"available_skills,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		utils.SendHTTPError(w, "Invalid request body", http.StatusBadRequest)
@@ -317,11 +316,10 @@ func HandleApprove(w http.ResponseWriter, r *http.Request) {
 	activeRequest.AddClient(sseClient)
 
 	chatPayload := ChatPayload{
-		ConversationID:    conversationID,
-		ModelSelected:     payload.ModelSelected,
-		ClientSideTools:   payload.ClientSideTools,
-		AvailableSkills:   payload.AvailableSkills,
-		HasAttachedFolder: payload.HasAttachedFolder,
+		ConversationID:  conversationID,
+		ModelSelected:   payload.ModelSelected,
+		ClientSideTools: payload.ClientSideTools,
+		AvailableSkills: payload.AvailableSkills,
 	}
 	go activeRequest.RunLLMLoop(persistCtx, *conversation, chatPayload)
 

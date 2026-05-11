@@ -240,14 +240,13 @@ class ConversationAdapter extends TypeAdapter<Conversation> {
       folder: fields[8] as String?,
       icon: fields[9] as String?,
       stateString: fields[10] as String?,
-      attachedFolderPath: fields[11] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, Conversation obj) {
     writer
-      ..writeByte(11)
+      ..writeByte(10)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(2)
@@ -267,9 +266,7 @@ class ConversationAdapter extends TypeAdapter<Conversation> {
       ..writeByte(9)
       ..write(obj.icon)
       ..writeByte(10)
-      ..write(obj.stateString)
-      ..writeByte(11)
-      ..write(obj.attachedFolderPath);
+      ..write(obj.stateString);
   }
 
   @override
@@ -346,13 +343,14 @@ class ModelSelectedAdapter extends TypeAdapter<ModelSelected> {
       videoGen: fields[6] as Model?,
       videoVision: fields[7] as Model?,
       code: fields[8] as Model?,
+      clientFolderPath: fields[9] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, ModelSelected obj) {
     writer
-      ..writeByte(9)
+      ..writeByte(10)
       ..writeByte(0)
       ..write(obj.text)
       ..writeByte(1)
@@ -370,7 +368,9 @@ class ModelSelectedAdapter extends TypeAdapter<ModelSelected> {
       ..writeByte(7)
       ..write(obj.videoVision)
       ..writeByte(8)
-      ..write(obj.code);
+      ..write(obj.code)
+      ..writeByte(9)
+      ..write(obj.clientFolderPath);
   }
 
   @override

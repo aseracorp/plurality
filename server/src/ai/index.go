@@ -114,7 +114,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	}
 
 	if isActionModel {
-		ait := ai_tools.GetRequests(model, payload.ClientSideTools, hasAttachments, hasDocAttachments, payload.HasAttachedFolder)
+		ait := ai_tools.GetRequests(model, payload.ClientSideTools, hasAttachments, hasDocAttachments, payload.ModelSelected.ClientFolderPath != "")
 		if len(ait) > 0 {
 			requestData.Tools = ait
 		}

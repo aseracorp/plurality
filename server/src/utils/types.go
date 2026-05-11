@@ -184,6 +184,13 @@ type ModelSelected struct {
 	VideoGen        *Model `json:"video_gen,omitempty"`
 	VideoVision     *Model `json:"video_vision,omitempty"`
 	Code            *Model `json:"code,omitempty"`
+
+	// ClientFolderPath is an absolute path on the client device of a folder
+	// the user has attached to the conversation. When non-empty, the LLM is
+	// given the device-side filesystem_client tools (the client sandboxes
+	// execution to this directory). Server treats the value as opaque — it
+	// round-trips and persists alongside the per-conversation tool toggles.
+	ClientFolderPath string `json:"client_folder_path,omitempty"`
 }
 
 // --- Conversation ---

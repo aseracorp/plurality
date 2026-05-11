@@ -89,10 +89,6 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
   String _miniAppPrePrompt = '';
 
-  /// Folder selected from the home-page input before the conversation exists.
-  /// Persisted to the new conversation's storage entry once it's created.
-  String? _pendingAttachedFolder;
-
   /// Observable session state from ChatService.
   late ValueNotifier<ChatSessionState> _session;
 
@@ -571,16 +567,12 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         message: newMessage,
         modelSelected: _modelSelected,
         miniApp: _miniAppSelected,
-        attachedFolderForNewConversation: _pendingAttachedFolder,
       );
 
       // For new conversations: navigate to the real conversation and return.
       // ChatService holds the SSE stream — this widget disposes cleanly.
-      // Title is generated server-side automatically. The pending folder (if
-      // any) is persisted by chat_service before the completer fires, so by
-      // this point the new conversation's storage entry already has it.
+      // Title is generated server-side automatically.
       if (isNew && resolvedId != null && resolvedId.isNotEmpty) {
-        _pendingAttachedFolder = null;
         if (mounted) widget.setConversationID?.call(resolvedId, true);
         return;
       }
@@ -1202,12 +1194,6 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
               allowEmptyMessage: _miniAppPrePrompt != "",
               attachments: attachments,
               conversationId: widget.conversationId,
-              pendingAttachedFolder: widget.conversationId.isEmpty
-                  ? _pendingAttachedFolder
-                  : null,
-              onPendingAttachedFolderChanged: widget.conversationId.isEmpty
-                  ? (path) => setState(() => _pendingAttachedFolder = path)
-                  : null,
               submitButton:
                   _miniAppSelected != null && widget.conversationId.isEmpty,
               placeholder:

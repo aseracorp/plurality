@@ -394,13 +394,6 @@ class Conversation extends HiveObject {
   @HiveField(10)
   String stateString;
 
-  /// Absolute path on this device of a folder the user has "attached" to the
-  /// conversation. While set, the LLM gets the device-side filesystem tools
-  /// (filesystem_client__fs_read/write) sandboxed to this directory. Local
-  /// only — never sent to the server (the server just learns a folder is set).
-  @HiveField(11)
-  String? attachedFolderPath;
-
   ConversationState get state => conversationStateFromString(stateString);
   set state(ConversationState value) => stateString = value.name;
 
@@ -415,7 +408,6 @@ class Conversation extends HiveObject {
     this.folder,
     this.icon,
     String? stateString,
-    this.attachedFolderPath,
   }) : createdAt = createdAt ?? DateTime.now(),
        stateString = stateString ?? 'idle';
 
@@ -593,6 +585,14 @@ class ModelSelected {
   @HiveField(8)
   final Model? code;
 
+  /// Absolute path of a device-side folder the user has attached to the
+  /// conversation. Round-trips with the server alongside the per-conversation
+  /// tool toggles — when non-empty, the LLM is given the device-side
+  /// filesystem_client tools (sandboxed to this directory) and the client
+  /// uses it as the sandbox root when executing those tools.
+  @HiveField(9)
+  final String? clientFolderPath;
+
   const ModelSelected({
     this.text,
     this.vision,
@@ -603,7 +603,36 @@ class ModelSelected {
     this.videoGen,
     this.videoVision,
     this.code,
+    this.clientFolderPath,
   });
+
+  ModelSelected copyWith({
+    Model? text,
+    Model? vision,
+    Model? imageGen,
+    Model? audioTranscribe,
+    Model? voiceGen,
+    Model? audioGen,
+    Model? videoGen,
+    Model? videoVision,
+    Model? code,
+    Object? clientFolderPath = _unset,
+  }) {
+    return ModelSelected(
+      text: text ?? this.text,
+      vision: vision ?? this.vision,
+      imageGen: imageGen ?? this.imageGen,
+      audioTranscribe: audioTranscribe ?? this.audioTranscribe,
+      voiceGen: voiceGen ?? this.voiceGen,
+      audioGen: audioGen ?? this.audioGen,
+      videoGen: videoGen ?? this.videoGen,
+      videoVision: videoVision ?? this.videoVision,
+      code: code ?? this.code,
+      clientFolderPath: identical(clientFolderPath, _unset)
+          ? this.clientFolderPath
+          : clientFolderPath as String?,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
     'text': text?.toJson(),
@@ -615,6 +644,7 @@ class ModelSelected {
     'video_gen': videoGen?.toJson(),
     'video_vision': videoVision?.toJson(),
     'code': code?.toJson(),
+    'client_folder_path': clientFolderPath,
   };
 
   factory ModelSelected.fromJson(Map<String, dynamic> json) {
@@ -638,9 +668,14 @@ class ModelSelected {
               ? Model.fromJson(json['video_vision'])
               : null,
       code: json['code'] != null ? Model.fromJson(json['code']) : null,
+      clientFolderPath: json['client_folder_path'] as String?,
     );
   }
 }
+
+/// Sentinel for [ModelSelected.copyWith] so callers can distinguish "leave
+/// unchanged" (default) from "explicitly set to null" (clear the folder).
+const Object _unset = Object();
 
 @HiveType(typeId: 7)
 class Model {

@@ -58,7 +58,7 @@ func ShouldStripResponse(content string) bool {
 	return strings.HasPrefix(content, "base64,")
 }
 
-func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest, hasAttachments bool, hasDocumentAttachments bool, hasAttachedFolder bool) []utils.ToolsRequest {
+func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest, hasAttachments bool, hasDocumentAttachments bool, hasClientFolder bool) []utils.ToolsRequest {
 	var requests []utils.ToolsRequest
 	var selected = model.Tools
 
@@ -158,9 +158,10 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 	requests = append(requests, WaitTool.ToolRequest)
 
 	// Force-include the device-side filesystem tools whenever the user has
-	// attached a local folder to the conversation. Schema-only — the server
-	// doesn't execute them, the client does.
-	if hasAttachedFolder {
+	// attached a local folder to the conversation (signalled by a non-empty
+	// ModelSelected.ClientFolderPath). Schema-only — the server doesn't
+	// execute them, the client does.
+	if hasClientFolder {
 		requests = append(requests, FsClientReadToolRequest)
 		requests = append(requests, FsClientWriteToolRequest)
 	}

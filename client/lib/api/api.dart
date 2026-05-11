@@ -150,7 +150,6 @@ class ApiService {
     bool isCall = false,
     List<Map<String, dynamic>>? clientSideTools,
     List<String>? availableSkills,
-    bool hasAttachedFolder = false,
   }) async {
     final request = http.Request('POST', Uri.parse('$baseUrl/chat'));
     request.headers['Content-Type'] = 'application/json';
@@ -173,7 +172,6 @@ class ApiService {
     if (availableSkills != null && availableSkills.isNotEmpty) {
       body['available_skills'] = availableSkills;
     }
-    if (hasAttachedFolder) body['has_attached_folder'] = true;
 
     request.body = jsonEncode(body);
 
@@ -226,7 +224,6 @@ class ApiService {
     required ModelSelected modelSelected,
     List<Map<String, dynamic>>? clientSideTools,
     List<String>? availableSkills,
-    bool hasAttachedFolder = false,
   }) async {
     final request = http.Request('POST', Uri.parse('$baseUrl/chat/approve/$conversationId'));
     request.headers['Content-Type'] = 'application/json';
@@ -241,7 +238,6 @@ class ApiService {
     if (availableSkills != null && availableSkills.isNotEmpty) {
       body['available_skills'] = availableSkills;
     }
-    if (hasAttachedFolder) body['has_attached_folder'] = true;
 
     request.body = jsonEncode(body);
 

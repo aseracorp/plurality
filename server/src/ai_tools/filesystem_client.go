@@ -9,10 +9,10 @@ import (
 // them — when the LLM calls these names, categorizeToolCalls in the tool loop
 // finds no Registry entry and routes the call to the client.
 //
-// They are force-included by GetRequests when payload.HasAttachedFolder is true,
-// so the LLM only sees them while the user has a folder attached to the
-// conversation. Paths are interpreted by the client *relative to the attached
-// folder*; the absolute sandbox root never leaves the device.
+// They are force-included by GetRequests when ModelSelected.ClientFolderPath
+// is non-empty, so the LLM only sees them while the user has a folder
+// attached to the conversation. Paths are interpreted by the client relative
+// to the attached folder root.
 
 var FsClientReadToolRequest = utils.ToolsRequest{
 	Type: "function",

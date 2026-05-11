@@ -4,7 +4,6 @@ import 'package:flutter/foundation.dart';
 import 'package:plurality/api/MCP.dart';
 import 'package:plurality/api/skills_service.dart';
 import 'package:plurality/api/filesystem_service.dart';
-import 'package:plurality/api/storage.dart';
 
 import '../utils/types.dart';
 import 'api.dart';
@@ -119,14 +118,12 @@ class ChatService {
   final SkillsService _skills = SkillsService();
   final FilesystemService _filesystem = FilesystemService();
 
-  /// Returns the absolute path of the folder the user has attached to the
-  /// conversation, or null if none. Used to (a) gate sending the device-side
-  /// filesystem tool definitions to the LLM, and (b) sandbox client-side
-  /// filesystem tool execution.
-  String? _attachedFolderFor(String conversationId) {
-    if (conversationId.isEmpty) return null;
-    final conv = ConversationStorage.getConversation(conversationId);
-    final p = conv?.attachedFolderPath;
+  /// Resolve the attached folder path from the per-conversation model
+  /// selection. Empty/null means no folder is attached, which is what gates
+  /// (a) whether the device-side filesystem tool schemas are sent to the LLM
+  /// and (b) the sandbox root for client-side filesystem tool execution.
+  String? _folderFromModel(ModelSelected? modelSelected) {
+    final p = modelSelected?.clientFolderPath;
     if (p == null || p.isEmpty) return null;
     return p;
   }
@@ -200,10 +197,6 @@ class ChatService {
     required Message message,
     required ModelSelected modelSelected,
     MiniApp? miniApp,
-    /// Folder selected in the home-page input before the conversation exists.
-    /// Used only when [conversationId] is empty — otherwise the folder is
-    /// read from the conversation's storage record.
-    String? attachedFolderForNewConversation,
   }) async {
     final session = getSession(conversationId);
     session.value = const ChatSessionState(state: ConversationState.processing);
@@ -213,22 +206,11 @@ class ChatService {
     if (isNew) {
       idCompleter = Completer<String?>();
       _pendingIdCompleters[conversationId] = idCompleter;
-      if (attachedFolderForNewConversation != null &&
-          attachedFolderForNewConversation.isNotEmpty) {
-        _pendingFoldersForNewConv[conversationId] =
-            attachedFolderForNewConversation;
-      } else {
-        _pendingFoldersForNewConv.remove(conversationId);
-      }
     }
 
     try {
       final skillNames = _skills.getSkillNames();
-      final attachedFolder = isNew
-          ? (attachedFolderForNewConversation?.isNotEmpty == true
-              ? attachedFolderForNewConversation
-              : null)
-          : _attachedFolderFor(conversationId);
+      final attachedFolder = _folderFromModel(modelSelected);
       final stream = await _api.postChat(
         conversationId: conversationId,
         modelSelected: modelSelected,
@@ -240,7 +222,6 @@ class ChatService {
           if (attachedFolder != null) ..._filesystem.getToolDefinitions(),
         ],
         availableSkills: skillNames,
-        hasAttachedFolder: attachedFolder != null,
       );
       _connectSSE(conversationId, stream, modelSelected);
     } catch (e) {
@@ -273,7 +254,7 @@ class ChatService {
 
     try {
       final skillNames = _skills.getSkillNames();
-      final attachedFolder = _attachedFolderFor(conversationId);
+      final attachedFolder = _folderFromModel(modelSelected);
       final stream = await _api.postChat(
         conversationId: conversationId,
         modelSelected: modelSelected,
@@ -284,7 +265,6 @@ class ChatService {
           if (attachedFolder != null) ..._filesystem.getToolDefinitions(),
         ],
         availableSkills: skillNames,
-        hasAttachedFolder: attachedFolder != null,
       );
       _connectSSE(conversationId, stream, modelSelected);
     } catch (e) {
@@ -441,28 +421,16 @@ class ChatService {
       final realId = event.conversationId;
       session.value = session.value.copyWith(resolvedConversationId: realId);
 
-      // Create the conversation in local state, then attach any folder the
-      // user staged from the home input. Chained off the same Future so the
-      // folder write lands AFTER the conversation exists in storage; the
-      // completer fires only after both succeed so consumers awaiting
-      // sendMessage see a fully-hydrated conversation.
-      final pendingFolder = _pendingFoldersForNewConv.remove(conversationId);
-      Future<void>? creation;
+      // Create the conversation in local state. The model_selected payload
+      // (which carries the per-conversation tool toggles and the attached
+      // folder path) is round-tripped server-side, so the local row will
+      // hydrate naturally on the next loadConversation.
       if (modelSelected != null) {
-        creation = _conversationsNotifier
-            ?.createConversation(
-              id: realId,
-              title: event.title ?? 'New Chat',
-              modelSelected: modelSelected,
-            )
-            .then((_) async {
-          if (pendingFolder != null && pendingFolder.isNotEmpty) {
-            await ConversationStorage.updateAttachedFolderPath(
-              realId,
-              pendingFolder,
-            );
-          }
-        });
+        _conversationsNotifier?.createConversation(
+          id: realId,
+          title: event.title ?? 'New Chat',
+          modelSelected: modelSelected,
+        );
       }
 
       // Re-key the session and stream under the real ID
@@ -472,20 +440,10 @@ class ChatService {
         _activeStreams[realId] = _activeStreams.remove(conversationId)!;
       }
 
-      // Complete the pending ID completer so the UI can navigate. Wait for
-      // the creation+folder chain first so storage is consistent by the time
-      // the caller navigates to the new conversation.
+      // Complete the pending ID completer so the UI can navigate
       final completer = _pendingIdCompleters.remove(conversationId);
       if (completer != null && !completer.isCompleted) {
-        if (creation != null) {
-          creation.then((_) {
-            if (!completer.isCompleted) completer.complete(realId);
-          }).catchError((_) {
-            if (!completer.isCompleted) completer.complete(realId);
-          });
-        } else {
-          completer.complete(realId);
-        }
+        completer.complete(realId);
       }
 
       conversationId = realId;
@@ -618,7 +576,7 @@ class ChatService {
                 ? '{}'
                 : toolCall.function.arguments,
           ) as Map<String, dynamic>;
-          final root = _attachedFolderFor(conversationId);
+          final root = _folderFromModel(modelSelected);
           final result = toolCall.function.name == FilesystemService.readToolName
               ? await _filesystem.executeFsRead(root, args)
               : await _filesystem.executeFsWrite(root, args);
@@ -781,7 +739,7 @@ class ChatService {
       // Then approve server tools (this relaunches the loop + SSE)
       try {
         final skillNames = _skills.getSkillNames();
-        final attachedFolder = _attachedFolderFor(conversationId);
+        final attachedFolder = _folderFromModel(modelSelected);
         final stream = await _api.approveTools(
           conversationId: conversationId,
           approvals: serverApprovals,
@@ -792,7 +750,6 @@ class ChatService {
             if (attachedFolder != null) ..._filesystem.getToolDefinitions(),
           ],
           availableSkills: skillNames,
-          hasAttachedFolder: attachedFolder != null,
         );
         _connectSSE(conversationId, stream, modelSelected);
       } catch (e) {

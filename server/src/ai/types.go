@@ -34,10 +34,6 @@ type ChatPayload struct {
 	IsCall          bool                         `json:"is_call"`
 	ClientSideTools []utils.FunctionToolsRequest `json:"client_side_tools"`
 	AvailableSkills []string                     `json:"available_skills,omitempty"`
-	// HasAttachedFolder signals that the user has attached a local folder to
-	// the conversation. The server force-includes the device-side filesystem
-	// tool schemas when true, so the LLM can act on the attached folder.
-	HasAttachedFolder bool `json:"has_attached_folder,omitempty"`
 }
 
 // --- Provider Request Types ---
