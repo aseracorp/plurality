@@ -186,20 +186,34 @@ class FilesystemService {
 
   String? _validateRoot(String? root) {
     if (root == null || root.isEmpty) return null;
+    // Refuse to accept a relative sandbox root — `path.canonicalize` would
+    // silently fall back to the current working directory (on Windows
+    // desktop that's typically C:\Users\<user>), leaking the user's home
+    // dir as the sandbox.
+    if (!path.isAbsolute(root)) return null;
     final dir = Directory(root);
     if (!dir.existsSync()) return null;
-    return path.canonicalize(root);
+    return path.normalize(root);
   }
 
-  /// Returns the canonical absolute path if [relPath] resolves inside [root],
-  /// otherwise null. Rejects '..' segments and absolute paths.
+  /// Returns the absolute path if [relPath] resolves inside [root], otherwise
+  /// null. Rejects '..' segments and absolute paths. Uses [path.normalize]
+  /// rather than [path.canonicalize] so the resolver never falls back to the
+  /// current working directory.
   String? _resolveInside(String root, String relPath) {
+    // Treat '.' (and a couple of trivially-equivalent forms) as the root
+    // itself — no join/normalize round-trip needed.
+    if (relPath.isEmpty || relPath == '.' || relPath == './' || relPath == r'.\') {
+      return root;
+    }
     if (relPath.contains('..')) return null;
     if (path.isAbsolute(relPath)) return null;
     final joined = path.join(root, relPath);
-    final canonical = path.canonicalize(joined);
-    if (canonical != root && !path.isWithin(root, canonical)) return null;
-    return canonical;
+    final resolved = path.normalize(joined);
+    if (!path.equals(resolved, root) && !path.isWithin(root, resolved)) {
+      return null;
+    }
+    return resolved;
   }
 
   // --- read ops ---

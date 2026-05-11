@@ -46,10 +46,20 @@ func GetTool(toolID string) (utils.AITool, bool) {
 	if ok {
 		return tool, true
 	}
-	// Strip namespace prefix for bundled builtins (e.g. "conversations__search_conversations" → "search_conversations").
+	// Strip namespace prefix for bundled builtins (e.g.
+	// "conversations__search_conversations" → "search_conversations"), but
+	// ONLY when the prefix matches the resolved tool's BundleName. Otherwise
+	// schema-only namespaced tools like "filesystem_client__fs_read" would
+	// accidentally match an unrelated server tool with the same bare ID
+	// (FsServerReadTool.ToolID == "fs_read"), get categorized as a
+	// server-side tool, and be executed by the server instead of forwarded
+	// to the client.
 	if idx := strings.Index(toolID, mcp.NamespaceSeparator); idx >= 0 {
-		tool, ok = Registry[toolID[idx+len(mcp.NamespaceSeparator):]]
-		return tool, ok
+		prefix := toolID[:idx]
+		bare := toolID[idx+len(mcp.NamespaceSeparator):]
+		if candidate, ok := Registry[bare]; ok && candidate.BundleName == prefix {
+			return candidate, true
+		}
 	}
 	return utils.AITool{}, false
 }
