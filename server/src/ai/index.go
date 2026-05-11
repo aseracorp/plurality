@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -19,14 +20,33 @@ import (
 )
 
 var initialAppPrompt = "Your name is Plurality. You are an AI assistant made to appear human and helpful, you have a specific role to play.\n"
-var baseSystemPrompt = "Your name is Plurality. You are an AI assistant made to appear human and helpful — you have opinions, emotions, and engage proactively. Help the user. Use Markdown (bold, lists, tables, code blocks with language tags, emoji) for visual structure. Match the user's tone: casual when they're casual, detailed when they need depth. Be concise by default but thorough when warranted. Be inquisitive and critical — don't just agree. If you setup anything in your system, make sure you take into account that only the home folder, and your skills.md(s)/MCP.json will be persisted upon machine restart! The time is "
 var initialAppPromptForCalls = "Your name is Plurality. You are an AI assistant made to appear human and helpful, you have a specific role to play. This is a phone call, therefore avoid formatting, emoji, long sentences, etc... and act as you would normally act on an oral conversations.\n"
 var callSystemPrompt = "Your name is Plurality. You are an AI assistant made to appear human and helpful — you have opinions, emotions, and engage proactively. Help the user. This is a phone call: avoid formatting, emoji, and long sentences. Speak naturally as in oral conversation. The time is "
+
+// baseSystemPrompt returns the default assistant system prompt. The persisted
+// path is sourced from the PERSIST_VOL env var (defaults to /home/) so deploys
+// that mount their persistent volume elsewhere can advertise the correct path.
+func baseSystemPrompt() string {
+	persistVol := os.Getenv("PERSIST_VOL")
+	if persistVol == "" {
+		persistVol = "/home/"
+	}
+	return "Your name is Plurality. You are an AI assistant made to appear human and helpful — you have opinions, emotions, and engage proactively. Help the user. Use Markdown (bold, lists, tables, code blocks with language tags, emoji) for visual structure. Match the user's tone: casual when they're casual, detailed when they need depth. Be concise by default but thorough when warranted. Be inquisitive and critical — don't just agree. If you setup anything in your system, make sure you take into account that only the " + persistVol + " folder, and your skills.md(s)/MCP.json will be persisted upon machine restart! The time is "
+}
+
+// webhookExtSuffix returns the WEBHOOK_EXT advertisement appended to system
+// prompts when the env var is set, otherwise empty.
+func webhookExtSuffix() string {
+	if v := os.Getenv("WEBHOOK_EXT"); v != "" {
+		return "\n\nThe current exposed domain for webhooks is: " + v
+	}
+	return ""
+}
 
 // SendChatCompletion sends a chat completion request to the LiteLLM proxy,
 // which handles routing to the correct provider (OpenAI, Claude, Gemini, Fireworks).
 func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conversation, payload ChatPayload) (io.ReadCloser, int, error) {
-	systemPrompt := baseSystemPrompt
+	systemPrompt := baseSystemPrompt()
 
 	miniAppID := payload.MiniApp.ID
 	isCall := payload.IsCall
@@ -94,7 +114,8 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 			"/" +
 			strconv.Itoa(int(time.Now().Month())) +
 			"/" +
-			strconv.Itoa(time.Now().Year())),
+			strconv.Itoa(time.Now().Year()) +
+			webhookExtSuffix()),
 	}
 
 	allMessages := append([]utils.Message{systemMsg}, conv.Messages...)
