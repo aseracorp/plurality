@@ -18,8 +18,10 @@
         	"manage_webhook":                       "true",
         	"list_presets":                         "true",
         	"conversations__search_conversations":  "true",
-        	"filesystem_server": "true",
-        	"system_tools": "true",
+        	"filesystem_server__fs_read":  "true",
+        	"filesystem_server__fs_write": "true",
+        	"system_tools__shell_exec":    "true",
+        	"system_tools__apt_install":   "true",
         	"conversations__retrieve_conversation": "true"
       },
       "vision": {
@@ -32,8 +34,10 @@
         	"manage_webhook":                       "true",
         	"list_presets":                         "true",
         	"conversations__search_conversations":  "true",
-        	"filesystem_server": "true",
-        	"system_tools": "true",
+        	"filesystem_server__fs_read":  "true",
+        	"filesystem_server__fs_write": "true",
+        	"system_tools__shell_exec":    "true",
+        	"system_tools__apt_install":   "true",
         	"conversations__retrieve_conversation": "true"
       },
     }
