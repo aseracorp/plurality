@@ -35,9 +35,10 @@ func API_ListCrons(w http.ResponseWriter, r *http.Request) {
 }
 
 type createReq struct {
-	Schedule string `json:"schedule"`
-	Prompt   string `json:"prompt"`
-	PresetID string `json:"preset_id"`
+	Schedule       string `json:"schedule"`
+	Prompt         string `json:"prompt"`
+	PresetID       string `json:"preset_id"`
+	ConversationID string `json:"conversation_id,omitempty"`
 }
 
 func API_CreateCron(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +52,7 @@ func API_CreateCron(w http.ResponseWriter, r *http.Request) {
 		utils.SendHTTPError(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	job, err := Create(userID, body.Schedule, body.Prompt, body.PresetID)
+	job, err := Create(userID, body.Schedule, body.Prompt, body.PresetID, body.ConversationID)
 	if err != nil {
 		utils.SendHTTPError(w, err.Error(), http.StatusBadRequest)
 		return

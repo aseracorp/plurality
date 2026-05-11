@@ -14,6 +14,7 @@ class Webhook {
   final bool enabled;
   final DateTime createdAt;
   final DateTime? lastTriggeredAt;
+  final String conversationId;
 
   Webhook({
     required this.id,
@@ -22,6 +23,7 @@ class Webhook {
     required this.enabled,
     required this.createdAt,
     this.lastTriggeredAt,
+    this.conversationId = '',
   });
 
   factory Webhook.fromJson(Map<String, dynamic> json) {
@@ -35,6 +37,7 @@ class Webhook {
       lastTriggeredAt: json['last_triggered_at'] != null
           ? DateTime.tryParse(json['last_triggered_at'])
           : null,
+      conversationId: json['conversation_id'] ?? '',
     );
   }
 }
@@ -102,6 +105,7 @@ class WebhookService {
   Future<WebhookCreateResult> create({
     required String prompt,
     String? presetId,
+    String? conversationId,
   }) async {
     final res = await http.post(
       Uri.parse('$_baseUrl/webhooks'),
@@ -109,6 +113,7 @@ class WebhookService {
       body: jsonEncode({
         'prompt': prompt,
         if (presetId != null) 'preset_id': presetId,
+        if (conversationId != null) 'conversation_id': conversationId,
       }),
     );
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -125,11 +130,13 @@ class WebhookService {
     String? prompt,
     String? presetId,
     bool? enabled,
+    String? conversationId,
   }) async {
     final body = <String, dynamic>{};
     if (prompt != null) body['prompt'] = prompt;
     if (presetId != null) body['preset_id'] = presetId;
     if (enabled != null) body['enabled'] = enabled;
+    if (conversationId != null) body['conversation_id'] = conversationId;
 
     final res = await http.put(
       Uri.parse('$_baseUrl/webhooks/$id'),
@@ -194,8 +201,13 @@ class WebhooksNotifier extends StateNotifier<List<Webhook>> {
   Future<WebhookCreateResult> add({
     required String prompt,
     String? presetId,
+    String? conversationId,
   }) async {
-    final result = await _service.create(prompt: prompt, presetId: presetId);
+    final result = await _service.create(
+      prompt: prompt,
+      presetId: presetId,
+      conversationId: conversationId,
+    );
     state = [...state, result.webhook];
     return result;
   }
@@ -205,12 +217,14 @@ class WebhooksNotifier extends StateNotifier<List<Webhook>> {
     String? prompt,
     String? presetId,
     bool? enabled,
+    String? conversationId,
   }) async {
     final hook = await _service.update(
       id,
       prompt: prompt,
       presetId: presetId,
       enabled: enabled,
+      conversationId: conversationId,
     );
     state = [
       for (final w in state)

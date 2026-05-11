@@ -78,6 +78,8 @@ class _CronListScreenState extends ConsumerState<CronListScreen> {
     String selectedPreset = existing?.presetId.isNotEmpty == true
         ? existing!.presetId
         : _defaultPresetId;
+    final bool originalAppend = existing?.conversationId.isNotEmpty ?? false;
+    bool appendToSame = originalAppend;
 
     final isPresetInList = presets.any((p) => p.id == selectedPreset);
     if (!isPresetInList && presets.isNotEmpty) {
@@ -123,6 +125,19 @@ class _CronListScreenState extends ConsumerState<CronListScreen> {
                       presetsFuture: _presetsFuture,
                       onChanged: (v) => setLocal(() => selectedPreset = v),
                     ),
+                    const SizedBox(height: 8),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      title: const Text('Append to the same conversation'),
+                      subtitle: const Text(
+                        'Every firing adds to one shared conversation instead of starting a new one.',
+                        style: TextStyle(fontSize: 12),
+                      ),
+                      value: appendToSame,
+                      onChanged: (v) =>
+                          setLocal(() => appendToSame = v ?? false),
+                    ),
                   ],
                 ),
               ),
@@ -150,13 +165,22 @@ class _CronListScreenState extends ConsumerState<CronListScreen> {
                           schedule: schedule,
                           prompt: prompt,
                           presetId: selectedPreset,
+                          conversationId: appendToSame ? '1' : '',
                         );
                       } else {
+                        // Only resend conversation_id when the checkbox state
+                        // changed — otherwise we'd clobber the persisted real
+                        // conversation_id with the "1" sentinel on every save.
+                        String? convPatch;
+                        if (appendToSame != originalAppend) {
+                          convPatch = appendToSame ? '1' : '';
+                        }
                         await notifier.update(
                           existing.id,
                           schedule: schedule,
                           prompt: prompt,
                           presetId: selectedPreset,
+                          conversationId: convPatch,
                         );
                       }
                       if (ctx.mounted) Navigator.of(ctx).pop(true);

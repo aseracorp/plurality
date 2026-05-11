@@ -24,7 +24,7 @@ func SaveAll(userID string, items []Webhook) error {
 // it in the owners index. The returned struct carries the plaintext token —
 // the caller is responsible for handing it back to the user; we never get
 // another chance to surface it.
-func Create(userID, prompt, presetID string) (Webhook, string, error) {
+func Create(userID, prompt, presetID, conversationID string) (Webhook, string, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return Webhook{}, "", errors.New("prompt is required")
 	}
@@ -35,11 +35,12 @@ func Create(userID, prompt, presetID string) (Webhook, string, error) {
 	token := GenerateToken()
 	w := Webhook{
 		Base: jobs.Base{
-			ID:        uuid.NewString(),
-			Prompt:    prompt,
-			PresetID:  presetID,
-			Enabled:   true,
-			CreatedAt: time.Now().UTC(),
+			ID:             uuid.NewString(),
+			Prompt:         prompt,
+			PresetID:       presetID,
+			Enabled:        true,
+			CreatedAt:      time.Now().UTC(),
+			ConversationID: conversationID,
 		},
 		TokenHash: HashToken(token),
 	}
@@ -86,12 +87,32 @@ func Update(userID, id string, patch WebhookUpdate) (Webhook, error) {
 	if patch.Enabled != nil {
 		updated.Enabled = *patch.Enabled
 	}
+	if patch.ConversationID != nil {
+		updated.ConversationID = *patch.ConversationID
+	}
 
 	list[idx] = updated
 	if err := SaveAll(userID, list); err != nil {
 		return Webhook{}, err
 	}
 	return updated, nil
+}
+
+// setConversationID rewrites just the ConversationID field on a webhook.
+// Called from the trigger path when a configured conversation no longer
+// exists so the persisted record points at the freshly-created replacement.
+func setConversationID(userID, id, convID string) error {
+	list, err := LoadAll(userID)
+	if err != nil {
+		return err
+	}
+	for i := range list {
+		if list[i].ID == id {
+			list[i].ConversationID = convID
+			return SaveAll(userID, list)
+		}
+	}
+	return errors.New("webhook not found")
 }
 
 // Delete removes a webhook and its owners-index entry.

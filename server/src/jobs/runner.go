@@ -30,6 +30,18 @@ type RunOptions struct {
 	// the UI can link back to whatever fired it. Empty values are skipped.
 	TriggerType string
 	TriggerID   string
+
+	// ConversationID, when non-empty, makes the run append to that existing
+	// conversation instead of creating a new one. If it doesn't resolve
+	// (deleted, never existed) we silently fall back to creating a new
+	// conversation and report the new ID through OnConversationResolved.
+	ConversationID string
+
+	// OnConversationResolved fires exactly once with the conversation ID
+	// that messages actually landed on. Callers compare it to whatever they
+	// passed in via ConversationID and persist the new value back when it
+	// differs (i.e. after a fallback). Optional.
+	OnConversationResolved func(conversationID string)
 }
 
 // RunPrompt creates a new conversation, kicks off the LLM loop in a
@@ -59,10 +71,28 @@ func RunPrompt(ctx context.Context, userID string, opts RunOptions) {
 		MiniApp:       preset,
 	}
 
+	// If the caller asked to append to a specific conversation, verify it
+	// exists; otherwise fall back to creating a new one. db.PushMessage
+	// branches purely on partial.ID being non-empty, so existence has to
+	// be checked here.
+	if opts.ConversationID != "" {
+		if _, err := db.GetConversationById(ctx, opts.ConversationID); err == nil {
+			partial.ID = opts.ConversationID
+			// Don't clobber the user's existing title on append.
+			partial.Title = ""
+		} else {
+			utils.Warn("[%s] configured conversation_id %s not found, creating new (%s)", opts.TitlePrefix, opts.ConversationID, err.Error())
+		}
+	}
+
 	updated, _, err := db.PushMessage(ctx, partial, msg)
 	if err != nil {
 		utils.Error("["+opts.TitlePrefix+"] PushMessage failed", err)
 		return
+	}
+
+	if opts.OnConversationResolved != nil {
+		opts.OnConversationResolved(updated.ID)
 	}
 
 	if opts.TriggerType != "" && opts.TriggerID != "" {

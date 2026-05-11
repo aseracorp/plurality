@@ -72,6 +72,7 @@ class _WebhookListScreenState extends ConsumerState<WebhookListScreen> {
   Future<void> _openCreateDialog() async {
     final promptCtrl = TextEditingController();
     String selectedPreset = _defaultPresetId;
+    bool appendToSame = false;
 
     final result = await showDialog<WebhookCreateResult>(
       context: context,
@@ -97,6 +98,19 @@ class _WebhookListScreenState extends ConsumerState<WebhookListScreen> {
                       presetsFuture: _presetsFuture,
                       onChanged: (v) => setLocal(() => selectedPreset = v),
                     ),
+                    const SizedBox(height: 8),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      title: const Text('Append to the same conversation'),
+                      subtitle: const Text(
+                        'Every trigger adds to one shared conversation instead of starting a new one.',
+                        style: TextStyle(fontSize: 12),
+                      ),
+                      value: appendToSame,
+                      onChanged: (v) =>
+                          setLocal(() => appendToSame = v ?? false),
+                    ),
                   ],
                 ),
               ),
@@ -118,6 +132,7 @@ class _WebhookListScreenState extends ConsumerState<WebhookListScreen> {
                       final res = await ref.read(webhooksProvider.notifier).add(
                             prompt: prompt,
                             presetId: selectedPreset,
+                            conversationId: appendToSame ? '1' : '',
                           );
                       if (ctx.mounted) Navigator.of(ctx).pop(res);
                     } catch (e) {
@@ -152,6 +167,8 @@ class _WebhookListScreenState extends ConsumerState<WebhookListScreen> {
     final promptCtrl = TextEditingController(text: existing.prompt);
     String selectedPreset =
         existing.presetId.isNotEmpty ? existing.presetId : _defaultPresetId;
+    final bool originalAppend = existing.conversationId.isNotEmpty;
+    bool appendToSame = originalAppend;
 
     await showDialog<void>(
       context: context,
@@ -177,6 +194,19 @@ class _WebhookListScreenState extends ConsumerState<WebhookListScreen> {
                       presetsFuture: _presetsFuture,
                       onChanged: (v) => setLocal(() => selectedPreset = v),
                     ),
+                    const SizedBox(height: 8),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      title: const Text('Append to the same conversation'),
+                      subtitle: const Text(
+                        'Every trigger adds to one shared conversation instead of starting a new one.',
+                        style: TextStyle(fontSize: 12),
+                      ),
+                      value: appendToSame,
+                      onChanged: (v) =>
+                          setLocal(() => appendToSame = v ?? false),
+                    ),
                   ],
                 ),
               ),
@@ -195,10 +225,18 @@ class _WebhookListScreenState extends ConsumerState<WebhookListScreen> {
                       return;
                     }
                     try {
+                      // Only resend conversation_id when the checkbox state
+                      // changed — otherwise we'd clobber the persisted real
+                      // conversation_id with the "1" sentinel on every save.
+                      String? convPatch;
+                      if (appendToSame != originalAppend) {
+                        convPatch = appendToSame ? '1' : '';
+                      }
                       await ref.read(webhooksProvider.notifier).update(
                             existing.id,
                             prompt: prompt,
                             presetId: selectedPreset,
+                            conversationId: convPatch,
                           );
                       if (ctx.mounted) Navigator.of(ctx).pop();
                     } catch (e) {

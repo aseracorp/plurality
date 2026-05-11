@@ -32,7 +32,7 @@ func validateSchedule(schedule string) error {
 }
 
 // Create persists a new CronJob and registers it with the scheduler.
-func Create(userID, schedule, prompt, presetID string) (CronJob, error) {
+func Create(userID, schedule, prompt, presetID, conversationID string) (CronJob, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return CronJob{}, errors.New("prompt is required")
 	}
@@ -45,11 +45,12 @@ func Create(userID, schedule, prompt, presetID string) (CronJob, error) {
 
 	job := CronJob{
 		Base: jobs.Base{
-			ID:        uuid.NewString(),
-			Prompt:    prompt,
-			PresetID:  presetID,
-			Enabled:   true,
-			CreatedAt: time.Now().UTC(),
+			ID:             uuid.NewString(),
+			Prompt:         prompt,
+			PresetID:       presetID,
+			Enabled:        true,
+			CreatedAt:      time.Now().UTC(),
+			ConversationID: conversationID,
 		},
 		Schedule: schedule,
 	}
@@ -104,6 +105,9 @@ func Update(userID, id string, patch CronUpdate) (CronJob, error) {
 	}
 	if patch.Enabled != nil {
 		updated.Enabled = *patch.Enabled
+	}
+	if patch.ConversationID != nil {
+		updated.ConversationID = *patch.ConversationID
 	}
 
 	list[idx] = updated
@@ -174,4 +178,21 @@ func FindByID(userID, id string) (CronJob, error) {
 		}
 	}
 	return CronJob{}, errors.New("cron not found")
+}
+
+// setConversationID rewrites just the ConversationID field on a cron job.
+// Called from the trigger path when a configured conversation no longer
+// exists so the persisted record points at the freshly-created replacement.
+func setConversationID(userID, id, convID string) error {
+	list, err := LoadAll(userID)
+	if err != nil {
+		return err
+	}
+	for i := range list {
+		if list[i].ID == id {
+			list[i].ConversationID = convID
+			return SaveAll(userID, list)
+		}
+	}
+	return errors.New("cron not found")
 }

@@ -44,12 +44,23 @@ func Trigger(webhookID, providedToken string, payload TriggerPayload) error {
 	}()
 
 	go jobs.RunPrompt(context.Background(), userID, jobs.RunOptions{
-		TitlePrefix:  "Webhook",
-		Prompt:       w.Prompt,
-		PresetID:     w.PresetID,
-		ExtraContext: formatPayload(payload),
-		TriggerType:  "webhook",
-		TriggerID:    w.ID,
+		TitlePrefix:    "Webhook",
+		Prompt:         w.Prompt,
+		PresetID:       w.PresetID,
+		ExtraContext:   formatPayload(payload),
+		TriggerType:    "webhook",
+		TriggerID:      w.ID,
+		ConversationID: w.ConversationID,
+		OnConversationResolved: func(convID string) {
+			if convID == w.ConversationID {
+				return
+			}
+			go func() {
+				if err := setConversationID(userID, w.ID, convID); err != nil {
+					utils.Error("[Webhook] setConversationID", err)
+				}
+			}()
+		},
 	})
 	return nil
 }

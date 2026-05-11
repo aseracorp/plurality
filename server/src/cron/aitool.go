@@ -25,12 +25,13 @@ var Tool = utils.AITool{
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{
-					"action":    {Type: "string", Description: "One of: list, create, delete, run, toggle"},
-					"schedule":  {Type: "string", Description: "5-field cron expression (m h dom mon dow). Required for create. Optional for update via toggle/etc not supported here."},
-					"prompt":    {Type: "string", Description: "Prompt to run when the schedule fires. Required for create. Make this prompt very explicit about what needs to be done, especially including whether or not the user should be notified upon completion"},
-					"preset_id": {Type: "string", Description: "Preset/miniapp ID to use. Optional on create (defaults to default-background-agent). Use list_presets to discover IDs."},
-					"id":        {Type: "string", Description: "Cron uuid. Required for delete/run/toggle."},
-					"enabled":   {Type: "boolean", Description: "Required for toggle: true to enable, false to disable."},
+					"action":          {Type: "string", Description: "One of: list, create, delete, run, toggle"},
+					"schedule":        {Type: "string", Description: "5-field cron expression (m h dom mon dow). Required for create. Optional for update via toggle/etc not supported here."},
+					"prompt":          {Type: "string", Description: "Prompt to run when the schedule fires. Required for create. Make this prompt very explicit about what needs to be done, especially including whether or not the user should be notified upon completion"},
+					"preset_id":       {Type: "string", Description: "Preset/miniapp ID to use. Optional on create (defaults to default-background-agent). Use list_presets to discover IDs."},
+					"id":              {Type: "string", Description: "Cron uuid. Required for delete/run/toggle."},
+					"enabled":         {Type: "boolean", Description: "Required for toggle: true to enable, false to disable."},
+					"conversation_id": {Type: "string", Description: "Optional. When set, each firing appends to that conversation instead of creating a new one. Pass '1' as a sentinel to start a new persistent thread that the first firing will materialise."},
 				},
 				Required: []string{"action"},
 			},
@@ -44,12 +45,13 @@ var Tool = utils.AITool{
 		}
 
 		var body struct {
-			Action   string `json:"action"`
-			Schedule string `json:"schedule"`
-			Prompt   string `json:"prompt"`
-			PresetID string `json:"preset_id"`
-			ID       string `json:"id"`
-			Enabled  *bool  `json:"enabled"`
+			Action         string `json:"action"`
+			Schedule       string `json:"schedule"`
+			Prompt         string `json:"prompt"`
+			PresetID       string `json:"preset_id"`
+			ID             string `json:"id"`
+			Enabled        *bool  `json:"enabled"`
+			ConversationID string `json:"conversation_id"`
 		}
 		if err := json.Unmarshal([]byte(args), &body); err != nil {
 			return utils.NewTextContent("Error parsing args: " + err.Error())
@@ -65,7 +67,7 @@ var Tool = utils.AITool{
 			return utils.NewTextContent(string(data))
 
 		case "create":
-			job, err := Create(userID, body.Schedule, body.Prompt, body.PresetID)
+			job, err := Create(userID, body.Schedule, body.Prompt, body.PresetID, body.ConversationID)
 			if err != nil {
 				return utils.NewTextContent("Error: " + err.Error())
 			}

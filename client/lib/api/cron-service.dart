@@ -11,6 +11,7 @@ class CronJob {
   final String presetId;
   final bool enabled;
   final DateTime? createdAt;
+  final String conversationId;
 
   CronJob({
     required this.id,
@@ -19,6 +20,7 @@ class CronJob {
     required this.presetId,
     required this.enabled,
     this.createdAt,
+    this.conversationId = '',
   });
 
   factory CronJob.fromJson(Map<String, dynamic> json) {
@@ -32,6 +34,7 @@ class CronJob {
           json['created_at'] != null
               ? DateTime.tryParse(json['created_at'])
               : null,
+      conversationId: json['conversation_id'] ?? '',
     );
   }
 }
@@ -77,6 +80,7 @@ class CronService {
     required String schedule,
     required String prompt,
     String? presetId,
+    String? conversationId,
   }) async {
     final res = await http.post(
       Uri.parse('$_baseUrl/crons'),
@@ -85,6 +89,7 @@ class CronService {
         'schedule': schedule,
         'prompt': prompt,
         if (presetId != null) 'preset_id': presetId,
+        if (conversationId != null) 'conversation_id': conversationId,
       }),
     );
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -102,12 +107,14 @@ class CronService {
     String? prompt,
     String? presetId,
     bool? enabled,
+    String? conversationId,
   }) async {
     final body = <String, dynamic>{};
     if (schedule != null) body['schedule'] = schedule;
     if (prompt != null) body['prompt'] = prompt;
     if (presetId != null) body['preset_id'] = presetId;
     if (enabled != null) body['enabled'] = enabled;
+    if (conversationId != null) body['conversation_id'] = conversationId;
 
     final res = await http.put(
       Uri.parse('$_baseUrl/crons/$id'),
@@ -170,11 +177,13 @@ class CronsNotifier extends StateNotifier<List<CronJob>> {
     required String schedule,
     required String prompt,
     String? presetId,
+    String? conversationId,
   }) async {
     final job = await _service.create(
       schedule: schedule,
       prompt: prompt,
       presetId: presetId,
+      conversationId: conversationId,
     );
     state = [...state, job];
   }
@@ -185,6 +194,7 @@ class CronsNotifier extends StateNotifier<List<CronJob>> {
     String? prompt,
     String? presetId,
     bool? enabled,
+    String? conversationId,
   }) async {
     final job = await _service.update(
       id,
@@ -192,6 +202,7 @@ class CronsNotifier extends StateNotifier<List<CronJob>> {
       prompt: prompt,
       presetId: presetId,
       enabled: enabled,
+      conversationId: conversationId,
     );
     state = [
       for (final j in state)

@@ -14,4 +14,10 @@ type Base struct {
 	PresetID  string    `json:"preset_id"`
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
+	// ConversationID, when non-empty, makes triggers append to the named
+	// conversation instead of creating a new one each fire. If the named
+	// conversation no longer exists at trigger time, RunPrompt falls back
+	// to creating a new one and surfaces the new ID via OnConversationResolved
+	// so the caller can persist it back.
+	ConversationID string `json:"conversation_id,omitempty"`
 }

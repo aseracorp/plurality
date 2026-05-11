@@ -41,11 +41,12 @@ var Tool = utils.AITool{
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{
-					"action":    {Type: "string", Description: "One of: list, create, delete, toggle, rotate_token"},
-					"prompt":    {Type: "string", Description: "Prompt to run when the webhook fires. Required for create."},
-					"preset_id": {Type: "string", Description: "Preset/miniapp ID. Optional on create (defaults to default-background-agent). Use list_presets to discover IDs."},
-					"id":        {Type: "string", Description: "Webhook uuid. Required for delete/toggle/rotate_token."},
-					"enabled":   {Type: "boolean", Description: "Required for toggle: true to enable, false to disable."},
+					"action":          {Type: "string", Description: "One of: list, create, delete, toggle, rotate_token"},
+					"prompt":          {Type: "string", Description: "Prompt to run when the webhook fires. Required for create."},
+					"preset_id":       {Type: "string", Description: "Preset/miniapp ID. Optional on create (defaults to default-background-agent). Use list_presets to discover IDs."},
+					"id":              {Type: "string", Description: "Webhook uuid. Required for delete/toggle/rotate_token."},
+					"enabled":         {Type: "boolean", Description: "Required for toggle: true to enable, false to disable."},
+					"conversation_id": {Type: "string", Description: "Optional. When set, each trigger appends to that conversation instead of creating a new one. Pass '1' as a sentinel to start a new persistent thread that the first trigger will materialise."},
 				},
 				Required: []string{"action"},
 			},
@@ -59,11 +60,12 @@ var Tool = utils.AITool{
 		}
 
 		var body struct {
-			Action   string `json:"action"`
-			Prompt   string `json:"prompt"`
-			PresetID string `json:"preset_id"`
-			ID       string `json:"id"`
-			Enabled  *bool  `json:"enabled"`
+			Action         string `json:"action"`
+			Prompt         string `json:"prompt"`
+			PresetID       string `json:"preset_id"`
+			ID             string `json:"id"`
+			Enabled        *bool  `json:"enabled"`
+			ConversationID string `json:"conversation_id"`
 		}
 		if err := json.Unmarshal([]byte(args), &body); err != nil {
 			return utils.NewTextContent("Error parsing args: " + err.Error())
@@ -83,7 +85,7 @@ var Tool = utils.AITool{
 			return utils.NewTextContent(string(data))
 
 		case "create":
-			hook, token, err := Create(userID, body.Prompt, body.PresetID)
+			hook, token, err := Create(userID, body.Prompt, body.PresetID, body.ConversationID)
 			if err != nil {
 				return utils.NewTextContent("Error: " + err.Error())
 			}

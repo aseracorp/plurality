@@ -24,11 +24,12 @@ type Webhook struct {
 }
 
 // WebhookUpdate is a sparse patch — webhooks have no schedule, so Prompt /
-// PresetID / Enabled are the only mutable user-facing fields.
+// PresetID / Enabled / ConversationID are the only mutable user-facing fields.
 type WebhookUpdate struct {
-	Prompt   *string `json:"prompt,omitempty"`
-	PresetID *string `json:"preset_id,omitempty"`
-	Enabled  *bool   `json:"enabled,omitempty"`
+	Prompt         *string `json:"prompt,omitempty"`
+	PresetID       *string `json:"preset_id,omitempty"`
+	Enabled        *bool   `json:"enabled,omitempty"`
+	ConversationID *string `json:"conversation_id,omitempty"`
 }
 
 // PublicWebhook is what API responses and the LLM tool see. It strips
@@ -40,6 +41,7 @@ type PublicWebhook struct {
 	Enabled         bool       `json:"enabled"`
 	CreatedAt       time.Time  `json:"created_at"`
 	LastTriggeredAt *time.Time `json:"last_triggered_at,omitempty"`
+	ConversationID  string     `json:"conversation_id,omitempty"`
 }
 
 // Public converts a Webhook to the safe-to-expose shape.
@@ -51,6 +53,7 @@ func (w Webhook) Public() PublicWebhook {
 		Enabled:         w.Enabled,
 		CreatedAt:       w.CreatedAt,
 		LastTriggeredAt: w.LastTriggeredAt,
+		ConversationID:  w.ConversationID,
 	}
 }
 

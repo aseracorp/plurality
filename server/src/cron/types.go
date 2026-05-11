@@ -16,8 +16,9 @@ type CronJob struct {
 
 // CronUpdate is a sparse patch. nil-valued pointers mean "leave alone".
 type CronUpdate struct {
-	Schedule *string `json:"schedule,omitempty"`
-	Prompt   *string `json:"prompt,omitempty"`
-	PresetID *string `json:"preset_id,omitempty"`
-	Enabled  *bool   `json:"enabled,omitempty"`
+	Schedule       *string `json:"schedule,omitempty"`
+	Prompt         *string `json:"prompt,omitempty"`
+	PresetID       *string `json:"preset_id,omitempty"`
+	Enabled        *bool   `json:"enabled,omitempty"`
+	ConversationID *string `json:"conversation_id,omitempty"`
 }

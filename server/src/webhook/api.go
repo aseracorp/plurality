@@ -54,8 +54,9 @@ func buildURL(r *http.Request, id, token string) string {
 // --- Authenticated CRUD ---
 
 type createReq struct {
-	Prompt   string `json:"prompt"`
-	PresetID string `json:"preset_id"`
+	Prompt         string `json:"prompt"`
+	PresetID       string `json:"preset_id"`
+	ConversationID string `json:"conversation_id,omitempty"`
 }
 
 func API_ListWebhooks(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +88,7 @@ func API_CreateWebhook(w http.ResponseWriter, r *http.Request) {
 		utils.SendHTTPError(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	hook, token, err := Create(userID, body.Prompt, body.PresetID)
+	hook, token, err := Create(userID, body.Prompt, body.PresetID, body.ConversationID)
 	if err != nil {
 		utils.SendHTTPError(w, err.Error(), http.StatusBadRequest)
 		return
