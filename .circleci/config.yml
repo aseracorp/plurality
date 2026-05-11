@@ -3,81 +3,128 @@ version: 2.1
 orbs:
   docker: circleci/docker@2.2.0
 
+# Multi-arch publishing pipeline:
+#   1. build-amd64  — native amd64 build on a docker executor.
+#   2. build-arm64  — native arm64 build on the arm.medium machine executor
+#                     (avoids QEMU emulation, which made arm64 ~10x slower).
+#   3. merge-manifest — stitches the two per-arch tags into a single
+#                       multi-arch manifest at :$SHA and :latest.
+# Each per-arch job pushes :<sha>-amd64 / :<sha>-arm64 as intermediates; those
+# tags remain on the registry as build artifacts but the consumable tags are
+# the multi-arch :$SHA and :latest produced by the merge job.
+
 jobs:
-  build-and-publish:
+  build-amd64:
     docker:
       - image: cimg/base:2023.03
     environment:
       DOCKER_REPOSITORY: azukaar/plurality
-      # You can change this to another registry if needed
+      DOCKER_BUILDKIT: "1"
     steps:
       - checkout
       - setup_remote_docker:
           docker_layer_caching: true
-          # Default Docker on CircleCI ships buildx; pin if you ever see it
-          # disappear: `version: "24.0.9"` or newer.
 
       - run:
           name: Generate Version Info
-          # Using the short Git commit hash
           command: |
             GIT_HASH=$(git rev-parse --short HEAD)
             echo "{\"version\": \"$GIT_HASH\"}" > version.json
             echo "Generated version.json with version: $GIT_HASH"
 
-      # Register QEMU handlers so the remote Docker daemon can run arm64
-      # build steps via emulation, then create a buildx builder.
-      - run:
-          name: Set up QEMU + buildx
-          command: |
-            docker run --privileged --rm tonistiigi/binfmt --install all
-            docker buildx create --use --name multiarch --driver docker-container
-            docker buildx inspect --bootstrap
-
-      # Log in BEFORE the build, because buildx multi-arch builds must push
-      # straight to the registry (no local image is produced for multi-arch).
       - run:
           name: Log in to Docker Hub
           command: |
             echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_LOGIN" --password-stdin
 
-      # Build & push the multi-arch Docker image (linux/amd64 + linux/arm64).
       - run:
-          name: Build & push multi-arch Docker image
-          # arm64 stages run under QEMU, so this leg is markedly slower than
-          # the amd64 leg. If build time becomes a problem, split into two
-          # native jobs (amd64 on docker executor, arm64 on resource_class:
-          # arm.medium) and join with `docker buildx imagetools create`.
-          no_output_timeout: 60m
+          name: Build & push amd64 image
+          no_output_timeout: 30m
           command: |
-            echo "Building multi-arch image: $DOCKER_REPOSITORY:$CIRCLE_SHA1"
-            docker buildx build \
-              --platform linux/amd64,linux/arm64 \
+            TAG="$DOCKER_REPOSITORY:$CIRCLE_SHA1-amd64"
+            echo "Building native amd64 image: $TAG"
+            docker build -t "$TAG" .
+            docker push "$TAG"
+
+  build-arm64:
+    machine:
+      image: ubuntu-2204:current
+      docker_layer_caching: true
+    resource_class: arm.medium
+    environment:
+      DOCKER_REPOSITORY: azukaar/plurality
+      DOCKER_BUILDKIT: "1"
+    steps:
+      - checkout
+
+      - run:
+          name: Generate Version Info
+          command: |
+            GIT_HASH=$(git rev-parse --short HEAD)
+            echo "{\"version\": \"$GIT_HASH\"}" > version.json
+            echo "Generated version.json with version: $GIT_HASH"
+
+      - run:
+          name: Log in to Docker Hub
+          command: |
+            echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_LOGIN" --password-stdin
+
+      - run:
+          name: Build & push arm64 image
+          no_output_timeout: 30m
+          command: |
+            TAG="$DOCKER_REPOSITORY:$CIRCLE_SHA1-arm64"
+            echo "Building native arm64 image: $TAG"
+            docker build -t "$TAG" .
+            docker push "$TAG"
+
+  merge-manifest:
+    docker:
+      - image: cimg/base:2023.03
+    environment:
+      DOCKER_REPOSITORY: azukaar/plurality
+    steps:
+      - setup_remote_docker:
+          docker_layer_caching: true
+
+      - run:
+          name: Log in to Docker Hub
+          command: |
+            echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_LOGIN" --password-stdin
+
+      - run:
+          name: Assemble multi-arch manifest
+          command: |
+            echo "Merging per-arch images into multi-arch manifest..."
+            docker buildx imagetools create \
               -t "$DOCKER_REPOSITORY:$CIRCLE_SHA1" \
               -t "$DOCKER_REPOSITORY:latest" \
-              --push \
-              .
+              "$DOCKER_REPOSITORY:$CIRCLE_SHA1-amd64" \
+              "$DOCKER_REPOSITORY:$CIRCLE_SHA1-arm64"
 
-      # Optional: Notify about successful deployment
       - run:
           name: Deployment notification
           command: |
-            echo "Docker image successfully built and pushed!"
-            echo "Image: $DOCKER_REPOSITORY:$CIRCLE_SHA1"
-            # Add notification commands here (Slack, email, etc.)
+            echo "Multi-arch image successfully built and pushed!"
+            echo "  $DOCKER_REPOSITORY:$CIRCLE_SHA1"
+            echo "  $DOCKER_REPOSITORY:latest"
 
 workflows:
   version: 2
   build-test-deploy:
     jobs:
-      - build-and-publish:
-          # Only run on master branch
+      - build-amd64:
           filters:
             branches:
               only: master
-          # Uncomment below if you want to run on tags
-          # filters:
-          #   tags:
-          #     only: /^v.*/
-          #   branches:
-          #     ignore: /.*/
+      - build-arm64:
+          filters:
+            branches:
+              only: master
+      - merge-manifest:
+          requires:
+            - build-amd64
+            - build-arm64
+          filters:
+            branches:
+              only: master

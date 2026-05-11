@@ -1,12 +1,19 @@
-# Multi-stage, multi-arch build (linux/amd64, linux/arm64).
+# Multi-stage, multi-arch-capable build (linux/amd64, linux/arm64).
 #
-# Build with buildx:
-#   docker buildx create --use --name plurality-builder   # one-time
+# Recommended: build each arch natively on its own host and join with
+# `docker buildx imagetools create` (this is what .circleci/config.yml does).
+# Cross-building a single image with `buildx --platform amd64,arm64` from an
+# amd64 host also works but runs the arm64 leg under QEMU, which is ~10x
+# slower (the Go compile alone takes ~10 min emulated).
+#
+# Local single-arch build (native):
+#   docker build -t plurality .
+#
+# Local cross-arch build (slow on non-native legs):
 #   docker buildx build --platform linux/amd64,linux/arm64 -t <tag> --push .
 #
-# Cross-arch stages run under QEMU emulation, so expect non-native builds to
-# be significantly slower than a native one. The Flutter stage is pinned to
-# $BUILDPLATFORM because its output (web assets) is arch-independent.
+# The Flutter stage is pinned to $BUILDPLATFORM because its output (web
+# assets) is arch-independent — no point emulating the toolchain.
 
 # Stage 1: Build the Flutter web app
 FROM --platform=$BUILDPLATFORM dart:stable AS flutter_builder
