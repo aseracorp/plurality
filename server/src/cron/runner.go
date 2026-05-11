@@ -21,9 +21,18 @@ func Run(userID string, job CronJob) {
 			if convID == job.ConversationID {
 				return
 			}
+			// Re-register so the next fire sees the new ConversationID.
+			// gocron's task closure captured `job` by value at RegisterJob
+			// time, so a plain disk write alone wouldn't be enough — the
+			// in-memory snapshot would keep falling back forever.
 			go func() {
-				if err := setConversationID(userID, job.ID, convID); err != nil {
+				updated, err := setConversationID(userID, job.ID, convID)
+				if err != nil {
 					utils.Error("[Cron] setConversationID", err)
+					return
+				}
+				if err := RegisterJob(userID, updated); err != nil {
+					utils.Error("[Cron] re-register after ConversationID update", err)
 				}
 			}()
 		},

@@ -24,8 +24,9 @@ type SkillInfo struct {
 }
 
 var (
-	mu     sync.RWMutex
-	skills []SkillInfo
+	mu         sync.RWMutex
+	skills     []SkillInfo
+	skillRoots map[string]string // skillName -> root directory the skill was loaded from
 )
 
 // dataDir returns the configured data dir (env DATA_DIR, default ./data
@@ -38,49 +39,88 @@ func dataDir() string {
 	return filepath.Join(filepath.Dir(exec), "data")
 }
 
-// SkillsDir returns the absolute path to data/skills.
-func SkillsDir() string {
+// dataSkillsDir is the server's bundled skills directory (data/skills).
+// Auto-created on Init.
+func dataSkillsDir() string {
 	return filepath.Join(dataDir(), "skills")
 }
 
-// Init scans data/skills/*/SKILL.md. Safe to re-run.
+// userSkillsDir is the per-user override directory (~/.plurality/skills).
+// Returns "" if the home directory cannot be resolved. Not auto-created.
+func userSkillsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".plurality", "skills")
+}
+
+// skillsRoots returns the ordered list of directories to scan for skills.
+// The first occurrence of a skill name wins, so data/skills takes precedence
+// over ~/.plurality/skills on collision.
+func skillsRoots() []string {
+	roots := []string{dataSkillsDir()}
+	if u := userSkillsDir(); u != "" {
+		roots = append(roots, u)
+	}
+	return roots
+}
+
+// Init scans the configured skill roots for */SKILL.md. Safe to re-run.
 func Init() {
 	mu.Lock()
 	defer mu.Unlock()
 	skills = nil
+	skillRoots = map[string]string{}
 
-	root := SkillsDir()
-	if err := os.MkdirAll(root, 0755); err != nil {
-		utils.Error("[Skills] Failed to create skills dir", err)
-		return
-	}
+	roots := skillsRoots()
 
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		utils.Error("[Skills] Failed to read skills dir", err)
-		return
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+	// Auto-create the bundled data dir so server installs have a place to drop
+	// skills. The user dir is left alone — we only scan it if it already exists.
+	if len(roots) > 0 {
+		if err := os.MkdirAll(roots[0], 0755); err != nil {
+			utils.Error("[Skills] Failed to create skills dir", err)
 		}
-		name := entry.Name()
-		skillPath := filepath.Join(root, name)
+	}
 
-		// Skill is valid only if SKILL.md exists.
-		if _, err := os.Stat(filepath.Join(skillPath, skillFileName)); err != nil {
+	for _, root := range roots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				utils.Error("[Skills] Failed to read skills dir "+root, err)
+			}
 			continue
 		}
 
-		skills = append(skills, SkillInfo{
-			Name:        name,
-			Description: readMetaDescription(skillPath),
-			Path:        skillPath,
-		})
-	}
+		loaded := 0
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			skillPath := filepath.Join(root, name)
 
-	utils.Log("[Skills] %d skills loaded from %s", len(skills), root)
+			// Skill is valid only if SKILL.md exists.
+			if _, err := os.Stat(filepath.Join(skillPath, skillFileName)); err != nil {
+				continue
+			}
+
+			if existing, dup := skillRoots[name]; dup {
+				utils.Log("[Skills] Skipping duplicate skill %q in %s (already loaded from %s)", name, root, existing)
+				continue
+			}
+
+			skills = append(skills, SkillInfo{
+				Name:        name,
+				Description: readMetaDescription(skillPath),
+				Path:        skillPath,
+			})
+			skillRoots[name] = root
+			loaded++
+		}
+
+		utils.Log("[Skills] %d skills loaded from %s", loaded, root)
+	}
 }
 
 // readMetaDescription returns the description from meta.json if the file
@@ -141,7 +181,12 @@ func ReadFile(skillName, fileName string) (string, error) {
 		return "", fmt.Errorf("invalid path: slashes are not allowed in skill_name or file_name")
 	}
 
-	root := SkillsDir()
+	mu.RLock()
+	root, ok := skillRoots[skillName]
+	mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("skill not found: %s", skillName)
+	}
 	full := filepath.Join(root, skillName, fileName)
 
 	resolved, err := filepath.Abs(full)

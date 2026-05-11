@@ -183,16 +183,22 @@ func FindByID(userID, id string) (CronJob, error) {
 // setConversationID rewrites just the ConversationID field on a cron job.
 // Called from the trigger path when a configured conversation no longer
 // exists so the persisted record points at the freshly-created replacement.
-func setConversationID(userID, id, convID string) error {
+// Returns the updated CronJob so the caller can re-register it with the
+// scheduler (gocron caches the task arguments, so disk updates alone are
+// invisible to subsequent fires).
+func setConversationID(userID, id, convID string) (CronJob, error) {
 	list, err := LoadAll(userID)
 	if err != nil {
-		return err
+		return CronJob{}, err
 	}
 	for i := range list {
 		if list[i].ID == id {
 			list[i].ConversationID = convID
-			return SaveAll(userID, list)
+			if err := SaveAll(userID, list); err != nil {
+				return CronJob{}, err
+			}
+			return list[i], nil
 		}
 	}
-	return errors.New("cron not found")
+	return CronJob{}, errors.New("cron not found")
 }
