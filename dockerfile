@@ -70,9 +70,16 @@ RUN mkdir -p build/litellm && cp litellm_requirements.txt build/litellm/
 FROM debian:bookworm-slim
 
 # Install runtime dependencies (Python needed for LiteLLM proxy;
-# nodejs/npm needed for npx-based MCP servers).
+# nodejs/npm needed for npx-based MCP servers; git needed for MCP servers
+# that clone repos / for go install-style tooling).
+# Node 22 LTS via NodeSource — Debian bookworm's packaged nodejs is 18.x,
+# which is past end-of-life and too old for several MCP servers.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl python3 python3-venv python3-pip nodejs npm && \
+    ca-certificates curl gnupg git python3 python3-venv python3-pip && \
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
+    apt-get update && apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/*
 
 # Pre-install Playwright MCP server and its Chromium browser with system deps.
