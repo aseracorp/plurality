@@ -212,42 +212,38 @@ func convertMessagesToOpenAI(messages []utils.Message, _ utils.Model) ([]Standar
 				continue
 			}
 
-			hasImages := msg.HasImages()
-			if hasImages {
-				contentParts := make([]StandardContentReq, 0, len(parts))
-				for _, part := range parts {
-					if part.Type == "image_url" && part.ImageURL != nil {
-						contentParts = append(contentParts, StandardContentReq{
-							Type: "image_url",
-							ImageURL: &utils.ContentImageURL{
-								URL: part.ImageURL.URL,
-							},
-						})
-					} else if part.Text != "" {
-						inputText += "user " + part.Text + " {}{}{}{}{}{}{}"
-						contentParts = append(contentParts, StandardContentReq{
-							Type: "text",
-							Text: part.Text,
-						})
-					}
-				}
-				if len(contentParts) > 0 {
-					result = append(result, StandardMessageReq{
-						Role:    "user",
-						Content: contentParts,
+			contentParts := make([]StandardContentReq, 0, len(parts))
+			for _, part := range parts {
+				if part.Type == "image_url" && part.ImageURL != nil {
+					contentParts = append(contentParts, StandardContentReq{
+						Type: "image_url",
+						ImageURL: &utils.ContentImageURL{
+							URL: part.ImageURL.URL,
+						},
 					})
-				}
-			} else {
-				text := msg.TextContent()
-				if text == "" {
 					continue
 				}
+				if part.Text == "" {
+					continue
+				}
+				text := part.Text
+				if part.Type != "text" && part.Filename != "" {
+					text = fmt.Sprintf("[Attached file: %s]\n%s", part.Filename, text)
+				}
 				inputText += "user " + text + " {}{}{}{}{}{}{}"
-				result = append(result, StandardMessageReq{
-					Role:    "user",
-					Content: text,
+				contentParts = append(contentParts, StandardContentReq{
+					Type: "text",
+					Text: text,
 				})
 			}
+
+			if len(contentParts) == 0 {
+				continue
+			}
+			result = append(result, StandardMessageReq{
+				Role:    "user",
+				Content: contentParts,
+			})
 
 		case "assistant":
 			text := msg.TextContent()
