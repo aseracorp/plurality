@@ -8,10 +8,34 @@ import (
 	"time"
 
 	"github.com/azukaar/plurality/src/ai"
+	"github.com/azukaar/plurality/src/ai_tools"
+	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/db"
+	"github.com/azukaar/plurality/src/skills"
 	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/utils"
 )
+
+// alwaysOnSubAgentTools returns the set of LLM-facing tool names that the
+// registry force-includes for the sub-agent regardless of ModelSelected.Tools,
+// given the inherited environment. Listing one of these in the requested
+// tools array should be a no-op, not a "dropped" entry.
+func alwaysOnSubAgentTools(subMS utils.ModelSelected) map[string]struct{} {
+	set := map[string]struct{}{
+		ai_tools.WaitTool.ToolID: {}, // unconditional
+	}
+	if auth.NotificationsEnabled() {
+		set[ai_tools.NotifyToolID] = struct{}{}
+	}
+	if skills.HasAny() {
+		set[ai_tools.RetrieveServerSkillTool.ToolID] = struct{}{}
+	}
+	if subMS.ClientFolderPath != "" {
+		set[ai_tools.FsClientReadToolRequest.Function.Name] = struct{}{}
+		set[ai_tools.FsClientWriteToolRequest.Function.Name] = struct{}{}
+	}
+	return set
+}
 
 // --- conversations__create_conversation ---
 
@@ -223,13 +247,21 @@ func parallelSubAgentExec(ctx context.Context, args string, conv utils.Conversat
 	// Build the sub-agent's ModelSelected from the shortcut, then overwrite
 	// Text.Tools with the intersection of requested tools and parent's enabled tools.
 	subMS := ai.ShortcutModelSelected(shortcut)
+	// Inherit the parent's attached client folder so the sub-agent can act on
+	// the same workspace. filesystem_client tool schemas are force-added at
+	// request time (registry.go) when ClientFolderPath is non-empty.
+	subMS.ClientFolderPath = conv.ModelSelected.ClientFolderPath
 	parentTools := map[string]string{}
 	if conv.ModelSelected.Text != nil {
 		parentTools = conv.ModelSelected.Text.Tools
 	}
 	allowed := map[string]string{}
 	var dropped []string
+	alwaysOn := alwaysOnSubAgentTools(subMS)
 	for _, t := range requestedTools {
+		if _, ok := alwaysOn[t]; ok {
+			continue // force-included by registry; no need to opt in or report dropped
+		}
 		mode, ok := parentTools[t]
 		if !ok || (mode != "true" && mode != "ask") {
 			dropped = append(dropped, t)
@@ -243,7 +275,7 @@ func parallelSubAgentExec(ctx context.Context, args string, conv utils.Conversat
 	subMS.Text.Tools = allowed
 	if subMS.Vision != nil {
 		subMS.Vision.Tools = allowed
-	} 
+	}
 
 	title := prompt
 	prompt = "You are a sub-agent spawned by the parent conversation to handle: " + prompt

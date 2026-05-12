@@ -546,6 +546,67 @@ class ChatService {
     return conversationId;
   }
 
+  /// Builds the same client-side tool definition list the server received in
+  /// this request, so we can validate tool-call args against the very
+  /// schemas the LLM was shown.
+  List<Map<String, dynamic>> _currentClientToolDefs(ModelSelected modelSelected) {
+    final skillNames = _skills.getSkillNames();
+    final attachedFolder = _folderFromModel(modelSelected);
+    return [
+      ..._mcp.getToolList(),
+      if (skillNames.isNotEmpty) _skills.getToolDefinition(),
+      if (attachedFolder != null) ..._filesystem.getToolDefinitions(),
+    ];
+  }
+
+  /// Strict-validate args for a client-side tool call against its declared
+  /// schema. Returns null when valid, or an LLM-facing error string. Mirrors
+  /// the server's ai_tools.ValidateToolCallArgs.
+  String? _validateClientToolArgs(
+    ToolCall toolCall,
+    List<Map<String, dynamic>> defs,
+  ) {
+    Map<String, dynamic>? def;
+    for (final d in defs) {
+      if (d['name'] == toolCall.function.name) {
+        def = d;
+        break;
+      }
+    }
+    if (def == null) return null;
+    final params = (def['parameters'] ?? def['input_schema']) as Map?;
+    if (params == null) return null;
+
+    final propsRaw = params['properties'];
+    final allowed = propsRaw is Map ? propsRaw.keys.map((k) => k.toString()).toSet() : <String>{};
+    final requiredRaw = params['required'];
+    final required = requiredRaw is List
+        ? requiredRaw.map((e) => e.toString()).toList()
+        : <String>[];
+
+    final argsStr = toolCall.function.arguments.isEmpty ? '{}' : toolCall.function.arguments;
+    dynamic decoded;
+    try {
+      decoded = jsonDecode(argsStr);
+    } catch (e) {
+      return 'Error: invalid arguments for ${toolCall.function.name}: arguments must be a JSON object ($e)';
+    }
+    if (decoded is! Map) {
+      return 'Error: invalid arguments for ${toolCall.function.name}: arguments must be a JSON object';
+    }
+    final provided = decoded.keys.map((k) => k.toString()).toSet();
+
+    final unknown = provided.difference(allowed).toList()..sort();
+    final missing = required.where((r) => !provided.contains(r)).toList()..sort();
+    if (unknown.isEmpty && missing.isEmpty) return null;
+
+    final allowedSorted = allowed.toList()..sort();
+    final parts = <String>[];
+    if (unknown.isNotEmpty) parts.add('unknown parameter(s) [${unknown.join(', ')}]');
+    if (missing.isNotEmpty) parts.add('missing required parameter(s) [${missing.join(', ')}]');
+    return 'Error: invalid arguments for ${toolCall.function.name}: ${parts.join('; ')}; allowed parameters: [${allowedSorted.join(', ')}]';
+  }
+
   /// Execute client-side (MCP) tools and submit results back to server.
   Future<void> _executeClientTools(
     String conversationId,
@@ -554,8 +615,18 @@ class ChatService {
     final session = getSession(conversationId);
     final toolCalls = List<ToolCall>.from(session.value.pendingClientTools);
     final results = <Message>[];
+    final toolDefs = _currentClientToolDefs(modelSelected);
 
     for (final toolCall in toolCalls) {
+      final validationError = _validateClientToolArgs(toolCall, toolDefs);
+      if (validationError != null) {
+        results.add(Message.toolResult(
+          toolCallId: toolCall.id,
+          name: toolCall.function.name,
+          result: validationError,
+        ));
+        continue;
+      }
       try {
         // Handle retrieve_skill locally (not an MCP tool)
         if (toolCall.function.name == 'retrieve_skill') {
@@ -689,9 +760,17 @@ class ChatService {
 
     // Handle client-side ask tools locally
     final clientResults = <Message>[];
+    final clientToolDefs = _currentClientToolDefs(modelSelected);
     for (final toolCall in clientAskTools) {
       final approved = decisions[toolCall.id] ?? false;
       if (approved) {
+        final validationError = _validateClientToolArgs(toolCall, clientToolDefs);
+        if (validationError != null) {
+          clientResults.add(Message.toolResult(
+            toolCallId: toolCall.id, name: toolCall.function.name, result: validationError,
+          ));
+          continue;
+        }
         try {
           if (toolCall.function.name == 'retrieve_skill') {
             final args = jsonDecode(

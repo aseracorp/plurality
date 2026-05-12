@@ -1,6 +1,7 @@
 # 2
 - AI galere a faire des webhook en local sur le bon port
 - make AI prioritize client folders when attached!
+- flag tool calls with non existing parameters added
 - completed agents should appear as tool call (check agent) rather than as user messsages
 - Per-user everything: using a map of linux user > plurality user 
   - Per-user MCP
@@ -12,6 +13,7 @@
 - queue messages (user and agents!)
 
 #3
+- rework calls
 - Tool to ask user QCM
 - Recvover: check last X emssages for timers without rsults, or outstadnding task lists
 - Add a way for AI to include pre-made prompt in the message (like "click here to know more" > paste the prompt "tell me more about X")

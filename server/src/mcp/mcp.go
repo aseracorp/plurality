@@ -271,6 +271,18 @@ func ServerNames() []string {
 	return out
 }
 
+// GetToolInputSchema returns the raw MCP inputSchema for a namespaced tool
+// name. Used by the strict-arg validator at dispatch time.
+func GetToolInputSchema(toolName string) (json.RawMessage, bool) {
+	mu.RLock()
+	defer mu.RUnlock()
+	t, ok := tools[toolName]
+	if !ok {
+		return nil, false
+	}
+	return t.InputSchema, true
+}
+
 // ToolsByServer groups discovered tools by their server name.
 func ToolsByServer() map[string][]ToolInfo {
 	mu.RLock()

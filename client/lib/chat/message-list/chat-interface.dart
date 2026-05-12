@@ -102,6 +102,11 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     _session = _chatService.getSession(widget.conversationId);
     _session.addListener(_onSessionChanged);
 
+    // Sub-agents and other LLM-spawned conversations never populate
+    // _session.state on this client; their busy state arrives via the global
+    // status stream, so we mirror it into rebuilds.
+    _chatService.conversationStatuses.addListener(_onStatusChanged);
+
     final preferencesNotifier = ref.read(preferencesProvider.notifier);
     preferencesNotifier.loadAllPreferences().then((_) {
       _updateSelectedModel();
@@ -157,6 +162,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
         _closeMessageWarning = false;
       });
     }
+  }
+
+  void _onStatusChanged() {
+    if (mounted) setState(() {});
   }
 
   /// Called whenever ChatService session state changes.
@@ -236,6 +245,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   @override
   void dispose() {
     _session.removeListener(_onSessionChanged);
+    _chatService.conversationStatuses.removeListener(_onStatusChanged);
     _listController.dispose();
     _miniMapListController.dispose();
     _mainScrollController.dispose();
@@ -965,8 +975,11 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   @override
   Widget build(BuildContext context) {
     final conversationsState = ref.watch(conversationsProvider);
+    final globalStatus =
+        _chatService.conversationStatuses.value[widget.conversationId];
     final isProcessing =
-        _session.value.state == ConversationState.processing;
+        _session.value.state == ConversationState.processing ||
+        (globalStatus?.isProcessing ?? false);
     final streamingText = _session.value.streamingText;
 
     final currentConversation = conversationsState.conversations.firstWhere(

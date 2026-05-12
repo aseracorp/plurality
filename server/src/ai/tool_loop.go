@@ -145,6 +145,54 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		// Categorize tool calls: server-side vs client-side
 		serverTools, clientTools := categorizeToolCalls(assistantMessage.ToolCalls)
 
+		// Strict-validate client tool args against the schemas the client
+		// advertised in this request. Invalid calls are short-circuited with
+		// a synthetic tool-result so the LLM can self-correct on the next
+		// turn, and removed from clientTools so the device never executes
+		// them.
+		if len(clientTools) > 0 {
+			var validClient []utils.ToolCall
+			for _, tc := range clientTools {
+				schema := schemaForClientTool(tc.Function.Name, payload.ClientSideTools)
+				args := tc.Function.Arguments
+				if args == "" {
+					args = "{}"
+				}
+				if len(schema) == 0 {
+					validClient = append(validClient, tc)
+					continue
+				}
+				ok, errMsg := ai_tools.ValidateToolCallArgs(tc.Function.Name, schema, args)
+				if ok {
+					validClient = append(validClient, tc)
+					continue
+				}
+
+				toolMessage := utils.Message{
+					Role:       "tool",
+					Content:    utils.NewTextContent(errMsg),
+					ToolCallID: tc.ID,
+					Name:       tc.Function.Name,
+					Timestamp:  time.Now().Format(time.RFC3339),
+				}
+				ar.Broadcast(SSEEvent{
+					Type:           "tool_result",
+					ToolCallID:     tc.ID,
+					ToolName:       tc.Function.Name,
+					ToolResult:     errMsg,
+					IsServer:       false,
+					ConversationID: ar.ConversationID,
+				})
+				updatedConv, _, pushErr := db.PushMessage(ctx, conversation, toolMessage)
+				if pushErr != nil {
+					utils.Error("[LLMLoop] Error saving client-tool validation error to DB", pushErr)
+				} else {
+					conversation = updatedConv
+				}
+			}
+			clientTools = validClient
+		}
+
 		// Split server tools into auto-execute vs needs-approval
 		var askServerTools []utils.ToolCall
 		if payload.ModelSelected.Text != nil && len(payload.ModelSelected.Text.Tools) > 0 {
@@ -323,6 +371,31 @@ func enrichToolCallMetadata(tc *utils.ToolCall) {
 	}
 }
 
+// schemaForClientTool returns the raw JSON Schema for a client-side tool, as
+// advertised by the client in this request. Empty result skips validation —
+// the client either declared no schema or didn't include the tool at all
+// (which is itself an LLM hallucination but handled downstream).
+func schemaForClientTool(name string, defs []utils.FunctionToolsRequest) json.RawMessage {
+	for i := range defs {
+		if defs[i].Name != name {
+			continue
+		}
+		params := defs[i].Parameters
+		if params == nil {
+			params = defs[i].InputSchema
+		}
+		if params == nil {
+			return nil
+		}
+		raw, err := json.Marshal(params)
+		if err != nil {
+			return nil
+		}
+		return raw
+	}
+	return nil
+}
+
 // categorizeToolCalls splits tool calls into server-side (server-side MCP or
 // builtin registry) and client-side. MCP is checked first so that a namespaced
 // MCP tool (e.g. "foo__search_web") is not mistakenly matched to a builtin
@@ -360,6 +433,11 @@ func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.To
 		if args == "" {
 			args = "{}"
 		}
+		if schema, ok := mcp.GetToolInputSchema(toolCall.Function.Name); ok {
+			if ok, errMsg := ai_tools.ValidateToolCallArgs(toolCall.Function.Name, schema, args); !ok {
+				return utils.NewTextContent(errMsg)
+			}
+		}
 		return mcp.CallTool(ctx, toolCall.Function.Name, args, ar.ConversationID)
 	}
 
@@ -371,6 +449,15 @@ func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.To
 	args := toolCall.Function.Arguments
 	if args == "" {
 		args = "{}"
+	}
+
+	// Validate args against the declared schema BEFORE any server-side
+	// injection (e.g. generate_image's _fs_read_enabled / model below) so
+	// internal flags don't accidentally trip the unknown-param check.
+	if schema := ai_tools.SchemaForBuiltinTool(toolCall.Function.Name); len(schema) > 0 {
+		if ok, errMsg := ai_tools.ValidateToolCallArgs(toolCall.Function.Name, schema, args); !ok {
+			return utils.NewTextContent(errMsg)
+		}
 	}
 
 	// Fetch current conversation — all tools receive it
