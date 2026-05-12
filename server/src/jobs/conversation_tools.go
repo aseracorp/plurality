@@ -41,12 +41,12 @@ var CreateConversationTool = utils.AITool{
 						Type:        "string",
 						Description: "Short visual description used to generate the conversation icon (e.g. 'cozy notebook with a pen')",
 					},
-					"ai_message": {
+					"message": {
 						Type:        "string",
 						Description: "The first message — sent as if the AI is messaging the user first",
 					},
 				},
-				Required: []string{"title", "icon_prompt", "ai_message"},
+				Required: []string{"title", "icon_prompt", "message"},
 			},
 		},
 	},
@@ -58,9 +58,9 @@ func createConversationExec(ctx context.Context, args string, conv utils.Convers
 	parsed := utils.ParseJson(args)
 	title, _ := parsed["title"].(string)
 	iconPrompt, _ := parsed["icon_prompt"].(string)
-	firstMessage, _ := parsed["ai_message"].(string)
+	firstMessage, _ := parsed["message"].(string)
 	if title == "" || iconPrompt == "" || firstMessage == "" {
-		return utils.NewTextContent("Error: title, icon_prompt, and ai_message are all required")
+		return utils.NewTextContent("Error: title, icon_prompt, and message are all required")
 	}
 
 	subCtx := context.WithValue(context.Background(), "userID", conv.UserID)
