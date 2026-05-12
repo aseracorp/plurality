@@ -758,12 +758,14 @@ class AppPreferences {
   final int darkMode;
   final bool useMiniMap;
   final double zoomFactor;
+  final Map<String, ModelSelected> shortcutOverrides;
 
   const AppPreferences({
     this.selectedModel = const ModelSelected(),
     this.darkMode = 0,
     this.useMiniMap = true,
     this.zoomFactor = 1.0,
+    this.shortcutOverrides = const {},
   });
 
   AppPreferences copyWith({
@@ -771,12 +773,14 @@ class AppPreferences {
     int? darkMode,
     bool? useMiniMap,
     double? zoomFactor,
+    Map<String, ModelSelected>? shortcutOverrides,
   }) {
     return AppPreferences(
       selectedModel: selectedModel ?? this.selectedModel,
       darkMode: darkMode ?? this.darkMode,
       useMiniMap: useMiniMap ?? this.useMiniMap,
       zoomFactor: zoomFactor ?? this.zoomFactor,
+      shortcutOverrides: shortcutOverrides ?? this.shortcutOverrides,
     );
   }
 }

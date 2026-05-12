@@ -7,6 +7,7 @@ class SharedPreferencesService {
   static const String _darkModeKey = 'dark_mode';
   static const String _useMiniMapKey = 'use_mini_map';
   static const String _zoomFactorKey = 'zoom_factor';
+  static const String _shortcutOverridesKey = 'model_shortcut_overrides';
 
   // Singleton pattern
   static final SharedPreferencesService _instance =
@@ -76,5 +77,29 @@ class SharedPreferencesService {
   Future<double> getZoomFactor() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getDouble(_zoomFactorKey) ?? -1; // -1 means use platform default
+  }
+
+  // Save shortcut overrides
+  Future<bool> saveShortcutOverrides(
+      Map<String, ModelSelected> overrides) async {
+    final prefs = await SharedPreferences.getInstance();
+    final encoded = overrides.map((k, v) => MapEntry(k, v.toJson()));
+    return await prefs.setString(_shortcutOverridesKey, jsonEncode(encoded));
+  }
+
+  // Get shortcut overrides
+  Future<Map<String, ModelSelected>> getShortcutOverrides() async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonString = prefs.getString(_shortcutOverridesKey);
+    if (jsonString == null) return {};
+    try {
+      final raw = jsonDecode(jsonString) as Map<String, dynamic>;
+      return raw.map(
+        (k, v) => MapEntry(k, ModelSelected.fromJson(v as Map<String, dynamic>)),
+      );
+    } catch (e) {
+      print('Error parsing shortcut overrides: $e');
+      return {};
+    }
   }
 }
