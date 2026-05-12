@@ -416,8 +416,14 @@ class ModelConfigFormState extends State<ModelConfigForm>
     _selectedImageGenModel = widget.initial.imageGen?.name ??
         (data.imageGenModelIds.isNotEmpty ? data.imageGenModelIds.first : '');
 
-    final toolsMap = widget.initial.text?.tools ?? const <String, String>{};
-    if (toolsMap.isNotEmpty) {
+    // When the caller specifies an `initial.text` (even with an empty tools
+    // map), treat that as the authoritative selection. An explicit empty map
+    // means "every tool off", which the preset editor relies on when opening
+    // a preset whose `model_selected` doesn't list any tools. Only when
+    // `text` is null do we keep the server `FunctionDef.defaultState`
+    // values seeded by `buildFunctions(data)`.
+    if (widget.initial.text != null) {
+      final toolsMap = widget.initial.text!.tools;
       applyToolsMapToFunctions(_functions, toolsMap);
       applyToolsMapToSkills(_skillItems, toolsMap);
     }

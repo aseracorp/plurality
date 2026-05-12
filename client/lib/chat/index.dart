@@ -10,6 +10,7 @@ import '../utils/types.dart';
 import '../auth/account.dart';
 import '../cron/cron-list.dart';
 import '../webhook/webhook-list.dart';
+import '../preset/preset-list.dart';
 import 'conversation-list/conversation-list.dart';
 import 'dart:convert';
 import 'dart:math';
@@ -163,6 +164,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           conversations,
           widget.isMobile,
         ),
+      },
+      {
+        'icon': Icon(
+          Icons.dashboard_customize,
+          color:
+              widget.isMobile
+                  ? Theme.of(context).colorScheme.primary
+                  : Colors.white,
+        ),
+        'label': Text(
+          'Presets',
+          style: TextStyle(
+            color:
+                widget.isMobile
+                    ? Theme.of(context).colorScheme.primary
+                    : Colors.white,
+          ),
+        ),
+        'content': const PresetListScreen(),
       },
       {
         'icon': Icon(

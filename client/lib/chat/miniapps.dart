@@ -8,6 +8,7 @@ import 'dart:convert';
 
 class MiniAppsBrowser extends StatefulWidget {
   final Function(MiniApp) onStartMiniApp;
+  final Future<void> Function(MiniApp)? onEditMiniApp;
   final bool showPinnedOnly;
   final bool isMobile;
 
@@ -16,6 +17,7 @@ class MiniAppsBrowser extends StatefulWidget {
     required this.onStartMiniApp,
     required this.isMobile,
     this.showPinnedOnly = false,
+    this.onEditMiniApp,
   }) : super(key: key);
 
   @override
@@ -202,6 +204,12 @@ class _MiniAppsBrowserState extends State<MiniAppsBrowser> {
                 isMobile: widget.isMobile,
                 miniApp: miniApp,
                 onTap: () => _showMiniAppDetails(context, miniApp),
+                onEdit: widget.onEditMiniApp == null
+                    ? null
+                    : () async {
+                        await widget.onEditMiniApp!(miniApp);
+                        if (mounted) _loadMiniApps();
+                      },
               );
             },
           ),
@@ -214,6 +222,7 @@ class _MiniAppsBrowserState extends State<MiniAppsBrowser> {
 class _MiniAppCard extends StatelessWidget {
   final MiniApp miniApp;
   final VoidCallback onTap;
+  final VoidCallback? onEdit;
   final bool isMobile;
 
   const _MiniAppCard({
@@ -221,6 +230,7 @@ class _MiniAppCard extends StatelessWidget {
     required this.miniApp,
     required this.onTap,
     required this.isMobile,
+    this.onEdit,
   }) : super(key: key);
 
   @override
@@ -229,55 +239,80 @@ class _MiniAppCard extends StatelessWidget {
       elevation: 4,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(
-              flex: 3,
-              child: Container(
-                color: Theme.of(context).colorScheme.surfaceVariant,
-                child:
-                    miniApp.iconURL.isNotEmpty
-                        ? Image.memory(
-                          base64Decode(miniApp.iconURL),
-                          fit: BoxFit.cover,
-                        )
-                        : Icon(
-                          Icons.extension,
-                          size: 48,
-                          color: Theme.of(context).colorScheme.primary,
+      child: Stack(
+        children: [
+          InkWell(
+            onTap: onTap,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  flex: 3,
+                  child: Container(
+                    color: Theme.of(context).colorScheme.surfaceVariant,
+                    child:
+                        miniApp.iconURL.isNotEmpty
+                            ? Image.memory(
+                              base64Decode(miniApp.iconURL),
+                              fit: BoxFit.cover,
+                            )
+                            : Icon(
+                              Icons.extension,
+                              size: 48,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                  ),
+                ),
+                Expanded(
+                  flex: 2,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          miniApp.name,
+                          style: Theme.of(context).textTheme.titleMedium,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
-              ),
-            ),
-            Expanded(
-              flex: 2,
-              child: Padding(
-                padding: const EdgeInsets.all(12.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      miniApp.name,
-                      style: Theme.of(context).textTheme.titleMedium,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                        if (!isMobile) const SizedBox(height: 4),
+                        if (!isMobile)
+                          Text(
+                            miniApp.description,
+                            style: Theme.of(context).textTheme.bodySmall,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                      ],
                     ),
-                    if (!isMobile) const SizedBox(height: 4),
-                    if (!isMobile)
-                      Text(
-                        miniApp.description,
-                        style: Theme.of(context).textTheme.bodySmall,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                  ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (onEdit != null)
+            Positioned(
+              top: 4,
+              right: 4,
+              child: Material(
+                color: Colors.black.withOpacity(0.4),
+                shape: const CircleBorder(),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: onEdit,
+                  child: const Padding(
+                    padding: EdgeInsets.all(6),
+                    child: Icon(
+                      Icons.edit,
+                      size: 16,
+                      color: Colors.white,
+                    ),
+                  ),
                 ),
               ),
             ),
-          ],
-        ),
+        ],
       ),
     );
   }

@@ -538,9 +538,10 @@ class _ModelShortcutsTabState extends ConsumerState<_ModelShortcutsTab> {
   Future<void> _editPreset(PresetConfig preset, ModelsData data) async {
     final overrides = ref.read(preferencesProvider).shortcutOverrides;
     final override = overrides[preset.name];
-    final effective = override == null
-        ? preset.models
-        : mergePresetOnto(override, preset.models);
+    // The form captures the full state via commit(), so when an override
+    // exists it is already authoritative. Merging the server preset on top
+    // would re-introduce tools the user explicitly turned off.
+    final effective = override ?? preset.models;
 
     final formKey = GlobalKey<ModelConfigFormState>();
 

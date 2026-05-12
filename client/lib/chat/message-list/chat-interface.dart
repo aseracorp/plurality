@@ -12,7 +12,9 @@ import '../../api/service.dart';
 import '../../api/chat_service.dart';
 import '../../api/tts.dart';
 import '../../api/mini-apps.dart';
+import '../../api/models_service.dart';
 import '../../api/preferences_provider.dart';
+import '../../preset/preset-editor.dart';
 import 'AnimatedMessageBox.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
@@ -278,6 +280,36 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
   void _handleStop() {
     _chatService.cancel(widget.conversationId);
+  }
+
+  Future<void> _editMiniApp(MiniApp miniapp) async {
+    final ModelsData modelsData;
+    try {
+      modelsData = await ModelsService().get();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load models: $e')),
+      );
+      return;
+    }
+    if (!mounted) return;
+    final saved = await showDialog<MiniApp>(
+      context: context,
+      builder: (ctx) => PresetEditorDialog(
+        modelsData: modelsData,
+        existing: miniapp,
+      ),
+    );
+    if (saved == null) return;
+    try {
+      await MiniAppsService().updateMiniApp(miniapp.id, saved);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to save preset: $e')),
+      );
+    }
   }
 
   void _removeAttachment(Attachment? attachment) {
@@ -1268,6 +1300,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                 }
               });
             },
+            onEditMiniApp: (miniapp) => _editMiniApp(miniapp),
           ),
       ],
     );
