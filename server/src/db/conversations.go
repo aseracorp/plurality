@@ -290,6 +290,43 @@ func UpdateConversationFolder(ctx context.Context, id string, folder string) err
 	return nil
 }
 
+// ListConversationsByTrigger returns conversations matching a (trigger_type,
+// trigger_id) pair. Used by the sub-agent management tool to find its children
+// (trigger_type='sub_agent', trigger_id=<parent_conv_id>). Messages are not loaded.
+func ListConversationsByTrigger(ctx context.Context, triggerType, triggerID string) ([]utils.Conversation, error) {
+	userID, ok := ctx.Value("userID").(string)
+	if !ok {
+		return nil, errors.New("user ID not found in request context")
+	}
+
+	db, err := GetUserDB(userID)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := db.Query(
+		`SELECT id, title, last_message_at, model_selected, state, mini_app, folder, icon, trigger_type, trigger_id
+		 FROM conversations WHERE trigger_type = ? AND trigger_id = ? ORDER BY last_message_at DESC`,
+		triggerType, triggerID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var conversations []utils.Conversation
+	for rows.Next() {
+		conv, err := scanConversation(rows)
+		if err != nil {
+			return nil, err
+		}
+		conv.UserID = userID
+		conversations = append(conversations, conv)
+	}
+
+	return conversations, rows.Err()
+}
+
 // SetConversationTrigger records what triggered a conversation (e.g.
 // triggerType="cron", triggerID=<cron uuid>). Used by the cron and webhook
 // packages — kept generic so a third trigger type doesn't add a column.

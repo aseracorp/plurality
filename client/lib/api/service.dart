@@ -276,12 +276,76 @@ class ConversationsNotifier extends StateNotifier<ConversationsState> {
 // null means no active search; empty list means search returned nothing.
 final searchResultIdsProvider = StateProvider<List<String>?>((ref) => null);
 
+// Session-only: when false, conversations with a non-empty trigger_id are
+// hidden from the sidebar and from search results.
+final showHiddenConversationsProvider = StateProvider<bool>((ref) => false);
+
+// Mirrors ChatService().conversationStatuses (a ValueNotifier) into Riverpod so
+// providers can react to live state changes. The map only contains entries for
+// conversations currently in a non-idle state, so membership == "active now".
+final liveConversationStatusesProvider =
+    StreamProvider<Map<String, ConversationStatus>>((ref) {
+      final notifier = ChatService().conversationStatuses;
+      final controller =
+          StreamController<Map<String, ConversationStatus>>();
+      void listener() => controller.add(notifier.value);
+      notifier.addListener(listener);
+      controller.add(notifier.value);
+      ref.onDispose(() {
+        notifier.removeListener(listener);
+        controller.close();
+      });
+      return controller.stream;
+    });
+
 // Create a simple provider to access sorted folders
 final sortedFoldersProvider =
     Provider.family<List<Map<String, dynamic>>, String?>((ref, searchQuery) {
       final state = ref.watch(conversationsProvider);
       final folderMap = state.folderMap;
       final searchIds = ref.watch(searchResultIdsProvider);
+      final showHidden = ref.watch(showHiddenConversationsProvider);
+      final liveStatuses =
+          ref.watch(liveConversationStatusesProvider).valueOrNull ?? const {};
+
+      // A triggered conversation should still appear when it has activity:
+      // either persisted non-idle state (e.g. waitingForApproval) or a live
+      // entry in the global status stream (processing / waiting_for_tool).
+      bool isVisible(Conversation c) =>
+          showHidden || !c.isHidden || liveStatuses.containsKey(c.id);
+
+      // Move each sub-agent row directly under its parent (preserving sibling
+      // order). Sub-agents whose parent isn't in the same visible list fall
+      // through to the end of the list in their original order.
+      List<Conversation> nestSubAgents(List<Conversation> convs) {
+        final parents = <Conversation>[];
+        final children = <String, List<Conversation>>{};
+        final orphans = <Conversation>[];
+        final parentIds = <String>{};
+        for (final c in convs) {
+          if (c.triggerType != 'sub_agent') {
+            parents.add(c);
+            parentIds.add(c.id);
+          }
+        }
+        for (final c in convs) {
+          if (c.triggerType != 'sub_agent') continue;
+          final pid = c.triggerId;
+          if (pid != null && parentIds.contains(pid)) {
+            children.putIfAbsent(pid, () => []).add(c);
+          } else {
+            orphans.add(c);
+          }
+        }
+        final out = <Conversation>[];
+        for (final p in parents) {
+          out.add(p);
+          final kids = children[p.id];
+          if (kids != null) out.addAll(kids);
+        }
+        out.addAll(orphans);
+        return out;
+      }
 
       final isSearching = searchQuery != null && searchQuery.length >= 3 && searchIds != null;
 
@@ -299,10 +363,11 @@ final sortedFoldersProvider =
         final ranked = searchIds
             .where((id) => allConvs.containsKey(id))
             .map((id) => allConvs[id]!)
+            .where(isVisible)
             .toList();
 
         if (ranked.isEmpty) return [];
-        return [{'name': 'Search Results', 'conversations': ranked}];
+        return [{'name': 'Search Results', 'conversations': nestSubAgents(ranked)}];
       }
 
       // Normal view: group by folders
@@ -315,12 +380,14 @@ final sortedFoldersProvider =
             return a.compareTo(b);
           });
 
-      return sortedFolderNames
-          .map((folderName) {
-            final conversations = folderMap[folderName]!;
-            return {'name': folderName, 'conversations': conversations};
-          })
-          .toList();
+      final result = <Map<String, dynamic>>[];
+      for (final folderName in sortedFolderNames) {
+        final conversations =
+            folderMap[folderName]!.where(isVisible).toList();
+        if (conversations.isEmpty) continue;
+        result.add({'name': folderName, 'conversations': nestSubAgents(conversations)});
+      }
+      return result;
     });
 
 final conversationsProvider =

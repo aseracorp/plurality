@@ -125,11 +125,42 @@ class _ConversationListState extends ConsumerState<ConversationList> {
                   child: Text('New conversation'),
                 ),
                 SizedBox(width: 12),
-                IconButton(
-                  onPressed: () {
-                    ref.read(conversationsProvider.notifier).refresh();
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert),
+                  tooltip: 'More',
+                  onSelected: (value) {
+                    if (value == 'refresh') {
+                      ref.read(conversationsProvider.notifier).refresh();
+                    } else if (value == 'toggle_hidden') {
+                      final notifier =
+                          ref.read(showHiddenConversationsProvider.notifier);
+                      notifier.state = !notifier.state;
+                    }
                   },
-                  icon: Icon(Icons.refresh),
+                  itemBuilder: (context) {
+                    final showHidden =
+                        ref.read(showHiddenConversationsProvider);
+                    return [
+                      const PopupMenuItem(
+                        value: 'refresh',
+                        child: ListTile(
+                          leading: Icon(Icons.refresh),
+                          title: Text('Refresh'),
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'toggle_hidden',
+                        child: ListTile(
+                          leading: Icon(showHidden
+                              ? Icons.visibility_off
+                              : Icons.visibility),
+                          title: Text(showHidden
+                              ? 'Hide hidden conversations'
+                              : 'Show hidden conversations'),
+                        ),
+                      ),
+                    ];
+                  },
                 ),
               ],
             ),

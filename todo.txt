@@ -1,6 +1,5 @@
 # 2
 - AI galere a faire des webhook en local sur le bon port
-- Setting shortcut preset (ex. fast) does not set tools!
 - Per-user everything: using a map of linux user > plurality user 
   - Per-user MCP
   - docker ?
@@ -11,7 +10,6 @@
 - Notifications
 - client tools are defined in the sever???
 - Client lock (if client tools used and such for remote )
-- Preset can set shortcut (fast/medium/smart)
 - UI to manage presets / shortcuts?
 - client side bash (need to tell the AI what OS)
 

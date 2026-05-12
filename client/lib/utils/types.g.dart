@@ -240,13 +240,15 @@ class ConversationAdapter extends TypeAdapter<Conversation> {
       folder: fields[8] as String?,
       icon: fields[9] as String?,
       stateString: fields[10] as String?,
+      triggerId: fields[11] as String?,
+      triggerType: fields[12] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, Conversation obj) {
     writer
-      ..writeByte(10)
+      ..writeByte(12)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(2)
@@ -266,7 +268,11 @@ class ConversationAdapter extends TypeAdapter<Conversation> {
       ..writeByte(9)
       ..write(obj.icon)
       ..writeByte(10)
-      ..write(obj.stateString);
+      ..write(obj.stateString)
+      ..writeByte(11)
+      ..write(obj.triggerId)
+      ..writeByte(12)
+      ..write(obj.triggerType);
   }
 
   @override

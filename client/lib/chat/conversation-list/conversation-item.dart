@@ -116,11 +116,16 @@ class ConversationItem extends StatelessWidget {
       return popupMenu;
     }
 
+    final isSubAgent = conversation.triggerType == 'sub_agent';
+
     return ValueListenableBuilder<Map<String, ConversationStatus>>(
       valueListenable: ChatService().conversationStatuses,
       builder: (context, statuses, _) {
         final status = statuses[conversation.id];
         final isActive = status != null && status.isProcessing;
+
+        final double subtitleFontSize = isSubAgent ? 10 : 11;
+        final double spinnerSize = isSubAgent ? 8 : 10;
 
         // Subtitle: live status with icon, or date with tick
         Widget subtitle;
@@ -128,11 +133,11 @@ class ConversationItem extends StatelessWidget {
           subtitle = Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SizedBox(width: 10, height: 10, child: CircularProgressIndicator(strokeWidth: 1.5, color: Theme.of(context).colorScheme.primary)),
+              SizedBox(width: spinnerSize, height: spinnerSize, child: CircularProgressIndicator(strokeWidth: 1.5, color: Theme.of(context).colorScheme.primary)),
               const SizedBox(width: 6),
               Flexible(child: Text(
                 _getToolDisplayName(status.toolName),
-                style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.primary),
+                style: TextStyle(fontSize: subtitleFontSize, color: Theme.of(context).colorScheme.primary),
                 overflow: TextOverflow.ellipsis,
               )),
             ],
@@ -141,11 +146,11 @@ class ConversationItem extends StatelessWidget {
           subtitle = Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SizedBox(width: 10, height: 10, child: CircularProgressIndicator(strokeWidth: 1.5, color: Theme.of(context).colorScheme.primary)),
+              SizedBox(width: spinnerSize, height: spinnerSize, child: CircularProgressIndicator(strokeWidth: 1.5, color: Theme.of(context).colorScheme.primary)),
               const SizedBox(width: 6),
               Text(
                 'Assistant is typing...',
-                style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.primary),
+                style: TextStyle(fontSize: subtitleFontSize, color: Theme.of(context).colorScheme.primary),
               ),
             ],
           );
@@ -153,67 +158,72 @@ class ConversationItem extends StatelessWidget {
           subtitle = Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.done_all, size: 14, color: Colors.grey[500]),
+              Icon(Icons.done_all, size: isSubAgent ? 12 : 14, color: Colors.grey[500]),
               const SizedBox(width: 4),
               Text(
                 conversation.lastMessageAt.toString().substring(0, 16),
-                style: TextStyle(fontSize: 11),
+                style: TextStyle(fontSize: subtitleFontSize),
               ),
             ],
           );
         }
 
-        // Avatar: animated border when active
-        Widget avatar;
-        if (conversation.icon != null && conversation.icon!.isNotEmpty) {
-          avatar = FutureBuilder<Uint8List>(
-            future: loadImageBytes(conversation.icon!),
-            builder: (context, snapshot) {
-              if (snapshot.hasData) {
-                return CircleAvatar(
-                  backgroundColor: Colors.transparent,
-                  child: ClipOval(
-                    child: Image.memory(
-                      snapshot.data!,
-                      width: 250,
-                      height: 250,
-                      fit: BoxFit.cover,
+        Widget? avatar;
+        if (!isSubAgent) {
+          if (conversation.icon != null && conversation.icon!.isNotEmpty) {
+            avatar = FutureBuilder<Uint8List>(
+              future: loadImageBytes(conversation.icon!),
+              builder: (context, snapshot) {
+                if (snapshot.hasData) {
+                  return CircleAvatar(
+                    backgroundColor: Colors.transparent,
+                    child: ClipOval(
+                      child: Image.memory(
+                        snapshot.data!,
+                        width: 250,
+                        height: 250,
+                        fit: BoxFit.cover,
+                      ),
                     ),
+                  );
+                }
+                return CircleAvatar(
+                  backgroundColor: Colors.primaries[conversation.title.hashCode.abs() % Colors.primaries.length],
+                  child: Text(
+                    conversation.title.isNotEmpty ? conversation.title[0].toUpperCase() : '?',
+                    style: TextStyle(color: Colors.white),
                   ),
                 );
-              }
-              return CircleAvatar(
-                backgroundColor: Colors.primaries[conversation.title.hashCode.abs() % Colors.primaries.length],
-                child: Text(
-                  conversation.title.isNotEmpty ? conversation.title[0].toUpperCase() : '?',
-                  style: TextStyle(color: Colors.white),
-                ),
-              );
-            },
-          );
-        } else {
-          avatar = CircleAvatar(
-            backgroundColor: Colors.primaries[conversation.title.hashCode.abs() % Colors.primaries.length],
-            child: Text(
-              conversation.title.isNotEmpty ? conversation.title[0].toUpperCase() : '?',
-              style: TextStyle(color: Colors.white),
-            ),
-          );
-        }
+              },
+            );
+          } else {
+            avatar = CircleAvatar(
+              backgroundColor: Colors.primaries[conversation.title.hashCode.abs() % Colors.primaries.length],
+              child: Text(
+                conversation.title.isNotEmpty ? conversation.title[0].toUpperCase() : '?',
+                style: TextStyle(color: Colors.white),
+              ),
+            );
+          }
 
-        if (isActive) {
-          avatar = _AnimatedBorderAvatar(child: avatar);
+          if (isActive) {
+            avatar = _AnimatedBorderAvatar(child: avatar);
+          }
         }
 
         return ListTile(
           key: ValueKey(conversation.id),
+          dense: isSubAgent,
+          contentPadding: isSubAgent
+              ? const EdgeInsets.only(left: 40, right: 8)
+              : null,
           title: Text(
             conversation.title,
-            maxLines: 2,
+            maxLines: isSubAgent ? 1 : 2,
             style: TextStyle(
-              fontWeight: FontWeight.bold,
+              fontWeight: isSubAgent ? FontWeight.w500 : FontWeight.bold,
               overflow: TextOverflow.ellipsis,
-              fontSize: 14,
+              fontSize: isSubAgent ? 12 : 14,
             ),
           ),
           subtitle: subtitle,

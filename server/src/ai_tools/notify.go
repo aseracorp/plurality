@@ -77,19 +77,24 @@ var NotifyTool = utils.AITool{
 						Type:        "string",
 						Description: "Optional. If set, NTFY will phone the user and read the message via TTS (requires Twilio configured on the NTFY server, with a verified number). Pass \"yes\" to use the user's first verified number, or an E.164 phone number like \"+15551234567\". Use only when the user has explicitly asked to be called, or for genuinely urgent matters — phone calls are intrusive.",
 					},
+					"deep_link": {
+						Type:        "string",
+						Description: "Optional URL opened when the user taps the notification. Defaults to the current conversation (plurality://conversation/{id}). Override only to deep-link the user elsewhere — e.g. plurality://conversation/<other-id> to point at a different conversation. Must be a fully-qualified URL.",
+					},
 				},
 				Required: []string{"title", "message"},
 			},
 		},
 	},
 	LoadingString: "Sending notification: {{title}}",
-	Exec: func(ctx context.Context, args string, _ utils.Conversation) utils.MessageContent {
+	Exec: func(ctx context.Context, args string, conv utils.Conversation) utils.MessageContent {
 		var p struct {
 			Title    string   `json:"title"`
 			Message  string   `json:"message"`
 			Priority int      `json:"priority"`
 			Tags     []string `json:"tags"`
 			Call     string   `json:"call"`
+			DeepLink string   `json:"deep_link"`
 		}
 		if err := json.Unmarshal([]byte(args), &p); err != nil {
 			return notifyError("invalid arguments: " + err.Error())
@@ -127,6 +132,13 @@ var NotifyTool = utils.AITool{
 		}
 		if call := strings.TrimSpace(p.Call); call != "" {
 			req.Header.Set("Call", sanitizeHeader(call))
+		}
+		click := strings.TrimSpace(p.DeepLink)
+		if click == "" && conv.ID != "" {
+			click = "plurality://conversation/" + conv.ID
+		}
+		if click != "" {
+			req.Header.Set("Click", sanitizeHeader(click))
 		}
 		if cfg.Token != "" {
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)

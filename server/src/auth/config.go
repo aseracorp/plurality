@@ -292,16 +292,19 @@ var defaultShortcutMediumTools = map[string]string{
 
 // defaultShortcutSmartTools is the full on-by-default tool set for the "smart" shortcut.
 var defaultShortcutSmartTools = map[string]string{
-	"search_web":                           "true",
-	"place_search":                         "true",
-	"visit_link":                           "true",
-	"generate_image":                       "true",
-	"long_task":                            "true",
-	"manage_cron":                          "true",
-	"manage_webhook":                       "true",
-	"list_presets":                         "true",
-	"conversations__search_conversations":  "true",
-	"conversations__retrieve_conversation": "true",
+	"search_web":                                          "true",
+	"place_search":                                        "true",
+	"visit_link":                                          "true",
+	"generate_image":                                      "true",
+	"long_task":                                           "true",
+	"manage_cron":                                         "true",
+	"manage_webhook":                                      "true",
+	"list_presets":                                        "true",
+	"conversations__search_conversations":                 "true",
+	"conversations__retrieve_conversation":                "true",
+	"conversations__create_conversation":                  "true",
+	"conversations__parallel_sub_agent":                   "true",
+	"conversations__parallel_sub_agent_background_manage": "true",
 }
 
 // defaultShortcuts returns baked-in definitions for the three reserved names.

@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:app_links/app_links.dart';
 import 'package:plurality/api/MCP.dart';
 import 'package:plurality/api/skills_service.dart';
 import 'package:plurality/api/chat_service.dart';
@@ -9,8 +10,10 @@ import './auth/account.dart';
 import './auth/login.dart';
 import './api/storage.dart';
 import './utils/index.dart';
+import './utils/deep_link.dart';
 import './api/preferences_provider.dart';
 import 'chat/index.dart';
+import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:flutter/rendering.dart';
 
@@ -42,13 +45,47 @@ final ThemeData darkTheme = ThemeData(
   colorScheme: ColorScheme.fromSeed(seedColor: c, brightness: Brightness.dark),
 );
 
-class MyApp extends ConsumerWidget {
+class MyApp extends ConsumerStatefulWidget {
   const MyApp({super.key});
 
   static bool newVersionAvailable = false;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends ConsumerState<MyApp> {
+  StreamSubscription<Uri>? _linkSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _initDeepLinks();
+  }
+
+  Future<void> _initDeepLinks() async {
+    final links = AppLinks();
+    try {
+      final initial = await links.getInitialLink();
+      if (initial != null) _handleUri(initial);
+    } catch (_) {}
+    _linkSub = links.uriLinkStream.listen(_handleUri, onError: (_) {});
+  }
+
+  void _handleUri(Uri uri) {
+    final id = parseConversationDeepLink(uri);
+    if (id == null) return;
+    ref.read(pendingConversationIdProvider.notifier).state = id;
+  }
+
+  @override
+  void dispose() {
+    _linkSub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final isMobile = MediaQuery.of(context).size.width < 820;
     final preferences = ref.watch(preferencesProvider);
     final darkModeValue = preferences.darkMode;

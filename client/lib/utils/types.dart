@@ -394,8 +394,25 @@ class Conversation extends HiveObject {
   @HiveField(10)
   String stateString;
 
+  @HiveField(11)
+  String? triggerId;
+
+  @HiveField(12)
+  String? triggerType;
+
   ConversationState get state => conversationStateFromString(stateString);
   set state(ConversationState value) => stateString = value.name;
+
+  bool get isTriggered => triggerType != null && triggerType!.isNotEmpty;
+
+  // Triggered conversations are hidden by default, but stay visible while
+  // active (processing, waiting on a tool, or waiting on user approval).
+  // "conversation"-type triggers are user-initiated sub-conversations and
+  // are never hidden.
+  bool get isHidden =>
+      isTriggered &&
+      triggerType != 'conversation' &&
+      state == ConversationState.idle;
 
   Conversation({
     required this.id,
@@ -408,6 +425,8 @@ class Conversation extends HiveObject {
     this.folder,
     this.icon,
     String? stateString,
+    this.triggerId,
+    this.triggerType,
   }) : createdAt = createdAt ?? DateTime.now(),
        stateString = stateString ?? 'idle';
 
@@ -422,6 +441,8 @@ class Conversation extends HiveObject {
     'folder': folder,
     'icon': icon,
     'state': state.name,
+    'trigger_id': triggerId,
+    'trigger_type': triggerType,
   };
 
   factory Conversation.fromJson(Map<String, dynamic> json) {
@@ -453,6 +474,8 @@ class Conversation extends HiveObject {
               : ModelSelected(),
       icon: json['icon'],
       stateString: json['state'] as String?,
+      triggerId: json['trigger_id'] as String?,
+      triggerType: json['trigger_type'] as String?,
     );
   }
 }

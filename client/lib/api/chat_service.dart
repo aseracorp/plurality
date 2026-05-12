@@ -321,10 +321,24 @@ class ChatService {
           final conversationId = data['conversation_id'] as String? ?? '';
           if (conversationId.isEmpty) return;
 
+          // Any status event for an unknown conversation means the sidebar is
+          // stale — sub-agents and AI-created conversations don't go through
+          // the regular client-initiated SSE flow, so the conversation row
+          // never reaches local state otherwise. Refresh regardless of state
+          // (idle events fire for newly-created inert conversations and for
+          // sub-agents that finished between our last refresh and now).
+          final known = _conversationsNotifier?.state.conversations
+                  .any((c) => c.id == conversationId) ??
+              false;
+          if (!known) {
+            _conversationsNotifier?.refresh();
+          }
+
           // Handle server-generated title/icon pushed via status stream
           final title = data['title'] as String?;
           final icon = data['icon'] as String?;
-          if (title != null && title.isNotEmpty) {
+          if ((title != null && title.isNotEmpty) ||
+              (icon != null && icon.isNotEmpty)) {
             _conversationsNotifier?.updateConversationMetaData(
               conversationId: conversationId,
               title: title,
@@ -343,11 +357,6 @@ class ChatService {
             updated.remove(conversationId);
           } else {
             updated[conversationId] = status;
-            // If we don't know this conversation locally, refresh the list
-            if (_conversationsNotifier != null) {
-              final known = _conversationsNotifier!.state.conversations.any((c) => c.id == conversationId);
-              if (!known) _conversationsNotifier!.refresh();
-            }
           }
           conversationStatuses.value = updated;
         },

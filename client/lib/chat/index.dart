@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:plurality/chat/conversation-list/conversation-item.dart';
 import 'package:plurality/chat/message-list/chat-interface.dart';
 import 'package:plurality/utils/index.dart';
+import 'package:plurality/utils/deep_link.dart';
 import '../api/service.dart';
 import '../api/api.dart';
 import '../utils/types.dart';
@@ -51,6 +52,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    final pending = ref.read(pendingConversationIdProvider);
+    if (pending != null && pending.isNotEmpty) {
+      _selectedConversationId = pending;
+      _selectedIndex = 1;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        ref.read(pendingConversationIdProvider.notifier).state = null;
+        _updateTitle();
+      });
+    }
     checkVersion().then((value) {
       if (value) {
         showDialog(
@@ -85,6 +95,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (_selectedConversationId != null) {
         _updateTitle();
       }
+    });
+
+    // Open a conversation when a plurality:// deep link arrives while the app is running.
+    ref.listen<String?>(pendingConversationIdProvider, (previous, next) {
+      if (next == null || next.isEmpty) return;
+      setState(() {
+        _selectedConversationId = next;
+        _selectedIndex = 1;
+        _updateTitle();
+      });
+      ref.read(pendingConversationIdProvider.notifier).state = null;
     });
 
     // Navigation destinations

@@ -14,6 +14,7 @@ import (
 	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/cron"
 	"github.com/azukaar/plurality/src/db"
+	"github.com/azukaar/plurality/src/jobs"
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/miniapps"
 	"github.com/azukaar/plurality/src/search"
@@ -81,6 +82,14 @@ func main() {
 	webhook.Init()
 	ai_tools.RegisterTool(webhook.Tool)
 	defer webhook.Shutdown()
+
+	// conversations__ bundle: create_conversation + parallel_sub_agent +
+	// parallel_sub_agent_background_manage. Live in jobs so they can reach
+	// ai.* (icon generation, RequestRegistry) and jobs.RunSubAgent without
+	// circling back through ai_tools.
+	ai_tools.RegisterTool(jobs.CreateConversationTool)
+	ai_tools.RegisterTool(jobs.ParallelSubAgentTool)
+	ai_tools.RegisterTool(jobs.ManageSubAgentTool)
 
 	utils.Log("[main] Starting server on :8090")
 

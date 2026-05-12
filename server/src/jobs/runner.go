@@ -115,6 +115,14 @@ func RunPrompt(ctx context.Context, userID string, opts RunOptions) {
 		utils.Error("["+opts.TitlePrefix+"] UpdateConversationState failed", err)
 	}
 
+	// Broadcast the new conversation's existence so the sidebar updates
+	// without waiting for the LLM loop's first event.
+	ai.StatusRegistry.BroadcastToUser(userID, ai.StatusEvent{
+		ConversationID: updated.ID,
+		State:          string(utils.StateProcessing),
+		Title:          updated.Title,
+	})
+
 	payload := ai.ChatPayload{
 		ConversationID: updated.ID,
 		ModelSelected:  modelSel,
@@ -125,6 +133,94 @@ func RunPrompt(ctx context.Context, userID string, opts RunOptions) {
 	}
 
 	go ar.RunLLMLoop(ctx, updated, payload)
+}
+
+// SubAgentOptions describes one sub-agent spawn.
+type SubAgentOptions struct {
+	// Prompt is the user-seed message for the sub-agent.
+	Prompt string
+
+	// Title for the new conversation (e.g. "Sub-agent: <truncated prompt>").
+	Title string
+
+	// ParentID is the spawning conversation's ID. Stored on the new child as
+	// (trigger_type='sub_agent', trigger_id=ParentID).
+	ParentID string
+
+	// ModelSelected drives the LLM and tool gating. The caller is responsible
+	// for building this (e.g. via ai.ShortcutModelSelected + intersected tools).
+	ModelSelected utils.ModelSelected
+}
+
+// RunSubAgent creates a child conversation linked to ParentID, kicks off the
+// LLM loop in a goroutine, and returns the new conversation ID plus a channel
+// that closes when the loop exits. Unlike RunPrompt, no preset is resolved —
+// the caller supplies ModelSelected verbatim.
+func RunSubAgent(ctx context.Context, userID string, opts SubAgentOptions) (string, <-chan struct{}, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Use a long-lived context for the sub-agent so it survives the parent's
+	// tool-exec context being canceled at end of turn.
+	subCtx := context.WithValue(context.Background(), "userID", userID)
+
+	msg := utils.Message{
+		Role:      "user",
+		Content:   utils.NewTextContent(opts.Prompt),
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+
+	partial := utils.Conversation{
+		Title:         opts.Title,
+		ModelSelected: opts.ModelSelected,
+	}
+
+	updated, _, err := db.PushMessage(subCtx, partial, msg)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if opts.ParentID != "" {
+		if err := db.SetConversationTrigger(subCtx, updated.ID, "sub_agent", opts.ParentID); err != nil {
+			utils.Error("[sub-agent] SetConversationTrigger failed", err)
+		}
+		updated.TriggerType = "sub_agent"
+		updated.TriggerID = opts.ParentID
+	}
+
+	model := ai.SelectModel(opts.ModelSelected, updated)
+	ar := ai.NewActiveRequest(updated.ID, userID, model, opts.ModelSelected)
+	cancelCtx, cancelFunc := context.WithCancel(subCtx)
+	ar.Ctx = cancelCtx
+	ar.Cancel = cancelFunc
+	ai.RequestRegistry.Set(updated.ID, ar)
+	if err := db.UpdateConversationState(subCtx, updated.ID, utils.StateProcessing); err != nil {
+		utils.Error("[sub-agent] UpdateConversationState failed", err)
+	}
+
+	// Broadcast the sub-agent's existence to the sidebar before the LLM loop
+	// gets a chance to. RunLLMLoop will emit its own "typing" event shortly,
+	// but races (early cancellation, slow first chunk) can leave the sidebar
+	// in the dark until manual refresh.
+	ai.StatusRegistry.BroadcastToUser(userID, ai.StatusEvent{
+		ConversationID: updated.ID,
+		State:          string(utils.StateProcessing),
+		Title:          opts.Title,
+	})
+
+	payload := ai.ChatPayload{
+		ConversationID: updated.ID,
+		ModelSelected:  opts.ModelSelected,
+		Messages:       []utils.Message{msg},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ar.RunLLMLoop(subCtx, updated, payload)
+	}()
+
+	return updated.ID, done, nil
 }
 
 func truncate(s string, n int) string {
