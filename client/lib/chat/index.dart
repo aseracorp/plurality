@@ -407,7 +407,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         icon: Icon(Icons.account_circle, color: Colors.white),
                         onPressed: () async {
                           setState(() {
-                            _selectedIndex = 3;
+                            _selectedIndex = destinations.indexWhere(
+                              (dest) => dest['content'] is SettingsScreen,
+                            );
                           });
                         },
                       ),

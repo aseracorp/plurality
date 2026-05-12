@@ -1,7 +1,7 @@
 # 2
+- Cant attach json??
+- user presentation card (name, email, etc...) (maybe thats the shared meemory skill)
 - AI galere a faire des webhook en local sur le bon port
-- make AI prioritize client folders when attached!
-- flag tool calls with non existing parameters added
 - completed agents should appear as tool call (check agent) rather than as user messsages
 - Per-user everything: using a map of linux user > plurality user 
   - Per-user MCP

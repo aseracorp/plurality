@@ -189,7 +189,7 @@ var ParallelSubAgentTool = utils.AITool{
 				Properties: map[string]utils.PropertyParameterToolsRequest{
 					"prompt": {
 						Type:        "string",
-						Description: "The prompt to send the sub-agent (as a user message)",
+						Description: "The prompt to send the sub-agent (as a user message). Be descriptive and clear. It's good practice to nudge the agent toward the right format and tools, especially being explicit about using the long task tool so they don't lose track of their work.",
 					},
 					"complexity": {
 						Type:        "string",
