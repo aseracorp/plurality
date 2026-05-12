@@ -113,30 +113,33 @@ class _DiffPreview extends StatelessWidget {
         const SizedBox(height: 6),
         ConstrainedBox(
           constraints: BoxConstraints(maxHeight: maxHeight),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                if (oldText != null)
-                  _DiffBlock(
-                    text: oldText!,
-                    sign: '-',
-                    background: Colors.red.withOpacity(isDark ? 0.18 : 0.10),
-                    border: Colors.red.withOpacity(0.4),
-                    fg: isDark ? Colors.red[200]! : Colors.red[900]!,
-                  ),
-                if (oldText != null && newText != null)
-                  const SizedBox(height: 4),
-                if (newText != null)
-                  _DiffBlock(
-                    text: newText!,
-                    sign: '+',
-                    background: Colors.green.withOpacity(isDark ? 0.18 : 0.10),
-                    border: Colors.green.withOpacity(0.4),
-                    fg: isDark ? Colors.green[200]! : Colors.green[900]!,
-                  ),
-              ],
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (oldText != null)
+                    _DiffBlock(
+                      text: oldText!,
+                      sign: '-',
+                      background: Colors.red.withOpacity(isDark ? 0.18 : 0.10),
+                      border: Colors.red.withOpacity(0.4),
+                      fg: isDark ? Colors.red[200]! : Colors.red[900]!,
+                    ),
+                  if (oldText != null && newText != null)
+                    const SizedBox(height: 4),
+                  if (newText != null)
+                    _DiffBlock(
+                      text: newText!,
+                      sign: '+',
+                      background: Colors.green.withOpacity(isDark ? 0.18 : 0.10),
+                      border: Colors.green.withOpacity(0.4),
+                      fg: isDark ? Colors.green[200]! : Colors.green[900]!,
+                    ),
+                ],
+              ),
             ),
           ),
         ),

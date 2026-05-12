@@ -1,17 +1,15 @@
 # 2
 - AI galere a faire des webhook en local sur le bon port
+- make AI prioritize client folders when attached!
+- completed agents should appear as tool call (check agent) rather than as user messsages
 - Per-user everything: using a map of linux user > plurality user 
   - Per-user MCP
   - docker ?
-- Agents (sub conversations as conversatiosn)
-  - (NO) tool to request extenal AI (ex. promote a request or something) - keep cost down
-  - select sub of tools + models for each 
-  - add message to another chat (agent restarting another chat)
-- Notifications
 - client tools are defined in the sever???
 - Client lock (if client tools used and such for remote )
 - UI to manage presets / shortcuts?
 - client side bash (need to tell the AI what OS)
+- queue messages (user and agents!)
 
 #3
 - Tool to ask user QCM

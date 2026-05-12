@@ -89,14 +89,68 @@ func (sp *StreamProcessor) buildAssistantMessage() utils.Message {
 }
 
 // finalizeStream stores total tokens on the active request and persists the
-// assistant message. No credit accounting in self-hosted mode.
+// assistant message. Tool calls whose accumulated arguments are not valid JSON
+// (typically because max_tokens cut the stream mid-call) get their args
+// sanitized to "{}" and an explicit failure tool result pushed, so the
+// outbound payload to the LLM never carries a malformed or dangling call.
 func (sp *StreamProcessor) finalizeStream(ctx context.Context) utils.Message {
 	sp.request.TokenUsage = sp.request.PromptTokens + sp.request.CompletionTokens
 
 	message := sp.buildAssistantMessage()
 
-	if _, _, err := db.PushMessage(ctx, sp.conversation, message); err != nil {
+	type failedCall struct{ ID, Name string }
+	var failed []failedCall
+	for i := range message.ToolCalls {
+		tc := &message.ToolCalls[i]
+		args := strings.TrimSpace(tc.Function.Arguments)
+		if args == "" {
+			tc.Function.Arguments = "{}"
+			continue
+		}
+		if !json.Valid([]byte(args)) {
+			preview := args
+			if len(preview) > 120 {
+				preview = preview[:120]
+			}
+			utils.Log("[StreamProcessor] tool_call %s (%s) args truncated/invalid; failing call. First 120 chars: %s",
+				tc.ID, tc.Function.Name, preview)
+			tc.Function.Arguments = "{}"
+			failed = append(failed, failedCall{ID: tc.ID, Name: tc.Function.Name})
+		}
+	}
+
+	if updated, _, err := db.PushMessage(ctx, sp.conversation, message); err != nil {
 		utils.Error("[StreamProcessor] Error saving assistant message to DB", err)
+	} else {
+		sp.conversation = updated
+	}
+
+	if len(failed) > 0 {
+		failBody := "The tool call failed either because the content was not a valid JSON or was too large to fit in a single toolcall. Retry with valid content, or smaller content."
+		for _, f := range failed {
+			toolMsg := utils.Message{
+				Role:       "tool",
+				Content:    utils.NewTextContent(failBody),
+				ToolCallID: f.ID,
+				Name:       f.Name,
+				Timestamp:  time.Now().Format(time.RFC3339),
+			}
+			updatedConv, _, pushErr := db.PushMessage(ctx, sp.conversation, toolMsg)
+			if pushErr != nil {
+				utils.Error("[StreamProcessor] Error saving failed-call tool result", pushErr)
+				continue
+			}
+			sp.conversation = updatedConv
+
+			sp.request.Broadcast(SSEEvent{
+				Type:           "tool_result",
+				ToolCallID:     f.ID,
+				ToolName:       f.Name,
+				ToolResult:     failBody,
+				IsServer:       true,
+				ConversationID: sp.request.ConversationID,
+			})
+		}
 	}
 
 	return message

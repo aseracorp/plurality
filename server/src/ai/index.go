@@ -261,10 +261,23 @@ func convertMessagesToOpenAI(messages []utils.Message, _ utils.Model) ([]Standar
 			if len(msg.ToolCalls) > 0 {
 				cleaned := make([]utils.ToolCall, len(msg.ToolCalls))
 				for i, tc := range msg.ToolCalls {
+					fn := tc.Function
+					args := strings.TrimSpace(fn.Arguments)
+					if args == "" {
+						fn.Arguments = "{}"
+					} else if !json.Valid([]byte(args)) {
+						preview := args
+						if len(preview) > 120 {
+							preview = preview[:120]
+						}
+						utils.Log("[convertMessagesToOpenAI] tool_call %s (%s) has invalid JSON args; replacing with {}. First 120 chars: %s",
+							tc.ID, fn.Name, preview)
+						fn.Arguments = "{}"
+					}
 					cleaned[i] = utils.ToolCall{
 						ID:       tc.ID,
 						Type:     tc.Type,
-						Function: tc.Function,
+						Function: fn,
 					}
 				}
 				smr.ToolCalls = cleaned
@@ -325,6 +338,44 @@ func convertMessagesToOpenAI(messages []utils.Message, _ utils.Model) ([]Standar
 			}
 		}
 	}
+
+	// Backfill any assistant tool_calls that don't have a matching tool result
+	// before the next user/assistant boundary. Strict providers (Fireworks)
+	// reject dangling tool_calls; this defense recovers conversations whose
+	// history was persisted before the stream-processor fix existed.
+	out := make([]StandardMessageReq, 0, len(result))
+	i := 0
+	for i < len(result) {
+		out = append(out, result[i])
+		if result[i].Role == "assistant" && len(result[i].ToolCalls) > 0 {
+			j := i + 1
+			for j < len(result) && result[j].Role != "user" && result[j].Role != "assistant" {
+				j++
+			}
+			seen := make(map[string]bool, len(result[i].ToolCalls))
+			for k := i + 1; k < j; k++ {
+				if result[k].Role == "tool" && result[k].ToolCallID != "" {
+					seen[result[k].ToolCallID] = true
+				}
+				out = append(out, result[k])
+			}
+			for _, tc := range result[i].ToolCalls {
+				if !seen[tc.ID] {
+					utils.Log("[convertMessagesToOpenAI] backfilling missing tool result for tool_call %s (%s)", tc.ID, tc.Function.Name)
+					out = append(out, StandardMessageReq{
+						Role:       "tool",
+						Content:    "No result available for this tool call (likely truncated by token limit).",
+						ToolCallID: tc.ID,
+						Name:       tc.Function.Name,
+					})
+				}
+			}
+			i = j
+			continue
+		}
+		i++
+	}
+	result = out
 
 	return result, inputText
 }

@@ -45,6 +45,45 @@ class _ConversationListState extends ConsumerState<ConversationList> {
     });
   }
 
+  Widget _buildMoreMenu() {
+    return PopupMenuButton<String>(
+      icon: const Icon(Icons.more_vert),
+      tooltip: 'More',
+      onSelected: (value) {
+        if (value == 'refresh') {
+          ref.read(conversationsProvider.notifier).refresh();
+        } else if (value == 'toggle_hidden') {
+          final notifier =
+              ref.read(showHiddenConversationsProvider.notifier);
+          notifier.state = !notifier.state;
+        }
+      },
+      itemBuilder: (context) {
+        final showHidden = ref.read(showHiddenConversationsProvider);
+        return [
+          const PopupMenuItem(
+            value: 'refresh',
+            child: ListTile(
+              leading: Icon(Icons.refresh),
+              title: Text('Refresh'),
+            ),
+          ),
+          PopupMenuItem(
+            value: 'toggle_hidden',
+            child: ListTile(
+              leading: Icon(showHidden
+                  ? Icons.visibility_off
+                  : Icons.visibility),
+              title: Text(showHidden
+                  ? 'Hide hidden conversations'
+                  : 'Show hidden conversations'),
+            ),
+          ),
+        ];
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // Use the sorted folders provider with search query
@@ -125,43 +164,7 @@ class _ConversationListState extends ConsumerState<ConversationList> {
                   child: Text('New conversation'),
                 ),
                 SizedBox(width: 12),
-                PopupMenuButton<String>(
-                  icon: const Icon(Icons.more_vert),
-                  tooltip: 'More',
-                  onSelected: (value) {
-                    if (value == 'refresh') {
-                      ref.read(conversationsProvider.notifier).refresh();
-                    } else if (value == 'toggle_hidden') {
-                      final notifier =
-                          ref.read(showHiddenConversationsProvider.notifier);
-                      notifier.state = !notifier.state;
-                    }
-                  },
-                  itemBuilder: (context) {
-                    final showHidden =
-                        ref.read(showHiddenConversationsProvider);
-                    return [
-                      const PopupMenuItem(
-                        value: 'refresh',
-                        child: ListTile(
-                          leading: Icon(Icons.refresh),
-                          title: Text('Refresh'),
-                        ),
-                      ),
-                      PopupMenuItem(
-                        value: 'toggle_hidden',
-                        child: ListTile(
-                          leading: Icon(showHidden
-                              ? Icons.visibility_off
-                              : Icons.visibility),
-                          title: Text(showHidden
-                              ? 'Hide hidden conversations'
-                              : 'Show hidden conversations'),
-                        ),
-                      ),
-                    ];
-                  },
-                ),
+                _buildMoreMenu(),
               ],
             ),
           ),
@@ -169,26 +172,34 @@ class _ConversationListState extends ConsumerState<ConversationList> {
         // Search bar widget
         Padding(
           padding: const EdgeInsets.all(8.0),
-          child: TextField(
-            decoration: InputDecoration(
-              hintText: 'Search conversations',
-              prefixIcon: Icon(Icons.search),
-            ),
-            onChanged: (value) {
-              setState(() {
-                searchQuery = value;
-              });
-              _searchDebounce?.cancel();
-              if (value.length >= 3) {
-                _searchDebounce = Timer(const Duration(milliseconds: 300), () {
-                  ApiService().searchConversations(value).then((ids) {
-                    ref.read(searchResultIdsProvider.notifier).state = ids;
-                  });
-                });
-              } else {
-                ref.read(searchResultIdsProvider.notifier).state = null;
-              }
-            },
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  decoration: InputDecoration(
+                    hintText: 'Search conversations',
+                    prefixIcon: Icon(Icons.search),
+                  ),
+                  onChanged: (value) {
+                    setState(() {
+                      searchQuery = value;
+                    });
+                    _searchDebounce?.cancel();
+                    if (value.length >= 3) {
+                      _searchDebounce =
+                          Timer(const Duration(milliseconds: 300), () {
+                        ApiService().searchConversations(value).then((ids) {
+                          ref.read(searchResultIdsProvider.notifier).state = ids;
+                        });
+                      });
+                    } else {
+                      ref.read(searchResultIdsProvider.notifier).state = null;
+                    }
+                  },
+                ),
+              ),
+              if (widget.isMobile) _buildMoreMenu(),
+            ],
           ),
         ),
 

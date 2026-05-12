@@ -18,7 +18,7 @@ var FsClientReadToolRequest = utils.ToolsRequest{
 	Type: "function",
 	Function: utils.FunctionToolsRequest{
 		Name:        "filesystem_client__fs_read",
-		Description: "[device] Read files in the user's attached folder. Set 'op' to one of: list (directory entries), find (recursive name pattern match), read (whole file as text), read_segment (line range), stat (metadata). Paths are RELATIVE to the attached folder root; '..' is rejected.",
+		Description: "[device] Read files in the user's attached folder. Set 'op' to one of: list (directory entries), find (recursive name pattern match), read (whole file as text), read_segment (line range), stat (metadata). Paths are RELATIVE to the attached folder root; '..' is rejected. THIS IS A CLIENT FOLDER: This means that the user explicitely attached a folder and you should ALWAYS prioritize this folder over any server folder if a prompt is ambiguous.",
 		Parameters: &utils.ParameterToolsRequest{
 			Type: "object",
 			Properties: map[string]utils.PropertyParameterToolsRequest{
@@ -57,7 +57,7 @@ var FsClientWriteToolRequest = utils.ToolsRequest{
 	Type: "function",
 	Function: utils.FunctionToolsRequest{
 		Name:        "filesystem_client__fs_write",
-		Description: "[device] Modify files in the user's attached folder. Set 'op' to one of: create (write a new file, fails if exists), edit (single occurrence search-and-replace), copy, move, delete, mkdir. Paths are RELATIVE to the attached folder root; '..' is rejected.",
+		Description: "[device] Modify files in the user's attached folder. Set 'op' to one of: create (write a new file, fails if exists), edit (single occurrence search-and-replace), copy, move, delete, mkdir. Paths are RELATIVE to the attached folder root; '..' is rejected. Do not write single large file in one go: split the write in multiple calls! THIS IS A CLIENT FOLDER: This means that the user explicitely attached a folder and you should ALWAYS prioritize this folder over any server folder if a prompt is ambiguous.",
 		Parameters: &utils.ParameterToolsRequest{
 			Type: "object",
 			Properties: map[string]utils.PropertyParameterToolsRequest{

@@ -38,7 +38,7 @@ var FsServerReadTool = utils.AITool{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
 			Name:        "fs_read",
-			Description: "Read filesystem on the server. Set 'op' to one of: list (directory entries), find (recursive name pattern match), read (whole file as text), read_segment (line range of a text file), stat (file metadata), read_attach (load a file as a conversation attachment so the user can download it and the assistant can reference it as 'att_N' on later turns).",
+			Description: "Read filesystem on the server. Set 'op' to one of: list (directory entries), find (recursive name pattern match), read (whole file as text), read_segment (line range of a text file), stat (file metadata), read_attach (load a file as a conversation attachment so the user can download it and the assistant can reference it as 'att_N' on later turns).If a client folder is available, prioritize client folder over server when ambiguous.",
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{
@@ -91,7 +91,7 @@ var FsServerWriteTool = utils.AITool{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
 			Name:        "fs_write",
-			Description: "Modify the server filesystem. Set 'op' to one of: create (write a new file, fails if exists), edit (search-and-replace inside an existing file), copy, move, delete, mkdir, save_attach (write a conversation attachment — e.g. a generated image or uploaded file — to a path on disk).",
+			Description: "Modify the server filesystem. Set 'op' to one of: create (write a new file, fails if exists), edit (search-and-replace inside an existing file), copy, move, delete, mkdir, save_attach (write a conversation attachment — e.g. a generated image or uploaded file — to a path on disk). Do not write single large file in one go: split the write in multiple calls! If a client folder is available, prioritize client folder over server when ambiguous.",
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{

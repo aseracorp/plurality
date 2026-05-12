@@ -122,6 +122,26 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			return
 		}
 
+		// Drop tool calls that already have a tool result in the conversation —
+		// the stream processor pushes synthetic failure results for tool calls
+		// whose args were truncated, so re-dispatching them here would just
+		// produce duplicate results in DB.
+		existingResults := make(map[string]bool, len(conversation.Messages))
+		for _, m := range conversation.Messages {
+			if m.Role == "tool" && m.ToolCallID != "" {
+				existingResults[m.ToolCallID] = true
+			}
+		}
+		if len(existingResults) > 0 {
+			remaining := make([]utils.ToolCall, 0, len(assistantMessage.ToolCalls))
+			for _, tc := range assistantMessage.ToolCalls {
+				if !existingResults[tc.ID] {
+					remaining = append(remaining, tc)
+				}
+			}
+			assistantMessage.ToolCalls = remaining
+		}
+
 		// Categorize tool calls: server-side vs client-side
 		serverTools, clientTools := categorizeToolCalls(assistantMessage.ToolCalls)
 
