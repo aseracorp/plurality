@@ -183,7 +183,7 @@ var ParallelSubAgentTool = utils.AITool{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
 			Name:        "parallel_sub_agent",
-			Description: "Spawn a sub-agent that processes the prompt as if the user created it. Use this tool to promote model: fast sub-agent to save token or smart to upgrade difficult query. Or use this tool to parallelize tasks, or to spawn sub-agent with less permissions for security. Returns the new conversation_id. When spawning a sub-agent, you cannot grant it more tool permissions than you have yourself — any tool you list that you don't have is dropped and reported back. Background runs survive across server restarts as conversations but their show_result callback does not (in-memory only).",
+			Description: "Spawn a sub-agent that processes the prompt as if the user created it. Use this tool to promote model: fast sub-agent to save token or smart to upgrade difficult query. Or use this tool to parallelize tasks, or to spawn sub-agent with less permissions for security. Returns the new conversation_id. When spawning a sub-agent, you cannot grant it more tool permissions than you have yourself — any tool you list that you don't have is dropped and reported back. Background runs survive across server restarts as conversations but their result callback does not (in-memory only). By default the sub-agent's final message is returned to the spawning conversation; set ignore_result='true' to suppress that.",
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{
@@ -205,9 +205,9 @@ var ParallelSubAgentTool = utils.AITool{
 						Description: "'true' to fire and return immediately; 'false' (default) to wait for the sub-agent to finish before returning",
 						Enum:        []string{"true", "false"},
 					},
-					"show_result": {
+					"ignore_result": {
 						Type:        "string",
-						Description: "'true' (default) to return the sub-agent's final message to the spawning conversation. With background='true', the result is delivered as a new turn on the parent when the sub-agent finishes.",
+						Description: "'false' (default) to return the sub-agent's final message to the spawning conversation; 'true' to suppress it. With background='true' and ignore_result='false', the result is delivered as a new turn on the parent when the sub-agent finishes.",
 						Enum:        []string{"true", "false"},
 					},
 				},
@@ -229,7 +229,7 @@ func parallelSubAgentExec(ctx context.Context, args string, conv utils.Conversat
 
 	requestedTools := parseToolsArg(parsed["tools"])
 	background := parseBoolArg(parsed["background"], false)
-	showResult := parseBoolArg(parsed["show_result"], true)
+	ignoreResult := parseBoolArg(parsed["ignore_result"], false)
 
 	// Map complexity → config shortcut name.
 	shortcut := ""
@@ -299,7 +299,7 @@ func parallelSubAgentExec(ctx context.Context, args string, conv utils.Conversat
 
 	if background {
 		out["status"] = "running"
-		if showResult {
+		if !ignoreResult {
 			parentID := conv.ID
 			userID := conv.UserID
 			go func() {
@@ -331,7 +331,7 @@ func parallelSubAgentExec(ctx context.Context, args string, conv utils.Conversat
 	}
 
 	out["status"] = "done"
-	if showResult {
+	if !ignoreResult {
 		out["result"] = readLastAssistantText(subID, conv.UserID)
 	}
 	data, _ := json.Marshal(out)
