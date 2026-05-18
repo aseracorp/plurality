@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/gorilla/mux"
+
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -108,6 +110,46 @@ func HandleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// HandleSetShortcut updates one entry in cfg.Shortcuts and persists
+// data/config.json. PUT /shortcuts/{name}. Body is a utils.ModelSelected;
+// only Text/Vision/ImageGen are read. Existing Label/Pricing/Color are
+// preserved.
+func HandleSetShortcut(w http.ResponseWriter, r *http.Request) {
+	name := mux.Vars(r)["name"]
+	var ms utils.ModelSelected
+	if err := json.NewDecoder(r.Body).Decode(&ms); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+
+	existing := Shortcut{Name: name}
+	for _, s := range GetConfig().Shortcuts {
+		if s.Name == name {
+			existing = s
+			break
+		}
+	}
+
+	existing.Models = ShortcutModels{
+		Text:     fromUtilsModel(ms.Text),
+		Vision:   fromUtilsModel(ms.Vision),
+		ImageGen: fromUtilsModel(ms.ImageGen),
+	}
+
+	if err := SetShortcut(existing); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func fromUtilsModel(m *utils.Model) *ShortcutModel {
+	if m == nil || m.Name == "" {
+		return nil
+	}
+	return &ShortcutModel{Name: m.Name, Tools: m.Tools}
 }
 
 // DeleteUserData removes a user's data directory (used by the account-delete handler).

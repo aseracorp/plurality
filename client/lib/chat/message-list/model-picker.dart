@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:plurality/api/MCP.dart';
 import 'package:plurality/api/models_service.dart';
-import 'package:plurality/api/preferences_provider.dart';
 import 'package:plurality/widgets/model_config/model_config_form.dart';
 import 'package:plurality/widgets/model_config/model_config_helpers.dart';
 import '../../utils/types.dart';
@@ -300,22 +299,17 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
   }
 
   Widget _buildPresetsTab(ModelsData data) {
-    final overrides = ref.watch(preferencesProvider).shortcutOverrides;
     final selectedName = _getSelectedPresetName(data.presets);
     return ListView.separated(
       itemCount: data.presets.length,
       separatorBuilder: (_, __) => const SizedBox(height: 12),
       itemBuilder: (context, index) {
         final preset = data.presets[index];
-        final override = overrides[preset.name];
-        final effective = override == null
-            ? preset.models
-            : mergePresetOnto(override, preset.models);
         return PresetButton(
           preset: preset,
           isSelected: selectedName == preset.name,
           onTap: () {
-            final merged = mergePresetOnto(effective, widget.selectedModel);
+            final merged = mergePresetOnto(preset.models, widget.selectedModel);
             setState(() {
               _selectedModel = merged.text?.name.isNotEmpty == true
                   ? merged.text!.name
@@ -367,15 +361,11 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
   }
 
   ModelSelected _getSelectedPreset(ModelsData data) {
-    final overrides = ref.read(preferencesProvider).shortcutOverrides;
     for (final preset in data.presets) {
       if (preset.models.text?.name == _selectedModel &&
           preset.models.vision?.name == _selectedVisionModel &&
           preset.models.imageGen?.name == _selectedImageGenModel) {
-        final override = overrides[preset.name];
-        return override == null
-            ? preset.models
-            : mergePresetOnto(override, preset.models);
+        return preset.models;
       }
     }
     return data.presets.first.models;

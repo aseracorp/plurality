@@ -359,13 +359,15 @@ class ModelSelectedAdapter extends TypeAdapter<ModelSelected> {
       videoVision: fields[7] as Model?,
       code: fields[8] as Model?,
       clientFolderPath: fields[9] as String?,
+      // Legacy records pre-date field 10 — default to true.
+      ecoMode: fields[10] as bool? ?? true,
     );
   }
 
   @override
   void write(BinaryWriter writer, ModelSelected obj) {
     writer
-      ..writeByte(10)
+      ..writeByte(11)
       ..writeByte(0)
       ..write(obj.text)
       ..writeByte(1)
@@ -385,7 +387,9 @@ class ModelSelectedAdapter extends TypeAdapter<ModelSelected> {
       ..writeByte(8)
       ..write(obj.code)
       ..writeByte(9)
-      ..write(obj.clientFolderPath);
+      ..write(obj.clientFolderPath)
+      ..writeByte(10)
+      ..write(obj.ecoMode);
   }
 
   @override

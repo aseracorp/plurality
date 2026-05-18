@@ -73,6 +73,7 @@ type StandardChatRequest struct {
 	Stream            bool                 `json:"stream"`
 	StreamOptions     *StreamOptions       `json:"stream_options,omitempty"`
 	Tools             []utils.ToolsRequest `json:"tools,omitempty"`
+	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
 }
 
 // --- Standard streaming chunk (OpenAI format, used for all providers via LiteLLM) ---

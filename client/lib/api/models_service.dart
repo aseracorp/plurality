@@ -182,6 +182,13 @@ class ModelsService {
 
   ModelsData? get cached => _cache;
 
+  /// Drop the in-memory cache so the next [get] hits the server again.
+  /// Use after mutating server-side config (e.g. shortcut edits).
+  void invalidate() {
+    _cache = null;
+    _fetchedAt = null;
+  }
+
   Future<ModelsData> get() {
     final fetchedAt = _fetchedAt;
     if (_cache != null && fetchedAt != null &&

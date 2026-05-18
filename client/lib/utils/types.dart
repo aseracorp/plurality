@@ -634,6 +634,13 @@ class ModelSelected {
   @HiveField(9)
   final String? clientFolderPath;
 
+  /// When true, the server compacts older turns into a rolling checkpoint
+  /// summary so the live LLM context stays small on long conversations.
+  /// Defaults to true; legacy persisted conversations that pre-date the
+  /// field also resolve to true (see fromJson).
+  @HiveField(10)
+  final bool ecoMode;
+
   const ModelSelected({
     this.text,
     this.vision,
@@ -645,6 +652,7 @@ class ModelSelected {
     this.videoVision,
     this.code,
     this.clientFolderPath,
+    this.ecoMode = true,
   });
 
   ModelSelected copyWith({
@@ -658,6 +666,7 @@ class ModelSelected {
     Model? videoVision,
     Model? code,
     Object? clientFolderPath = _unset,
+    bool? ecoMode,
   }) {
     return ModelSelected(
       text: text ?? this.text,
@@ -672,6 +681,7 @@ class ModelSelected {
       clientFolderPath: identical(clientFolderPath, _unset)
           ? this.clientFolderPath
           : clientFolderPath as String?,
+      ecoMode: ecoMode ?? this.ecoMode,
     );
   }
 
@@ -686,6 +696,7 @@ class ModelSelected {
     'video_vision': videoVision?.toJson(),
     'code': code?.toJson(),
     'client_folder_path': clientFolderPath,
+    'eco_mode': ecoMode,
   };
 
   factory ModelSelected.fromJson(Map<String, dynamic> json) {
@@ -710,6 +721,9 @@ class ModelSelected {
               : null,
       code: json['code'] != null ? Model.fromJson(json['code']) : null,
       clientFolderPath: json['client_folder_path'] as String?,
+      // Default-on: if the server omits the field (legacy conversations or
+      // older builds), treat eco mode as enabled rather than disabled.
+      ecoMode: json['eco_mode'] as bool? ?? true,
     );
   }
 }
@@ -776,14 +790,12 @@ class AppPreferences {
   final int darkMode;
   final bool useMiniMap;
   final double zoomFactor;
-  final Map<String, ModelSelected> shortcutOverrides;
 
   const AppPreferences({
     this.selectedModel = const ModelSelected(),
     this.darkMode = 0,
     this.useMiniMap = true,
     this.zoomFactor = 1.0,
-    this.shortcutOverrides = const {},
   });
 
   AppPreferences copyWith({
@@ -791,14 +803,12 @@ class AppPreferences {
     int? darkMode,
     bool? useMiniMap,
     double? zoomFactor,
-    Map<String, ModelSelected>? shortcutOverrides,
   }) {
     return AppPreferences(
       selectedModel: selectedModel ?? this.selectedModel,
       darkMode: darkMode ?? this.darkMode,
       useMiniMap: useMiniMap ?? this.useMiniMap,
       zoomFactor: zoomFactor ?? this.zoomFactor,
-      shortcutOverrides: shortcutOverrides ?? this.shortcutOverrides,
     );
   }
 }

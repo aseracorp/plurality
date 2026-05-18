@@ -689,12 +689,6 @@ class _ModelShortcutsTabState extends ConsumerState<_ModelShortcutsTab> {
   }
 
   Future<void> _editPreset(PresetConfig preset, ModelsData data) async {
-    final overrides = ref.read(preferencesProvider).shortcutOverrides;
-    final override = overrides[preset.name];
-    final effective = override == null
-        ? preset.models
-        : mergePresetOnto(override, preset.models);
-
     final formKey = GlobalKey<ModelConfigFormState>();
 
     final saved = await showDialog<bool>(
@@ -719,7 +713,7 @@ class _ModelShortcutsTabState extends ConsumerState<_ModelShortcutsTab> {
                   ModelConfigForm(
                     key: formKey,
                     data: data,
-                    initial: effective,
+                    initial: preset.models,
                   ),
                   const SizedBox(height: 24),
                   Row(
@@ -751,18 +745,23 @@ class _ModelShortcutsTabState extends ConsumerState<_ModelShortcutsTab> {
     if (saved == true) {
       final result = formKey.currentState?.commit();
       if (result != null) {
-        final sparse = diffPresetAgainst(result, preset.models);
-        await ref
-            .read(preferencesProvider.notifier)
-            .setShortcutOverride(preset.name, sparse);
+        try {
+          await ApiService().updateShortcut(preset.name, result);
+          ModelsService().invalidate();
+          if (mounted) {
+            setState(() {
+              _modelsFuture = ModelsService().get();
+            });
+          }
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Failed to save shortcut: $e')),
+            );
+          }
+        }
       }
     }
-  }
-
-  Future<void> _resetPreset(PresetConfig preset) async {
-    await ref
-        .read(preferencesProvider.notifier)
-        .clearShortcutOverride(preset.name);
   }
 
   @override
@@ -800,8 +799,6 @@ class _ModelShortcutsTabState extends ConsumerState<_ModelShortcutsTab> {
           );
         }
         final data = snapshot.data!;
-        final overrides = ref.watch(preferencesProvider).shortcutOverrides;
-
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -812,16 +809,14 @@ class _ModelShortcutsTabState extends ConsumerState<_ModelShortcutsTab> {
             const SizedBox(height: 8),
             Text(
               'Customize the models and tools used for each shortcut. '
-              'Overrides apply when you tap a shortcut in the model picker.',
+              'Changes are saved server-side and apply to every device.',
               style: TextStyle(color: Colors.grey.shade700),
             ),
             const SizedBox(height: 16),
             for (final preset in data.presets) ...[
               _ShortcutCard(
                 preset: preset,
-                isOverridden: overrides.containsKey(preset.name),
                 onEdit: () => _editPreset(preset, data),
-                onReset: () => _resetPreset(preset),
               ),
               const SizedBox(height: 12),
             ],
@@ -834,15 +829,11 @@ class _ModelShortcutsTabState extends ConsumerState<_ModelShortcutsTab> {
 
 class _ShortcutCard extends StatelessWidget {
   final PresetConfig preset;
-  final bool isOverridden;
   final VoidCallback onEdit;
-  final VoidCallback onReset;
 
   const _ShortcutCard({
     required this.preset,
-    required this.isOverridden,
     required this.onEdit,
-    required this.onReset,
   });
 
   @override
@@ -864,36 +855,13 @@ class _ShortcutCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        Text(
-                          preset.name,
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.grey[900],
-                          ),
-                        ),
-                        if (isOverridden) ...[
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: base,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: const Text(
-                              'Customized',
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: Colors.white,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ],
+                    Text(
+                      preset.name,
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.grey[900],
+                      ),
                     ),
                     const SizedBox(height: 4),
                     Text(
@@ -918,13 +886,6 @@ class _ShortcutCard extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              if (isOverridden)
-                TextButton.icon(
-                  onPressed: onReset,
-                  icon: const Icon(Icons.restore, size: 18),
-                  label: const Text('Reset'),
-                ),
-              const SizedBox(width: 8),
               ElevatedButton.icon(
                 onPressed: onEdit,
                 icon: const Icon(Icons.edit, size: 18),

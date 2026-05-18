@@ -384,7 +384,8 @@ class ChatService {
         },
       );
     } catch (e) {
-      debugPrint('[ChatService] Failed to connect status stream: $e');
+      debugPrint('[ChatService] Failed to connect status stream: $e — retrying in 5s');
+      Future.delayed(const Duration(seconds: 5), connectStatusStream);
     }
   }
 

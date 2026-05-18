@@ -69,17 +69,30 @@ type NotificationsConfig struct {
 	Token   string `json:"token"`
 }
 
+// EcoConfig controls the server-side "eco mode" rolling-checkpoint
+// compaction. Both values are in tokens (as reported by LiteLLM in the last
+// assistant message's prompt_tokens). When the previous prompt crosses
+// TriggerTokens, the oldest turns are summarised into a single checkpoint so
+// the remaining live tail is roughly TargetTokens wide.
+type EcoConfig struct {
+	TriggerTokens int `json:"trigger_tokens"`
+	TargetTokens  int `json:"target_tokens"`
+}
+
 type Config struct {
 	JWTSecret     string              `json:"jwt_secret"`
 	OpenID        OpenIDConfig        `json:"openid"`
 	Shortcuts     []Shortcut          `json:"shortcuts"`
 	Webhook       WebhookConfig       `json:"webhook"`
 	Notifications NotificationsConfig `json:"notifications"`
+	Eco           EcoConfig           `json:"eco"`
 }
 
 const (
 	defaultPerClientPerMinute  = 200
 	defaultPerWebhookPerMinute = 10
+	defaultEcoTriggerTokens    = 100000
+	defaultEcoTargetTokens     = 50000
 )
 
 // ReservedShortcutNames are the picker-visible shortcut names, in display order.
@@ -126,6 +139,10 @@ func LoadConfig() error {
 				PerClientPerMinute:  defaultPerClientPerMinute,
 				PerWebhookPerMinute: defaultPerWebhookPerMinute,
 			},
+			Eco: EcoConfig{
+				TriggerTokens: defaultEcoTriggerTokens,
+				TargetTokens:  defaultEcoTargetTokens,
+			},
 		}
 		validateShortcuts(&cfg)
 		if err := writeConfigLocked(); err != nil {
@@ -152,6 +169,14 @@ func LoadConfig() error {
 		}
 		if loaded.Webhook.PerWebhookPerMinute <= 0 {
 			loaded.Webhook.PerWebhookPerMinute = defaultPerWebhookPerMinute
+			needsWrite = true
+		}
+		if loaded.Eco.TriggerTokens <= 0 {
+			loaded.Eco.TriggerTokens = defaultEcoTriggerTokens
+			needsWrite = true
+		}
+		if loaded.Eco.TargetTokens <= 0 {
+			loaded.Eco.TargetTokens = defaultEcoTargetTokens
 			needsWrite = true
 		}
 		cfg = loaded
@@ -224,6 +249,41 @@ func GetConfig() Config {
 	defer cfgMu.RUnlock()
 	return cfg
 }
+
+// SetShortcut overwrites the entry with matching name in cfg.Shortcuts and
+// persists data/config.json. The name must be one of ReservedShortcutNames.
+func SetShortcut(s Shortcut) error {
+	name := strings.ToLower(strings.TrimSpace(s.Name))
+	reserved := false
+	for _, r := range ReservedShortcutNames {
+		if name == r {
+			reserved = true
+			break
+		}
+	}
+	if !reserved {
+		return errors.New("unknown shortcut: " + name)
+	}
+	s.Name = name
+
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+
+	replaced := false
+	for i := range cfg.Shortcuts {
+		if cfg.Shortcuts[i].Name == name {
+			cfg.Shortcuts[i] = s
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		cfg.Shortcuts = append(cfg.Shortcuts, s)
+		validateShortcuts(&cfg)
+	}
+	return writeConfigLocked()
+}
+
 
 func OpenIDEnabled() bool {
 	cfgMu.RLock()

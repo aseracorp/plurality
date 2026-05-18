@@ -249,6 +249,9 @@ func parallelSubAgentExec(ctx context.Context, args string, conv utils.Conversat
 	// the same workspace. filesystem_client tool schemas are force-added at
 	// request time (registry.go) when ClientFolderPath is non-empty.
 	subMS.ClientFolderPath = conv.ModelSelected.ClientFolderPath
+	// Inherit the parent's eco toggle so the sub-agent compacts (or doesn't)
+	// the same way the user chose for the parent thread.
+	subMS.EcoMode = conv.ModelSelected.EcoMode
 	parentTools := map[string]string{}
 	if conv.ModelSelected.Text != nil {
 		parentTools = conv.ModelSelected.Text.Tools

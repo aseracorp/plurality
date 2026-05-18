@@ -141,7 +141,10 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	activeRequest.AddClient(sseClient)
 
-	// Launch the LLM loop in a goroutine that outlives this HTTP connection
+	// Launch the LLM loop in a goroutine that outlives this HTTP connection.
+	// The eco-mode rolling-checkpoint summary is spawned at the END of the
+	// LLM loop (in tool_loop.go) so it can read the just-recorded assistant
+	// message's prompt_tokens.
 	go activeRequest.RunLLMLoop(persistCtx, conversation, payload)
 
 	// Block until the client disconnects or the stream ends
@@ -235,8 +238,10 @@ func HandleApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify user owns this conversation
-	conversation, err := db.GetConversationById(r.Context(), conversationID)
+	// Verify user owns this conversation. Use the internal variant so the
+	// downstream tool-call processing (and the LLM loop it resumes) sees
+	// the raw history including any eco checkpoint pair.
+	conversation, err := db.GetConversationByIdInternal(r.Context(), conversationID)
 	if err != nil {
 		utils.SendHTTPError(w, "Conversation not found", http.StatusNotFound)
 		return
@@ -425,19 +430,11 @@ func API_HandleConversation(w http.ResponseWriter, r *http.Request) {
 }
 
 // fastShortcutModels returns the text and imagegen model names from the "fast"
-// shortcut in data/config.json, with hardcoded fallbacks if the shortcut or a
-// specific slot is missing.
+// shortcut in data/config.json. validateShortcuts guarantees the shortcut and
+// both slots always exist.
 func fastShortcutModels() (textModel, imageModel string) {
-	textModel = "qwen3-vl-30b-a3b-instruct"
-	imageModel = "black-forest-labs/FLUX.2-dev"
 	ms := ShortcutModelSelected("fast")
-	if ms.Text != nil && ms.Text.Name != "" {
-		textModel = ms.Text.Name
-	}
-	if ms.ImageGen != nil && ms.ImageGen.Name != "" {
-		imageModel = ms.ImageGen.Name
-	}
-	return
+	return ms.Text.Name, ms.ImageGen.Name
 }
 
 // generateTitleAndIcon generates a title and icon for a conversation and persists them.

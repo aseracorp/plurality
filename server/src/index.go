@@ -104,6 +104,7 @@ func main() {
 	r.HandleFunc("/auth/me", auth.AuthMiddleware(auth.HandleMe)).Methods("GET", "OPTIONS")
 	r.HandleFunc("/auth/logout", auth.AuthMiddleware(auth.HandleLogout)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/auth/change-password", auth.AuthMiddleware(auth.HandleChangePassword)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/shortcuts/{name}", auth.AuthMiddleware(auth.HandleSetShortcut)).Methods("PUT", "OPTIONS")
 
 	// OpenAI-compatible API (stateless, for generic clients)
 	r.HandleFunc("/v1/chat/completions", auth.AuthMiddleware(ai.HandleOpenAIChatCompletion)).Methods("POST", "OPTIONS")

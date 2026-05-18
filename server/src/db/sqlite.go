@@ -197,8 +197,21 @@ func marshalJSON(v interface{}) string {
 
 func unmarshalModelSelected(data string) utils.ModelSelected {
 	var ms utils.ModelSelected
-	if data != "" {
-		json.Unmarshal([]byte(data), &ms)
+	if data == "" {
+		ms.EcoMode = true
+		return ms
+	}
+	// Detect whether eco_mode was present in the stored JSON. Legacy rows
+	// (written before the field existed) don't carry the key and should
+	// default to true rather than to Go's zero-value false.
+	var probe map[string]json.RawMessage
+	hasKey := false
+	if json.Unmarshal([]byte(data), &probe) == nil {
+		_, hasKey = probe["eco_mode"]
+	}
+	json.Unmarshal([]byte(data), &ms)
+	if !hasKey {
+		ms.EcoMode = true
 	}
 	return ms
 }

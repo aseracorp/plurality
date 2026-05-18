@@ -63,9 +63,36 @@ model_list:
       supports_vision: false
       supports_function_calling: true
       
-  - model_name: "qwen3-vl-30b-a3b-instruct"
+  - model_name: "gpt-oss-20b"
     litellm_params:
-      model: "fireworks_ai/accounts/fireworks/models/qwen3-vl-30b-a3b-instruct"
+      model: "fireworks_ai/accounts/fireworks/models/gpt-oss-20b"
+      api_key: "os.environ/FIREWORK_KEY"
+    model_info:
+      mode: "chat"
+      supports_vision: false
+      supports_function_calling: false
+
+  - model_name: "gpt-oss-120b"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/gpt-oss-120b"
+      api_key: "os.environ/FIREWORK_KEY"
+    model_info:
+      mode: "chat"
+      supports_vision: false
+      supports_function_calling: true
+      
+  - model_name: "minimax-m2p7"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/minimax-m2p7"
+      api_key: "os.environ/FIREWORK_KEY"
+    model_info:
+      mode: "chat"
+      supports_vision: false
+      supports_function_calling: true
+      
+  - model_name: "deepseek-v4-pro"
+    litellm_params:
+      model: "fireworks_ai/accounts/fireworks/models/deepseek-v4-pro"
       api_key: "os.environ/FIREWORK_KEY"
     model_info:
       mode: "chat"

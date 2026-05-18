@@ -176,8 +176,22 @@ func ListConversations(ctx context.Context) ([]utils.Conversation, error) {
 	return conversations, rows.Err()
 }
 
-// GetConversationById returns a full conversation including all messages.
+// GetConversationById returns a full conversation including all messages,
+// with eco-mode checkpoint pairs stripped. Use GetConversationByIdInternal
+// when the caller needs the raw history (e.g. the LLM context assembler).
 func GetConversationById(ctx context.Context, id string) (*utils.Conversation, error) {
+	conv, err := GetConversationByIdInternal(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	conv.Messages = FilterOutCheckpoints(conv.Messages)
+	return conv, nil
+}
+
+// GetConversationByIdInternal returns the raw conversation including any
+// eco checkpoint pair. For server-internal use only — never hand the result
+// to a client.
+func GetConversationByIdInternal(ctx context.Context, id string) (*utils.Conversation, error) {
 	userID, ok := ctx.Value("userID").(string)
 	if !ok {
 		return nil, errors.New("user ID not found in request context")

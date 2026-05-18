@@ -194,6 +194,13 @@ type ModelSelected struct {
 	// execution to this directory). Server treats the value as opaque — it
 	// round-trips and persists alongside the per-conversation tool toggles.
 	ClientFolderPath string `json:"client_folder_path,omitempty"`
+
+	// EcoMode, when true, makes the server roll the oldest turns of the
+	// conversation into a single rolling "checkpoint" summary whenever the
+	// previous prompt token count exceeds the configured trigger. New
+	// conversations default to true; legacy rows that pre-date the field are
+	// upgraded to true at load time (see unmarshalModelSelected).
+	EcoMode bool `json:"eco_mode"`
 }
 
 // --- Conversation ---

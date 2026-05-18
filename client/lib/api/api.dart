@@ -474,6 +474,30 @@ class ApiService {
     );
   }
 
+  /// Overwrite one shortcut entry (e.g. "fast") in data/config.json on the
+  /// server. The body is a [ModelSelected]; the server reads text/vision/
+  /// image_gen and preserves the existing label/pricing/color.
+  Future<void> updateShortcut(String name, ModelSelected model) async {
+    final token = await _authService.getCurrentUserToken();
+    if (token == null) {
+      throw APIException('User not authenticated', statusCode: 401);
+    }
+    final response = await http.put(
+      Uri.parse('$baseUrl/shortcuts/$name'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      },
+      body: jsonEncode(model.toJson()),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw APIException(
+        'Failed to update shortcut: ${response.body}',
+        statusCode: response.statusCode,
+      );
+    }
+  }
+
   /// Overwrite the user's important_memory snippet on the server.
   Future<void> setImportantMemory(String content) async {
     final token = await _authService.getCurrentUserToken();

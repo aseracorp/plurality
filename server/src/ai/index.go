@@ -141,7 +141,12 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 			portExtSuffix()),
 	}
 
-	allMessages := append([]utils.Message{systemMsg}, conv.Messages...)
+	// Apply eco-mode checkpoint filtering before assembling the request.
+	// When eco is on: keep the rolling checkpoint pair and drop everything
+	// older than it. When eco is off: drop the checkpoint pair entirely
+	// and send the raw history.
+	visibleMessages := filterCheckpointsForRequest(conv.Messages, conv.ModelSelected.EcoMode)
+	allMessages := append([]utils.Message{systemMsg}, visibleMessages...)
 	optimizedMessages, hasAttachments, hasDocAttachments := PrepareMessagesForAI(allMessages, model)
 	msgReqList, _ := convertMessagesToOpenAI(optimizedMessages, model)
 
@@ -469,14 +474,15 @@ func GenerateTitleForMessage(message, model string) (string, error) {
 		},
 	}
 
-	maxTokens := 30
+	maxTokens := 500
 	temperature := 0.3
 	requestData := StandardChatRequest{
-		Model:       model,
-		Messages:    msgReqList,
-		MaxTokens:   &maxTokens,
-		Temperature: &temperature,
-		Stream:      false,
+		Model:           model,
+		Messages:        msgReqList,
+		MaxTokens:       &maxTokens,
+		Temperature:     &temperature,
+		Stream:          false,
+		ReasoningEffort: "low",
 	}
 
 	jsonData, err := json.Marshal(requestData)
@@ -528,4 +534,88 @@ func GenerateTitleForMessage(message, model string) (string, error) {
 	title := strings.TrimSpace(result.Choices[0].Message.Content)
 
 	return title, nil
+}
+
+// GenerateCheckpointSummary asks the configured fast model to produce a
+// dense summary of a slice of conversation history, used by the eco mode
+// rolling checkpoint. The input may include a previously-stored summary
+// prefixed with "PRIOR CHECKPOINT:" — the system prompt instructs the
+// model to fold it in rather than repeat it verbatim.
+func GenerateCheckpointSummary(text, model string) (string, error) {
+	if !LiteLLMReady() {
+		return "", fmt.Errorf("AI proxy is not ready")
+	}
+
+	msgReqList := []StandardMessageReq{
+		{
+			Role: "system",
+			Content: "You are summarising older conversation history that the live LLM will no longer see directly. " +
+				"Your summary REPLACES those messages in the live context, so any detail you drop is lost to the model. " +
+				"Rules:\n" +
+				"1. Preserve verbatim: code blocks, file paths, identifiers, IDs, error messages, command outputs, URLs, numeric values, exact quoted user requests.\n" +
+				"2. Preserve the FULL text content of any inline pasted snippet or text attachment shown to you under '[attachment: ...]' headers — copy them into a clearly-labeled section, do not paraphrase code or text the user pasted.\n" +
+				"3. Preserve tool_call → TOOL_RESULT outcomes: which tool was called, the key arguments, and the substantive result (paths created, errors returned, data retrieved). Drop only obviously verbose framing.\n" +
+				"4. For image / document / binary attachments noted as '[image attachment omitted]' or '[document attachment: ...]', just record that the attachment existed (filename and any context the user gave).\n" +
+				"5. Preserve user goals, decisions, plans, and rejected options chronologically so the live LLM understands where the conversation stands.\n" +
+				"6. The optional 'PRIOR CHECKPOINT' section at the start is a summary you produced earlier — fold its facts into your new summary in-place, do not repeat it verbatim and do not lose information from it.\n" +
+				"7. Be dense and structured (sections / bullets), but do NOT be brief at the cost of dropping concrete content. Length should match the input's information density.\n" +
+				"Respond with the summary text only — no preamble, no closing remarks.",
+		},
+		{
+			Role:    "user",
+			Content: text,
+		},
+	}
+
+	maxTokens := 8192
+	temperature := 0.2
+	requestData := StandardChatRequest{
+		Model:       model,
+		Messages:    msgReqList,
+		MaxTokens:   &maxTokens,
+		Temperature: &temperature,
+		Stream:      false,
+	}
+
+	jsonData, err := json.Marshal(requestData)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest("POST", LiteLLMBaseURL+"/v1/chat/completions", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		utils.Error("[EcoSummary] API request failed", nil, strconv.Itoa(resp.StatusCode), string(body))
+		return "", fmt.Errorf("API request failed with status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("failed to parse summary response: %w", err)
+	}
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("no choices in summary response")
+	}
+	return strings.TrimSpace(result.Choices[0].Message.Content), nil
 }

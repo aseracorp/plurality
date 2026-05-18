@@ -73,7 +73,10 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		utils.Log("[LLMLoop] Stream complete. Text length: %d, Tool calls: %d", len(ar.TextBuffer.String()), len(assistantMessage.ToolCalls))
 
 		// Refresh conversation from DB (finalizeStream already pushed the assistant message)
-		updatedConversation, err := db.GetConversationById(ctx, ar.ConversationID)
+		// Use the internal variant so any eco checkpoint pair is included —
+		// the LLM context filter (filterCheckpointsForRequest) handles
+		// whether to keep or drop it based on the user's eco toggle.
+		updatedConversation, err := db.GetConversationByIdInternal(ctx, ar.ConversationID)
 		if err != nil {
 			utils.Error("[LLMLoop] Error refreshing conversation from DB", err)
 			ar.setState(ctx, utils.StateIdle)
@@ -118,6 +121,12 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 					})
 				}()
 			}
+
+			// Eco-mode rolling-checkpoint compaction. Spawned at the end of
+			// the LLM loop so it can read the just-recorded assistant
+			// prompt_tokens. Uses an independent user-scoped context so a
+			// client disconnect doesn't interrupt the summary call.
+			go runEcoSummary(userContextFor(ar.UserID), ar.ConversationID)
 
 			return
 		}
@@ -465,8 +474,11 @@ func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.To
 		}
 	}
 
-	// Fetch current conversation — all tools receive it
-	conv, convErr := db.GetConversationById(ctx, ar.ConversationID)
+	// Fetch current conversation — all tools receive it. Tools may inspect
+	// raw history (read_message etc.), so use the internal variant; if a
+	// tool returns conversation slices back to the LLM it's already inside
+	// the LLM context so eco checkpoints are fine.
+	conv, convErr := db.GetConversationByIdInternal(ctx, ar.ConversationID)
 	if convErr != nil {
 		utils.Error("[LLMLoop] Error loading conversation for tool execution", convErr)
 		return utils.NewTextContent("Error: could not load conversation data")

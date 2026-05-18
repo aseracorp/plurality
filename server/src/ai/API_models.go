@@ -195,6 +195,11 @@ func toUtilsModel(m *auth.ShortcutModel) *utils.Model {
 // ShortcutModelSelected returns the ModelSelected from a named shortcut in
 // data/config.json (e.g. "fast", "smart"). Returns an empty struct when the
 // shortcut is missing — callers layer their own defaults.
+//
+// EcoMode defaults to true to match new-conversation defaults (see
+// db.unmarshalModelSelected); sub-agents and preset-driven jobs build their
+// ModelSelected from here, so without this default they'd silently run with
+// eco off.
 func ShortcutModelSelected(name string) utils.ModelSelected {
 	for _, s := range auth.GetConfig().Shortcuts {
 		if s.Name != name {
@@ -204,9 +209,10 @@ func ShortcutModelSelected(name string) utils.ModelSelected {
 			Text:     toUtilsModel(s.Models.Text),
 			Vision:   toUtilsModel(s.Models.Vision),
 			ImageGen: toUtilsModel(s.Models.ImageGen),
+			EcoMode:  true,
 		}
 	}
-	return utils.ModelSelected{}
+	return utils.ModelSelected{EcoMode: true}
 }
 
 // HandleListModels is OpenAI-list-compatible with added {presets, functions,

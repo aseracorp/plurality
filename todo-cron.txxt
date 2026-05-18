@@ -1,4 +1,0 @@
-- the agent promotion might allow defaulting to medium
-- make the preset select a shortcut rather than a model
-- add to prompt "hand hold the agent, for example append a specific task list rather than vague instructions" 
-- notification (add to agent system prompt that they can notif, add to cron tool that they should add the notif in the prompt) 
