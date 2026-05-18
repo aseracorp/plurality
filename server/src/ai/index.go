@@ -39,7 +39,7 @@ func baseSystemPrompt() string {
 // prompts when the env var is set, otherwise empty.
 func webhookExtSuffix() string {
 	if v := os.Getenv("WEBHOOK_EXT"); v != "" {
-		return "\n\nThe current exposed domain for webhooks is: " + v + " for external webhooks. Local ones can use localhost."
+		return "\n\nThe current exposed domain for webhooks is: " + v + " for external webhooks. Local ones (aka. non-SaaS that you start) must use localhost:8090!"
 	}
 	return ""
 }

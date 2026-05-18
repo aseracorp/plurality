@@ -73,6 +73,56 @@ Model? mergeModel(Model? presetModel, Model? currentModel) {
   );
 }
 
+/// Inverse of [mergeModel]'s tools merge: return only the entries from
+/// [userMap] that differ from [serverMap]. Absence in either map means
+/// "tool off". An entry the user turned off that the server defaults on
+/// is emitted as `'false'` so [mergeModel] can subtract it later.
+Map<String, String> diffToolsAgainst(
+  Map<String, String> userMap,
+  Map<String, String> serverMap,
+) {
+  final out = <String, String>{};
+  final keys = {...userMap.keys, ...serverMap.keys};
+  for (final key in keys) {
+    final user = userMap[key];
+    final server = serverMap[key];
+    if (user == server) continue;
+    out[key] = user ?? 'false';
+  }
+  return out;
+}
+
+Model? diffModelAgainst(Model? user, Model? serverDefault) {
+  if (user == null) return null;
+  return Model(
+    name: user.name,
+    params: user.params,
+    tools: diffToolsAgainst(user.tools, serverDefault?.tools ?? const {}),
+  );
+}
+
+/// Inverse of [mergePresetOnto]: produce a sparse [ModelSelected] containing
+/// only per-slot tool entries that differ from [serverDefault]. Persisted as
+/// a shortcut override so new server tools surface with their server defaults
+/// instead of being implicitly disabled.
+ModelSelected diffPresetAgainst(
+  ModelSelected user,
+  ModelSelected serverDefault,
+) {
+  return ModelSelected(
+    text: diffModelAgainst(user.text, serverDefault.text),
+    vision: diffModelAgainst(user.vision, serverDefault.vision),
+    imageGen: diffModelAgainst(user.imageGen, serverDefault.imageGen),
+    audioGen: diffModelAgainst(user.audioGen, serverDefault.audioGen),
+    voiceGen: diffModelAgainst(user.voiceGen, serverDefault.voiceGen),
+    audioTranscribe:
+        diffModelAgainst(user.audioTranscribe, serverDefault.audioTranscribe),
+    videoGen: diffModelAgainst(user.videoGen, serverDefault.videoGen),
+    videoVision: diffModelAgainst(user.videoVision, serverDefault.videoVision),
+    code: diffModelAgainst(user.code, serverDefault.code),
+  );
+}
+
 /// Build the functions list (server functions + local MCP tools), grouped by
 /// bundle parent. Each entry has shape:
 ///   { key, label, description, enabled: 'on'|'ask'|'off',
