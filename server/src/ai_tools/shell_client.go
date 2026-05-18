@@ -19,7 +19,6 @@ var ShellClientExecTool = utils.AITool{
 	Description:       "Execute shell commands on the user's device",
 	ToolID:            "exec",
 	BundleName:        "shell_client",
-	Cost:              0,
 	PickerLabel:       "Shell Execute (Device)",
 	PickerDescription: "Run shell commands on the user's device (PowerShell on Windows, sh on macOS/Linux)",
 	PickerDefault:     "ask",

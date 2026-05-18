@@ -10,7 +10,6 @@ var HTMLTool = utils.AITool{
 	Name:        "HTML Page",
 	Description: "Create an HTML page to show the result of a code snippet",
 	ToolID:      "html_page",
-	Cost:        0,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{

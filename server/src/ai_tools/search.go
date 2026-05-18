@@ -16,7 +16,6 @@ var SearchTool = utils.AITool{
 	Name:              "Search",
 	Description:       "Search on the internet via Google",
 	ToolID:            "search_web",
-	Cost:              100,
 	PickerLabel:       "Search Web",
 	PickerDescription: "Search sites via Google",
 	PickerDefault:     "on",

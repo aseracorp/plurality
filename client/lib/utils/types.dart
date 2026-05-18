@@ -196,6 +196,15 @@ class Message {
   @HiveField(7)
   String? name; // Tool messages only
 
+  @HiveField(8)
+  int? promptTokens;
+
+  @HiveField(9)
+  int? completionTokens;
+
+  @HiveField(10)
+  double? responseCost;
+
   Message({
     required this.role,
     required this.content,
@@ -205,6 +214,9 @@ class Message {
     this.toolCalls,
     this.toolCallId,
     this.name,
+    this.promptTokens,
+    this.completionTokens,
+    this.responseCost,
   }) : timestamp = timestamp ?? DateTime.now();
 
   bool get isBot => role == 'assistant';
@@ -292,6 +304,9 @@ class Message {
     if (toolCallId != null) data['tool_call_id'] = toolCallId;
     if (name != null) data['name'] = name;
     if (totalTokens != null) data['total_tokens'] = totalTokens;
+    if (promptTokens != null) data['prompt_tokens'] = promptTokens;
+    if (completionTokens != null) data['completion_tokens'] = completionTokens;
+    if (responseCost != null) data['response_cost'] = responseCost;
     if (model != null) data['model'] = model!.toJson();
     data['timestamp'] = timestamp.toIso8601String();
 
@@ -334,6 +349,9 @@ class Message {
       toolCallId: json['tool_call_id'],
       name: json['name'],
       totalTokens: json['total_tokens'],
+      promptTokens: json['prompt_tokens'],
+      completionTokens: json['completion_tokens'],
+      responseCost: (json['response_cost'] as num?)?.toDouble(),
       model: json['model'] != null ? Model.fromJson(json['model']) : null,
       timestamp:
           json['timestamp'] != null

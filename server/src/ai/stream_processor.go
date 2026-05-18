@@ -37,12 +37,15 @@ func (sp *StreamProcessor) broadcastText(content string) {
 	}
 	sp.request.TextBuffer.WriteString(content)
 	sp.request.Broadcast(SSEEvent{
-		Type:           "text",
-		Content:        content,
-		ConversationID: sp.request.ConversationID,
-		Model:          &sp.model,
-		TotalTokens:    sp.request.TokenUsage,
-		Title:          sp.conversation.Title,
+		Type:             "text",
+		Content:          content,
+		ConversationID:   sp.request.ConversationID,
+		Model:            &sp.model,
+		TotalTokens:      sp.request.TokenUsage,
+		PromptTokens:     sp.request.PromptTokens,
+		CompletionTokens: sp.request.CompletionTokens,
+		ResponseCost:     sp.request.ResponseCost,
+		Title:            sp.conversation.Title,
 	})
 }
 
@@ -67,10 +70,13 @@ func (sp *StreamProcessor) accumulateToolCall(id, name, arguments string) {
 // buildAssistantMessage creates the final assistant Message from accumulated buffers.
 func (sp *StreamProcessor) buildAssistantMessage() utils.Message {
 	message := utils.Message{
-		Role:        "assistant",
-		Timestamp:   time.Now().Format(time.RFC3339),
-		TotalTokens: sp.request.TokenUsage,
-		Model:       sp.model,
+		Role:             "assistant",
+		Timestamp:        time.Now().Format(time.RFC3339),
+		TotalTokens:      sp.request.TokenUsage,
+		PromptTokens:     sp.request.PromptTokens,
+		CompletionTokens: sp.request.CompletionTokens,
+		ResponseCost:     sp.request.ResponseCost,
+		Model:            sp.model,
 	}
 
 	text := sp.request.TextBuffer.String()

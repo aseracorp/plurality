@@ -1344,7 +1344,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
             ),
           ),
 
-        // if last message of messages has message.TokenPrice > 1000
+        // Long-conversation warning: token usage grows as context grows.
         if (!_closeMessageWarning &&
             messages.isNotEmpty &&
             messages.last.totalTokens != null &&
@@ -1364,9 +1364,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
                 SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    "Replying to long conversation costs more credits. Consider starting a new conversation whenever possible. Last message cost was " +
-                        messages.last.totalTokens.toString() +
-                        " credits (message cost goes up and down as the conversation goes on).",
+                    "Long conversations use more tokens per reply. Consider starting a new conversation when possible. Last message used ${messages.last.totalTokens} tokens (token use grows as the conversation gets longer).",
                     style: TextStyle(color: Colors.white, fontSize: 16),
                   ),
                 ),

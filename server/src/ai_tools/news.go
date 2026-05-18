@@ -35,7 +35,6 @@ var NewsSearchTool = utils.AITool{
 	Name:        "News Search",
 	Description: "Search for news articles across multiple sources by domain or keyword",
 	ToolID:      "search_news",
-	Cost:        500,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{

@@ -17,7 +17,6 @@ var PlaceSearchTool = utils.AITool{
 	Name:              "Place Search",
 	Description:       "Search for places on Google Maps",
 	ToolID:            "place_search",
-	Cost:              600,
 	PickerLabel:       "Place Search",
 	PickerDescription: "Search locations via Google Maps",
 	PickerDefault:     "on",

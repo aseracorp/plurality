@@ -14,6 +14,9 @@ class SSEEvent {
   final String? state;
   final Model? model;
   final int? totalTokens;
+  final int? promptTokens;
+  final int? completionTokens;
+  final double? responseCost;
   final String? title;
 
   SSEEvent({
@@ -28,6 +31,9 @@ class SSEEvent {
     this.state,
     this.model,
     this.totalTokens,
+    this.promptTokens,
+    this.completionTokens,
+    this.responseCost,
     this.title,
   });
 
@@ -47,6 +53,9 @@ class SSEEvent {
       state: json['state'],
       model: json['model'] != null ? Model.fromJson(json['model']) : null,
       totalTokens: json['total_tokens'],
+      promptTokens: json['prompt_tokens'],
+      completionTokens: json['completion_tokens'],
+      responseCost: (json['response_cost'] as num?)?.toDouble(),
       title: json['title'],
     );
   }

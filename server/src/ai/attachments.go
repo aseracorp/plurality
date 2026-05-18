@@ -163,13 +163,16 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 			result[i] = msg
 		} else {
 			result[i] = utils.Message{
-				Role:        msg.Role,
-				ToolCalls:   msg.ToolCalls,
-				ToolCallID:  msg.ToolCallID,
-				Name:        msg.Name,
-				Timestamp:   msg.Timestamp,
-				TotalTokens: msg.TotalTokens,
-				Model:       msg.Model,
+				Role:             msg.Role,
+				ToolCalls:        msg.ToolCalls,
+				ToolCallID:       msg.ToolCallID,
+				Name:             msg.Name,
+				Timestamp:        msg.Timestamp,
+				TotalTokens:      msg.TotalTokens,
+				PromptTokens:     msg.PromptTokens,
+				CompletionTokens: msg.CompletionTokens,
+				ResponseCost:     msg.ResponseCost,
+				Model:            msg.Model,
 			}
 			if len(newParts) > 0 {
 				result[i].Content = utils.NewPartsContent(newParts)

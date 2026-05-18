@@ -16,7 +16,6 @@ var DebugMCPTool = utils.AITool{
 	Description:       "Debug MCP server processes",
 	ToolID:            "debug_mcp",
 	BundleName:        "mcp_capabilities",
-	Cost:              0,
 	PickerLabel:       "Debug MCP",
 	PickerDescription: "View MCP server logs for debugging",
 	PickerDefault:     "ask",

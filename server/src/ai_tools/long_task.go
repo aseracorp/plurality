@@ -40,7 +40,6 @@ var LongTaskTool = utils.AITool{
 	Name:              "Long Task",
 	Description:       "Maintain a checklist of subtasks for multi-step requests. Call 'set' once at the start with the full plan, then 'complete' tasks as you finish each one. If you stop while items are still open, the system will remind you to keep going — call 'clear' to drop them, or 'pause' (with optional 'reason') if you can't continue right now but want to come back later. Use 'resume' to re-enable a paused list.",
 	ToolID:            "long_task",
-	Cost:              0,
 	PickerLabel:       "Long Task",
 	PickerDescription: "Maintain a checklist of subtasks for multi-step requests",
 	PickerDefault:     "on",

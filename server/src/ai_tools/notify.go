@@ -47,7 +47,6 @@ var NotifyTool = utils.AITool{
 	Name:          "Send Notification",
 	Description:   "Send a push notification to the user's device via the configured NTFY server.",
 	ToolID:        NotifyToolID,
-	Cost:          0,
 	PickerDefault: "",
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",

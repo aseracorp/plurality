@@ -13,7 +13,6 @@ var ReadDocumentTool = utils.AITool{
 	Name:        "Document Reader",
 	Description: "Extract readable text from document attachments (PDF, DOCX, XLSX, PPTX)",
 	ToolID:      "read_document",
-	Cost:        0,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{

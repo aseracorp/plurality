@@ -141,9 +141,12 @@ type Message struct {
 	Name       string         `json:"name,omitempty"`         // tool role only
 
 	// Metadata — stored in DB, not sent to LLMs
-	Timestamp   string `json:"timestamp,omitempty"`
-	TotalTokens int    `json:"total_tokens,omitempty"`
-	Model       Model  `json:"model,omitempty"`
+	Timestamp        string  `json:"timestamp,omitempty"`
+	TotalTokens      int     `json:"total_tokens,omitempty"`
+	PromptTokens     int     `json:"prompt_tokens,omitempty"`
+	CompletionTokens int     `json:"completion_tokens,omitempty"`
+	ResponseCost     float64 `json:"response_cost,omitempty"`
+	Model            Model   `json:"model,omitempty"`
 }
 
 // TextContent returns the text of the first "text" content part.
@@ -265,9 +268,6 @@ type PropertyParameterToolsRequest struct {
 }
 
 // AITool is a server-side tool registered in the tool registry.
-//
-// Cost is retained as an inert field so existing tool literals still compile,
-// but it has no effect now that the credit/billing system is removed.
 type AITool struct {
 	Name          string                                                     `json:"name"`
 	Description   string                                                     `json:"description"`
@@ -277,7 +277,6 @@ type AITool struct {
 	LoadingString string                                                     `json:"loading_string"`
 	IconURL       string                                                     `json:"icon_url"`
 	Author        string                                                     `json:"author"`
-	Cost          int                                                        `json:"-"`
 	Exec          func(context.Context, string, Conversation) MessageContent `json:"-"`
 
 	// Picker metadata — fields used by HandleListModels to drive the UI tool

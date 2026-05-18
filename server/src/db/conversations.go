@@ -455,8 +455,8 @@ func DeleteAllConversations(ctx context.Context, userID string) (int64, error) {
 // Returns the auto-incremented message ID.
 func insertMessage(tx *sql.Tx, conversationID string, seq int64, msg utils.Message) (int64, error) {
 	res, err := tx.Exec(
-		`INSERT INTO messages (conversation_id, seq, role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, model)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages (conversation_id, seq, role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, prompt_tokens, completion_tokens, response_cost, model)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		conversationID,
 		seq,
 		msg.Role,
@@ -466,6 +466,9 @@ func insertMessage(tx *sql.Tx, conversationID string, seq int64, msg utils.Messa
 		nullString(msg.Name),
 		nullString(msg.Timestamp),
 		msg.TotalTokens,
+		msg.PromptTokens,
+		msg.CompletionTokens,
+		msg.ResponseCost,
 		marshalModel(msg.Model),
 	)
 	if err != nil {
@@ -567,7 +570,7 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 
 	// Load messages
 	msgRows, err := db.Query(
-		`SELECT role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, model
+		`SELECT role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, prompt_tokens, completion_tokens, response_cost, model
 		 FROM messages WHERE conversation_id = ? ORDER BY seq`, id,
 	)
 	if err != nil {
@@ -592,6 +595,9 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 			&name,
 			&timestamp,
 			&msg.TotalTokens,
+			&msg.PromptTokens,
+			&msg.CompletionTokens,
+			&msg.ResponseCost,
 			&modelJSON,
 		)
 		if err != nil {

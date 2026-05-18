@@ -183,13 +183,16 @@ class MessageAdapter extends TypeAdapter<Message> {
       toolCalls: (fields[5] as List?)?.cast<ToolCall>(),
       toolCallId: fields[6] as String?,
       name: fields[7] as String?,
+      promptTokens: (fields[8] as num?)?.toInt(),
+      completionTokens: (fields[9] as num?)?.toInt(),
+      responseCost: (fields[10] as num?)?.toDouble(),
     );
   }
 
   @override
   void write(BinaryWriter writer, Message obj) {
     writer
-      ..writeByte(8)
+      ..writeByte(11)
       ..writeByte(0)
       ..write(obj.role)
       ..writeByte(1)
@@ -205,7 +208,13 @@ class MessageAdapter extends TypeAdapter<Message> {
       ..writeByte(6)
       ..write(obj.toolCallId)
       ..writeByte(7)
-      ..write(obj.name);
+      ..write(obj.name)
+      ..writeByte(8)
+      ..write(obj.promptTokens)
+      ..writeByte(9)
+      ..write(obj.completionTokens)
+      ..writeByte(10)
+      ..write(obj.responseCost);
   }
 
   @override

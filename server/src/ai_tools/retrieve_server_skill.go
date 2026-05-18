@@ -13,7 +13,6 @@ var RetrieveServerSkillTool = utils.AITool{
 	Name:        "Retrieve Server Skill",
 	Description: "Retrieve instructions from the server's shared skills library.",
 	ToolID:      "retrieve_server_skill",
-	Cost:        0,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{

@@ -95,7 +95,6 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/icons/credit_icon.svg
     - assets/logo_512.png
     - assets/logo_64.png
     - assets/version.json

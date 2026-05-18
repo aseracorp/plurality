@@ -14,7 +14,6 @@ var DiceRollTool = utils.AITool{
 	Name:              "Dice Roller",
 	Description:       "Roll a dice with a specified number of faces",
 	ToolID:            "roll_dice",
-	Cost:              0,
 	PickerLabel:       "Roll Dice",
 	PickerDescription: "Well... rolls a dice",
 	PickerDefault:     "on",

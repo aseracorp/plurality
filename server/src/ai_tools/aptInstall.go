@@ -18,7 +18,6 @@ var AptInstallTool = utils.AITool{
 	Description:       "Install packages via apt",
 	ToolID:            "apt_install",
 	BundleName:        "system_tools",
-	Cost:              0,
 	PickerLabel:       "Apt Install",
 	PickerDescription: "Install system packages via apt-get",
 	PickerDefault:     "ask",

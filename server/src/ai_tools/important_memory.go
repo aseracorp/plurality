@@ -24,7 +24,6 @@ var UpdateImportantMemoryTool = utils.AITool{
 	Name:              "Update Important Memory",
 	Description:       "Overwrite the important_memory snippet that is injected into every system prompt.",
 	ToolID:            UpdateImportantMemoryToolID,
-	Cost:              0,
 	PickerLabel:       "Important Memory",
 	PickerDescription: "Lets the assistant maintain a compact snippet (the user's name, contacts, key preferences…) that is shown at the top of every conversation. Use files and reference them here for longer memories.",
 	PickerDefault:     "on",

@@ -72,7 +72,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 
 		utils.Log("[LLMLoop] Stream complete. Text length: %d, Tool calls: %d", len(ar.TextBuffer.String()), len(assistantMessage.ToolCalls))
 
-		// Refresh conversation from DB (finalizeCredits already pushed the assistant message)
+		// Refresh conversation from DB (finalizeStream already pushed the assistant message)
 		updatedConversation, err := db.GetConversationById(ctx, ar.ConversationID)
 		if err != nil {
 			utils.Error("[LLMLoop] Error refreshing conversation from DB", err)
@@ -420,7 +420,7 @@ func categorizeToolCalls(toolCalls []utils.ToolCall) (serverTools, clientTools [
 	return
 }
 
-// executeServerTool runs a server-side tool and handles credit deduction.
+// executeServerTool runs a server-side tool.
 // MCP tools are checked first (so namespaced MCP names don't collide with
 // builtins); builtin tools come from ai_tools.Registry.
 func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.ToolCall, payload ChatPayload) (result utils.MessageContent) {

@@ -51,9 +51,12 @@ CREATE TABLE IF NOT EXISTS messages (
 	tool_calls      TEXT,
 	tool_call_id    TEXT,
 	name            TEXT,
-	timestamp       TEXT,
-	total_tokens    INTEGER DEFAULT 0,
-	model           TEXT,
+	timestamp         TEXT,
+	total_tokens      INTEGER DEFAULT 0,
+	prompt_tokens     INTEGER DEFAULT 0,
+	completion_tokens INTEGER DEFAULT 0,
+	response_cost     REAL    DEFAULT 0,
+	model             TEXT,
 	UNIQUE(conversation_id, seq)
 );
 
@@ -128,6 +131,16 @@ func GetUserDB(userID string) (*sql.DB, error) {
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_conversations_trigger ON conversations(trigger_type, trigger_id)`); err != nil {
 		utils.Error("[SQLite] creating idx_conversations_trigger failed", err)
+	}
+
+	if err := ensureColumn(db, "messages", "prompt_tokens", "INTEGER DEFAULT 0"); err != nil {
+		utils.Error("[SQLite] migration prompt_tokens failed", err)
+	}
+	if err := ensureColumn(db, "messages", "completion_tokens", "INTEGER DEFAULT 0"); err != nil {
+		utils.Error("[SQLite] migration completion_tokens failed", err)
+	}
+	if err := ensureColumn(db, "messages", "response_cost", "REAL DEFAULT 0"); err != nil {
+		utils.Error("[SQLite] migration response_cost failed", err)
 	}
 
 	actual, _ := userDBs.LoadOrStore(userID, db)

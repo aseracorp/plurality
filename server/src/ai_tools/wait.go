@@ -27,7 +27,6 @@ var WaitTool = utils.AITool{
 	Name:        "Wait",
 	Description: "Pause the agent for a given number of seconds and resume automatically",
 	ToolID:      WaitToolID,
-	Cost:        0,
 	// Empty PickerDefault hides it from the toggle UI. The registry force-
 	// includes the tool unconditionally.
 	PickerDefault: "",

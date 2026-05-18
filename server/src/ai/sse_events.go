@@ -19,9 +19,12 @@ type SSEEvent struct {
 	IsServer       bool            `json:"is_server"`              // true = server-side tool, false = client must execute
 	ConversationID string          `json:"conversation_id"`
 	State          string          `json:"state,omitempty"` // for "state_change" events
-	Model          *utils.Model    `json:"model,omitempty"`
-	TotalTokens    int             `json:"total_tokens,omitempty"`
-	Title          string          `json:"title,omitempty"`
+	Model            *utils.Model `json:"model,omitempty"`
+	TotalTokens      int          `json:"total_tokens,omitempty"`
+	PromptTokens     int          `json:"prompt_tokens,omitempty"`
+	CompletionTokens int          `json:"completion_tokens,omitempty"`
+	ResponseCost     float64      `json:"response_cost,omitempty"`
+	Title            string       `json:"title,omitempty"`
 }
 
 // WriteSSEEvent serializes an SSEEvent and writes it to an HTTP response writer.

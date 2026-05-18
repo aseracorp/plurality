@@ -169,6 +169,8 @@ class InfoButton extends StatelessWidget {
   }
 
   void _showTokenInfoModal(BuildContext context) {
+    final hasCost =
+        message.responseCost != null && message.responseCost! > 0;
     showDialog(
       context: context,
       builder: (BuildContext context) {
@@ -179,10 +181,21 @@ class InfoButton extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Credits spent:',
+                'Tokens:',
                 style: const TextStyle(fontWeight: FontWeight.bold),
               ),
-              Text('${message.totalTokens ?? "?"}'),
+              Text('Input: ${message.promptTokens ?? "?"}'),
+              Text('Output: ${message.completionTokens ?? "?"}'),
+              Text('Total: ${message.totalTokens ?? "?"}'),
+              if (hasCost) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Cost:',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                Text('\$${message.responseCost!.toStringAsFixed(4)}'),
+              ],
+              const SizedBox(height: 8),
               Text(
                 'Model used:',
                 style: const TextStyle(fontWeight: FontWeight.bold),

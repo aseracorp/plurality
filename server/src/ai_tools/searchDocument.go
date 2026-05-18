@@ -13,7 +13,6 @@ var SearchDocumentTool = utils.AITool{
 	Name:        "Document Search",
 	Description: "Search document attachments (PDF, DOCX, XLSX, PPTX) with regex",
 	ToolID:      "search_document",
-	Cost:        0,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{

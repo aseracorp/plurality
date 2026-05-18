@@ -23,7 +23,6 @@ var ShellExecTool = utils.AITool{
 	Description:       "Execute shell commands, with optional background tasks",
 	ToolID:            "shell_exec",
 	BundleName:        "system_tools",
-	Cost:              0,
 	PickerLabel:       "Shell Execute",
 	PickerDescription: "Execute shell commands on the server",
 	PickerDefault:     "ask",

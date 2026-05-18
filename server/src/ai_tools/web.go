@@ -17,7 +17,6 @@ var WebTool = utils.AITool{
 	Name:              "Web",
 	Description:       "Visit a link to a website",
 	ToolID:            "visit_link",
-	Cost:              200,
 	PickerLabel:       "Visit Link",
 	PickerDescription: "Visit websites shared in the chat",
 	PickerDefault:     "on",

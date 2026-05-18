@@ -17,7 +17,6 @@ var ConversationAttachmentsTool = utils.AITool{
 	Name:        "Conversation Attachments",
 	Description: "Retrieve attachments from the conversation",
 	ToolID:      "conversation_attachments",
-	Cost:        0,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
