@@ -287,4 +287,10 @@ type AITool struct {
 	PickerDescription string `json:"-"`
 	PickerDefault     string `json:"-"` // "on", "ask", "off", or "" (hidden)
 	PickerOrder       int    `json:"-"`
+
+	// ClientSide marks tools whose schema lives in Registry (so they appear
+	// in the picker) but whose execution happens on the device. The tool
+	// loop's categorizeToolCalls treats them as client-routed even though
+	// GetTool returns them.
+	ClientSide bool `json:"-"`
 }

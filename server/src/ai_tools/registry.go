@@ -32,6 +32,7 @@ var Registry = map[string]utils.AITool{
 	WaitTool.ToolID:                    WaitTool,
 	NotifyTool.ToolID:                  NotifyTool,
 	UpdateImportantMemoryTool.ToolID:   UpdateImportantMemoryTool,
+	ShellClientExecTool.ToolID:         ShellClientExecTool,
 }
 
 // RegisterRetrieveServerSkill adds retrieve_server_skill to the registry.
@@ -75,6 +76,15 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 	var requests []utils.ToolsRequest
 	var selected = model.Tools
 
+	// Names the client sent in ClientSideTools. Used below to skip the
+	// Registry stub for ClientSide tools when the client has shipped its
+	// own (richer, e.g. with OS/environment info baked into the
+	// description) version of the same tool.
+	clientSent := make(map[string]bool, len(ClientSideTools))
+	for _, ct := range ClientSideTools {
+		clientSent[ct.Name] = true
+	}
+
 	for _, tool := range Registry {
 		if tool.ToolID == ConversationAttachmentsTool.ToolID || tool.ToolID == ReadDocumentTool.ToolID || tool.ToolID == SearchDocumentTool.ToolID {
 			continue // handled separately below
@@ -96,6 +106,12 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 		}
 
 		if _, ok := selected[selKey]; ok {
+			// ClientSide tools: if the client also shipped its own enriched
+			// version (with runtime OS/env info), skip the Registry stub —
+			// the ClientSideTools loop below will add the client's version.
+			if tool.ClientSide && clientSent[selKey] {
+				continue
+			}
 			req := tool.ToolRequest
 			if tool.BundleName != "" {
 				// Emit the namespaced name and enriched description to the LLM.

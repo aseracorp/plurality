@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:plurality/api/MCP.dart';
 import 'package:plurality/api/skills_service.dart';
 import 'package:plurality/api/filesystem_service.dart';
+import 'package:plurality/api/shell_service.dart';
 
 import '../utils/types.dart';
 import 'api.dart';
@@ -117,6 +119,13 @@ class ChatService {
   final MCPService _mcp = MCPService();
   final SkillsService _skills = SkillsService();
   final FilesystemService _filesystem = FilesystemService();
+  final ShellService _shell = ShellService();
+
+  /// True on the three desktop platforms where `Process.start` works. The
+  /// device-side shell tool is only advertised there — on mobile the tool is
+  /// invisible to the LLM.
+  static bool get _isDesktop =>
+      Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 
   /// Resolve the attached folder path from the per-conversation model
   /// selection. Empty/null means no folder is attached, which is what gates
@@ -220,6 +229,8 @@ class ChatService {
           ..._mcp.getToolList(),
           if (skillNames.isNotEmpty) _skills.getToolDefinition(),
           if (attachedFolder != null) ..._filesystem.getToolDefinitions(),
+          if (_isDesktop)
+            _shell.getToolDefinition(attachedFolder: attachedFolder),
         ],
         availableSkills: skillNames,
       );
@@ -263,6 +274,8 @@ class ChatService {
           ..._mcp.getToolList(),
           if (skillNames.isNotEmpty) _skills.getToolDefinition(),
           if (attachedFolder != null) ..._filesystem.getToolDefinitions(),
+          if (_isDesktop)
+            _shell.getToolDefinition(attachedFolder: attachedFolder),
         ],
         availableSkills: skillNames,
       );
@@ -556,6 +569,8 @@ class ChatService {
       ..._mcp.getToolList(),
       if (skillNames.isNotEmpty) _skills.getToolDefinition(),
       if (attachedFolder != null) ..._filesystem.getToolDefinitions(),
+      if (_isDesktop)
+        _shell.getToolDefinition(attachedFolder: attachedFolder),
     ];
   }
 
@@ -668,6 +683,24 @@ class ChatService {
           continue;
         }
 
+        // Device-side shell. cwd defaults to the attached folder if set,
+        // else the user's home directory; absolute pwd values are honored.
+        if (toolCall.function.name == ShellService.toolName) {
+          final args = jsonDecode(
+            toolCall.function.arguments.isEmpty
+                ? '{}'
+                : toolCall.function.arguments,
+          ) as Map<String, dynamic>;
+          final root = _folderFromModel(modelSelected);
+          final result = await _shell.executeShellExec(root, args);
+          results.add(Message.toolResult(
+            toolCallId: toolCall.id,
+            name: toolCall.function.name,
+            result: result,
+          ));
+          continue;
+        }
+
         final serverName = _mcp.getToolServerName(toolCall.function.name);
         if (serverName == null) {
           results.add(Message.toolResult(
@@ -744,8 +777,12 @@ class ChatService {
 
     for (final toolCall in askTools) {
       final approved = decisions[toolCall.id] ?? false;
-      final isClientTool = _mcp.getToolServerName(toolCall.function.name) != null
-          || toolCall.function.name == 'retrieve_skill';
+      final name = toolCall.function.name;
+      final isClientTool = _mcp.getToolServerName(name) != null
+          || name == 'retrieve_skill'
+          || name == FilesystemService.readToolName
+          || name == FilesystemService.writeToolName
+          || name == ShellService.toolName;
       if (isClientTool) {
         clientAskTools.add(toolCall);
       } else {
@@ -782,6 +819,27 @@ class ChatService {
             );
             clientResults.add(Message.toolResult(
               toolCallId: toolCall.id, name: toolCall.function.name, result: content,
+            ));
+          } else if (toolCall.function.name == FilesystemService.readToolName ||
+              toolCall.function.name == FilesystemService.writeToolName) {
+            final args = jsonDecode(
+              toolCall.function.arguments.isEmpty ? '{}' : toolCall.function.arguments,
+            ) as Map<String, dynamic>;
+            final root = _folderFromModel(modelSelected);
+            final result = toolCall.function.name == FilesystemService.readToolName
+                ? await _filesystem.executeFsRead(root, args)
+                : await _filesystem.executeFsWrite(root, args);
+            clientResults.add(Message.toolResult(
+              toolCallId: toolCall.id, name: toolCall.function.name, result: result,
+            ));
+          } else if (toolCall.function.name == ShellService.toolName) {
+            final args = jsonDecode(
+              toolCall.function.arguments.isEmpty ? '{}' : toolCall.function.arguments,
+            ) as Map<String, dynamic>;
+            final root = _folderFromModel(modelSelected);
+            final result = await _shell.executeShellExec(root, args);
+            clientResults.add(Message.toolResult(
+              toolCallId: toolCall.id, name: toolCall.function.name, result: result,
             ));
           } else {
             final serverName = _mcp.getToolServerName(toolCall.function.name)!;
@@ -836,6 +894,8 @@ class ChatService {
             ..._mcp.getToolList(),
             if (skillNames.isNotEmpty) _skills.getToolDefinition(),
             if (attachedFolder != null) ..._filesystem.getToolDefinitions(),
+            if (_isDesktop)
+              _shell.getToolDefinition(attachedFolder: attachedFolder),
           ],
           availableSkills: skillNames,
         );

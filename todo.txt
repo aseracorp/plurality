@@ -3,6 +3,7 @@
 - AI galere a faire des webhook en local sur le bon port
 - completed agents should appear as tool call (check agent) rather than as user messsages
 - client tools are defined in the sever???
+- shortcuts  shouold be additive on the default rather than completely hardcoded (bc of new tools)
 
 - ECO MODE : need max token per conv, and compacting
 - client side bash (need to tell the AI what OS)

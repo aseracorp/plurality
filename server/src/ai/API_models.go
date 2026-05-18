@@ -121,6 +121,7 @@ var BuiltinFunctionBundles = map[string]FunctionBundle{
 	"mcp_capabilities":  {Key: "mcp_capabilities", Label: "MCP Capabilities", Description: "Manage and debug MCP server integrations"},
 	"system_tools":      {Key: "system_tools", Label: "System Tools", Description: "Execute commands and install packages on the server"},
 	"filesystem_server": {Key: "filesystem_server", Label: "Server Filesystem", Description: "Read and write files on the server"},
+	"shell_client":      {Key: "shell_client", Label: "Shell (Device)", Description: "Run shell commands on the user's device (PowerShell on Windows, sh on macOS/Linux)"},
 }
 
 // buildModelInfoList projects the litellm-driven registry into the client-facing

@@ -399,15 +399,20 @@ func schemaForClientTool(name string, defs []utils.FunctionToolsRequest) json.Ra
 // categorizeToolCalls splits tool calls into server-side (server-side MCP or
 // builtin registry) and client-side. MCP is checked first so that a namespaced
 // MCP tool (e.g. "foo__search_web") is not mistakenly matched to a builtin
-// with the same bare name.
+// with the same bare name. Registry entries with ClientSide: true (e.g.
+// shell_client__exec) are routed to the client even though GetTool finds them.
 func categorizeToolCalls(toolCalls []utils.ToolCall) (serverTools, clientTools []utils.ToolCall) {
 	for _, tc := range toolCalls {
 		if mcp.IsMCPTool(tc.Function.Name) {
 			serverTools = append(serverTools, tc)
 			continue
 		}
-		if _, isBuiltin := ai_tools.GetTool(tc.Function.Name); isBuiltin {
-			serverTools = append(serverTools, tc)
+		if builtin, isBuiltin := ai_tools.GetTool(tc.Function.Name); isBuiltin {
+			if builtin.ClientSide {
+				clientTools = append(clientTools, tc)
+			} else {
+				serverTools = append(serverTools, tc)
+			}
 			continue
 		}
 		clientTools = append(clientTools, tc)

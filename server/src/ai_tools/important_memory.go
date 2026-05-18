@@ -26,7 +26,7 @@ var UpdateImportantMemoryTool = utils.AITool{
 	ToolID:            UpdateImportantMemoryToolID,
 	Cost:              0,
 	PickerLabel:       "Important Memory",
-	PickerDescription: "Lets the assistant maintain a compact snippet (the user's name, contacts, key preferences…) that is shown at the top of every conversation.",
+	PickerDescription: "Lets the assistant maintain a compact snippet (the user's name, contacts, key preferences…) that is shown at the top of every conversation. Use files and reference them here for longer memories.",
 	PickerDefault:     "on",
 	PickerOrder:       45,
 	ToolRequest: utils.ToolsRequest{
