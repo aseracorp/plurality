@@ -449,6 +449,53 @@ class ApiService {
     }
   }
 
+  /// Fetch the authenticated user's important_memory snippet. Returns the
+  /// current value plus the server-side default (used when the user hasn't
+  /// written anything yet) so the UI can offer a "reset" affordance.
+  Future<({String memory, String defaultMemory})> getImportantMemory() async {
+    final token = await _authService.getCurrentUserToken();
+    if (token == null) {
+      throw APIException('User not authenticated', statusCode: 401);
+    }
+    final response = await http.get(
+      Uri.parse('$baseUrl/user/memory'),
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw APIException(
+        'Failed to fetch memory: ${response.reasonPhrase}',
+        statusCode: response.statusCode,
+      );
+    }
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    return (
+      memory: (data['memory'] ?? '') as String,
+      defaultMemory: (data['default'] ?? '') as String,
+    );
+  }
+
+  /// Overwrite the user's important_memory snippet on the server.
+  Future<void> setImportantMemory(String content) async {
+    final token = await _authService.getCurrentUserToken();
+    if (token == null) {
+      throw APIException('User not authenticated', statusCode: 401);
+    }
+    final response = await http.put(
+      Uri.parse('$baseUrl/user/memory'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      },
+      body: jsonEncode({'memory': content}),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw APIException(
+        'Failed to save memory: ${response.reasonPhrase}',
+        statusCode: response.statusCode,
+      );
+    }
+  }
+
   // Function to update conversation title
   Future<void> updateConversationTitle(
     String conversationID,

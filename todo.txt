@@ -1,19 +1,22 @@
 # 2
-- Cant attach json??
 - user presentation card (name, email, etc...) (maybe thats the shared meemory skill)
 - AI galere a faire des webhook en local sur le bon port
 - completed agents should appear as tool call (check agent) rather than as user messsages
+- client tools are defined in the sever???
+
+- ECO MODE : need max token per conv, and compacting
+- client side bash (need to tell the AI what OS)
+- Client lock (if client tools used and such for remote )
 - Per-user everything: using a map of linux user > plurality user 
   - Per-user MCP
   - docker ?
-- client tools are defined in the sever???
-- Client lock (if client tools used and such for remote )
-- UI to manage presets / shortcuts?
-- client side bash (need to tell the AI what OS)
-- queue messages (user and agents!)
+- finish openid
+- Fix realtime events disconnecting and conversation losing loading states
+
 
 #3
-- rework calls
+- queue messages (user and agents!)
+- rework voice calls
 - Tool to ask user QCM
 - Recvover: check last X emssages for timers without rsults, or outstadnding task lists
 - Add a way for AI to include pre-made prompt in the message (like "click here to know more" > paste the prompt "tell me more about X")

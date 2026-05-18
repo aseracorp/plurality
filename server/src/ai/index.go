@@ -14,6 +14,7 @@ import (
 
 	"github.com/azukaar/plurality/src/ai_tools"
 	"github.com/azukaar/plurality/src/mcp"
+	"github.com/azukaar/plurality/src/memory"
 	"github.com/azukaar/plurality/src/miniapps"
 	"github.com/azukaar/plurality/src/skills"
 	"github.com/azukaar/plurality/src/utils"
@@ -117,6 +118,13 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 
 	if !LiteLLMReady() {
 		return nil, 0, fmt.Errorf("AI proxy is not ready, please try again in a moment")
+	}
+
+	// Append the per-user important_memory snippet. It is always present so the
+	// LLM can read its current value, and is overwritten via the
+	// update_important_memory tool.
+	if username, ok := ctx.Value("userID").(string); ok && username != "" {
+		systemPrompt += "\n\nThis is your important_memory snippet, you can edit it further but keep it compact:\n```\n" + memory.Get(username) + "\n```"
 	}
 
 	systemMsg := utils.Message{

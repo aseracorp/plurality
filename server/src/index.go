@@ -129,6 +129,8 @@ func main() {
 	r.HandleFunc("/transcribe", auth.AuthMiddleware(ai.HandleTranscribe)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/generate-audio", auth.AuthMiddleware(ai.HandleGenerateAudio)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/delete-user", auth.AuthMiddleware(user.API_DeleteUser)).Methods("DELETE", "OPTIONS")
+	r.HandleFunc("/user/memory", auth.AuthMiddleware(user.API_GetMemory)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/user/memory", auth.AuthMiddleware(user.API_UpdateMemory)).Methods("PUT", "OPTIONS")
 
 	// CRON scheduled prompts
 	r.HandleFunc("/crons", auth.AuthMiddleware(cron.API_ListCrons)).Methods("GET", "OPTIONS")

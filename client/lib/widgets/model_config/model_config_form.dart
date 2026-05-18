@@ -40,11 +40,18 @@ class ToolToggleSegmented extends StatelessWidget {
 }
 
 /// Bordered, label-on-top dropdown for choosing one of [items].
+///
+/// When [autoLabel] is non-null, an extra entry with the empty string as its
+/// value is prepended to the menu (rendered with [autoLabel] as its text).
+/// Selecting it reports `''` to [onChanged], and passing `''` for [value]
+/// selects it. Callers that don't pass [autoLabel] keep the existing
+/// "always pick a concrete item" semantics.
 class LabeledDropdown extends StatelessWidget {
   final String label;
   final String value;
   final List<String> items;
   final ValueChanged<String?>? onChanged;
+  final String? autoLabel;
 
   const LabeledDropdown({
     Key? key,
@@ -52,12 +59,21 @@ class LabeledDropdown extends StatelessWidget {
     required this.value,
     required this.items,
     required this.onChanged,
+    this.autoLabel,
   }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
-    final effectiveValue =
-        items.contains(value) ? value : (items.isNotEmpty ? items.first : '');
+    final allowAuto = autoLabel != null;
+    final effectiveItems = allowAuto ? <String>['', ...items] : items;
+    final String effectiveValue;
+    if (effectiveItems.contains(value)) {
+      effectiveValue = value;
+    } else if (allowAuto) {
+      effectiveValue = '';
+    } else {
+      effectiveValue = items.isNotEmpty ? items.first : '';
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -73,15 +89,22 @@ class LabeledDropdown extends StatelessWidget {
           ),
           child: DropdownButtonHideUnderline(
             child: DropdownButton<String>(
-              value: effectiveValue.isEmpty ? null : effectiveValue,
+              value: (!allowAuto && effectiveValue.isEmpty)
+                  ? null
+                  : effectiveValue,
               isExpanded: true,
               icon: const Icon(Icons.arrow_drop_down),
               padding: const EdgeInsets.symmetric(horizontal: 12),
               borderRadius: BorderRadius.circular(8),
-              items: items
+              items: effectiveItems
                   .map((String item) => DropdownMenuItem<String>(
                         value: item,
-                        child: Text(item),
+                        child: Text(
+                          item.isEmpty && allowAuto ? autoLabel! : item,
+                          style: item.isEmpty && allowAuto
+                              ? const TextStyle(fontStyle: FontStyle.italic)
+                              : null,
+                        ),
                       ))
                   .toList(),
               onChanged: onChanged,
@@ -168,6 +191,11 @@ class PresetButton extends StatelessWidget {
 }
 
 /// Three labeled dropdowns (text / vision / image-gen) for choosing model ids.
+///
+/// When [allowAuto] is true, each dropdown gains a leading "Auto" entry that
+/// reports `''` to its callback — used by the preset editor so a preset can
+/// be saved without pinning a specific model, deferring model selection to
+/// the preset's `complexity` field (see `server/src/jobs/preset.go`).
 class CustomModelsForm extends StatelessWidget {
   final ModelsData data;
   final String text;
@@ -176,6 +204,7 @@ class CustomModelsForm extends StatelessWidget {
   final ValueChanged<String?> onText;
   final ValueChanged<String?> onVision;
   final ValueChanged<String?> onImageGen;
+  final bool allowAuto;
 
   const CustomModelsForm({
     Key? key,
@@ -186,10 +215,12 @@ class CustomModelsForm extends StatelessWidget {
     required this.onText,
     required this.onVision,
     required this.onImageGen,
+    this.allowAuto = false,
   }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
+    const autoLabel = 'Auto (use complexity)';
     return Column(
       children: [
         LabeledDropdown(
@@ -197,6 +228,7 @@ class CustomModelsForm extends StatelessWidget {
           value: text,
           items: data.textModelIds,
           onChanged: onText,
+          autoLabel: allowAuto ? autoLabel : null,
         ),
         const SizedBox(height: 16),
         LabeledDropdown(
@@ -204,6 +236,7 @@ class CustomModelsForm extends StatelessWidget {
           value: vision,
           items: data.visionModelIds,
           onChanged: onVision,
+          autoLabel: allowAuto ? autoLabel : null,
         ),
         const SizedBox(height: 16),
         LabeledDropdown(
@@ -211,6 +244,7 @@ class CustomModelsForm extends StatelessWidget {
           value: imageGen,
           items: data.imageGenModelIds,
           onChanged: onImageGen,
+          autoLabel: allowAuto ? autoLabel : null,
         ),
       ],
     );
@@ -379,10 +413,20 @@ class ModelConfigForm extends StatefulWidget {
   final ModelsData data;
   final ModelSelected initial;
 
+  /// When true, the per-slot model dropdowns expose an "Auto" entry whose
+  /// value is the empty string. An empty-string model name on save is
+  /// preserved (not auto-replaced by the first available model). The preset
+  /// editor uses this so a preset can be saved without pinning a concrete
+  /// model — server `ResolvePreset` then picks the model from the preset's
+  /// `complexity` field. Existing call sites (shortcut editor) leave this
+  /// `false` and keep the old "always pick a concrete model" behaviour.
+  final bool allowAutoModel;
+
   const ModelConfigForm({
     Key? key,
     required this.data,
     required this.initial,
+    this.allowAutoModel = false,
   }) : super(key: key);
 
   @override
@@ -409,12 +453,24 @@ class ModelConfigFormState extends State<ModelConfigForm>
     _functions = buildFunctions(data);
     _skillItems = initSkillItems(data);
 
-    _selectedModel = widget.initial.text?.name ??
-        (data.textModelIds.isNotEmpty ? data.textModelIds.first : '');
-    _selectedVisionModel = widget.initial.vision?.name ??
-        (data.visionModelIds.isNotEmpty ? data.visionModelIds.first : '');
-    _selectedImageGenModel = widget.initial.imageGen?.name ??
-        (data.imageGenModelIds.isNotEmpty ? data.imageGenModelIds.first : '');
+    // For each slot, an explicit empty name is preserved when allowAutoModel
+    // is true (it means "let complexity decide" on the server). Otherwise we
+    // fall back to the first available model.
+    String pickModel(String? name, List<String> available) {
+      if (name == null) {
+        return available.isNotEmpty ? available.first : '';
+      }
+      if (name.isEmpty && widget.allowAutoModel) return '';
+      if (name.isEmpty) {
+        return available.isNotEmpty ? available.first : '';
+      }
+      return name;
+    }
+    _selectedModel = pickModel(widget.initial.text?.name, data.textModelIds);
+    _selectedVisionModel =
+        pickModel(widget.initial.vision?.name, data.visionModelIds);
+    _selectedImageGenModel =
+        pickModel(widget.initial.imageGen?.name, data.imageGenModelIds);
 
     // When the caller specifies an `initial.text` (even with an empty tools
     // map), treat that as the authoritative selection. An explicit empty map
@@ -434,15 +490,21 @@ class ModelConfigFormState extends State<ModelConfigForm>
   }
 
   void _checkAndSetDefaultModels(ModelsData data) {
-    if (!data.textModelIds.contains(_selectedModel) &&
+    // Empty selection is a valid persistable state when allowAutoModel is
+    // on (means "use complexity-based shortcut"); don't clobber it.
+    bool keepEmpty(String v) => widget.allowAutoModel && v.isEmpty;
+    if (!keepEmpty(_selectedModel) &&
+        !data.textModelIds.contains(_selectedModel) &&
         data.textModelIds.isNotEmpty) {
       setState(() => _selectedModel = data.textModelIds.first);
     }
-    if (!data.visionModelIds.contains(_selectedVisionModel) &&
+    if (!keepEmpty(_selectedVisionModel) &&
+        !data.visionModelIds.contains(_selectedVisionModel) &&
         data.visionModelIds.isNotEmpty) {
       setState(() => _selectedVisionModel = data.visionModelIds.first);
     }
-    if (!data.imageGenModelIds.contains(_selectedImageGenModel) &&
+    if (!keepEmpty(_selectedImageGenModel) &&
+        !data.imageGenModelIds.contains(_selectedImageGenModel) &&
         data.imageGenModelIds.isNotEmpty) {
       setState(() => _selectedImageGenModel = data.imageGenModelIds.first);
     }
@@ -498,6 +560,7 @@ class ModelConfigFormState extends State<ModelConfigForm>
                 text: _selectedModel,
                 vision: _selectedVisionModel,
                 imageGen: _selectedImageGenModel,
+                allowAuto: widget.allowAutoModel,
                 onText: (v) => setState(() => _selectedModel = v ?? ''),
                 onVision: (v) =>
                     setState(() => _selectedVisionModel = v ?? ''),

@@ -197,6 +197,7 @@ class _PresetEditorDialogState extends State<PresetEditorDialog> {
                         key: _formKey,
                         data: widget.modelsData,
                         initial: _initialModelSelected(),
+                        allowAutoModel: true,
                       ),
                     ],
                   ),

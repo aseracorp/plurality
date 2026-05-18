@@ -31,6 +31,7 @@ var Registry = map[string]utils.AITool{
 	ListPresetsTool.ToolID:             ListPresetsTool,
 	WaitTool.ToolID:                    WaitTool,
 	NotifyTool.ToolID:                  NotifyTool,
+	UpdateImportantMemoryTool.ToolID:   UpdateImportantMemoryTool,
 }
 
 // RegisterRetrieveServerSkill adds retrieve_server_skill to the registry.

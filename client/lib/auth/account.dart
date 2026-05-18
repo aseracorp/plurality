@@ -23,8 +23,81 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   String? _errorMessage;
   int _selectedTab = 0;
 
+  final TextEditingController _memoryController = TextEditingController();
+  String _memoryDefault = '';
+  bool _memoryLoading = true;
+  bool _memorySaving = false;
+  String? _memoryError;
+  bool _memoryDirty = false;
+
   String get _userEmail =>
       _authService.currentUser?.username ?? 'Not logged in';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadMemory();
+  }
+
+  @override
+  void dispose() {
+    _memoryController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadMemory() async {
+    try {
+      final result = await _apiService.getImportantMemory();
+      if (!mounted) return;
+      setState(() {
+        _memoryController.text = result.memory;
+        _memoryDefault = result.defaultMemory;
+        _memoryLoading = false;
+        _memoryError = null;
+        _memoryDirty = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _memoryLoading = false;
+        _memoryError = e.toString();
+      });
+    }
+  }
+
+  Future<void> _saveMemory() async {
+    setState(() {
+      _memorySaving = true;
+      _memoryError = null;
+    });
+    try {
+      await _apiService.setImportantMemory(_memoryController.text);
+      if (!mounted) return;
+      setState(() {
+        _memorySaving = false;
+        _memoryDirty = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Memory saved.'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _memorySaving = false;
+        _memoryError = e.toString();
+      });
+    }
+  }
+
+  void _resetMemoryToDefault() {
+    setState(() {
+      _memoryController.text = _memoryDefault;
+      _memoryDirty = true;
+    });
+  }
 
   Future<void> _resetPassword() async {
     final oldCtl = TextEditingController();
@@ -288,6 +361,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ),
         const SizedBox(height: 24),
         const Text(
+          'Important Memory',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'A compact snippet injected into the assistant\'s system prompt at '
+          'the start of every conversation. The assistant can rewrite it via '
+          'a tool; you can edit it here.',
+          style: TextStyle(color: Colors.grey.shade700),
+        ),
+        const SizedBox(height: 12),
+        _buildMemoryCard(colorScheme),
+        const SizedBox(height: 24),
+        const Text(
           'Security',
           style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
         ),
@@ -332,6 +419,72 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
         ],
       ],
+    );
+  }
+
+  Widget _buildMemoryCard(ColorScheme colorScheme) {
+    if (_memoryLoading) {
+      return const Card(
+        margin: EdgeInsets.only(bottom: 12),
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      );
+    }
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _memoryController,
+              minLines: 4,
+              maxLines: 12,
+              onChanged: (_) {
+                if (!_memoryDirty) setState(() => _memoryDirty = true);
+              },
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: 'What should the assistant always remember?',
+              ),
+            ),
+            if (_memoryError != null) ...[
+              const SizedBox(height: 8),
+              Text(_memoryError!, style: const TextStyle(color: Colors.red)),
+            ],
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton.icon(
+                  onPressed: _memorySaving ? null : _resetMemoryToDefault,
+                  icon: const Icon(Icons.restore, size: 18),
+                  label: const Text('Reset to default'),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton.icon(
+                  onPressed: (_memorySaving || !_memoryDirty) ? null : _saveMemory,
+                  icon: _memorySaving
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.save, size: 18),
+                  label: const Text('Save'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: colorScheme.primary,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 

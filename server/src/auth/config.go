@@ -279,15 +279,17 @@ var defaultShortcutFastTools = map[string]string{
 	"place_search":                         "true",
 	"search_web":                           "true",
 	"visit_link":                           "true",
+	"update_important_memory":              "true",
 }
 
 // defaultShortcutMediumTools is the on-by-default tool set for the "medium" shortcut.
 var defaultShortcutMediumTools = map[string]string{
-	"search_web":     "true",
-	"place_search":   "true",
-	"visit_link":     "true",
-	"generate_image": "true",
-	"long_task":      "true",
+	"search_web":              "true",
+	"place_search":            "true",
+	"visit_link":              "true",
+	"generate_image":          "true",
+	"long_task":               "true",
+	"update_important_memory": "true",
 }
 
 // defaultShortcutSmartTools is the full on-by-default tool set for the "smart" shortcut.
@@ -300,6 +302,7 @@ var defaultShortcutSmartTools = map[string]string{
 	"manage_cron":                                         "true",
 	"manage_webhook":                                      "true",
 	"list_presets":                                        "true",
+	"update_important_memory":                             "true",
 	"conversations__search_conversations":                 "true",
 	"conversations__retrieve_conversation":                "true",
 	"conversations__create_conversation":                  "true",
