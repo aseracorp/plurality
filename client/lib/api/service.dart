@@ -99,6 +99,11 @@ class ConversationsNotifier extends StateNotifier<ConversationsState> {
     if (conv != null) {
       await ConversationStorage.saveConversation(conv);
       _loadConversations();
+      // The freshly-loaded messages might end on an unanswered client tool
+      // call (previous client crashed / was closed mid-execution). Hand it
+      // to ChatService which guards against double-dispatch via the lock,
+      // active-stream, and in-flight-resume checks.
+      ChatService().resumeTrailingClientToolsIfNeeded(id);
     }
   }
 

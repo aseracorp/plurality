@@ -1485,10 +1485,10 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
           }
           final busy = isProcessing ||
               _session.value.state == ConversationState.waitingForTool;
+          final onBg = Theme.of(context).colorScheme.onSecondaryContainer;
           return Container(
-            width: double.infinity,
-            margin: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            margin: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            padding: EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
               color: Theme.of(context).colorScheme.secondaryContainer,
               borderRadius: BorderRadius.circular(5),
@@ -1497,39 +1497,42 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
               ),
             ),
             child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  Icons.lock_outline,
-                  color: Theme.of(context).colorScheme.onSecondaryContainer,
-                ),
-                SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    "This conversation is locked on '${lock.label}'. Client tools (files, shell) only run on that machine.",
-                    style: TextStyle(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSecondaryContainer,
-                      fontSize: 14,
+                Icon(Icons.lock_outline, size: 14, color: onBg),
+                SizedBox(width: 6),
+                Flexible(
+                  child: Tooltip(
+                    message:
+                        "Client tools (files, shell) only run on '${lock.label}'.",
+                    child: Text(
+                      "Locked on '${lock.label}'",
+                      style: TextStyle(color: onBg, fontSize: 12),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
                     ),
                   ),
                 ),
+                SizedBox(width: 4),
                 Tooltip(
                   message: busy
                       ? 'Wait for the current step to finish'
-                      : 'Take ownership of client tool execution on this device',
+                      : 'Take ownership on this device',
                   child: TextButton(
+                    style: TextButton.styleFrom(
+                      padding: EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: const Size(0, 28),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      visualDensity: VisualDensity.compact,
+                    ),
                     onPressed: busy
                         ? null
                         : () {
                             final claim = ClientIdentity().asLock();
                             if (claim == null) return;
                             // Drop the previous holder's folder attachment
-                            // along with the lock claim. The folder path
-                            // points at a directory on the OTHER machine's
-                            // filesystem — keeping it would leave the
-                            // device-side filesystem tools targeting a path
-                            // that doesn't exist on this device.
+                            // along with the lock claim — the path lives on
+                            // the OTHER machine's filesystem.
                             ref
                                 .read(conversationsProvider.notifier)
                                 .updateConversationMetaData(
@@ -1542,7 +1545,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
                                       ),
                                 );
                           },
-                    child: const Text('Move conversation here'),
+                    child: const Text('Move here', style: TextStyle(fontSize: 12)),
                   ),
                 ),
               ],

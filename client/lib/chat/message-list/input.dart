@@ -465,17 +465,17 @@ class _InputBoxState extends State<InputBox> {
     }
   }
 
-  /// Small chip rendered next to the model selection button when the
-  /// client lock is held by this device. Reminds the user that any
-  /// other connected client viewing this conversation is currently in
-  /// "read-only" mode for client-side tools (files, shell, MCP). The
-  /// trailing X clears the lock so another client can take over —
-  /// without forcing them to use the "Move conversation here" banner.
+  /// Small chip rendered next to the model selection button whenever a
+  /// client lock is set — on every viewing client, mirroring how the
+  /// folder chip shows the attached folder on every client. The X
+  /// releases the lock from any client (consistent with the banner's
+  /// "Move conversation here", which also lets a non-holder change the
+  /// lock state).
   Widget _lockIndicator(Color primaryColor) {
     final lock = widget.selectedModel.clientLock;
     if (lock == null) return const SizedBox.shrink();
     final myId = ClientIdentity().id;
-    if (myId.isEmpty || lock.id != myId) return const SizedBox.shrink();
+    final isHolder = myId.isNotEmpty && lock.id == myId;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4),
       child: InputChip(
@@ -489,9 +489,10 @@ class _InputBoxState extends State<InputBox> {
             maxLines: 1,
           ),
         ),
-        tooltip:
-            "Client tools (files, shell) only run on this device while "
-            "the lock is held. Click X to release so another client can take over.",
+        tooltip: isHolder
+            ? "Client tools (files, shell) only run on this device while "
+                "the lock is held. Click X to release so another client can take over."
+            : "Conversation is locked on '${lock.label}'. Click X to release.",
         onDeleted: () {
           widget.setSelectedModel(
             widget.selectedModel.copyWith(clientLock: null),
@@ -505,17 +506,21 @@ class _InputBoxState extends State<InputBox> {
   }
 
   Widget _folderAttachButton(Color primaryColor) {
-    if (!_supportsFolderPicker) {
-      return const SizedBox.shrink();
-    }
     final attached = widget.selectedModel.clientFolderPath;
     if (attached == null || attached.isEmpty) {
+      // Only desktop platforms can pick a folder. On mobile/web we just
+      // hide the attach affordance — no chip to render anyway.
+      if (!_supportsFolderPicker) return const SizedBox.shrink();
       return IconButton(
         tooltip: 'Attach a folder for the AI to read/write',
         onPressed: _attachFolder,
         icon: Icon(Icons.create_new_folder_outlined, color: primaryColor),
       );
     }
+    // A folder IS attached. Always render the chip — even on mobile/web
+    // where the path lives on a different device — so every client viewing
+    // the conversation sees the same per-conversation state. The chip's X
+    // releases the attachment, which is a valid edit from any client.
     final name = p.basename(attached);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -540,7 +545,14 @@ class _InputBoxState extends State<InputBox> {
   }
 
   Widget getPlus(Color primaryColor) {
-    return Row(
+    // The action row holds the + button, call, folder chip, model picker,
+    // and the lock chip. With long hostnames / folder names it can exceed
+    // the input width on mobile; wrap in a horizontal scroller so it
+    // never overflows the input box.
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
         // Replace the three separate buttons with a single + button
         widget.isMobile
@@ -690,6 +702,7 @@ class _InputBoxState extends State<InputBox> {
 
         _lockIndicator(primaryColor),
       ],
+      ),
     );
   }
 

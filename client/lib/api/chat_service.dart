@@ -325,6 +325,110 @@ class ChatService {
     );
   }
 
+  /// Tracks conversations for which a resume attempt is already in flight,
+  /// so concurrent triggers (loadConversation + reconnect + status events)
+  /// don't double-dispatch the same trailing tool calls.
+  final Set<String> _resumingClientTools = {};
+
+  /// True for tool names this client knows how to dispatch — the device-side
+  /// filesystem / shell tools, retrieve_skill, and any registered MCP tool.
+  /// Used by the trailing-tool resume path to decide whether a pending tool
+  /// call is ours to handle vs. a server-side tool waiting on something else.
+  bool _isClientSideToolName(String name) {
+    if (name == FilesystemService.readToolName ||
+        name == FilesystemService.writeToolName ||
+        name == ShellService.toolName ||
+        name == 'retrieve_skill') {
+      return true;
+    }
+    return _mcp.getToolServerName(name) != null;
+  }
+
+  /// If the just-loaded conversation has an assistant message whose
+  /// client-side tool calls were never answered (e.g. the previous client
+  /// crashed or was closed mid-execution), queue them and dispatch them
+  /// from this client. Guards against double-dispatch with:
+  ///   - a live SSE stream attached (let the stream drive execution)
+  ///   - the session already processing (a send / submit is in flight)
+  ///   - pendingClientTools already populated (executing or about to)
+  ///   - an in-flight resume for the same conversation
+  ///   - the conversation's clientLock pointing at a different client (the
+  ///     lock holder is the one expected to run it; we let them).
+  /// Safe to call on every conversation open / refresh — it short-circuits
+  /// when there's nothing to do.
+  Future<void> resumeTrailingClientToolsIfNeeded(String conversationId) async {
+    if (conversationId.isEmpty) return;
+    if (_resumingClientTools.contains(conversationId)) return;
+    if (_activeStreams.containsKey(conversationId)) return;
+    final session = getSession(conversationId);
+    if (session.value.state == ConversationState.processing) return;
+    if (session.value.pendingClientTools.isNotEmpty) return;
+
+    Conversation? conv;
+    final convs = _conversationsNotifier?.state.conversations;
+    if (convs != null) {
+      for (final c in convs) {
+        if (c.id == conversationId) {
+          conv = c;
+          break;
+        }
+      }
+    }
+    if (conv == null || conv.messages.isEmpty) return;
+
+    // Lock arbitration: if someone else owns the lock, let them resume.
+    final lock = conv.modelSelected.clientLock;
+    final myId = ClientIdentity().id;
+    if (lock != null && myId.isNotEmpty && lock.id != myId) return;
+
+    // Collect tool_call ids that already have matching tool result messages.
+    final resolved = <String>{};
+    for (final m in conv.messages) {
+      if (m.role == 'tool' && m.toolCallId != null) {
+        resolved.add(m.toolCallId!);
+      }
+    }
+
+    // Find the most recent assistant message with tool calls — that's the
+    // turn the server is waiting on. Earlier orphaned tool calls (if any)
+    // belong to past turns and aren't recoverable here.
+    Message? trailingAssistant;
+    for (int i = conv.messages.length - 1; i >= 0; i--) {
+      final m = conv.messages[i];
+      if (m.role == 'assistant' &&
+          m.toolCalls != null &&
+          m.toolCalls!.isNotEmpty) {
+        trailingAssistant = m;
+        break;
+      }
+    }
+    if (trailingAssistant == null) return;
+
+    final pending = <ToolCall>[];
+    for (final tc in trailingAssistant.toolCalls!) {
+      if (resolved.contains(tc.id)) continue;
+      if (_isClientSideToolName(tc.function.name)) {
+        pending.add(tc);
+      }
+    }
+    if (pending.isEmpty) return;
+
+    _resumingClientTools.add(conversationId);
+    try {
+      // Mirror the state the SSE state_change → waitingForTool would have
+      // landed the session in, then hand off to the standard executor —
+      // which will stamp our lock onto the outgoing modelSelected and POST
+      // tool results, same as the live-stream path.
+      session.value = session.value.copyWith(
+        state: ConversationState.waitingForTool,
+        pendingClientTools: pending,
+      );
+      await _executeClientTools(conversationId, conv.modelSelected);
+    } finally {
+      _resumingClientTools.remove(conversationId);
+    }
+  }
+
   /// Reconnect to an active conversation's SSE stream. Idempotent.
   /// Safe to call on conversation open, on SSE error, and on app resume.
   /// If the server has no active stream, resolves the session to idle and
@@ -670,10 +774,30 @@ class ChatService {
         final newState = conversationStateFromString(event.state);
         session.value = session.value.copyWith(state: newState);
 
-        if (newState == ConversationState.waitingForTool && modelSelected != null) {
-          if (session.value.pendingClientTools.isNotEmpty) {
-            // Auto-execute non-ask client tools
-            _executeClientTools(conversationId, modelSelected);
+        if (newState == ConversationState.waitingForTool &&
+            session.value.pendingClientTools.isNotEmpty) {
+          // The modelSelected parameter is the one captured when this SSE
+          // stream was opened. It's null whenever the stream was attached
+          // via reconnect() — most importantly when another client sent
+          // the message and we hopped onto its ActiveRequest via the
+          // status stream. In that case fall back to the live conversation
+          // in Riverpod (kept fresh by the model_selected stamped on every
+          // tool_use / done event). Without this fallback the lock holder
+          // receives the tool call but never dispatches it.
+          ModelSelected? effective = modelSelected;
+          if (effective == null) {
+            final convs = _conversationsNotifier?.state.conversations;
+            if (convs != null) {
+              for (final c in convs) {
+                if (c.id == conversationId) {
+                  effective = c.modelSelected;
+                  break;
+                }
+              }
+            }
+          }
+          if (effective != null) {
+            _executeClientTools(conversationId, effective);
           }
           // If pendingAskTools is non-empty, the UI will show an approval banner
         }
