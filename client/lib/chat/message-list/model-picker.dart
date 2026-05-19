@@ -34,6 +34,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
   String _selectedModel = '';
   String _selectedVisionModel = '';
   String _selectedImageGenModel = '';
+  late bool _ecoMode;
 
   late TabController _tabController;
   int _currentTabIndex = 0;
@@ -50,6 +51,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     _tabController.addListener(_handleTabChange);
     _skillItems = initSkillItems();
     _modelsFuture = ModelsService().get();
+    _ecoMode = widget.selectedModel.ecoMode;
   }
 
   void _initFromData(ModelsData data) {
@@ -227,7 +229,18 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
               ],
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 16),
+          CheckboxListTile(
+            value: _ecoMode,
+            onChanged: (value) {
+              setState(() => _ecoMode = value ?? false);
+            },
+            controlAffinity: ListTileControlAffinity.leading,
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            title: const Text('Auto-compact conversation (recommended)'),
+          ),
+          const SizedBox(height: 8),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
@@ -261,24 +274,25 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
                       _functions,
                       _skillItems,
                     );
-                    final selectedModels = _currentTabIndex == 0
-                        ? _getSelectedPreset(data)
-                        : ModelSelected(
-                            text: Model(
-                              name: _selectedModel,
-                              params: null,
-                              tools: toolsMap,
-                            ),
-                            vision: Model(
-                              name: _selectedVisionModel,
-                              params: null,
-                              tools: toolsMap,
-                            ),
-                            imageGen: Model(
-                              name: _selectedImageGenModel,
-                              params: null,
-                            ),
-                          );
+                    final selectedModels = (_currentTabIndex == 0
+                            ? _getSelectedPreset(data)
+                            : ModelSelected(
+                                text: Model(
+                                  name: _selectedModel,
+                                  params: null,
+                                  tools: toolsMap,
+                                ),
+                                vision: Model(
+                                  name: _selectedVisionModel,
+                                  params: null,
+                                  tools: toolsMap,
+                                ),
+                                imageGen: Model(
+                                  name: _selectedImageGenModel,
+                                  params: null,
+                                ),
+                              ))
+                        .copyWith(ecoMode: _ecoMode);
 
                     widget.onModelSelected(selectedModels);
                     Navigator.pop(context);
@@ -309,7 +323,8 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
           preset: preset,
           isSelected: selectedName == preset.name,
           onTap: () {
-            final merged = mergePresetOnto(preset.models, widget.selectedModel);
+            final merged = mergePresetOnto(preset.models, widget.selectedModel)
+                .copyWith(ecoMode: _ecoMode);
             setState(() {
               _selectedModel = merged.text?.name.isNotEmpty == true
                   ? merged.text!.name

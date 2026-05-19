@@ -641,6 +641,14 @@ class ModelSelected {
   @HiveField(10)
   final bool ecoMode;
 
+  /// When non-null, identifies the single client that owns this
+  /// conversation's client-side tool execution. Other connected clients
+  /// keep streaming messages but skip tool dispatch and show a banner.
+  /// Acquired on folder attach or first client-tool execution; released
+  /// only when another client clicks "Move conversation here".
+  @HiveField(11)
+  final ClientLock? clientLock;
+
   const ModelSelected({
     this.text,
     this.vision,
@@ -653,6 +661,7 @@ class ModelSelected {
     this.code,
     this.clientFolderPath,
     this.ecoMode = true,
+    this.clientLock,
   });
 
   ModelSelected copyWith({
@@ -667,6 +676,7 @@ class ModelSelected {
     Model? code,
     Object? clientFolderPath = _unset,
     bool? ecoMode,
+    Object? clientLock = _unset,
   }) {
     return ModelSelected(
       text: text ?? this.text,
@@ -682,6 +692,9 @@ class ModelSelected {
           ? this.clientFolderPath
           : clientFolderPath as String?,
       ecoMode: ecoMode ?? this.ecoMode,
+      clientLock: identical(clientLock, _unset)
+          ? this.clientLock
+          : clientLock as ClientLock?,
     );
   }
 
@@ -697,6 +710,7 @@ class ModelSelected {
     'code': code?.toJson(),
     'client_folder_path': clientFolderPath,
     'eco_mode': ecoMode,
+    'client_lock': clientLock?.toJson(),
   };
 
   factory ModelSelected.fromJson(Map<String, dynamic> json) {
@@ -724,8 +738,33 @@ class ModelSelected {
       // Default-on: if the server omits the field (legacy conversations or
       // older builds), treat eco mode as enabled rather than disabled.
       ecoMode: json['eco_mode'] as bool? ?? true,
+      clientLock: json['client_lock'] != null
+          ? ClientLock.fromJson(json['client_lock'] as Map<String, dynamic>)
+          : null,
     );
   }
+}
+
+/// Identifies the client device that currently owns a conversation's
+/// client-side tool execution. [id] is the stable identifier (hostname on
+/// desktop, persisted UUID on mobile/web). [label] is the human-readable
+/// name shown in the "locked on X" banner on other clients.
+@HiveType(typeId: 12)
+class ClientLock {
+  @HiveField(0)
+  final String id;
+
+  @HiveField(1)
+  final String label;
+
+  const ClientLock({required this.id, required this.label});
+
+  Map<String, dynamic> toJson() => {'id': id, 'label': label};
+
+  factory ClientLock.fromJson(Map<String, dynamic> json) => ClientLock(
+        id: json['id'] as String? ?? '',
+        label: json['label'] as String? ?? '',
+      );
 }
 
 /// Sentinel for [ModelSelected.copyWith] so callers can distinguish "leave

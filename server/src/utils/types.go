@@ -201,6 +201,22 @@ type ModelSelected struct {
 	// conversations default to true; legacy rows that pre-date the field are
 	// upgraded to true at load time (see unmarshalModelSelected).
 	EcoMode bool `json:"eco_mode"`
+
+	// ClientLock, when non-nil, identifies the single client (by opaque ID)
+	// that owns this conversation's client-side tool execution. Other
+	// connected clients still read messages but must not run filesystem /
+	// shell / MCP tools while a lock is held. Server treats this as opaque —
+	// it round-trips alongside ClientFolderPath and EcoMode.
+	ClientLock *ClientLock `json:"client_lock,omitempty"`
+}
+
+// ClientLock identifies which physical client owns a conversation's
+// client-tool execution. ID is the stable identifier (hostname on desktop,
+// persisted UUID elsewhere). Label is the human-readable name shown in the
+// "locked on X" banner on other clients.
+type ClientLock struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
 }
 
 // --- Conversation ---

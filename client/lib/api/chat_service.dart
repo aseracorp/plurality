@@ -6,6 +6,7 @@ import 'package:plurality/api/MCP.dart';
 import 'package:plurality/api/skills_service.dart';
 import 'package:plurality/api/filesystem_service.dart';
 import 'package:plurality/api/shell_service.dart';
+import 'package:plurality/api/client_identity.dart';
 
 import '../utils/types.dart';
 import 'api.dart';
@@ -298,16 +299,51 @@ class ChatService {
     session.value = session.value.copyWith(state: ConversationState.idle);
   }
 
-  /// Reconnect to an active conversation's SSE stream.
+  /// Reconnect to an active conversation's SSE stream. Idempotent.
+  /// Safe to call on conversation open, on SSE error, and on app resume.
+  /// If the server has no active stream, resolves the session to idle and
+  /// clears any stale entry in [conversationStatuses].
   Future<void> reconnect(String conversationId) async {
+    if (conversationId.isEmpty) return;
     if (_activeStreams.containsKey(conversationId)) return;
 
     try {
       final stream = await _api.connectStream(conversationId);
+      // Live stream — flip session to processing so the UI shows activity
+      // immediately rather than waiting for the first event.
+      final session = getSession(conversationId);
+      session.value = session.value.copyWith(
+        state: ConversationState.processing,
+      );
       _connectSSE(conversationId, stream, null);
     } catch (_) {
-      // No active stream on server — conversation is idle
+      // No active stream on server — force local state to idle so a stale
+      // "processing" UI doesn't get stuck.
+      final session = getSession(conversationId);
+      session.value = session.value.copyWith(state: ConversationState.idle);
+      _clearStatus(conversationId);
     }
+  }
+
+  /// Remove a conversation's entry from [conversationStatuses] when the
+  /// global view is known to be stale (e.g. after an SSE abort).
+  void _clearStatus(String conversationId) {
+    final current = conversationStatuses.value;
+    if (!current.containsKey(conversationId)) return;
+    final updated = Map<String, ConversationStatus>.from(current);
+    updated.remove(conversationId);
+    conversationStatuses.value = updated;
+  }
+
+  /// Called from the app lifecycle observer when the app resumes. The OS
+  /// may have severed the SSE sockets while backgrounded; flush the global
+  /// status stream so it (and the events it emits) can drive recovery. The
+  /// currently-viewed chat is reattached separately by the ChatInterface's
+  /// own lifecycle observer.
+  Future<void> handleAppResumed() async {
+    _statusStreamSubscription?.cancel();
+    _statusStreamSubscription = null;
+    connectStatusStream();
   }
 
   bool _connected = false;
@@ -372,6 +408,18 @@ class ChatService {
             updated[conversationId] = status;
           }
           conversationStatuses.value = updated;
+
+          // If the server says this conversation is processing but our SSE
+          // socket for it is gone (e.g. it died while we were backgrounded),
+          // reattach. Limited to conversations we already have a local
+          // session for — we don't want to spin up SSE streams for chats
+          // the user hasn't opened. reconnect() is a no-op when the stream
+          // is already healthy.
+          if (!status.isIdle &&
+              _sessions.containsKey(conversationId) &&
+              !_activeStreams.containsKey(conversationId)) {
+            reconnect(conversationId);
+          }
         },
         onError: (e) {
           debugPrint('[ChatService] Status stream error: $e');
@@ -414,6 +462,17 @@ class ChatService {
           error: error.toString(),
         );
         _activeStreams.remove(currentId);
+        // After a transient socket abort (e.g. phone locked, network blip)
+        // the conversation may still be running server-side. Try to reattach
+        // shortly; reconnect() falls through to idle if the server says
+        // there's no active stream.
+        _clearStatus(currentId);
+        final convId = currentId;
+        Future.delayed(const Duration(seconds: 2), () {
+          if (!_activeStreams.containsKey(convId)) {
+            reconnect(convId);
+          }
+        });
       },
       onDone: () {
         _activeStreams.remove(currentId);
@@ -629,6 +688,38 @@ class ChatService {
     ModelSelected modelSelected,
   ) async {
     final session = getSession(conversationId);
+
+    // Client-lock gate. The conversation can only have one machine
+    // dispatching its client-side tools at a time. Other connected
+    // clients still receive the tool_use events (so the stream stays
+    // visible in the UI) but must skip execution — the locked client
+    // will submit the results and the server doesn't care which
+    // client posts them.
+    final myId = ClientIdentity().id;
+    final lock = modelSelected.clientLock;
+    if (lock != null && myId.isNotEmpty && lock.id != myId) {
+      // Drop the queued calls so we don't try to re-dispatch them on the
+      // next state_change. The locked client's submission will advance
+      // the conversation.
+      session.value =
+          session.value.copyWith(pendingClientTools: const []);
+      return;
+    }
+    if (lock == null) {
+      final acquired = ClientIdentity().asLock();
+      if (acquired != null) {
+        // Persist the lock locally + push to server on the next request.
+        // The new modelSelected becomes the one that submitToolResults
+        // sends below, so the server sees the acquisition in the same
+        // round-trip as the tool result.
+        await _conversationsNotifier?.updateConversationMetaData(
+          conversationId: conversationId,
+          modelSelected: modelSelected.copyWith(clientLock: acquired),
+        );
+        modelSelected = modelSelected.copyWith(clientLock: acquired);
+      }
+    }
+
     final toolCalls = List<ToolCall>.from(session.value.pendingClientTools);
     final results = <Message>[];
     final toolDefs = _currentClientToolDefs(modelSelected);

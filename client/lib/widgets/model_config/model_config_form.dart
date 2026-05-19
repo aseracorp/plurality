@@ -39,6 +39,93 @@ class ToolToggleSegmented extends StatelessWidget {
   }
 }
 
+/// A row laying out a label, description, and a trailing [ToolToggleSegmented].
+/// On wide containers the toggle sits next to the label; on narrow containers
+/// the toggle wraps to its own line below the description so the label is not
+/// squeezed.
+class _ToolRow extends StatelessWidget {
+  final String label;
+  final String description;
+  final bool isServer;
+  final String currentMode;
+  final ValueChanged<String> onChanged;
+
+  // Below this width the toggle won't fit comfortably next to the label, so we
+  // drop it onto its own line.
+  static const double _stackBelow = 360;
+
+  const _ToolRow({
+    Key? key,
+    required this.label,
+    required this.description,
+    required this.isServer,
+    required this.currentMode,
+    required this.onChanged,
+  }) : super(key: key);
+
+  Widget _title(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (isServer) ...[
+          const Icon(Icons.cloud_outlined, size: 16),
+          const SizedBox(width: 6),
+        ],
+        Flexible(
+          child: Text(
+            label,
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final toggle = ToolToggleSegmented(
+      currentMode: currentMode,
+      onChanged: onChanged,
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final stack = constraints.maxWidth < _stackBelow;
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: stack
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _title(context),
+                    const SizedBox(height: 4),
+                    Text(description),
+                    const SizedBox(height: 8),
+                    Align(alignment: Alignment.centerRight, child: toggle),
+                  ],
+                )
+              : Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _title(context),
+                          const SizedBox(height: 4),
+                          Text(description),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    toggle,
+                  ],
+                ),
+        );
+      },
+    );
+  }
+}
+
 /// Bordered, label-on-top dropdown for choosing one of [items].
 ///
 /// When [autoLabel] is non-null, an extra entry with the empty string as its
@@ -272,23 +359,12 @@ class FunctionsListView extends StatelessWidget {
             ((function['tools'] != null && function['tools'].length > 1)
                 ? ' (${function['tools'].length} tools) '
                 : '');
-        final isServer = function['source'] == 'server';
-        return ListTile(
-          title: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (isServer) ...[
-                const Icon(Icons.cloud_outlined, size: 16),
-                const SizedBox(width: 6),
-              ],
-              Flexible(child: Text(label)),
-            ],
-          ),
-          subtitle: Text(function['description']),
-          trailing: ToolToggleSegmented(
-            currentMode: function['enabled'] as String,
-            onChanged: (mode) => onChanged(index, mode),
-          ),
+        return _ToolRow(
+          label: label,
+          description: function['description'] as String,
+          isServer: function['source'] == 'server',
+          currentMode: function['enabled'] as String,
+          onChanged: (mode) => onChanged(index, mode),
         );
       },
     );
@@ -379,23 +455,12 @@ class SkillsListView extends StatelessWidget {
             itemCount: skillItems.length,
             itemBuilder: (context, index) {
               final skill = skillItems[index];
-              final isServer = skill['source'] == 'server';
-              return ListTile(
-                title: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (isServer) ...[
-                      const Icon(Icons.cloud_outlined, size: 16),
-                      const SizedBox(width: 6),
-                    ],
-                    Flexible(child: Text(skill['label'] as String)),
-                  ],
-                ),
-                subtitle: Text(skill['description']),
-                trailing: ToolToggleSegmented(
-                  currentMode: skill['enabled'] as String,
-                  onChanged: (mode) => onChanged(index, mode),
-                ),
+              return _ToolRow(
+                label: skill['label'] as String,
+                description: skill['description'] as String,
+                isServer: skill['source'] == 'server',
+                currentMode: skill['enabled'] as String,
+                onChanged: (mode) => onChanged(index, mode),
               );
             },
           ),

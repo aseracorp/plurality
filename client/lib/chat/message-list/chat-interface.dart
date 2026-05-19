@@ -14,6 +14,7 @@ import '../../api/tts.dart';
 import '../../api/mini-apps.dart';
 import '../../api/models_service.dart';
 import '../../api/preferences_provider.dart';
+import '../../api/client_identity.dart';
 import '../../preset/preset-editor.dart';
 import 'AnimatedMessageBox.dart';
 import 'package:image_picker/image_picker.dart';
@@ -59,7 +60,8 @@ class ChatInterface extends ConsumerStatefulWidget {
   ConsumerState<ChatInterface> createState() => _ChatInterfaceState();
 }
 
-class _ChatInterfaceState extends ConsumerState<ChatInterface> {
+class _ChatInterfaceState extends ConsumerState<ChatInterface>
+    with WidgetsBindingObserver {
   final ApiService _apiService = ApiService();
   final ChatService _chatService = ChatService();
   final FocusNode _inputFocusNode = FocusNode();
@@ -96,6 +98,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _mainScrollController.addListener(_scrollListener);
 
     _miniAppPrePrompt = '';
@@ -116,6 +119,12 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
     _updateSelectedModel();
     _loadConversation(widget.conversationId);
+
+    // Reattach to any live SSE stream for this conversation. Recovers from
+    // a dropped socket (phone lock, network blip) where the UI is otherwise
+    // stuck on "loading" — no-op for new (empty id) conversations and
+    // idempotent when a stream is already attached.
+    _chatService.reconnect(widget.conversationId);
 
     // Ensure ChatService has a reference to the conversations notifier
     _chatService.setConversationsNotifier(
@@ -158,6 +167,9 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
       _updateSelectedModel();
       _loadConversation(widget.conversationId);
+
+      // Reattach to any live SSE stream for the newly-selected conversation.
+      _chatService.reconnect(widget.conversationId);
 
       setState(() {
         _needsBottomMargin = false;
@@ -246,6 +258,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _session.removeListener(_onSessionChanged);
     _chatService.conversationStatuses.removeListener(_onStatusChanged);
     _listController.dispose();
@@ -256,6 +269,16 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
     // Guard: controller may already be disposed if widget was torn down during navigation
     try { _messageController.dispose(); } catch (_) {}
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Re-attach SSE for the currently-viewed conversation. The OS may have
+      // killed the socket while we were backgrounded. reconnect() is a no-op
+      // if the stream is already healthy.
+      _chatService.reconnect(widget.conversationId);
+    }
   }
 
   double get _contentMaxExtent {
@@ -1379,6 +1402,76 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface> {
               ],
             ),
           ),
+
+        // Client-lock banner: shown on every client EXCEPT the one that
+        // currently holds the lock. The lock holder runs the client-side
+        // tools (filesystem / shell / MCP); other clients still see the
+        // message stream but skip tool dispatch. "Move conversation here"
+        // claims the lock on this device — disabled while any client is
+        // mid-step so we don't yank ownership during a tool execution.
+        Builder(builder: (context) {
+          final lock = currentConversation.modelSelected.clientLock;
+          final myId = ClientIdentity().id;
+          if (lock == null || myId.isEmpty || lock.id == myId) {
+            return const SizedBox.shrink();
+          }
+          final busy = isProcessing ||
+              _session.value.state == ConversationState.waitingForTool;
+          return Container(
+            width: double.infinity,
+            margin: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.secondaryContainer,
+              borderRadius: BorderRadius.circular(5),
+              border: Border.all(
+                color: Theme.of(context).colorScheme.outline,
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.lock_outline,
+                  color: Theme.of(context).colorScheme.onSecondaryContainer,
+                ),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    "This conversation is locked on '${lock.label}'. Client tools (files, shell) only run on that machine.",
+                    style: TextStyle(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSecondaryContainer,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+                Tooltip(
+                  message: busy
+                      ? 'Wait for the current step to finish'
+                      : 'Take ownership of client tool execution on this device',
+                  child: TextButton(
+                    onPressed: busy
+                        ? null
+                        : () {
+                            final claim = ClientIdentity().asLock();
+                            if (claim == null) return;
+                            ref
+                                .read(conversationsProvider.notifier)
+                                .updateConversationMetaData(
+                                  conversationId: widget.conversationId,
+                                  modelSelected: currentConversation
+                                      .modelSelected
+                                      .copyWith(clientLock: claim),
+                                );
+                          },
+                    child: const Text('Move conversation here'),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }),
 
         if (widget.conversationId.isEmpty && _miniAppSelected != null)
           Positioned(

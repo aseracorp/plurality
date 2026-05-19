@@ -359,15 +359,15 @@ class ModelSelectedAdapter extends TypeAdapter<ModelSelected> {
       videoVision: fields[7] as Model?,
       code: fields[8] as Model?,
       clientFolderPath: fields[9] as String?,
-      // Legacy records pre-date field 10 — default to true.
-      ecoMode: fields[10] as bool? ?? true,
+      ecoMode: fields[10] == null ? true : fields[10] as bool,
+      clientLock: fields[11] as ClientLock?,
     );
   }
 
   @override
   void write(BinaryWriter writer, ModelSelected obj) {
     writer
-      ..writeByte(11)
+      ..writeByte(12)
       ..writeByte(0)
       ..write(obj.text)
       ..writeByte(1)
@@ -389,7 +389,9 @@ class ModelSelectedAdapter extends TypeAdapter<ModelSelected> {
       ..writeByte(9)
       ..write(obj.clientFolderPath)
       ..writeByte(10)
-      ..write(obj.ecoMode);
+      ..write(obj.ecoMode)
+      ..writeByte(11)
+      ..write(obj.clientLock);
   }
 
   @override
@@ -399,6 +401,40 @@ class ModelSelectedAdapter extends TypeAdapter<ModelSelected> {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is ModelSelectedAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
+}
+
+class ClientLockAdapter extends TypeAdapter<ClientLock> {
+  @override
+  final typeId = 12;
+
+  @override
+  ClientLock read(BinaryReader reader) {
+    final numOfFields = reader.readByte();
+    final fields = <int, dynamic>{
+      for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
+    };
+    return ClientLock(id: fields[0] as String, label: fields[1] as String);
+  }
+
+  @override
+  void write(BinaryWriter writer, ClientLock obj) {
+    writer
+      ..writeByte(2)
+      ..writeByte(0)
+      ..write(obj.id)
+      ..writeByte(1)
+      ..write(obj.label);
+  }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ClientLockAdapter &&
           runtimeType == other.runtimeType &&
           typeId == other.typeId;
 }

@@ -19,6 +19,7 @@ import '../../utils/types.dart';
 import '../../utils/file-types.dart';
 import '../../api/stt.dart';
 import '../../api/models_service.dart';
+import '../../api/client_identity.dart';
 import './model-picker.dart';
 
 class InputBox extends StatefulWidget {
@@ -94,8 +95,16 @@ class _InputBoxState extends State<InputBox> {
       );
       if (selected == null || selected.isEmpty) return;
       final canonical = p.canonicalize(selected);
+      // Attaching a folder pins this conversation to this client — only
+      // this machine can run the device-side filesystem tools. If a lock
+      // is already held by us this is a no-op; if held by another client,
+      // overwrite (the user explicitly attached the folder here).
+      final lock = ClientIdentity().asLock() ?? widget.selectedModel.clientLock;
       widget.setSelectedModel(
-        widget.selectedModel.copyWith(clientFolderPath: canonical),
+        widget.selectedModel.copyWith(
+          clientFolderPath: canonical,
+          clientLock: lock,
+        ),
       );
     } catch (e) {
       debugPrint('[InputBox] folder attach failed: $e');
@@ -105,12 +114,6 @@ class _InputBoxState extends State<InputBox> {
   void _detachFolder() {
     widget.setSelectedModel(
       widget.selectedModel.copyWith(clientFolderPath: null),
-    );
-  }
-
-  void _toggleEcoMode() {
-    widget.setSelectedModel(
-      widget.selectedModel.copyWith(ecoMode: !widget.selectedModel.ecoMode),
     );
   }
 
@@ -591,21 +594,6 @@ class _InputBoxState extends State<InputBox> {
         // Folder attach button (desktop only) — sandbox for the device-side
         // filesystem tools.
         _folderAttachButton(primaryColor),
-
-        // Eco-mode toggle — when on, the server rolls older turns into a
-        // summary checkpoint so long conversations don't blow the context.
-        IconButton(
-          tooltip: widget.selectedModel.ecoMode
-              ? 'Eco mode on — long context is auto-summarised'
-              : 'Eco mode off — full history sent to the model',
-          onPressed: _toggleEcoMode,
-          icon: Icon(
-            widget.selectedModel.ecoMode ? Icons.eco : Icons.eco_outlined,
-            color: widget.selectedModel.ecoMode
-                ? Colors.green.shade600
-                : primaryColor.withValues(alpha: 0.5),
-          ),
-        ),
 
         SizedBox(width: 8),
 

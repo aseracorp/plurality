@@ -8,6 +8,7 @@ import 'package:plurality/utils/types.dart';
 extension HiveRegistrar on HiveInterface {
   void registerAdapters() {
     registerAdapter(AttachmentAdapter());
+    registerAdapter(ClientLockAdapter());
     registerAdapter(ContentImageURLAdapter());
     registerAdapter(ContentPartAdapter());
     registerAdapter(ConversationAdapter());
@@ -24,6 +25,7 @@ extension HiveRegistrar on HiveInterface {
 extension IsolatedHiveRegistrar on IsolatedHiveInterface {
   void registerAdapters() {
     registerAdapter(AttachmentAdapter());
+    registerAdapter(ClientLockAdapter());
     registerAdapter(ContentImageURLAdapter());
     registerAdapter(ContentPartAdapter());
     registerAdapter(ConversationAdapter());

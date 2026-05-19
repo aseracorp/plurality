@@ -5,6 +5,7 @@ import 'package:app_links/app_links.dart';
 import 'package:plurality/api/MCP.dart';
 import 'package:plurality/api/skills_service.dart';
 import 'package:plurality/api/chat_service.dart';
+import 'package:plurality/api/client_identity.dart';
 import './auth/auth-service.dart';
 import './auth/account.dart';
 import './auth/login.dart';
@@ -25,6 +26,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AuthService.loadServerUrl();
   await ConversationStorage.init();
+  await ClientIdentity().init();
   debugPaintSizeEnabled = false;
 
   checkVersion();
@@ -54,13 +56,23 @@ class MyApp extends ConsumerStatefulWidget {
   ConsumerState<MyApp> createState() => _MyAppState();
 }
 
-class _MyAppState extends ConsumerState<MyApp> {
+class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
   StreamSubscription<Uri>? _linkSub;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initDeepLinks();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // On mobile the OS may have severed SSE sockets while backgrounded,
+      // leaving the chat UI stuck on "loading" against a dead stream.
+      ChatService().handleAppResumed();
+    }
   }
 
   Future<void> _initDeepLinks() async {
@@ -80,6 +92,7 @@ class _MyAppState extends ConsumerState<MyApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _linkSub?.cancel();
     super.dispose();
   }
