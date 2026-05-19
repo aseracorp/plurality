@@ -84,6 +84,10 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			return
 		}
 		conversation = *updatedConversation
+		// Keep ar.ModelSelected in sync with the persisted conversation so
+		// BroadcastStatus (which is read by all sidebar clients via the global
+		// status stream) carries the latest lock / folder / eco snapshot.
+		ar.ModelSelected = conversation.ModelSelected
 
 		// If no tool calls, we're done
 		if len(assistantMessage.ToolCalls) == 0 {
@@ -98,14 +102,17 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			utils.Log("[LLMLoop] No tool calls, setting idle and broadcasting done")
 			ar.setState(ctx, utils.StateIdle)
 			ar.BroadcastStatus("", "")
+			modelSelectedSnap := conversation.ModelSelected
 			ar.Broadcast(SSEEvent{
 				Type:           "done",
 				ConversationID: ar.ConversationID,
 				Title:          conversation.Title,
+				ModelSelected:  &modelSelectedSnap,
 			})
 
 			// Auto-generate title for new conversations
 			if conversation.Title == "New Chat" {
+				titleMsSnap := conversation.ModelSelected
 				go func() {
 					title, icon, err := generateTitleAndIcon(ctx, conversation)
 					if err != nil {
@@ -118,6 +125,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 						State:          string(utils.StateIdle),
 						Title:          title,
 						Icon:           icon,
+						ModelSelected:  &titleMsSnap,
 					})
 				}()
 			}
@@ -231,11 +239,13 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				resultContent = utils.NewTextContent("Cancelled by user")
 			default:
 				ar.BroadcastStatus("tool_use", tc.Function.Name)
+				msSnap := conversation.ModelSelected
 				ar.Broadcast(SSEEvent{
 					Type:           "tool_use",
 					ToolCall:       tc,
 					IsServer:       true,
 					ConversationID: ar.ConversationID,
+					ModelSelected:  &msSnap,
 				})
 
 				resultContent = executeServerTool(ar.Ctx, ar, *tc, payload)
@@ -318,8 +328,13 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			return
 		}
 
-		// If there are ask-server tools or client-side tools, pause and wait
+		// If there are ask-server tools or client-side tools, pause and wait.
+		// We stamp the conversation's current ModelSelected onto every
+		// tool_use event here so any *other* connected client receives the
+		// current lock holder before they'd race to dispatch the client-side
+		// tools themselves.
 		if len(askServerTools) > 0 || len(clientTools) > 0 {
+			msSnap := conversation.ModelSelected
 			for i := range askServerTools {
 				tc := &askServerTools[i]
 				enrichToolCallMetadata(tc)
@@ -328,14 +343,17 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 					ToolCall:       tc,
 					IsServer:       true,
 					ConversationID: ar.ConversationID,
+					ModelSelected:  &msSnap,
 				})
 			}
 			for _, toolCall := range clientTools {
+				tc := toolCall
 				ar.Broadcast(SSEEvent{
 					Type:           "tool_use",
-					ToolCall:       &toolCall,
+					ToolCall:       &tc,
 					IsServer:       false,
 					ConversationID: ar.ConversationID,
+					ModelSelected:  &msSnap,
 				})
 			}
 
@@ -354,14 +372,17 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				waitState = utils.StateWaitingForApproval
 			}
 			ar.setState(ctx, waitState)
+			doneSnap := conversation.ModelSelected
 			ar.Broadcast(SSEEvent{
 				Type:           "state_change",
 				State:          string(waitState),
 				ConversationID: ar.ConversationID,
+				ModelSelected:  &doneSnap,
 			})
 			ar.Broadcast(SSEEvent{
 				Type:           "done",
 				ConversationID: ar.ConversationID,
+				ModelSelected:  &doneSnap,
 			})
 			return // Wait for client to POST tool results or approvals
 		}

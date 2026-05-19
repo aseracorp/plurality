@@ -38,6 +38,7 @@ class ConversationStorage {
     Hive.registerAdapter(ModelAdapter());
     Hive.registerAdapter(MiniAppAdapter());
     Hive.registerAdapter(MiniAppInputAdapter());
+    Hive.registerAdapter(ClientLockAdapter());
 
     // Open box
     if (!kIsWeb) {

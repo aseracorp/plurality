@@ -164,7 +164,9 @@ func HandleStreamReconnect(w http.ResponseWriter, r *http.Request) {
 
 	activeRequest := RequestRegistry.Get(conversationID)
 	if activeRequest == nil {
-		utils.Error("[HandleStreamReconnect] No active request for conversation", nil, conversationID)
+		// Expected: the client probes this endpoint on every conversation
+		// open / switch / app-resume to detect a live stream, so 404 here
+		// is normal control flow rather than an error condition.
 		http.Error(w, "No active request for this conversation", http.StatusNotFound)
 		return
 	}

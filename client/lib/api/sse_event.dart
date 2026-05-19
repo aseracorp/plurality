@@ -18,6 +18,12 @@ class SSEEvent {
   final int? completionTokens;
   final double? responseCost;
   final String? title;
+  /// Conversation's current per-conversation settings snapshot, stamped by
+  /// the server on `tool_use` events (so other connected clients see the
+  /// current lock holder before they'd race to dispatch the tool) and on
+  /// `done` events (so folder / eco / tool / model swaps reach every
+  /// viewer). Null on events that don't carry it.
+  final ModelSelected? modelSelected;
 
   SSEEvent({
     required this.type,
@@ -35,6 +41,7 @@ class SSEEvent {
     this.completionTokens,
     this.responseCost,
     this.title,
+    this.modelSelected,
   });
 
   factory SSEEvent.fromJson(Map<String, dynamic> json) {
@@ -57,6 +64,11 @@ class SSEEvent {
       completionTokens: json['completion_tokens'],
       responseCost: (json['response_cost'] as num?)?.toDouble(),
       title: json['title'],
+      modelSelected: json['model_selected'] != null
+          ? ModelSelected.fromJson(
+              Map<String, dynamic>.from(json['model_selected'] as Map),
+            )
+          : null,
     );
   }
 }

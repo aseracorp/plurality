@@ -112,9 +112,24 @@ class _InputBoxState extends State<InputBox> {
   }
 
   void _detachFolder() {
-    widget.setSelectedModel(
-      widget.selectedModel.copyWith(clientFolderPath: null),
-    );
+    // Only release the lock for the new-chat (no conversationId) flow:
+    // the attach in that flow is what acquired the lock in the first
+    // place, so undoing the attach should undo the lock too. For an
+    // existing conversation the lock represents ongoing ownership of
+    // client-tool execution — possibly acquired by a shell run, not the
+    // folder — so a folder detach shouldn't auto-unlock it.
+    if (widget.conversationId.isEmpty) {
+      widget.setSelectedModel(
+        widget.selectedModel.copyWith(
+          clientFolderPath: null,
+          clientLock: null,
+        ),
+      );
+    } else {
+      widget.setSelectedModel(
+        widget.selectedModel.copyWith(clientFolderPath: null),
+      );
+    }
   }
 
   @override
@@ -450,6 +465,45 @@ class _InputBoxState extends State<InputBox> {
     }
   }
 
+  /// Small chip rendered next to the model selection button when the
+  /// client lock is held by this device. Reminds the user that any
+  /// other connected client viewing this conversation is currently in
+  /// "read-only" mode for client-side tools (files, shell, MCP). The
+  /// trailing X clears the lock so another client can take over —
+  /// without forcing them to use the "Move conversation here" banner.
+  Widget _lockIndicator(Color primaryColor) {
+    final lock = widget.selectedModel.clientLock;
+    if (lock == null) return const SizedBox.shrink();
+    final myId = ClientIdentity().id;
+    if (myId.isEmpty || lock.id != myId) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: InputChip(
+        avatar: Icon(Icons.lock, size: 14, color: primaryColor),
+        label: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 120),
+          child: Text(
+            lock.label,
+            style: const TextStyle(fontSize: 10),
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
+          ),
+        ),
+        tooltip:
+            "Client tools (files, shell) only run on this device while "
+            "the lock is held. Click X to release so another client can take over.",
+        onDeleted: () {
+          widget.setSelectedModel(
+            widget.selectedModel.copyWith(clientLock: null),
+          );
+        },
+        deleteIconColor: primaryColor,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+      ),
+    );
+  }
+
   Widget _folderAttachButton(Color primaryColor) {
     if (!_supportsFolderPicker) {
       return const SizedBox.shrink();
@@ -633,6 +687,8 @@ class _InputBoxState extends State<InputBox> {
             ),
           ),
         ),
+
+        _lockIndicator(primaryColor),
       ],
     );
   }

@@ -141,6 +141,13 @@ class ChatService {
   /// Active SSE stream subscriptions per conversation.
   final Map<String, StreamSubscription> _activeStreams = {};
 
+  /// Conversation ids for which a reconnect() is mid-flight (HTTP in flight,
+  /// not yet registered in [_activeStreams]). Used to serialize concurrent
+  /// reconnect attempts — without this, two callers both observe "no entry
+  /// in _activeStreams" and both attach SSE clients to the same server-side
+  /// ActiveRequest, which broadcasts every event to both → duplicate text.
+  final Set<String> _connecting = {};
+
   /// Observable state per conversation session.
   final Map<String, ValueNotifier<ChatSessionState>> _sessions = {};
 
@@ -297,6 +304,25 @@ class ChatService {
     _disconnectSSE(conversationId);
     final session = getSession(conversationId);
     session.value = session.value.copyWith(state: ConversationState.idle);
+    // Cancelling a Dart StreamSubscription doesn't fire onError/onDone, so
+    // the SSE error path (which normally clears global status) is skipped.
+    // Wipe the entry here so the chat UI's isProcessing check goes false.
+    _clearStatus(conversationId);
+  }
+
+  /// Reset a conversation's session to a clean idle state when there is no
+  /// live SSE attached. Keeps the resolved id for new-conversation flows.
+  /// Without this, items from a previous interrupted stream stay in the
+  /// ValueNotifier and render on top of the freshly-loaded DB messages.
+  void resetSessionIfIdle(String conversationId) {
+    if (conversationId.isEmpty) return;
+    if (_activeStreams.containsKey(conversationId)) return;
+    final existing = _sessions[conversationId];
+    if (existing == null) return;
+    existing.value = ChatSessionState(
+      state: ConversationState.idle,
+      resolvedConversationId: existing.value.resolvedConversationId,
+    );
   }
 
   /// Reconnect to an active conversation's SSE stream. Idempotent.
@@ -306,7 +332,20 @@ class ChatService {
   Future<void> reconnect(String conversationId) async {
     if (conversationId.isEmpty) return;
     if (_activeStreams.containsKey(conversationId)) return;
+    // Another caller is already attaching — wait for it instead of racing.
+    if (_connecting.contains(conversationId)) return;
+    // sendMessage / submitToolResults set state=processing synchronously
+    // before awaiting their POST. While that POST is in flight we don't
+    // have an entry in _activeStreams yet, but reconnecting would race the
+    // POST's stream with our /chat/stream/<id> stream — and the server
+    // would fan every event to both sockets. Bail.
+    final existing = _sessions[conversationId];
+    if (existing != null &&
+        existing.value.state == ConversationState.processing) {
+      return;
+    }
 
+    _connecting.add(conversationId);
     try {
       final stream = await _api.connectStream(conversationId);
       // Live stream — flip session to processing so the UI shows activity
@@ -322,6 +361,8 @@ class ChatService {
       final session = getSession(conversationId);
       session.value = session.value.copyWith(state: ConversationState.idle);
       _clearStatus(conversationId);
+    } finally {
+      _connecting.remove(conversationId);
     }
   }
 
@@ -386,12 +427,25 @@ class ChatService {
           // Handle server-generated title/icon pushed via status stream
           final title = data['title'] as String?;
           final icon = data['icon'] as String?;
+          final modelSelectedJson = data['model_selected'];
+          ModelSelected? incomingModelSelected;
+          if (modelSelectedJson is Map) {
+            try {
+              incomingModelSelected = ModelSelected.fromJson(
+                Map<String, dynamic>.from(modelSelectedJson),
+              );
+            } catch (_) {
+              // Malformed payload — skip the merge rather than poisoning state.
+            }
+          }
           if ((title != null && title.isNotEmpty) ||
-              (icon != null && icon.isNotEmpty)) {
+              (icon != null && icon.isNotEmpty) ||
+              incomingModelSelected != null) {
             _conversationsNotifier?.updateConversationMetaData(
               conversationId: conversationId,
               title: title,
               icon: icon,
+              modelSelected: incomingModelSelected,
             );
           }
 
@@ -415,9 +469,16 @@ class ChatService {
           // session for — we don't want to spin up SSE streams for chats
           // the user hasn't opened. reconnect() is a no-op when the stream
           // is already healthy.
+          //
+          // Skip when the local session is already processing: that means
+          // sendMessage/submitToolResults set state=processing synchronously
+          // and is mid-await on the POST. Reconnecting here would race the
+          // POST's stream and double-up every event between the two sockets.
           if (!status.isIdle &&
               _sessions.containsKey(conversationId) &&
-              !_activeStreams.containsKey(conversationId)) {
+              !_activeStreams.containsKey(conversationId) &&
+              _sessions[conversationId]!.value.state !=
+                  ConversationState.processing) {
             reconnect(conversationId);
           }
         },
@@ -534,6 +595,20 @@ class ChatService {
     // Update title if received
     if (event.title != null && event.title!.isNotEmpty) {
       session.value = session.value.copyWith(title: event.title);
+    }
+
+    // Sync per-conversation settings (tools / folder / eco / client lock)
+    // from any server event that carries the snapshot. The server stamps
+    // model_selected on tool_use and done events; here we mirror that into
+    // the local conversation in Riverpod so UI watchers (lock badge,
+    // banner, eco toggle, folder chip) reflect the freshest state — and
+    // so a passively-viewing client sees the lock holder *before* it
+    // would otherwise race to execute the same client-side tool.
+    if (event.modelSelected != null) {
+      _conversationsNotifier?.updateConversationMetaData(
+        conversationId: conversationId,
+        modelSelected: event.modelSelected,
+      );
     }
 
     switch (event.type) {
@@ -695,8 +770,28 @@ class ChatService {
     // visible in the UI) but must skip execution — the locked client
     // will submit the results and the server doesn't care which
     // client posts them.
+    //
+    // Important: we re-read the lock from Riverpod rather than trusting
+    // the `modelSelected` argument the caller captured when starting the
+    // request. The server stamps the current lock onto tool_use events,
+    // and our SSE handler mirrors that into Riverpod *before* the
+    // state_change → waitingForTool that triggers this method. So the
+    // fresh read is what closes the race when another client has just
+    // claimed the conversation.
+    Conversation? liveConv;
+    final convs = _conversationsNotifier?.state.conversations;
+    if (convs != null) {
+      for (final c in convs) {
+        if (c.id == conversationId) {
+          liveConv = c;
+          break;
+        }
+      }
+    }
+    final liveModelSelected = liveConv?.modelSelected ?? modelSelected;
+
     final myId = ClientIdentity().id;
-    final lock = modelSelected.clientLock;
+    final lock = liveModelSelected.clientLock;
     if (lock != null && myId.isNotEmpty && lock.id != myId) {
       // Drop the queued calls so we don't try to re-dispatch them on the
       // next state_change. The locked client's submission will advance
@@ -705,20 +800,12 @@ class ChatService {
           session.value.copyWith(pendingClientTools: const []);
       return;
     }
-    if (lock == null) {
-      final acquired = ClientIdentity().asLock();
-      if (acquired != null) {
-        // Persist the lock locally + push to server on the next request.
-        // The new modelSelected becomes the one that submitToolResults
-        // sends below, so the server sees the acquisition in the same
-        // round-trip as the tool result.
-        await _conversationsNotifier?.updateConversationMetaData(
-          conversationId: conversationId,
-          modelSelected: modelSelected.copyWith(clientLock: acquired),
-        );
-        modelSelected = modelSelected.copyWith(clientLock: acquired);
-      }
-    }
+    // Adopt the live model so any folder / eco / tool changes pushed by
+    // the server are honoured during this execution too. Lock acquisition
+    // itself is deferred until the tool-results submission below — that's
+    // the moment we actually claim ownership over the wire, and the
+    // server arbitrates if two clients race.
+    modelSelected = liveModelSelected;
 
     final toolCalls = List<ToolCall>.from(session.value.pendingClientTools);
     final results = <Message>[];
@@ -830,6 +917,26 @@ class ChatService {
     }
 
     if (results.isNotEmpty) {
+      // Stamp this client as the lock holder on the outgoing modelSelected.
+      // The server's PushMessage will persist this, and the next SSE event
+      // back (tool_use / done with model_selected) will mirror it into
+      // Riverpod on every viewer — including us — so the badge appears
+      // without a separate local write. If two clients race to reply, the
+      // POST that lands last wins and the loser's local lock state is
+      // overwritten by the server's reply, which is the correct UX.
+      // We also do an optimistic local update so the badge surfaces
+      // immediately on this client without waiting for the round-trip.
+      final claim = ClientIdentity().asLock();
+      if (claim != null &&
+          (modelSelected.clientLock == null ||
+              modelSelected.clientLock!.id != claim.id)) {
+        modelSelected = modelSelected.copyWith(clientLock: claim);
+        _conversationsNotifier?.updateConversationMetaData(
+          conversationId: conversationId,
+          modelSelected: modelSelected,
+        );
+      }
+
       // Add tool result messages to local state
       for (final result in results) {
         _conversationsNotifier?.addMessage(

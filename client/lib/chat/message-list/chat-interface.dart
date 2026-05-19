@@ -85,6 +85,12 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
   bool _isNearBottom = true;
   bool _needsBottomMargin = false;
   bool _closeMessageWarning = false;
+  bool _didInitialScroll = false;
+
+  // Mirrors the main list's itemCount from the most recent buildMessageList.
+  // jumpToItem callers must use this — recomputing a filter here drifts and
+  // throws an out-of-bounds assertion in super_sliver_list.
+  int _lastMainItemCount = 0;
 
   ModelSelected _modelSelected = ModelSelected();
 
@@ -119,6 +125,11 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
 
     _updateSelectedModel();
     _loadConversation(widget.conversationId);
+
+    // Drop any stale streaming items left behind by a previous interrupted
+    // run on this conversation, so the freshly-loaded DB messages are the
+    // only thing rendered. No-op when there's a live SSE attached.
+    _chatService.resetSessionIfIdle(widget.conversationId);
 
     // Reattach to any live SSE stream for this conversation. Recovers from
     // a dropped socket (phone lock, network blip) where the UI is otherwise
@@ -168,12 +179,16 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
       _updateSelectedModel();
       _loadConversation(widget.conversationId);
 
+      // Drop stale streaming items left over from a previous interrupted run.
+      _chatService.resetSessionIfIdle(widget.conversationId);
+
       // Reattach to any live SSE stream for the newly-selected conversation.
       _chatService.reconnect(widget.conversationId);
 
       setState(() {
         _needsBottomMargin = false;
         _closeMessageWarning = false;
+        _didInitialScroll = false;
       });
     }
   }
@@ -253,6 +268,17 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
     if (widget.conversationId.isEmpty) {
       final preferencesNotifier = ref.read(preferencesProvider.notifier);
       preferencesNotifier.setSelectedModel(modelSelected);
+    } else {
+      // Mirror the user-driven change into the conversation in Riverpod
+      // (and Hive) so build()'s sync from currentConversation.modelSelected
+      // doesn't immediately wipe the edit. The server still sees it only
+      // on the next /chat or tool-results POST — round-trips as before.
+      ref
+          .read(conversationsProvider.notifier)
+          .updateConversationMetaData(
+            conversationId: widget.conversationId,
+            modelSelected: modelSelected,
+          );
     }
   }
 
@@ -292,13 +318,25 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
   void _scrollListener() {
     if (!_mainScrollController.hasClients) return;
     final isNearBottom =
-        _mainScrollController.position.pixels >=
-        _contentMaxExtent - 200;
+        _mainScrollController.position.pixels >= _contentMaxExtent - 200;
     if (isNearBottom != _isNearBottom) {
       setState(() {
         _isNearBottom = isNearBottom;
       });
     }
+  }
+
+  /// Anchor the main list to its last item. Uses the itemCount from the most
+  /// recent build so it matches whatever super_sliver_list is rendering.
+  void _scrollToBottom() {
+    if (!_listController.isAttached ||
+        !_mainScrollController.hasClients ||
+        _lastMainItemCount <= 0) return;
+    _listController.jumpToItem(
+      index: _lastMainItemCount - 1,
+      scrollController: _mainScrollController,
+      alignment: 1.0,
+    );
   }
 
   void _handleStop() {
@@ -594,7 +632,9 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
 
       // Scroll the user's message to the top of the viewport, once per submit.
       // Done here (not on state transitions) so multi-turn tool/AI events
-      // don't yank the scroll position around between turns.
+      // don't yank the scroll position around between turns. The bottom margin
+      // added above gives the streaming response room to grow downward without
+      // pushing the user message off-screen.
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted ||
             !_listController.isAttached ||
@@ -961,14 +1001,17 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
       return true;
     }).toList();
 
+    final itemCount = visibleMessages.length
+        + (hasStreamingContent ? 1 : 0)
+        + (hasPendingApproval ? 1 : 0);
+    if (!mini) _lastMainItemCount = itemCount;
+
     var l = SuperListView.builder(
       listController: mini ? _miniMapListController : _listController,
       controller: controller,
       cacheExtent: 100,
       padding: padding ?? const EdgeInsets.all(16.0),
-      itemCount: visibleMessages.length
-          + (hasStreamingContent ? 1 : 0)
-          + (hasPendingApproval ? 1 : 0),
+      itemCount: itemCount,
       itemBuilder: (context, index) {
         // --- Streaming content ---
         if (hasStreamingContent && index == visibleMessages.length) {
@@ -1049,11 +1092,36 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
           ),
     );
 
+    // Sync the local cache from the live conversation so anything pushed
+    // through Riverpod (the SSE handler mirroring server-stamped
+    // model_selected on tool_use / done events, status-stream events,
+    // or another part of the UI calling updateConversationMetaData) is
+    // immediately visible — most importantly the client-lock badge and
+    // the "locked on X" banner. _setSelectedModel pushes user edits into
+    // Riverpod too, so this idempotent reassignment doesn't clobber any
+    // in-flight picker change.
+    if (widget.conversationId.isNotEmpty) {
+      _modelSelected = currentConversation.modelSelected;
+    }
+
     final messages = currentConversation.messages;
 
     // Dynamic bottom padding: give room for streaming response to grow
+    // downward without pushing the user's just-sent message off-screen.
     final viewportHeight = MediaQuery.of(context).size.height;
     final dynamicBottomPadding = _needsBottomMargin ? (viewportHeight - 400) : 16.0;
+
+    // One-shot: anchor to the newest item the first time an existing
+    // conversation renders. Index-based jump is robust against unmeasured
+    // items — the failure mode that broke the old animateTo(maxScrollExtent).
+    if (!_didInitialScroll &&
+        widget.conversationId.isNotEmpty &&
+        messages.isNotEmpty) {
+      _didInitialScroll = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _scrollToBottom();
+      });
+    }
 
     // Build main content and minimap content using the shared function
     final mainContent = buildMessageList(
@@ -1456,13 +1524,22 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
                         : () {
                             final claim = ClientIdentity().asLock();
                             if (claim == null) return;
+                            // Drop the previous holder's folder attachment
+                            // along with the lock claim. The folder path
+                            // points at a directory on the OTHER machine's
+                            // filesystem — keeping it would leave the
+                            // device-side filesystem tools targeting a path
+                            // that doesn't exist on this device.
                             ref
                                 .read(conversationsProvider.notifier)
                                 .updateConversationMetaData(
                                   conversationId: widget.conversationId,
                                   modelSelected: currentConversation
                                       .modelSelected
-                                      .copyWith(clientLock: claim),
+                                      .copyWith(
+                                        clientLock: claim,
+                                        clientFolderPath: null,
+                                      ),
                                 );
                           },
                     child: const Text('Move conversation here'),
@@ -1489,18 +1566,13 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
             ),
           ),
 
-        // Scroll to bottom button
         if (!_isNearBottom)
           Positioned(
             right: 16,
             bottom: 80,
             child: FloatingActionButton(
               mini: true,
-              onPressed: () => _mainScrollController.animateTo(
-                _contentMaxExtent,
-                duration: Duration(milliseconds: 300),
-                curve: Curves.easeOut,
-              ),
+              onPressed: _scrollToBottom,
               child: const Icon(Icons.arrow_downward),
             ),
           ),

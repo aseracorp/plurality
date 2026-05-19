@@ -179,6 +179,9 @@ class MCPService {
   }
 
   void initMCP() async {
+    if (kIsWeb) {
+      return;
+    }
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       serverManager.stopAll();
       mcpServers = {};

@@ -25,6 +25,13 @@ type SSEEvent struct {
 	CompletionTokens int          `json:"completion_tokens,omitempty"`
 	ResponseCost     float64      `json:"response_cost,omitempty"`
 	Title            string       `json:"title,omitempty"`
+
+	// ModelSelected is the conversation's current per-conversation settings
+	// snapshot — tools, eco mode, attached folder, and client lock. Populated
+	// on "tool_use" events (so other connected clients see the lock holder
+	// before they'd race to execute the tool) and on "done" events (so
+	// folder / eco / tool / model swaps round-trip to every viewer).
+	ModelSelected *utils.ModelSelected `json:"model_selected,omitempty"`
 }
 
 // WriteSSEEvent serializes an SSEEvent and writes it to an HTTP response writer.
@@ -52,6 +59,13 @@ type StatusEvent struct {
 	ToolName       string `json:"tool_name,omitempty"` // only when activity is "tool_use"
 	Title          string `json:"title,omitempty"`     // set when title is generated server-side
 	Icon           string `json:"icon,omitempty"`      // set when icon is generated server-side
+
+	// ModelSelected is the conversation's current per-conversation settings
+	// snapshot, broadcast on the global status stream so any client with the
+	// sidebar open (not necessarily watching this conversation's SSE) stays
+	// in sync — including the client lock holder so the "locked on X" banner
+	// updates everywhere without a full reload.
+	ModelSelected *utils.ModelSelected `json:"model_selected,omitempty"`
 }
 
 // WriteStatusEvent serializes a StatusEvent and writes it as SSE.

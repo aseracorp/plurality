@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 
@@ -29,6 +30,9 @@ class SkillsService {
   }
 
   Future<void> initSkills() async {
+    if (kIsWeb) {
+      return;
+    }
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       _skills = [];
 

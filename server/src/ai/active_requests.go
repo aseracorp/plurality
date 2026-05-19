@@ -130,13 +130,18 @@ func (ar *ActiveRequest) CloseAllClients() {
 	}
 }
 
-// BroadcastStatus sends a compact status event to all status stream clients for this user.
+// BroadcastStatus sends a compact status event to all status stream clients
+// for this user. The conversation's current ModelSelected snapshot is
+// included so any client with the sidebar open — not just the per-conversation
+// SSE viewer — picks up lock / folder / eco / model changes live.
 func (ar *ActiveRequest) BroadcastStatus(activity string, toolName string) {
+	msSnap := ar.ModelSelected
 	StatusRegistry.BroadcastToUser(ar.UserID, StatusEvent{
 		ConversationID: ar.ConversationID,
 		State:          string(ar.State),
 		Activity:       activity,
 		ToolName:       toolName,
+		ModelSelected:  &msSnap,
 	})
 }
 
