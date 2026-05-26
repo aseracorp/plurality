@@ -263,8 +263,8 @@ func HandleApprove(w http.ResponseWriter, r *http.Request) {
 				args = "{}"
 			}
 
-			if mcp.IsMCPTool(approval.ToolName) {
-				resultContent := mcp.CallTool(r.Context(), approval.ToolName, args, conversationID)
+			if mcp.IsMCPTool(userID, approval.ToolName) {
+				resultContent := mcp.CallTool(r.Context(), userID, approval.ToolName, args, conversationID)
 				toolMessage = utils.Message{
 					Role: "tool", Content: resultContent,
 					ToolCallID: approval.ToolCallID, Name: approval.ToolName,

@@ -149,7 +149,10 @@ class AuthService {
     return _current!;
   }
 
-  Future<AuthMethods> getAuthMethods() async {
+  /// Ask the server which login methods it supports. Returns null when the
+  /// server can't be reached or replies with an error, so callers can tell
+  /// "unreachable server" apart from "server has no local users".
+  Future<AuthMethods?> getAuthMethods() async {
     try {
       final resp = await http.get(Uri.parse('$baseUrl/auth/methods'));
       if (resp.statusCode == 200) {
@@ -162,7 +165,7 @@ class AuthService {
         );
       }
     } catch (_) {}
-    return AuthMethods(local: true, openid: false);
+    return null;
   }
 
   /// Run the openid_client flow, then exchange the resulting ID token for a

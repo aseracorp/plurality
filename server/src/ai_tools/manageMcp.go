@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/utils"
@@ -24,7 +25,7 @@ var ManageMCPTool = utils.AITool{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
 			Name:        "manage_mcp",
-			Description: "Read or edit the MCP server configuration (mcp.json). Use 'get' to view current config, 'set' to replace it entirely. After 'set', MCP servers will be reinitialized.",
+			Description: "Read or edit YOUR per-user MCP server configuration (users-data/<you>/mcp.json), layered on top of the shared global servers. Use 'get' to view your current config, 'set' to replace it entirely. After 'set', only your MCP servers are reinitialized.",
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{
@@ -56,13 +57,13 @@ func execManageMCP(_ context.Context, input string, conv utils.Conversation) uti
 		return utils.NewTextContent(fmt.Sprintf("Error parsing parameters: %s", err.Error()))
 	}
 
-	configPath := mcp.MCPConfigPath()
+	configPath := mcp.UserMCPConfigPath(conv.UserID)
 
 	switch params.Mode {
 	case "get":
 		data, err := os.ReadFile(configPath)
 		if os.IsNotExist(err) {
-			return utils.NewTextContent("No mcp.json configured yet. Use 'set' mode to create one.")
+			return utils.NewTextContent("No personal mcp.json configured yet. You currently use the shared global servers only. Use 'set' mode to add your own.")
 		}
 		if err != nil {
 			return utils.NewTextContent(fmt.Sprintf("Error reading config: %s", err.Error()))
@@ -91,17 +92,19 @@ func execManageMCP(_ context.Context, input string, conv utils.Conversation) uti
 			return utils.NewTextContent(fmt.Sprintf("Error formatting config: %s", err.Error()))
 		}
 
-		// Write the config
+		// Write the config (per-user dir may not exist yet)
+		if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+			return utils.NewTextContent(fmt.Sprintf("Error creating user data dir: %s", err.Error()))
+		}
 		if err := os.WriteFile(configPath, formatted, 0644); err != nil {
 			return utils.NewTextContent(fmt.Sprintf("Error writing config: %s", err.Error()))
 		}
 
-		// Reinitialize MCP
-		mcp.Shutdown()
-		mcp.Init()
+		// Reinitialize only this user's MCP servers
+		mcp.ReinitUser(conv.UserID)
 
-		servers := mcp.ListAllMCPServers()
-		return utils.NewTextContent(fmt.Sprintf("MCP config updated and reinitialized. Active servers: %v", servers))
+		servers := mcp.ListAllMCPServers(conv.UserID)
+		return utils.NewTextContent(fmt.Sprintf("Your MCP config was updated and reinitialized. Servers available to you (incl. global): %v", servers))
 
 	default:
 		return utils.NewTextContent("Invalid mode. Use 'get' or 'set'.")

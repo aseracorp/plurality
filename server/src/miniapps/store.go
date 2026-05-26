@@ -20,6 +20,17 @@ const (
 	presetsDir   = "presets"
 )
 
+// defaultPins are the builtin mini apps pinned by default for new users
+// (all base presets except the background agent).
+var defaultPins = []string{
+	"branding-designer",
+	"dungeon-master",
+	"language-tutor",
+	"note-taker",
+	"teacher",
+	"therapist",
+}
+
 var (
 	storeMu  sync.RWMutex
 	builtins map[string]utils.MiniApp // id -> app
@@ -259,6 +270,9 @@ func pinsPath(username string) string {
 func loadPins(username string) []string {
 	data, err := os.ReadFile(pinsPath(username))
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return append([]string{}, defaultPins...)
+		}
 		return []string{}
 	}
 	var pins []string

@@ -32,7 +32,7 @@ class ProcessManager {
       // For Windows, resolve the full path to the executable
       String executablePath = command;
 
-      if (Platform.isWindows) {
+      if (!kIsWeb && Platform.isWindows) {
         executablePath = await _resolveWindowsPath(command);
         if (executablePath.isEmpty) {
           _processOutput.add(

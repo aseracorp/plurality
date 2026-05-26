@@ -58,7 +58,7 @@ func execDebugMCP(_ context.Context, input string, conv utils.Conversation) util
 
 	switch params.Mode {
 	case "list":
-		servers := mcp.ListAllMCPServers()
+		servers := mcp.ListAllMCPServers(conv.UserID)
 		if len(servers) == 0 {
 			return utils.NewTextContent("No MCP servers configured.")
 		}
@@ -68,7 +68,7 @@ func execDebugMCP(_ context.Context, input string, conv utils.Conversation) util
 		if params.Server == "" {
 			return utils.NewTextContent("Error: 'server' parameter is required for 'logs' mode.")
 		}
-		logs := mcp.GetMCPLogs(params.Server, conv.ID)
+		logs := mcp.GetMCPLogs(conv.UserID, params.Server, conv.ID)
 		return utils.NewTextContent(fmt.Sprintf("Logs for %s:\n%s", params.Server, logs))
 
 	default:

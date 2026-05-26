@@ -218,6 +218,7 @@ func ShortcutModelSelected(name string) utils.ModelSelected {
 // HandleListModels is OpenAI-list-compatible with added {presets, functions,
 // function_bundles, skills} root-level fields for rich clients.
 func HandleListModels(w http.ResponseWriter, r *http.Request) {
+	userID, _ := r.Context().Value("userID").(string)
 	builtinFns := BuiltinFunctionsFromRegistry()
 	functions := make([]FunctionDef, 0, len(builtinFns)+8)
 	functions = append(functions, builtinFns...)
@@ -228,13 +229,13 @@ func HandleListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Server-side MCP servers become one bundle each, grouping their tools.
-	for serverName, mcpTools := range mcp.ToolsByServer() {
+	for serverName, mcpTools := range mcp.ToolsByServer(userID) {
 		if serverName == "" {
 			continue
 		}
 		bundleKey := "mcp:" + serverName
 		// Prefer user-configured description from mcp.json; fall back to first tool's.
-		firstDesc := mcp.ServerDescription(serverName)
+		firstDesc := mcp.ServerDescription(userID, serverName)
 		if firstDesc == "" {
 			for _, t := range mcpTools {
 				if t.Description != "" {
@@ -262,7 +263,7 @@ func HandleListModels(w http.ResponseWriter, r *http.Request) {
 	// Expose server skills to the picker. retrieve_server_skill itself is
 	// force-included in GetRequests — we don't list it as a toggle.
 	var skillDefs []SkillDef
-	for _, s := range skills.List() {
+	for _, s := range skills.List(userID) {
 		skillDefs = append(skillDefs, SkillDef{
 			Name:        s.Name,
 			Description: s.Description,
@@ -273,7 +274,7 @@ func HandleListModels(w http.ResponseWriter, r *http.Request) {
 	presets := orderedPresets()
 
 	// Inject server-side MCP tools into presets so they're enabled out of the box.
-	mcpTools := mcp.ListTools()
+	mcpTools := mcp.ListTools(userID)
 	if len(mcpTools) > 0 {
 		for i := range presets {
 			for _, modelPtr := range []*utils.Model{presets[i].Models.Text, presets[i].Models.Vision} {

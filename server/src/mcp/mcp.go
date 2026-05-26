@@ -62,17 +62,75 @@ type convProcess struct {
 	lastUsed time.Time
 }
 
+// globalUserID is the sentinel key for the shared/global layer loaded from
+// data/mcp.json. Every user's effective view merges this layer with their own
+// users-data/{userID}/mcp.json, with the global layer winning on name collision.
+const globalUserID = ""
+
 var (
 	mu          sync.RWMutex
-	processes   = map[string]*ProcessManager{} // shared (non-stateful) servers
-	tools       = map[string]ToolInfo{}        // toolName -> info
 	initialized bool
 
-	// Stateful MCP: per-conversation process isolation.
-	statefulConfigs    = map[string]mcpServerConfig{}         // serverName -> config (for lazy spawning)
-	convProcesses      = map[string]map[string]*convProcess{} // conversationID -> serverName -> process
-	serverDescriptions = map[string]string{}                  // serverName -> description from mcp.json
+	// All state is keyed by userID first; globalUserID ("") holds the shared layer.
+	processes          = map[string]map[string]*ProcessManager{} // userID -> serverName -> shared (non-stateful) process
+	tools              = map[string]map[string]ToolInfo{}        // userID -> namespaced toolName -> info
+	statefulConfigs    = map[string]map[string]mcpServerConfig{} // userID -> serverName -> config (for lazy spawning)
+	serverDescriptions = map[string]map[string]string{}          // userID -> serverName -> description from mcp.json
+
+	// Stateful MCP: per-conversation process isolation. Keyed by conversationID
+	// (globally unique). convOwner maps a conversation to its owning user so a
+	// stateful call/cleanup can resolve the right user's server config.
+	convProcesses = map[string]map[string]*convProcess{} // conversationID -> serverName -> process
+	convOwner     = map[string]string{}                  // conversationID -> userID
+
+	cleanupRunning bool // guards against spawning duplicate cleanupLoop goroutines
 )
+
+// startCleanupLoop launches the idle-process reaper at most once. Caller must
+// hold mu.
+func startCleanupLoop() {
+	if cleanupRunning {
+		return
+	}
+	cleanupRunning = true
+	go cleanupLoop()
+}
+
+// resetState clears all in-memory maps. Caller must hold mu.
+func resetState() {
+	processes = map[string]map[string]*ProcessManager{}
+	tools = map[string]map[string]ToolInfo{}
+	statefulConfigs = map[string]map[string]mcpServerConfig{}
+	serverDescriptions = map[string]map[string]string{}
+}
+
+// --- merge resolvers (caller holds mu) -------------------------------------
+// Each checks the global layer first, then the user's own, so the global
+// definition wins on name collision.
+
+func resolveTool(userID, nsName string) (ToolInfo, bool) {
+	if g, ok := tools[globalUserID][nsName]; ok {
+		return g, true
+	}
+	t, ok := tools[userID][nsName]
+	return t, ok
+}
+
+func resolveStatefulConfig(userID, serverName string) (mcpServerConfig, bool) {
+	if g, ok := statefulConfigs[globalUserID][serverName]; ok {
+		return g, true
+	}
+	c, ok := statefulConfigs[userID][serverName]
+	return c, ok
+}
+
+func resolveSharedProcess(userID, serverName string) (*ProcessManager, bool) {
+	if g, ok := processes[globalUserID][serverName]; ok {
+		return g, true
+	}
+	p, ok := processes[userID][serverName]
+	return p, ok
+}
 
 // dataDir returns the configured data dir (env DATA_DIR, default ./data
 // next to the binary). Mirrors the convention in storage.Init.
@@ -84,9 +142,15 @@ func dataDir() string {
 	return filepath.Join(filepath.Dir(exec), "data")
 }
 
-// MCPConfigPath returns the absolute path to data/mcp.json.
+// MCPConfigPath returns the absolute path to the shared/global data/mcp.json.
 func MCPConfigPath() string {
 	return filepath.Join(dataDir(), "mcp.json")
+}
+
+// UserMCPConfigPath returns the absolute path to a user's
+// users-data/{userID}/mcp.json.
+func UserMCPConfigPath(userID string) string {
+	return utils.UserFilePath(userID, "mcp.json")
 }
 
 // Init loads data/mcp.json, starts all configured servers, and discovers
@@ -97,51 +161,98 @@ func Init() {
 	defer mu.Unlock()
 
 	initialized = true
-	tools = map[string]ToolInfo{}
-	processes = map[string]*ProcessManager{}
-	statefulConfigs = map[string]mcpServerConfig{}
-	serverDescriptions = map[string]string{}
+	resetState()
 
+	// 1. Load the shared/global layer from data/mcp.json (creating defaults).
 	configPath := MCPConfigPath()
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
 		utils.Error("[MCP] Failed to create data dir", err)
-		return
-	}
-
-	data, err := os.ReadFile(configPath)
-	if os.IsNotExist(err) {
-		defaultCfg := defaultMCPConfig()
-		if werr := os.WriteFile(configPath, []byte(defaultCfg), 0644); werr != nil {
-			utils.Error("[MCP] Failed to write default config", werr)
-		} else {
-			utils.Log("[MCP] Created default config at %s", configPath)
+	} else {
+		data, err := os.ReadFile(configPath)
+		if os.IsNotExist(err) {
+			defaultCfg := defaultMCPConfig()
+			if werr := os.WriteFile(configPath, []byte(defaultCfg), 0644); werr != nil {
+				utils.Error("[MCP] Failed to write default config", werr)
+			} else {
+				utils.Log("[MCP] Created default config at %s", configPath)
+			}
+			data, err = os.ReadFile(configPath)
 		}
-		// Re-read so we continue to start the default servers.
-		data, err = os.ReadFile(configPath)
 		if err != nil {
-			utils.Error("[MCP] Failed to re-read config", err)
-			return
+			utils.Error("[MCP] Failed to read config", err)
+		} else {
+			var cfg mcpFile
+			if jerr := json.Unmarshal(data, &cfg); jerr != nil {
+				utils.Error("[MCP] Failed to parse mcp.json", jerr)
+			} else {
+				loadUserConfig(globalUserID, cfg)
+			}
 		}
 	}
-	if err != nil {
-		utils.Error("[MCP] Failed to read config", err)
+
+	// 2. Eagerly load every user's users-data/{userID}/mcp.json layer on top.
+	for _, uid := range utils.ListUserIDsWith("mcp.json") {
+		data, err := os.ReadFile(UserMCPConfigPath(uid))
+		if err != nil {
+			utils.Error("[MCP] Failed to read config for user "+uid, err)
+			continue
+		}
+		var cfg mcpFile
+		if jerr := json.Unmarshal(data, &cfg); jerr != nil {
+			utils.Error("[MCP] Failed to parse mcp.json for user "+uid, jerr)
+			continue
+		}
+		loadUserConfig(uid, cfg)
+	}
+
+	// Start cleanup goroutine if any user has stateful servers.
+	for _, cfgs := range statefulConfigs {
+		if len(cfgs) > 0 {
+			startCleanupLoop()
+			break
+		}
+	}
+}
+
+// loadUserConfig starts and discovers all servers in cfg for a single user,
+// writing the results into that user's slot of every state map. Caller must
+// hold mu. For non-global users, a server name already present in the global
+// layer is skipped (global wins on collision).
+func loadUserConfig(userID string, cfg mcpFile) {
+	if len(cfg.MCPServers) == 0 {
+		if userID == globalUserID {
+			utils.Log("[MCP] No global servers configured")
+		}
 		return
 	}
 
-	var cfg mcpFile
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		utils.Error("[MCP] Failed to parse mcp.json", err)
-		return
-	}
-	if len(cfg.MCPServers) == 0 {
-		utils.Log("[MCP] No servers configured")
-		return
+	tools[userID] = map[string]ToolInfo{}
+	processes[userID] = map[string]*ProcessManager{}
+	statefulConfigs[userID] = map[string]mcpServerConfig{}
+	serverDescriptions[userID] = map[string]string{}
+
+	logPrefix := "global"
+	if userID != globalUserID {
+		logPrefix = "user " + userID
 	}
 
 	for name, server := range cfg.MCPServers {
 		if name == "" || server.Command == "" {
-			utils.Log("[MCP] Skipping invalid entry: name=%q command=%q", name, server.Command)
+			utils.Log("[MCP] (%s) Skipping invalid entry: name=%q command=%q", logPrefix, name, server.Command)
 			continue
+		}
+
+		// A user may not shadow an admin-provisioned global server (it runs an
+		// arbitrary command under the admin's intent).
+		if userID != globalUserID {
+			if _, clash := statefulConfigs[globalUserID][name]; clash {
+				utils.Log("[MCP] (%s) Skipping %q: shadows a global server", logPrefix, name)
+				continue
+			}
+			if _, clash := processes[globalUserID][name]; clash {
+				utils.Log("[MCP] (%s) Skipping %q: shadows a global server", logPrefix, name)
+				continue
+			}
 		}
 
 		// Resolve command to absolute path for reliability.
@@ -150,29 +261,27 @@ func Init() {
 			cmdPath = resolved
 		}
 
-		utils.Log("[MCP] Starting %s (%s)...", name, cmdPath)
+		utils.Log("[MCP] (%s) Starting %s (%s)...", logPrefix, name, cmdPath)
 		pm := NewProcessManager(name, cmdPath, server.Args)
 		if err := pm.Start(); err != nil {
-			utils.Error("[MCP] Failed to start "+name, err)
+			utils.Error("[MCP] ("+logPrefix+") Failed to start "+name, err)
 			continue
 		}
 
 		// Initialize then list tools. Many MCP servers require "initialize"
 		// before they will accept other calls.
-		utils.Log("[MCP] %s: sending initialize...", name)
 		if _, err := pm.SendRequest("initialize", map[string]interface{}{
 			"protocolVersion": "2024-11-05",
 			"capabilities":    map[string]interface{}{},
 			"clientInfo":      map[string]interface{}{"name": "plurality", "version": "1.0"},
 		}); err != nil {
-			utils.Log("[MCP] %s: initialize warning: %v (continuing)", name, err)
+			utils.Log("[MCP] (%s) %s: initialize warning: %v (continuing)", logPrefix, name, err)
 		}
 		_, _ = pm.SendRequest("notifications/initialized", nil)
 
-		utils.Log("[MCP] %s: fetching tools...", name)
 		raw, err := pm.SendRequest("tools/list", map[string]interface{}{})
 		if err != nil {
-			utils.Error("[MCP] "+name+": tools/list failed", err)
+			utils.Error("[MCP] ("+logPrefix+") "+name+": tools/list failed", err)
 			pm.Stop()
 			continue
 		}
@@ -185,7 +294,7 @@ func Init() {
 			} `json:"tools"`
 		}
 		if err := json.Unmarshal(raw, &list); err != nil {
-			utils.Error("[MCP] "+name+": tools/list parse", err)
+			utils.Error("[MCP] ("+logPrefix+") "+name+": tools/list parse", err)
 			pm.Stop()
 			continue
 		}
@@ -195,17 +304,17 @@ func Init() {
 				continue
 			}
 			nsName := NamespacedToolName(name, t.Name)
-			tools[nsName] = ToolInfo{
+			tools[userID][nsName] = ToolInfo{
 				Name:        t.Name,
 				Description: t.Description,
 				ServerName:  name,
 				InputSchema: t.InputSchema,
 			}
 		}
-		utils.Log("[MCP] %s: %d tools loaded (stateful=%v)", name, len(list.Tools), server.Stateful)
+		utils.Log("[MCP] (%s) %s: %d tools loaded (stateful=%v)", logPrefix, name, len(list.Tools), server.Stateful)
 
 		if server.Description != "" {
-			serverDescriptions[name] = server.Description
+			serverDescriptions[userID][name] = server.Description
 		}
 
 		if server.Stateful {
@@ -213,16 +322,11 @@ func Init() {
 			// lazy per-conversation spawning.
 			pm.Stop()
 			server.Command = cmdPath // store resolved path
-			statefulConfigs[name] = server
+			statefulConfigs[userID][name] = server
 		} else {
 			// Shared: keep the process running for all conversations.
-			processes[name] = pm
+			processes[userID][name] = pm
 		}
-	}
-
-	// Start cleanup goroutine for idle stateful processes.
-	if len(statefulConfigs) > 0 {
-		go cleanupLoop()
 	}
 }
 
@@ -230,16 +334,16 @@ func Init() {
 func Shutdown() {
 	mu.Lock()
 	procs := processes
-	processes = map[string]*ProcessManager{}
-	tools = map[string]ToolInfo{}
-	statefulConfigs = map[string]mcpServerConfig{}
-
 	convProcs := convProcesses
+	resetState()
 	convProcesses = map[string]map[string]*convProcess{}
+	convOwner = map[string]string{}
 	mu.Unlock()
 
-	for _, p := range procs {
-		p.Stop()
+	for _, servers := range procs {
+		for _, p := range servers {
+			p.Stop()
+		}
 	}
 	for _, servers := range convProcs {
 		for _, cp := range servers {
@@ -248,87 +352,156 @@ func Shutdown() {
 	}
 }
 
-// ListTools returns all discovered MCP tools.
-func ListTools() []ToolInfo {
+// ReinitUser stops and reloads only one user's MCP servers and tools, leaving
+// the global layer and all other users untouched. It also tears down that
+// user's stateful per-conversation processes so they respawn under the new
+// config. Used by manage_mcp after a config edit.
+func ReinitUser(userID string) {
+	if userID == globalUserID {
+		return // global layer is reloaded only via full Init()
+	}
+
+	// Collect this user's processes (and their stateful conv processes) to stop,
+	// then clear their slots — all under the lock.
+	mu.Lock()
+	var toStop []*ProcessManager
+	for _, p := range processes[userID] {
+		toStop = append(toStop, p)
+	}
+	for convID, owner := range convOwner {
+		if owner != userID {
+			continue
+		}
+		for _, cp := range convProcesses[convID] {
+			toStop = append(toStop, cp.pm)
+		}
+		delete(convProcesses, convID)
+		delete(convOwner, convID)
+	}
+	delete(processes, userID)
+	delete(tools, userID)
+	delete(statefulConfigs, userID)
+	delete(serverDescriptions, userID)
+	mu.Unlock()
+
+	// Stop the old processes outside the lock (Stop can block).
+	for _, p := range toStop {
+		p.Stop()
+	}
+
+	// Reload from the user's config file.
+	data, err := os.ReadFile(UserMCPConfigPath(userID))
+	if os.IsNotExist(err) {
+		return // user removed all their servers; global-only view remains
+	}
+	if err != nil {
+		utils.Error("[MCP] ReinitUser: failed to read config for "+userID, err)
+		return
+	}
+	var cfg mcpFile
+	if jerr := json.Unmarshal(data, &cfg); jerr != nil {
+		utils.Error("[MCP] ReinitUser: failed to parse mcp.json for "+userID, jerr)
+		return
+	}
+
+	mu.Lock()
+	loadUserConfig(userID, cfg)
+	if len(statefulConfigs[userID]) > 0 {
+		startCleanupLoop()
+	}
+	mu.Unlock()
+}
+
+// mergedTools returns a userID's effective namespaced tool map (global layer
+// plus the user's own, global winning on collision). Caller must hold mu.
+func mergedTools(userID string) map[string]ToolInfo {
+	out := make(map[string]ToolInfo, len(tools[globalUserID])+len(tools[userID]))
+	for k, v := range tools[userID] {
+		out[k] = v
+	}
+	for k, v := range tools[globalUserID] { // global wins
+		out[k] = v
+	}
+	return out
+}
+
+// ListTools returns all MCP tools visible to a user (global + their own).
+func ListTools(userID string) []ToolInfo {
 	mu.RLock()
 	defer mu.RUnlock()
-	out := make([]ToolInfo, 0, len(tools))
-	for _, t := range tools {
+	merged := mergedTools(userID)
+	out := make([]ToolInfo, 0, len(merged))
+	for _, t := range merged {
 		out = append(out, t)
 	}
 	return out
 }
 
-// ServerNames returns the names of all currently running MCP servers,
-// whether they exposed tools or not.
-func ServerNames() []string {
-	mu.RLock()
-	defer mu.RUnlock()
-	out := make([]string, 0, len(processes))
-	for name := range processes {
-		out = append(out, name)
-	}
-	return out
-}
-
 // GetToolInputSchema returns the raw MCP inputSchema for a namespaced tool
-// name. Used by the strict-arg validator at dispatch time.
-func GetToolInputSchema(toolName string) (json.RawMessage, bool) {
+// name in a user's view. Used by the strict-arg validator at dispatch time.
+func GetToolInputSchema(userID, toolName string) (json.RawMessage, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
-	t, ok := tools[toolName]
+	t, ok := resolveTool(userID, toolName)
 	if !ok {
 		return nil, false
 	}
 	return t.InputSchema, true
 }
 
-// ToolsByServer groups discovered tools by their server name.
-func ToolsByServer() map[string][]ToolInfo {
+// ToolsByServer groups a user's visible tools by their server name.
+func ToolsByServer(userID string) map[string][]ToolInfo {
 	mu.RLock()
 	defer mu.RUnlock()
 	out := map[string][]ToolInfo{}
-	for _, t := range tools {
+	for _, t := range mergedTools(userID) {
 		out[t.ServerName] = append(out[t.ServerName], t)
 	}
 	return out
 }
 
-// ServerDescription returns the user-configured description for a server,
-// or empty string if none was set.
-func ServerDescription(serverName string) string {
+// ServerDescription returns the configured description for a server in a
+// user's view, or empty string if none was set.
+func ServerDescription(userID, serverName string) string {
 	mu.RLock()
 	defer mu.RUnlock()
-	return serverDescriptions[serverName]
+	if d, ok := serverDescriptions[globalUserID][serverName]; ok {
+		return d
+	}
+	return serverDescriptions[userID][serverName]
 }
 
-// ServerDescriptions returns all server descriptions keyed by server name.
-func ServerDescriptions() map[string]string {
+// ServerDescriptions returns all server descriptions visible to a user.
+func ServerDescriptions(userID string) map[string]string {
 	mu.RLock()
 	defer mu.RUnlock()
-	out := make(map[string]string, len(serverDescriptions))
-	for k, v := range serverDescriptions {
+	out := map[string]string{}
+	for k, v := range serverDescriptions[userID] {
+		out[k] = v
+	}
+	for k, v := range serverDescriptions[globalUserID] { // global wins
 		out[k] = v
 	}
 	return out
 }
 
 // IsMCPTool reports whether the given (namespaced) tool name belongs to a
-// configured MCP server.
-func IsMCPTool(toolName string) bool {
+// configured MCP server in a user's view.
+func IsMCPTool(userID, toolName string) bool {
 	mu.RLock()
 	defer mu.RUnlock()
-	_, ok := tools[toolName]
+	_, ok := resolveTool(userID, toolName)
 	return ok
 }
 
-// ToolsRequests returns OpenAI-format tool definitions for all MCP tools,
-// using namespaced names (serverName__toolName) and enriched descriptions.
-func ToolsRequests() []utils.ToolsRequest {
+// ToolsRequests returns OpenAI-format tool definitions for a user's visible
+// MCP tools, using namespaced names (serverName__toolName) and enriched descriptions.
+func ToolsRequests(userID string) []utils.ToolsRequest {
 	mu.RLock()
 	defer mu.RUnlock()
-	out := make([]utils.ToolsRequest, 0, len(tools))
-	for nsName, t := range tools {
+	merged := mergedTools(userID)
+	out := make([]utils.ToolsRequest, 0, len(merged))
+	for nsName, t := range merged {
 		desc := fmt.Sprintf("[MCP server: %s] %s", t.ServerName, t.Description)
 		out = append(out, utils.ToolsRequest{
 			Type: "function",
@@ -389,17 +562,23 @@ func schemaToParameters(raw json.RawMessage) *utils.ParameterToolsRequest {
 // CallTool dispatches a tools/call request to the MCP server that owns
 // toolName (namespaced) and returns the flattened text content. For stateful
 // servers the conversationID is used to route to a per-conversation process.
-func CallTool(ctx context.Context, toolName, argsJSON, conversationID string) utils.MessageContent {
+func CallTool(ctx context.Context, userID, toolName, argsJSON, conversationID string) utils.MessageContent {
 	mu.RLock()
-	info, ok := tools[toolName]
+	info, ok := resolveTool(userID, toolName)
 	mu.RUnlock()
 
 	if !ok {
 		return utils.NewTextContent(fmt.Sprintf("Error: MCP tool %q not found", toolName))
 	}
 
+	// Remember which user owns this conversation so stateful spawn/cleanup can
+	// resolve the right config later (CleanupConversation only has the convID).
+	mu.Lock()
+	convOwner[conversationID] = userID
+	mu.Unlock()
+
 	// Resolve the process manager: per-conversation for stateful, shared otherwise.
-	pm, err := getProcessForCall(info.ServerName, conversationID)
+	pm, err := getProcessForCall(userID, info.ServerName, conversationID)
 	if err != nil {
 		return utils.NewTextContent(fmt.Sprintf("Error: %v", err))
 	}
@@ -448,15 +627,16 @@ func CallTool(ctx context.Context, toolName, argsJSON, conversationID string) ut
 	return utils.NewTextContent(out.String())
 }
 
-// getProcessForCall returns the correct ProcessManager for a tool call.
-// Stateful servers get a per-conversation process; shared servers use the global one.
-func getProcessForCall(serverName, conversationID string) (*ProcessManager, error) {
+// getProcessForCall returns the correct ProcessManager for a tool call in a
+// user's view. Stateful servers get a per-conversation process; shared servers
+// use the running one.
+func getProcessForCall(userID, serverName, conversationID string) (*ProcessManager, error) {
 	mu.RLock()
-	cfg, isStateful := statefulConfigs[serverName]
+	cfg, isStateful := resolveStatefulConfig(userID, serverName)
 	if !isStateful {
-		pm := processes[serverName]
+		pm, ok := resolveSharedProcess(userID, serverName)
 		mu.RUnlock()
-		if pm == nil {
+		if !ok {
 			return nil, fmt.Errorf("MCP server %q not running", serverName)
 		}
 		return pm, nil
@@ -515,6 +695,7 @@ func CleanupConversation(conversationID string) {
 	mu.Lock()
 	servers := convProcesses[conversationID]
 	delete(convProcesses, conversationID)
+	delete(convOwner, conversationID)
 	mu.Unlock()
 
 	for name, cp := range servers {
@@ -530,6 +711,7 @@ func cleanupLoop() {
 	for range ticker.C {
 		mu.Lock()
 		if !initialized {
+			cleanupRunning = false
 			mu.Unlock()
 			return
 		}
@@ -544,6 +726,7 @@ func cleanupLoop() {
 			}
 			if len(servers) == 0 {
 				delete(convProcesses, convID)
+				delete(convOwner, convID)
 			}
 		}
 		mu.Unlock()
@@ -553,7 +736,7 @@ func cleanupLoop() {
 // GetMCPLogs returns the recent stderr logs for an MCP process.
 // For stateful servers, uses the conversation-specific process.
 // For shared servers, uses the global process.
-func GetMCPLogs(serverName, conversationID string) string {
+func GetMCPLogs(userID, serverName, conversationID string) string {
 	mu.RLock()
 	defer mu.RUnlock()
 
@@ -568,8 +751,8 @@ func GetMCPLogs(serverName, conversationID string) string {
 		}
 	}
 
-	// Try shared process
-	if pm, ok := processes[serverName]; ok {
+	// Try shared process (global, then user's own)
+	if pm, ok := resolveSharedProcess(userID, serverName); ok {
 		logs := pm.GetLogs()
 		if len(logs) == 0 {
 			return "(no logs captured yet)"
@@ -580,32 +763,36 @@ func GetMCPLogs(serverName, conversationID string) string {
 	return fmt.Sprintf("(no process found for %s)", serverName)
 }
 
-// ListAllMCPServers returns names of all configured MCP servers.
-func ListAllMCPServers() []string {
+// ListAllMCPServers returns names of all MCP servers configured in a user's
+// view (global + their own).
+func ListAllMCPServers(userID string) []string {
 	mu.RLock()
 	defer mu.RUnlock()
 	seen := map[string]bool{}
 	var out []string
-	for name := range statefulConfigs {
+	add := func(name string) {
 		if !seen[name] {
 			out = append(out, name)
 			seen[name] = true
 		}
 	}
-	for name := range processes {
-		if !seen[name] {
-			out = append(out, name)
-			seen[name] = true
+	for _, uid := range []string{globalUserID, userID} {
+		for name := range statefulConfigs[uid] {
+			add(name)
+		}
+		for name := range processes[uid] {
+			add(name)
 		}
 	}
 	return out
 }
 
-// HasAnyServers returns true if any MCP servers are configured.
-func HasAnyServers() bool {
+// HasAnyServers returns true if any MCP servers are configured in a user's view.
+func HasAnyServers(userID string) bool {
 	mu.RLock()
 	defer mu.RUnlock()
-	return len(statefulConfigs) > 0 || len(processes) > 0
+	return len(statefulConfigs[globalUserID]) > 0 || len(processes[globalUserID]) > 0 ||
+		len(statefulConfigs[userID]) > 0 || len(processes[userID]) > 0
 }
 
 // defaultMCPConfig returns the default mcp.json content, including

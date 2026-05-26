@@ -20,14 +20,14 @@ import (
 // registry force-includes for the sub-agent regardless of ModelSelected.Tools,
 // given the inherited environment. Listing one of these in the requested
 // tools array should be a no-op, not a "dropped" entry.
-func alwaysOnSubAgentTools(subMS utils.ModelSelected) map[string]struct{} {
+func alwaysOnSubAgentTools(userID string, subMS utils.ModelSelected) map[string]struct{} {
 	set := map[string]struct{}{
 		ai_tools.WaitTool.ToolID: {}, // unconditional
 	}
 	if auth.NotificationsEnabled() {
 		set[ai_tools.NotifyToolID] = struct{}{}
 	}
-	if skills.HasAny() {
+	if skills.HasAny(userID) {
 		set[ai_tools.RetrieveServerSkillTool.ToolID] = struct{}{}
 	}
 	if subMS.ClientFolderPath != "" {
@@ -258,7 +258,7 @@ func parallelSubAgentExec(ctx context.Context, args string, conv utils.Conversat
 	}
 	allowed := map[string]string{}
 	var dropped []string
-	alwaysOn := alwaysOnSubAgentTools(subMS)
+	alwaysOn := alwaysOnSubAgentTools(conv.UserID, subMS)
 	for _, t := range requestedTools {
 		if _, ok := alwaysOn[t]; ok {
 			continue // force-included by registry; no need to opt in or report dropped

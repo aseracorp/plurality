@@ -22,7 +22,7 @@ import (
 
 var initialAppPrompt = "Your name is Plurality. You are an AI assistant made to appear human and helpful, you have a specific role to play.\n"
 var initialAppPromptForCalls = "Your name is Plurality. You are an AI assistant made to appear human and helpful, you have a specific role to play. This is a phone call, therefore avoid formatting, emoji, long sentences, etc... and act as you would normally act on an oral conversations.\n"
-var callSystemPrompt = "Your name is Plurality. You are an AI assistant made to appear human and helpful — you have opinions, emotions, and engage proactively. Help the user. This is a phone call: avoid formatting, emoji, and long sentences. Speak naturally as in oral conversation. The time is "
+var callSystemPrompt = "Your name is Plurality. You are an AI assistant made to appear human and helpful — you have opinions, emotions, and engage proactively. You run as a server that the user connects to through a client app, not as a local AI on the user's own machine. Help the user. This is a phone call: avoid formatting, emoji, and long sentences. Speak naturally as in oral conversation. The time is "
 
 // baseSystemPrompt returns the default assistant system prompt. The persisted
 // path is sourced from the PERSIST_VOL env var (defaults to /home/) so deploys
@@ -32,7 +32,7 @@ func baseSystemPrompt() string {
 	if persistVol == "" {
 		persistVol = "/home/"
 	}
-	return "Your name is Plurality. You are an AI assistant made to appear human and helpful — you have opinions, emotions, and engage proactively. Help the user. Use Markdown (bold, lists, tables, code blocks with language tags, emoji) for visual structure. Match the user's tone: casual when they're casual, detailed when they need depth. Be concise by default but thorough when warranted. Be inquisitive and critical — don't just agree. If you setup anything in your system, make sure you take into account that only the " + persistVol + " folder, and your skills.md(s)/MCP.json will be persisted upon machine restart! The time is "
+	return "Your name is Plurality. You are an AI assistant made to appear human and helpful — you have opinions, emotions, and engage proactively. You run as a server that the user connects to through a client app, not as a local AI on the user's own machine. Help the user. Use Markdown (bold, lists, tables, code blocks with language tags, emoji) for visual structure. Match the user's tone: casual when they're casual, detailed when they need depth. Be concise by default but thorough when warranted. Be inquisitive and critical — don't just agree. If you setup anything in your system, make sure you take into account that only the " + persistVol + " folder, and your skills.md(s)/MCP.json will be persisted upon machine restart! The time is "
 }
 
 // webhookExtSuffix returns the WEBHOOK_EXT advertisement appended to system
@@ -94,7 +94,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 				"Call retrieve_skill with the skill_name parameter. You can optionally specify a file_name to retrieve a specific file from the skill folder (defaults to SKILL.md)."
 		}
 
-		if serverSkillNames := skills.Names(); len(serverSkillNames) > 0 {
+		if serverSkillNames := skills.Names(conv.UserID); len(serverSkillNames) > 0 {
 			serverSkillsList := strings.Join(serverSkillNames, ", ")
 			systemPrompt += "\n\nYou have access to the following server-shared skills: " + serverSkillsList +
 				". When a user's request matches one of these skills, use the retrieve_server_skill tool to load the skill's instructions before responding. " +
@@ -102,7 +102,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		}
 
 		// Append MCP server descriptions configured in mcp.json.
-		for serverName, desc := range mcp.ServerDescriptions() {
+		for serverName, desc := range mcp.ServerDescriptions(conv.UserID) {
 			systemPrompt += "\n\n[" + serverName + "] " + desc
 		}
 
@@ -111,7 +111,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		}
 
 		// Append a compact summary of disabled tools so the LLM can suggest enabling them.
-		if disabledSummary := ai_tools.GetDisabledToolsSummary(model, payload.ClientSideTools); disabledSummary != "" {
+		if disabledSummary := ai_tools.GetDisabledToolsSummary(conv.UserID, model, payload.ClientSideTools); disabledSummary != "" {
 			systemPrompt += "\n\n" + disabledSummary
 		}
 	}
@@ -163,7 +163,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	}
 
 	if isActionModel {
-		ait := ai_tools.GetRequests(model, payload.ClientSideTools, hasAttachments, hasDocAttachments, payload.ModelSelected.ClientFolderPath != "")
+		ait := ai_tools.GetRequests(conv.UserID, model, payload.ClientSideTools, hasAttachments, hasDocAttachments, payload.ModelSelected.ClientFolderPath != "")
 		if len(ait) > 0 {
 			requestData.Tools = ait
 		}

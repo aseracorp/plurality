@@ -160,7 +160,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		}
 
 		// Categorize tool calls: server-side vs client-side
-		serverTools, clientTools := categorizeToolCalls(assistantMessage.ToolCalls)
+		serverTools, clientTools := categorizeToolCalls(ar.UserID, assistantMessage.ToolCalls)
 
 		// Strict-validate client tool args against the schemas the client
 		// advertised in this request. Invalid calls are short-circuited with
@@ -431,9 +431,9 @@ func schemaForClientTool(name string, defs []utils.FunctionToolsRequest) json.Ra
 // MCP tool (e.g. "foo__search_web") is not mistakenly matched to a builtin
 // with the same bare name. Registry entries with ClientSide: true (e.g.
 // shell_client__exec) are routed to the client even though GetTool finds them.
-func categorizeToolCalls(toolCalls []utils.ToolCall) (serverTools, clientTools []utils.ToolCall) {
+func categorizeToolCalls(userID string, toolCalls []utils.ToolCall) (serverTools, clientTools []utils.ToolCall) {
 	for _, tc := range toolCalls {
-		if mcp.IsMCPTool(tc.Function.Name) {
+		if mcp.IsMCPTool(userID, tc.Function.Name) {
 			serverTools = append(serverTools, tc)
 			continue
 		}
@@ -463,17 +463,17 @@ func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.To
 
 	// Check MCP first — namespaced names must match exactly before we
 	// try stripping the namespace for a builtin lookup.
-	if mcp.IsMCPTool(toolCall.Function.Name) {
+	if mcp.IsMCPTool(ar.UserID, toolCall.Function.Name) {
 		args := toolCall.Function.Arguments
 		if args == "" {
 			args = "{}"
 		}
-		if schema, ok := mcp.GetToolInputSchema(toolCall.Function.Name); ok {
+		if schema, ok := mcp.GetToolInputSchema(ar.UserID, toolCall.Function.Name); ok {
 			if ok, errMsg := ai_tools.ValidateToolCallArgs(toolCall.Function.Name, schema, args); !ok {
 				return utils.NewTextContent(errMsg)
 			}
 		}
-		return mcp.CallTool(ctx, toolCall.Function.Name, args, ar.ConversationID)
+		return mcp.CallTool(ctx, ar.UserID, toolCall.Function.Name, args, ar.ConversationID)
 	}
 
 	tool, ok := ai_tools.GetTool(toolCall.Function.Name)

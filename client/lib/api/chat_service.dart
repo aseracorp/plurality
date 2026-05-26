@@ -126,7 +126,7 @@ class ChatService {
   /// device-side shell tool is only advertised there — on mobile the tool is
   /// invisible to the LLM.
   static bool get _isDesktop =>
-      Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
 
   /// Resolve the attached folder path from the per-conversation model
   /// selection. Empty/null means no folder is attached, which is what gates

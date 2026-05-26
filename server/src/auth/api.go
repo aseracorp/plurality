@@ -77,7 +77,7 @@ func HandleLogout(w http.ResponseWriter, r *http.Request) {
 // Flutter client can run its own openid_client discovery + auth flow.
 func HandleAuthMethods(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]interface{}{
-		"local":  true,
+		"local":  len(ListUsernames()) > 0,
 		"openid": OpenIDEnabled(),
 	}
 	if OpenIDEnabled() {

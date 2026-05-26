@@ -43,11 +43,12 @@ func main() {
 	defer db.CloseAllUserDBs()
 	storage.Init()
 
-	// Load global server-side skills from data/skills/
+	// Load global server-side skills from data/skills/ and per-user skills from
+	// users-data/{userID}/skills/. The retrieve_server_skill tool is registered
+	// unconditionally — GetRequests only surfaces it to users that actually have
+	// skills (skills.HasAny(userID)), and it 404s gracefully otherwise.
 	skills.Init()
-	if skills.HasAny() {
-		ai_tools.RegisterRetrieveServerSkill()
-	}
+	ai_tools.RegisterRetrieveServerSkill()
 
 	// Load mini app presets from data/presets/
 	miniapps.LoadBuiltins()

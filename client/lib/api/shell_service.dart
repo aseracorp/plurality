@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:path/path.dart' as path;
 
 import 'shell_background_process.dart';
@@ -99,6 +100,7 @@ class ShellService {
   }
 
   String _osLine() {
+    if (kIsWeb) return 'web';
     final os = Platform.operatingSystem;
     final ver = Platform.operatingSystemVersion;
     return '$os ($ver)';
@@ -106,7 +108,9 @@ class ShellService {
 
   String _shellLine() {
     if (_cachedShellInfo != null) return _cachedShellInfo!;
-    if (Platform.isWindows) {
+    if (kIsWeb) {
+      _cachedShellInfo = 'n/a';
+    } else if (Platform.isWindows) {
       _cachedShellInfo = _probePowerShellVersion();
     } else {
       final envShell = Platform.environment['SHELL'] ?? '/bin/sh';
@@ -130,6 +134,7 @@ class ShellService {
   }
 
   String _homeDir() {
+    if (kIsWeb) return '';
     if (Platform.isWindows) {
       return Platform.environment['USERPROFILE'] ?? '';
     }
@@ -180,7 +185,7 @@ class ShellService {
   }
 
   List<String> _gotchas() {
-    if (Platform.isWindows) {
+    if (!kIsWeb && Platform.isWindows) {
       return const [
         'PowerShell 5.1: pipeline operators `&&` / `||` are NOT available. To run B only if A succeeds: `A; if (\$?) { B }`. To chain unconditionally: `A; B`.',
         'Ternary `?:`, null-coalescing `??`, and null-conditional `?.` operators are NOT available in PS 5.1.',
@@ -191,7 +196,7 @@ class ShellService {
         'Bash control-flow (`if [ -f x ]`, `for x in *`, backticks) is a parser error — use PowerShell equivalents.',
       ];
     }
-    if (Platform.isMacOS) {
+    if (!kIsWeb && Platform.isMacOS) {
       return const [
         'macOS ships BSD utilities by default: `sed -i` requires an empty backup arg (`sed -i ""`); GNU-only flags differ.',
         '`readlink -f` is not in BSD `readlink` — use `python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" <path>` or install coreutils.',
@@ -427,7 +432,7 @@ class ShellService {
   }
 
   _ShellCommand _shellCommand(String command) {
-    if (Platform.isWindows) {
+    if (!kIsWeb && Platform.isWindows) {
       return _ShellCommand(
         executable: 'powershell.exe',
         args: ['-NoProfile', '-NonInteractive', '-Command', command],

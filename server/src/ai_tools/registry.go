@@ -72,7 +72,7 @@ func ShouldStripResponse(content string) bool {
 	return strings.HasPrefix(content, "base64,")
 }
 
-func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest, hasAttachments bool, hasDocumentAttachments bool, hasClientFolder bool) []utils.ToolsRequest {
+func GetRequests(userID string, model utils.Model, ClientSideTools []utils.FunctionToolsRequest, hasAttachments bool, hasDocumentAttachments bool, hasClientFolder bool) []utils.ToolsRequest {
 	var requests []utils.ToolsRequest
 	var selected = model.Tools
 
@@ -149,7 +149,7 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 
 	// Server-side MCP tools (from data/mcp.json). Names are already
 	// namespaced (serverName__toolName) by mcp.ToolsRequests().
-	for _, mcpReq := range mcp.ToolsRequests() {
+	for _, mcpReq := range mcp.ToolsRequests(userID) {
 		if _, ok := selected[mcpReq.Function.Name]; ok {
 			requests = append(requests, mcpReq)
 		}
@@ -180,7 +180,7 @@ func GetRequests(model utils.Model, ClientSideTools []utils.FunctionToolsRequest
 	// Force-include retrieve_server_skill whenever the server has skills,
 	// so the LLM can always reach them even if the user didn't explicitly
 	// toggle the builtin in the picker.
-	if skills.HasAny() {
+	if skills.HasAny(userID) {
 		requests = append(requests, RetrieveServerSkillTool.ToolRequest)
 	}
 
@@ -221,7 +221,7 @@ func truncateWords(s string, n int) string {
 // available but not enabled in model.Tools. The LLM can use this to suggest
 // enabling tools. Only the name and first 20 words of description are included
 // to minimise token usage.
-func GetDisabledToolsSummary(model utils.Model, ClientSideTools []utils.FunctionToolsRequest) string {
+func GetDisabledToolsSummary(userID string, model utils.Model, ClientSideTools []utils.FunctionToolsRequest) string {
 	selected := model.Tools
 	var lines []string
 
@@ -249,7 +249,7 @@ func GetDisabledToolsSummary(model utils.Model, ClientSideTools []utils.Function
 	}
 
 	// Server-side MCP tools
-	for _, mcpReq := range mcp.ToolsRequests() {
+	for _, mcpReq := range mcp.ToolsRequests(userID) {
 		if _, ok := selected[mcpReq.Function.Name]; !ok {
 			lines = append(lines, fmt.Sprintf("- %s: %s", mcpReq.Function.Name, truncateWords(mcpReq.Function.Description, 20)))
 		}
