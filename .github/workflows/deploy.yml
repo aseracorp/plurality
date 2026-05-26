@@ -34,6 +34,7 @@ jobs:
           workflow: windows-build.yml
           name: windows-artifact
           path: gh-pages/downloads/windows
+          if_no_artifact_found: warn
           
       # Download macOS artifacts
       - name: Download macOS artifacts
@@ -42,6 +43,7 @@ jobs:
           workflow: macos-build.yml
           name: macos-artifact
           path: gh-pages/downloads/macos
+          if_no_artifact_found: warn
           
       # Download Linux artifacts
       - name: Download Linux artifacts
@@ -50,6 +52,7 @@ jobs:
           workflow: linux-build.yml
           name: linux-artifact
           path: gh-pages/downloads/linux
+          if_no_artifact_found: warn
       
       # Create index page with download links
       - name: Create index page
