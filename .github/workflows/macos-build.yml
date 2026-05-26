@@ -28,10 +28,15 @@ jobs:
           
       - name: Create macOS package
         run: |
-          # Package creation steps
-          # ...
+          # `flutter build macos` produces a .app bundle, not a .dmg, so build
+          # the disk image ourselves from the bundle.
+          APP_PATH="client/build/macos/Build/Products/Release/plurality.app"
           mkdir -p downloads/macos
-          cp client/build/macos/Build/Products/Release/plurality.dmg downloads/macos/plurality-macos-latest.dmg
+          hdiutil create \
+            -volname "Plurality" \
+            -srcfolder "$APP_PATH" \
+            -ov -format UDZO \
+            downloads/macos/plurality-macos-latest.dmg
       
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4

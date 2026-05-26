@@ -46,7 +46,8 @@ jobs:
           # Assumes the script is at client/windows/plurality-installer.exe
           # The script's OutFile directive creates plurality-installer.exe in the script's directory
           echo "Compiling NSIS script..."
-          makensis client/windows/installer.nsi
+          # choco installs NSIS here but doesn't add it to PATH, so call it directly.
+          & "C:\Program Files (x86)\NSIS\makensis.exe" client/windows/installer.nsi
 
           # Check if the installer was created successfully (optional but good practice)
           if (-not (Test-Path client/windows/${{ env.INSTALLER_FILENAME }})) {
