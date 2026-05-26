@@ -1,12 +1,10 @@
 # 2
-- Client lock (if client tools used and such for remote )
 - completed agents should appear as tool call (check agent) rather than as user messsages
 - client tools are defined in the sever???
 - Per-user everything: using a map of linux user > plurality user 
   - Per-user MCP
   - docker ?
 - finish openid
-- Fix realtime events disconnecting and conversation losing loading states
 - remove {}{}{}
 - stop does not refresh conversation
 - stop / error do not restore prompt
