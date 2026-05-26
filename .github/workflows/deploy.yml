@@ -7,11 +7,17 @@ on:
       - completed
     branches: [master]
 
+concurrency:
+  group: deploy-release
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v3
       
@@ -30,12 +36,12 @@ jobs:
           path: gh-pages/downloads/windows
           
       # Download macOS artifacts
-      # - name: Download macOS artifacts
-      #   uses: dawidd6/action-download-artifact@v2
-      #   with:
-      #     workflow: macos-build.yml
-      #     name: macos-artifact
-      #     path: gh-pages/downloads/macos
+      - name: Download macOS artifacts
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          workflow: macos-build.yml
+          name: macos-artifact
+          path: gh-pages/downloads/macos
           
       # Download Linux artifacts
       - name: Download Linux artifacts
@@ -84,6 +90,26 @@ jobs:
           </html>
           EOL
       
+      # Read the app version from pubspec.yaml (e.g. 1.0.6+2)
+      - name: Read app version
+        id: appversion
+        run: |
+          VERSION=$(grep '^version:' client/pubspec.yaml | sed -E 's/^version:[[:space:]]*//' | tr -d '[:space:]')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing release for version $VERSION"
+
+      # Publish the platform binaries to a GitHub Release named after the pubspec version
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.appversion.outputs.version }}
+          name: v${{ steps.appversion.outputs.version }}
+          fail_on_unmatched_files: false
+          files: |
+            gh-pages/downloads/windows/*
+            gh-pages/downloads/macos/*
+            gh-pages/downloads/linux/*
+
       # Deploy to GitHub Pages
       - name: Deploy to GitHub Pages
         uses: JamesIves/github-pages-deploy-action@v4
