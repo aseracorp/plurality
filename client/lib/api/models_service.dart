@@ -189,9 +189,12 @@ class ModelsService {
     _fetchedAt = null;
   }
 
-  Future<ModelsData> get() {
+  /// Returns model data. With [forceRefresh] the TTL is bypassed and the
+  /// server is always hit (the existing [cached] value is kept until the
+  /// fresh data arrives, so readers of [cached] never see null mid-refresh).
+  Future<ModelsData> get({bool forceRefresh = false}) {
     final fetchedAt = _fetchedAt;
-    if (_cache != null && fetchedAt != null &&
+    if (!forceRefresh && _cache != null && fetchedAt != null &&
         DateTime.now().difference(fetchedAt) < _ttl) {
       return Future.value(_cache!);
     }

@@ -450,8 +450,12 @@ func generateTitleAndIcon(ctx context.Context, conversation utils.Conversation) 
 
 	titlePayload := ""
 	for _, message := range messages {
+		content := message.TextContent()
+		if len(content) > 2000 {
+			content = content[:2000]
+		}
 		titlePayload += message.Role + ": \n"
-		titlePayload += message.TextContent() + "\n\n"
+		titlePayload += content + "\n\n"
 	}
 
 	if len(titlePayload) > 500 {

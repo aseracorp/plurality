@@ -150,13 +150,11 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	optimizedMessages, hasAttachments, hasDocAttachments := PrepareMessagesForAI(allMessages, model)
 	msgReqList, _ := convertMessagesToOpenAI(optimizedMessages, model)
 
-	maxTok := 4096
 	Temperature := 0.7
 
 	requestData := StandardChatRequest{
 		Model:         model.Name,
 		Messages:      msgReqList,
-		MaxTokens:     &maxTok,
 		Temperature:   &Temperature,
 		Stream:        true,
 		StreamOptions: &StreamOptions{IncludeUsage: true},

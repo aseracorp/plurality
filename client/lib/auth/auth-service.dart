@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'openid_signin.dart';
+import '../api/models_service.dart';
 
 class User {
   final String username;
@@ -224,6 +225,9 @@ class AuthService {
     await prefs.remove(_usernameKey);
     _current = null;
     _stateController.add(null);
+    // Drop the in-memory model cache so the next login re-fetches from the
+    // (possibly different) server instead of reusing the old session's list.
+    ModelsService().invalidate();
     if (token != null) {
       try {
         await http.post(

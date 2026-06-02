@@ -1,50 +1,21 @@
 model_list:
-  # OpenAI
-  - model_name: "gpt-5.2"
+  # text/vision
+  - model_name: "gpt-oss-20b"
     litellm_params:
-      model: "gpt-5.2"
-      api_key: "os.environ/CHATGPT_API_KEY"
+      model: "fireworks_ai/accounts/fireworks/models/gpt-oss-20b"
+      api_key: "os.environ/FIREWORK_KEY"
     model_info:
       mode: "chat"
-      supports_vision: true
-      supports_function_calling: true
-  - model_name: "gpt-5-mini"
+      supports_vision: false
+      supports_function_calling: false
+  - model_name: "gpt-oss-120b"
     litellm_params:
-      model: "gpt-5-mini"
-      api_key: "os.environ/CHATGPT_API_KEY"
+      model: "fireworks_ai/accounts/fireworks/models/gpt-oss-120b"
+      api_key: "os.environ/FIREWORK_KEY"
     model_info:
       mode: "chat"
-      supports_vision: true
+      supports_vision: false
       supports_function_calling: true
-
-  # Claude
-  - model_name: "claude-haiku-4-7"
-    litellm_params:
-      model: "anthropic/claude-haiku-4-7"
-      api_key: "os.environ/CLAUDE_API_KEY"
-    model_info:
-      mode: "chat"
-      supports_vision: true
-      supports_function_calling: true
-  - model_name: "claude-sonnet-4-7"
-    litellm_params:
-      model: "anthropic/claude-sonnet-4-7"
-      api_key: "os.environ/CLAUDE_API_KEY"
-    model_info:
-      mode: "chat"
-      supports_vision: true
-      supports_function_calling: true
-  - model_name: "claude-opus-4-7"
-    litellm_params:
-      model: "anthropic/claude-opus-4-7"
-      api_key: "os.environ/CLAUDE_API_KEY"
-    model_info:
-      mode: "chat"
-      supports_vision: true
-      supports_function_calling: true
-
-
-  # Fireworks
   - model_name: "qwen3p6-plus"
     litellm_params:
       model: "fireworks_ai/accounts/fireworks/models/qwen3p6-plus"
@@ -54,82 +25,40 @@ model_list:
       supports_vision: true
       supports_function_calling: true
 
-  - model_name: "glm-5p1"
-    litellm_params:
-      model: "fireworks_ai/accounts/fireworks/models/glm-5p1"
-      api_key: "os.environ/FIREWORK_KEY"
-    model_info:
-      mode: "chat"
-      supports_vision: false
-      supports_function_calling: true
-      
-  - model_name: "gpt-oss-20b"
-    litellm_params:
-      model: "fireworks_ai/accounts/fireworks/models/gpt-oss-20b"
-      api_key: "os.environ/FIREWORK_KEY"
-    model_info:
-      mode: "chat"
-      supports_vision: false
-      supports_function_calling: false
-
-  - model_name: "gpt-oss-120b"
-    litellm_params:
-      model: "fireworks_ai/accounts/fireworks/models/gpt-oss-120b"
-      api_key: "os.environ/FIREWORK_KEY"
-    model_info:
-      mode: "chat"
-      supports_vision: false
-      supports_function_calling: true
-      
-  - model_name: "minimax-m2p7"
-    litellm_params:
-      model: "fireworks_ai/accounts/fireworks/models/minimax-m2p7"
-      api_key: "os.environ/FIREWORK_KEY"
-    model_info:
-      mode: "chat"
-      supports_vision: false
-      supports_function_calling: true
-      
-  - model_name: "deepseek-v4-pro"
-    litellm_params:
-      model: "fireworks_ai/accounts/fireworks/models/deepseek-v4-pro"
-      api_key: "os.environ/FIREWORK_KEY"
-    model_info:
-      mode: "chat"
-      supports_vision: false
-      supports_function_calling: true
-
   # Image generation
-  - model_name: "black-forest-labs/FLUX.2-dev"
+  - model_name: "black-forest-labs/FLUX.1-schnell"
     litellm_params:
-      model: "together_ai/black-forest-labs/FLUX.2-dev"
-      api_key: "os.environ/TOGETHER_API_KEY"
+      model: "fal_ai/fal-ai/flux-schnell"
+      api_key: "os.environ/FAL_AI_API_KEY"
     model_info:
       mode: "image_generation"
-      endpoint_url: "https://api.together.xyz/v1/images/generations"
-  - model_name: "black-forest-labs/FLUX.2-pro"
+
+  - model_name: "black-forest-labs/FLUX.1-dev"
     litellm_params:
-      model: "together_ai/black-forest-labs/FLUX.2-pro"
-      api_key: "os.environ/TOGETHER_API_KEY"
+      model: "fal_ai/fal-ai/flux-dev"
+      api_key: "os.environ/FAL_AI_API_KEY"
+      # litellm has no name-mapping for "flux-dev", so it would post to bare
+      # https://fal.run; pin the real fal endpoint explicitly.
+      api_base: "https://fal.run/fal-ai/flux/dev"
     model_info:
       mode: "image_generation"
-      endpoint_url: "https://api.together.xyz/v1/images/generations"
+
+  - model_name: "black-forest-labs/FLUX.1-pro"
+    litellm_params:
+      model: "fal_ai/fal-ai/flux-pro/v1.1"
+      api_key: "os.environ/FAL_AI_API_KEY"
+    model_info:
+      mode: "image_generation"
 
   # Audio
-  - model_name: "cartesia/sonic"
-    litellm_params:
-      model: "together_ai/cartesia/sonic"
-      api_key: "os.environ/TOGETHER_API_KEY"
-    model_info:
-      mode: "audio_speech"
-      endpoint_url: "https://api.together.ai/v1/audio/generations"
   - model_name: "whisper-v3-turbo"
     litellm_params:
       model: "fireworks_ai/whisper-v3-turbo"
       api_key: "os.environ/FIREWORK_KEY"
+      # Fireworks' low-latency "direct" transcription host; litellm appends /v1/audio/transcriptions.
+      api_base: "https://audio-turbo.us-virginia-1.direct.fireworks.ai"
     model_info:
       mode: "audio_transcription"
-      endpoint_url: "https://audio-turbo.us-virginia-1.direct.fireworks.ai/v1/audio/transcriptions"
 
   # Embedding (for conversation search)
   - model_name: "text-embedding-3-small"

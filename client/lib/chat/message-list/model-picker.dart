@@ -50,7 +50,9 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     _tabController = TabController(length: 4, vsync: this);
     _tabController.addListener(_handleTabChange);
     _skillItems = initSkillItems();
-    _modelsFuture = ModelsService().get();
+    // Always re-fetch when the modal opens so a changed/restarted server's
+    // model list is reflected immediately rather than served from the TTL cache.
+    _modelsFuture = ModelsService().get(forceRefresh: true);
     _ecoMode = widget.selectedModel.ecoMode;
   }
 

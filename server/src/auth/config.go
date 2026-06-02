@@ -384,25 +384,25 @@ func defaultShortcuts() map[string]Shortcut {
 		"fast": {
 			Name: "fast", Label: "Fast and low cost", Pricing: "$", Color: "green",
 			Models: ShortcutModels{
-				Text:     &ShortcutModel{Name: "qwen3-vl-30b-a3b-instruct", Tools: cloneTools(defaultShortcutFastTools)},
-				Vision:   &ShortcutModel{Name: "qwen3-vl-30b-a3b-instruct", Tools: cloneTools(defaultShortcutFastTools)},
-				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.2-dev"},
+				Text:     &ShortcutModel{Name: "gpt-oss-20b", Tools: cloneTools(defaultShortcutFastTools)},
+				Vision:   &ShortcutModel{Name: "gpt-oss-20b", Tools: cloneTools(defaultShortcutFastTools)},
+				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.1-schnell"},
 			},
 		},
 		"medium": {
 			Name: "medium", Label: "Recommended", Pricing: "$$", Color: "blue",
 			Models: ShortcutModels{
-				Text:     &ShortcutModel{Name: "qwen3p6-plus", Tools: cloneTools(defaultShortcutMediumTools)},
+				Text:     &ShortcutModel{Name: "gpt-oss-120b", Tools: cloneTools(defaultShortcutMediumTools)},
 				Vision:   &ShortcutModel{Name: "qwen3p6-plus", Tools: cloneTools(defaultShortcutMediumTools)},
-				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.2-dev"},
+				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.1-dev"},
 			},
 		},
 		"smart": {
 			Name: "smart", Label: "Best quality but slow", Pricing: "$$$", Color: "purple",
 			Models: ShortcutModels{
-				Text:     &ShortcutModel{Name: "glm-5p1", Tools: cloneTools(defaultShortcutSmartTools)},
+				Text:     &ShortcutModel{Name: "qwen3p6-plus", Tools: cloneTools(defaultShortcutSmartTools)},
 				Vision:   &ShortcutModel{Name: "qwen3p6-plus", Tools: cloneTools(defaultShortcutSmartTools)},
-				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.2-pro"},
+				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.1-pro"},
 			},
 		},
 	}

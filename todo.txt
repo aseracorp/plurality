@@ -10,6 +10,7 @@
 - stop / error do not restore prompt
 - improve file write for multi edits
 - test new tool default
+- some provider need separated endpoint for edit image
 
 #3
 - fork conversation

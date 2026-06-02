@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/azukaar/plurality/src/utils"
 )
@@ -50,6 +51,10 @@ var ImageGenTool = utils.AITool{
 						Type:        "string",
 						Description: "Optional attachment ID from the conversation (e.g. 'att_0') to edit. This is an ID, NOT a file path.",
 					},
+					"size": {
+						Type:        "string",
+						Description: "Optional output size as 'WIDTHxHEIGHT' (e.g. '1024x1024' square, '1024x1792' portrait, '1792x1024' landscape). Defaults to 1024x768. Ignored when editing an existing image, where the source aspect ratio is preserved.",
+					},
 				},
 				Required: []string{"prompt"},
 			},
@@ -72,7 +77,7 @@ var ImageGenTool = utils.AITool{
 
 		model := params["model"]
 		if model == "" {
-			model = "black-forest-labs/FLUX.2-dev"
+			model = "black-forest-labs/FLUX.1-schnell"
 		}
 
 		// Set steps based on model
@@ -112,13 +117,23 @@ var ImageGenTool = utils.AITool{
 			width, height = computeOutputDims(ratio)
 		}
 
-		// Build request
+		// Determine output size. For a pure generation the model may request a
+		// size; for edits the dimensions follow the source image (computed above).
+		sizeStr := fmt.Sprintf("%dx%d", width, height)
+		if inputImageURI == "" {
+			if s := strings.TrimSpace(params["size"]); s != "" {
+				sizeStr = s
+			}
+		}
+
+		// Build request. Use the OpenAI-standard `size` param ("WxH") rather than
+		// width/height: every litellm provider config translates `size` to its
+		// native shape (fal -> image_size, bedrock -> width/height, vertex ->
+		// aspect_ratio, ...), whereas width/height are non-standard and dropped.
 		requestBody := map[string]interface{}{
-			"model":  model,
-			"prompt": prompt,
-			"width":  width,
-			"height": height,
-			// "steps":           steps,
+			"model":           model,
+			"prompt":          prompt,
+			"size":            sizeStr,
 			"n":               1,
 			"response_format": "b64_json",
 		}
@@ -159,6 +174,7 @@ var ImageGenTool = utils.AITool{
 		var jsonResponse struct {
 			Data []struct {
 				B64Json string `json:"b64_json"`
+				URL     string `json:"url"`
 				Timings struct {
 					Inference float64 `json:"inference"`
 				} `json:"timings"`
@@ -175,16 +191,30 @@ var ImageGenTool = utils.AITool{
 
 		imageData := jsonResponse.Data[0].B64Json
 		infTime := jsonResponse.Data[0].Timings.Inference
+		timingText := "Generated in " + strconv.FormatFloat(infTime, 'f', 2, 64) + "s"
+
+		// Some providers return a hosted URL instead of base64; reference it directly.
+		if imageData == "" {
+			if url := jsonResponse.Data[0].URL; url != "" {
+				return utils.NewPartsContent([]utils.ContentPart{
+					{Type: "image_url", ImageURL: &utils.ContentImageURL{URL: url}},
+					{Type: "text", Text: timingText},
+				})
+			}
+			return utils.NewTextContent("No image data received")
+		}
 
 		// Detect actual image format from the base64 data
 		mimeType := "image/png"
-		if decoded, err := base64.StdEncoding.DecodeString(imageData[:16]); err == nil {
-			if len(decoded) >= 3 && decoded[0] == 0xFF && decoded[1] == 0xD8 && decoded[2] == 0xFF {
-				mimeType = "image/jpeg"
-			} else if len(decoded) >= 4 && string(decoded[:4]) == "\x89PNG" {
-				mimeType = "image/png"
-			} else if len(decoded) >= 4 && string(decoded[:4]) == "RIFF" {
-				mimeType = "image/webp"
+		if len(imageData) >= 16 {
+			if decoded, err := base64.StdEncoding.DecodeString(imageData[:16]); err == nil {
+				if len(decoded) >= 3 && decoded[0] == 0xFF && decoded[1] == 0xD8 && decoded[2] == 0xFF {
+					mimeType = "image/jpeg"
+				} else if len(decoded) >= 4 && string(decoded[:4]) == "\x89PNG" {
+					mimeType = "image/png"
+				} else if len(decoded) >= 4 && string(decoded[:4]) == "RIFF" {
+					mimeType = "image/webp"
+				}
 			}
 		}
 
@@ -195,7 +225,7 @@ var ImageGenTool = utils.AITool{
 			},
 			{
 				Type: "text",
-				Text: "Generated in " + strconv.FormatFloat(infTime, 'f', 2, 64) + "s",
+				Text: timingText,
 			},
 		})
 	},
