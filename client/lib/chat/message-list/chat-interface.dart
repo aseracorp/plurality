@@ -1388,6 +1388,9 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
                     imageGen:
                         miniapp.modelSelected!.imageGen ??
                         _modelSelected.imageGen,
+                    imageEdit:
+                        miniapp.modelSelected!.imageEdit ??
+                        _modelSelected.imageEdit,
                   );
                 }
               });

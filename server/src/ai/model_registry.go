@@ -17,7 +17,7 @@ import (
 // on /v1/models. Anything not in the config simply remains a zero value.
 type ModelEntry struct {
 	Name                    string
-	Mode                    string // chat | image_generation | audio_speech | audio_transcription | embedding
+	Mode                    string // chat | image_generation | image_edit | audio_speech | audio_transcription | embedding
 	SupportsVision          bool
 	SupportsFunctionCalling bool
 }
@@ -147,6 +147,15 @@ func (r *ModelRegistry) IsImageGenModel(name string) bool {
 		return false
 	}
 	return entry.Mode == "image_generation"
+}
+
+// IsImageEditModel reports whether the model edits an input image.
+func (r *ModelRegistry) IsImageEditModel(name string) bool {
+	entry, ok := r.Get(name)
+	if !ok {
+		return false
+	}
+	return entry.Mode == "image_edit"
 }
 
 // IsAudioModel reports whether the model is an audio (TTS or STT) model.

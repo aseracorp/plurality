@@ -23,12 +23,25 @@ import httpx
 
 logger = logging.getLogger("litellm_proxy")
 
+# Attribution headers forwarded to the upstream provider (e.g. OpenRouter) on
+# every request. litellm passes extra_headers through to the provider API call,
+# so these reach OpenRouter even though the Go server only talks to this proxy.
+# Sent regardless of provider — harmless on non-OpenRouter backends.
+EXTRA_HEADERS = {
+    "HTTP-Referer": "https://plurality-ai.com/",
+    "X-OpenRouter-Title": "Plurality",
+    "X-OpenRouter-Categories": "personal-agent,general-chat",
+}
+
 app = FastAPI()
 router = None
 # Map from short model_name to the full litellm model string (e.g. "anthropic/claude-sonnet-4-6")
 model_to_litellm = {}
 # model_to_info: model_name -> the full model_info dict (for /v1/models surfacing)
 model_to_info = {}
+# model_to_api_key: model_name -> resolved upstream API key. Needed for endpoints
+# that bypass the Router (e.g. litellm.aimage_edit, which has no Router method).
+model_to_api_key = {}
 
 
 def load_config(config_path):
@@ -49,6 +62,7 @@ def load_config(config_path):
 
         model_to_litellm[name] = params.get("model", name)
         model_to_info[name] = info
+        model_to_api_key[name] = params.get("api_key", "")
 
     return model_list
 
@@ -108,7 +122,7 @@ async def embeddings(request: Request):
     model = body.get("model", "")
     input_text = body.get("input", "")
 
-    response = await router.aembedding(model=model, input=[input_text] if isinstance(input_text, str) else input_text)
+    response = await router.aembedding(model=model, input=[input_text] if isinstance(input_text, str) else input_text, extra_headers=EXTRA_HEADERS)
     return JSONResponse(content=response.model_dump())
 
 
@@ -127,6 +141,7 @@ async def chat_completions(request: Request):
         "model": model,
         "messages": messages,
         "stream": stream,
+        "extra_headers": EXTRA_HEADERS,
     }
     if tools:
         kwargs["tools"] = tools
@@ -250,6 +265,19 @@ async def _inline_image_urls(data):
                 logger.warning(f"Could not fetch image url {d.get('url')!r}: {e}")
 
 
+def _image_error_response(e):
+    """Surface the real upstream/litellm error instead of a bare 500."""
+    status = getattr(e, "status_code", None)
+    try:
+        status = int(status)
+    except (TypeError, ValueError):
+        status = None
+    if not status or status < 400 or status > 599:
+        status = 502
+    logger.warning(f"image request failed: {e}")
+    return JSONResponse(status_code=status, content={"error": str(e)})
+
+
 @app.post("/v1/images/generations")
 async def images_generations(request: Request):
     body = await request.json()
@@ -257,7 +285,61 @@ async def images_generations(request: Request):
     prompt = body.pop("prompt", "")
     response_format = body.get("response_format")
 
-    response = await router.aimage_generation(prompt=prompt, model=model, **body)
+    try:
+        response = await router.aimage_generation(prompt=prompt, model=model, extra_headers=EXTRA_HEADERS, **body)
+    except Exception as e:
+        return _image_error_response(e)
+    result = response.model_dump()
+
+    if response_format == "b64_json":
+        await _inline_image_urls(result.get("data") or [])
+
+    return JSONResponse(content=result)
+
+
+@app.post("/v1/images/edits")
+async def images_edits(request: Request):
+    # Multipart form (OpenAI /v1/images/edits shape): the input image arrives as
+    # "image", plus "model"/"prompt" fields. litellm.aimage_edit is module-level
+    # (no Router method), so we resolve the litellm model string + api key here.
+    form = await request.form()
+    model = (form.get("model") or "").strip()
+    upload = form.get("image")
+    if upload is None or not hasattr(upload, "read"):
+        return JSONResponse(status_code=400, content={"error": "missing 'image' in form data"})
+
+    image_bytes = await upload.read()
+    prompt = form.get("prompt") or ""
+    response_format = form.get("response_format")
+
+    kwargs = {}
+    for key in ("size", "response_format"):
+        value = form.get(key)
+        if value is not None:
+            kwargs[key] = value
+    if form.get("n") is not None:
+        try:
+            kwargs["n"] = int(form.get("n"))
+        except (TypeError, ValueError):
+            pass
+
+    litellm_model = model_to_litellm.get(model, model)
+    api_key = model_to_api_key.get(model) or None
+
+    try:
+        response = await litellm.aimage_edit(
+            # Pass raw bytes: litellm's OpenRouter image-edit reader accepts only
+            # bytes/BytesIO/BufferedReader (a (name, bytes) tuple is rejected) and
+            # sniffs the mime type from the content.
+            image=image_bytes,
+            model=litellm_model,
+            prompt=prompt,
+            api_key=api_key,
+            extra_headers=EXTRA_HEADERS,
+            **kwargs,
+        )
+    except Exception as e:
+        return _image_error_response(e)
     result = response.model_dump()
 
     if response_format == "b64_json":
@@ -274,7 +356,7 @@ async def audio_speech(request: Request):
     voice = body.pop("voice", "")
     response_format = body.get("response_format", "mp3")
 
-    response = await router.aspeech(model=model, input=input_text, voice=voice, **body)
+    response = await router.aspeech(model=model, input=input_text, voice=voice, extra_headers=EXTRA_HEADERS, **body)
     # litellm returns an HttpxBinaryResponseContent wrapper; .content is the raw audio bytes.
     return Response(
         content=response.content,
@@ -301,7 +383,7 @@ async def audio_transcriptions(request: Request):
         if value is not None:
             kwargs[key] = value
 
-    response = await router.atranscription(file=(filename, file_bytes), model=model, **kwargs)
+    response = await router.atranscription(file=(filename, file_bytes), model=model, extra_headers=EXTRA_HEADERS, **kwargs)
     # response_format=text/srt/vtt yields a plain string; JSON formats yield an object.
     if isinstance(response, str):
         return Response(content=response, media_type="text/plain")

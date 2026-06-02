@@ -59,6 +59,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	stripLegacyPrefix(payload.ModelSelected.Text)
 	stripLegacyPrefix(payload.ModelSelected.Vision)
 	stripLegacyPrefix(payload.ModelSelected.ImageGen)
+	stripLegacyPrefix(payload.ModelSelected.ImageEdit)
 
 	if payload.ModelSelected.Text == nil || !Models.IsKnown(payload.ModelSelected.Text.Name) {
 		utils.Error("[HandleChat] Unknown text model", nil)

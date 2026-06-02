@@ -34,6 +34,7 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
   String _selectedModel = '';
   String _selectedVisionModel = '';
   String _selectedImageGenModel = '';
+  String _selectedImageEditModel = '';
   late bool _ecoMode;
 
   late TabController _tabController;
@@ -66,6 +67,8 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
         (data.visionModelIds.isNotEmpty ? data.visionModelIds.first : '');
     _selectedImageGenModel = widget.selectedModel.imageGen?.name ??
         (data.imageGenModelIds.isNotEmpty ? data.imageGenModelIds.first : '');
+    _selectedImageEditModel = widget.selectedModel.imageEdit?.name ??
+        (data.imageEditModelIds.isNotEmpty ? data.imageEditModelIds.first : '');
 
     final toolsMap =
         widget.selectedModel.text?.tools ?? const <String, String>{};
@@ -84,7 +87,9 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
       if (presetNameMatches(preset.models.text?.name, _selectedModel) &&
           presetNameMatches(preset.models.vision?.name, _selectedVisionModel) &&
           presetNameMatches(
-              preset.models.imageGen?.name, _selectedImageGenModel)) {
+              preset.models.imageGen?.name, _selectedImageGenModel) &&
+          presetNameMatches(
+              preset.models.imageEdit?.name, _selectedImageEditModel)) {
         return preset.name;
       }
     }
@@ -109,6 +114,10 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
     if (!data.imageGenModelIds.contains(_selectedImageGenModel) &&
         data.imageGenModelIds.isNotEmpty) {
       setState(() => _selectedImageGenModel = data.imageGenModelIds.first);
+    }
+    if (!data.imageEditModelIds.contains(_selectedImageEditModel) &&
+        data.imageEditModelIds.isNotEmpty) {
+      setState(() => _selectedImageEditModel = data.imageEditModelIds.first);
     }
   }
 
@@ -293,6 +302,10 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
                                   name: _selectedImageGenModel,
                                   params: null,
                                 ),
+                                imageEdit: Model(
+                                  name: _selectedImageEditModel,
+                                  params: null,
+                                ),
                               ))
                         .copyWith(ecoMode: _ecoMode);
 
@@ -337,6 +350,10 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
               _selectedImageGenModel = merged.imageGen?.name.isNotEmpty == true
                   ? merged.imageGen!.name
                   : _selectedImageGenModel;
+              _selectedImageEditModel =
+                  merged.imageEdit?.name.isNotEmpty == true
+                      ? merged.imageEdit!.name
+                      : _selectedImageEditModel;
             });
             widget.onModelSelected(merged);
             Navigator.pop(context);
@@ -352,9 +369,11 @@ class ModelSelectionModalState extends ConsumerState<ModelSelectionModal>
       text: _selectedModel,
       vision: _selectedVisionModel,
       imageGen: _selectedImageGenModel,
+      imageEdit: _selectedImageEditModel,
       onText: (v) => setState(() => _selectedModel = v ?? ''),
       onVision: (v) => setState(() => _selectedVisionModel = v ?? ''),
       onImageGen: (v) => setState(() => _selectedImageGenModel = v ?? ''),
+      onImageEdit: (v) => setState(() => _selectedImageEditModel = v ?? ''),
     );
   }
 

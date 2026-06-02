@@ -9,6 +9,7 @@ class ModelInfo {
   final bool text;
   final bool vision;
   final bool imageGen;
+  final bool imageEdit;
   final bool audio;
 
   ModelInfo({
@@ -16,6 +17,7 @@ class ModelInfo {
     this.text = false,
     this.vision = false,
     this.imageGen = false,
+    this.imageEdit = false,
     this.audio = false,
   });
 
@@ -24,6 +26,7 @@ class ModelInfo {
         text: json['text'] == true,
         vision: json['vision'] == true,
         imageGen: json['image_gen'] == true,
+        imageEdit: json['image_edit'] == true,
         audio: json['audio'] == true,
       );
 }
@@ -137,6 +140,9 @@ class ModelsData {
   List<String> get imageGenModelIds =>
       models.where((m) => m.imageGen).map((m) => m.id).toList();
 
+  List<String> get imageEditModelIds =>
+      models.where((m) => m.imageEdit).map((m) => m.id).toList();
+
   PresetConfig? get fastPreset =>
       presets.where((p) => p.name == 'Fast').firstOrNull;
 
@@ -192,13 +198,19 @@ class ModelsService {
   /// Returns model data. With [forceRefresh] the TTL is bypassed and the
   /// server is always hit (the existing [cached] value is kept until the
   /// fresh data arrives, so readers of [cached] never see null mid-refresh).
+  /// If the refresh fails (e.g. the server is offline) but a cached value
+  /// exists, that stale value is returned instead of surfacing the error.
   Future<ModelsData> get({bool forceRefresh = false}) {
     final fetchedAt = _fetchedAt;
     if (!forceRefresh && _cache != null && fetchedAt != null &&
         DateTime.now().difference(fetchedAt) < _ttl) {
       return Future.value(_cache!);
     }
-    _inflight ??= _fetch().whenComplete(() => _inflight = null);
+    _inflight ??= _fetch().catchError((error) {
+      final cached = _cache;
+      if (cached != null) return cached;
+      throw error;
+    }).whenComplete(() => _inflight = null);
     return _inflight!;
   }
 

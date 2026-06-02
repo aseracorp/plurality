@@ -352,6 +352,7 @@ class ModelSelectedAdapter extends TypeAdapter<ModelSelected> {
       text: fields[0] as Model?,
       vision: fields[1] as Model?,
       imageGen: fields[2] as Model?,
+      imageEdit: fields[12] as Model?,
       audioGen: fields[5] as Model?,
       voiceGen: fields[4] as Model?,
       audioTranscribe: fields[3] as Model?,
@@ -367,7 +368,7 @@ class ModelSelectedAdapter extends TypeAdapter<ModelSelected> {
   @override
   void write(BinaryWriter writer, ModelSelected obj) {
     writer
-      ..writeByte(12)
+      ..writeByte(13)
       ..writeByte(0)
       ..write(obj.text)
       ..writeByte(1)
@@ -391,7 +392,9 @@ class ModelSelectedAdapter extends TypeAdapter<ModelSelected> {
       ..writeByte(10)
       ..write(obj.ecoMode)
       ..writeByte(11)
-      ..write(obj.clientLock);
+      ..write(obj.clientLock)
+      ..writeByte(12)
+      ..write(obj.imageEdit);
   }
 
   @override

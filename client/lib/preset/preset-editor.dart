@@ -68,6 +68,7 @@ class _PresetEditorDialogState extends State<PresetEditorDialog> {
       text: preset?.text ?? blank,
       vision: preset?.vision ?? blank,
       imageGen: preset?.imageGen ?? blank,
+      imageEdit: preset?.imageEdit ?? blank,
       audioGen: preset?.audioGen,
       voiceGen: preset?.voiceGen,
       audioTranscribe: preset?.audioTranscribe,

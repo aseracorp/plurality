@@ -1,56 +1,71 @@
 model_list:
-  # text/vision
+  # --- text / vision (all via OpenRouter) ---
   - model_name: "gpt-oss-20b"
     litellm_params:
-      model: "fireworks_ai/accounts/fireworks/models/gpt-oss-20b"
-      api_key: "os.environ/FIREWORK_KEY"
-    model_info:
-      mode: "chat"
-      supports_vision: false
-      supports_function_calling: false
-  - model_name: "gpt-oss-120b"
-    litellm_params:
-      model: "fireworks_ai/accounts/fireworks/models/gpt-oss-120b"
-      api_key: "os.environ/FIREWORK_KEY"
+      model: "openrouter/openai/gpt-oss-20b"
+      api_key: "os.environ/OPENROUTER_API_KEY"
     model_info:
       mode: "chat"
       supports_vision: false
       supports_function_calling: true
-  - model_name: "qwen3p6-plus"
+  - model_name: "gpt-oss-120b"
     litellm_params:
-      model: "fireworks_ai/accounts/fireworks/models/qwen3p6-plus"
-      api_key: "os.environ/FIREWORK_KEY"
+      model: "openrouter/openai/gpt-oss-120b"
+      api_key: "os.environ/OPENROUTER_API_KEY"
+    model_info:
+      mode: "chat"
+      supports_vision: false
+      supports_function_calling: true
+  - model_name: "gemini-3.1-flash-lite"
+    litellm_params:
+      model: "openrouter/google/gemini-3.1-flash-lite"
+      api_key: "os.environ/OPENROUTER_API_KEY"
+    model_info:
+      mode: "chat"
+      supports_vision: true
+      supports_function_calling: true
+  - model_name: "gemini-3.5-flash"
+    litellm_params:
+      model: "openrouter/google/gemini-3.5-flash"
+      api_key: "os.environ/OPENROUTER_API_KEY"
+    model_info:
+      mode: "chat"
+      supports_vision: true
+      supports_function_calling: true
+  - model_name: "kimi-k2.6"
+    litellm_params:
+      model: "openrouter/moonshotai/kimi-k2.6"
+      api_key: "os.environ/OPENROUTER_API_KEY"
     model_info:
       mode: "chat"
       supports_vision: true
       supports_function_calling: true
 
-  # Image generation
-  - model_name: "black-forest-labs/FLUX.1-schnell"
+  # --- image generation (OpenRouter: Gemini 3.1 Flash Image / "Nano Banana") ---
+  - model_name: "gemini-3.1-flash-image"
     litellm_params:
-      model: "fal_ai/fal-ai/flux-schnell"
-      api_key: "os.environ/FAL_AI_API_KEY"
+      model: "openrouter/google/gemini-3.1-flash-image-preview"
+      api_key: "os.environ/OPENROUTER_API_KEY"
     model_info:
       mode: "image_generation"
 
-  - model_name: "black-forest-labs/FLUX.1-dev"
+  # --- image editing (same Nano Banana model, edit mode) ---
+  - model_name: "gemini-3.1-flash-image-edit"
     litellm_params:
-      model: "fal_ai/fal-ai/flux-dev"
-      api_key: "os.environ/FAL_AI_API_KEY"
-      # litellm has no name-mapping for "flux-dev", so it would post to bare
-      # https://fal.run; pin the real fal endpoint explicitly.
-      api_base: "https://fal.run/fal-ai/flux/dev"
+      model: "openrouter/google/gemini-3.1-flash-image-preview"
+      api_key: "os.environ/OPENROUTER_API_KEY"
     model_info:
-      mode: "image_generation"
+      mode: "image_edit"
 
-  - model_name: "black-forest-labs/FLUX.1-pro"
+  # --- embedding (for conversation search) ---
+  - model_name: "text-embedding-3-small"
     litellm_params:
-      model: "fal_ai/fal-ai/flux-pro/v1.1"
-      api_key: "os.environ/FAL_AI_API_KEY"
+      model: "openrouter/openai/text-embedding-3-small"
+      api_key: "os.environ/OPENROUTER_API_KEY"
     model_info:
-      mode: "image_generation"
+      mode: "embedding"
 
-  # Audio
+  # --- audio transcription ---
   - model_name: "whisper-v3-turbo"
     litellm_params:
       model: "fireworks_ai/whisper-v3-turbo"
@@ -59,14 +74,6 @@ model_list:
       api_base: "https://audio-turbo.us-virginia-1.direct.fireworks.ai"
     model_info:
       mode: "audio_transcription"
-
-  # Embedding (for conversation search)
-  - model_name: "text-embedding-3-small"
-    litellm_params:
-      model: "text-embedding-3-small"
-      api_key: "os.environ/CHATGPT_API_KEY"
-    model_info:
-      mode: "embedding"
 
 general_settings:
   drop_params: true

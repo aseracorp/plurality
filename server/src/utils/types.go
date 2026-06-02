@@ -181,6 +181,7 @@ type ModelSelected struct {
 	Text            *Model `json:"text,omitempty"`
 	Vision          *Model `json:"vision,omitempty"`
 	ImageGen        *Model `json:"image_gen,omitempty"`
+	ImageEdit       *Model `json:"image_edit,omitempty"`
 	AudioTranscribe *Model `json:"audio_transcribe,omitempty"`
 	VoiceGen        *Model `json:"voice_gen,omitempty"`
 	AudioGen        *Model `json:"audio_gen,omitempty"`

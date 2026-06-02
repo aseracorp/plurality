@@ -65,6 +65,7 @@ func mergePresetOnto(preset, base utils.ModelSelected) utils.ModelSelected {
 	out.Text = mergeModel(preset.Text, base.Text)
 	out.Vision = mergeModel(preset.Vision, base.Vision)
 	out.ImageGen = mergeModel(preset.ImageGen, base.ImageGen)
+	out.ImageEdit = mergeModel(preset.ImageEdit, base.ImageEdit)
 	out.AudioTranscribe = mergeModel(preset.AudioTranscribe, base.AudioTranscribe)
 	out.VoiceGen = mergeModel(preset.VoiceGen, base.VoiceGen)
 	out.AudioGen = mergeModel(preset.AudioGen, base.AudioGen)

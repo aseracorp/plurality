@@ -20,10 +20,11 @@ type ModelInfo struct {
 	ID       string `json:"id"`
 	Object   string `json:"object"`
 	OwnedBy  string `json:"owned_by"`
-	Text     bool   `json:"text,omitempty"`
-	Vision   bool   `json:"vision,omitempty"`
-	ImageGen bool   `json:"image_gen,omitempty"`
-	Audio    bool   `json:"audio,omitempty"`
+	Text      bool   `json:"text,omitempty"`
+	Vision    bool   `json:"vision,omitempty"`
+	ImageGen  bool   `json:"image_gen,omitempty"`
+	ImageEdit bool   `json:"image_edit,omitempty"`
+	Audio     bool   `json:"audio,omitempty"`
 }
 
 // PresetConfig holds a preset's model selection and display metadata.
@@ -138,6 +139,8 @@ func buildModelInfoList() []ModelInfo {
 		switch e.Mode {
 		case "image_generation":
 			info.ImageGen = true
+		case "image_edit":
+			info.ImageEdit = true
 		case "audio_speech", "audio_transcription":
 			info.Audio = true
 		default:
@@ -174,9 +177,10 @@ func orderedPresets() []PresetConfig {
 			Color:   s.Color,
 			Order:   i,
 			Models: utils.ModelSelected{
-				Text:     toUtilsModel(s.Models.Text),
-				Vision:   toUtilsModel(s.Models.Vision),
-				ImageGen: toUtilsModel(s.Models.ImageGen),
+				Text:      toUtilsModel(s.Models.Text),
+				Vision:    toUtilsModel(s.Models.Vision),
+				ImageGen:  toUtilsModel(s.Models.ImageGen),
+				ImageEdit: toUtilsModel(s.Models.ImageEdit),
 			},
 		})
 	}
@@ -206,10 +210,11 @@ func ShortcutModelSelected(name string) utils.ModelSelected {
 			continue
 		}
 		return utils.ModelSelected{
-			Text:     toUtilsModel(s.Models.Text),
-			Vision:   toUtilsModel(s.Models.Vision),
-			ImageGen: toUtilsModel(s.Models.ImageGen),
-			EcoMode:  true,
+			Text:      toUtilsModel(s.Models.Text),
+			Vision:    toUtilsModel(s.Models.Vision),
+			ImageGen:  toUtilsModel(s.Models.ImageGen),
+			ImageEdit: toUtilsModel(s.Models.ImageEdit),
+			EcoMode:   true,
 		}
 	}
 	return utils.ModelSelected{EcoMode: true}

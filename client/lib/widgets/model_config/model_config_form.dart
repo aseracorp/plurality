@@ -288,9 +288,11 @@ class CustomModelsForm extends StatelessWidget {
   final String text;
   final String vision;
   final String imageGen;
+  final String imageEdit;
   final ValueChanged<String?> onText;
   final ValueChanged<String?> onVision;
   final ValueChanged<String?> onImageGen;
+  final ValueChanged<String?> onImageEdit;
   final bool allowAuto;
 
   const CustomModelsForm({
@@ -299,16 +301,21 @@ class CustomModelsForm extends StatelessWidget {
     required this.text,
     required this.vision,
     required this.imageGen,
+    required this.imageEdit,
     required this.onText,
     required this.onVision,
     required this.onImageGen,
+    required this.onImageEdit,
     this.allowAuto = false,
   }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     const autoLabel = 'Auto (use complexity)';
-    return Column(
+    // Scrollable so the model dropdowns don't overflow the fixed-height tab
+    // container they're hosted in (model-picker.dart / ModelConfigForm).
+    return SingleChildScrollView(
+      child: Column(
       children: [
         LabeledDropdown(
           label: 'Text Model',
@@ -333,7 +340,16 @@ class CustomModelsForm extends StatelessWidget {
           onChanged: onImageGen,
           autoLabel: allowAuto ? autoLabel : null,
         ),
+        const SizedBox(height: 16),
+        LabeledDropdown(
+          label: 'Image Edit Model',
+          value: imageEdit,
+          items: data.imageEditModelIds,
+          onChanged: onImageEdit,
+          autoLabel: allowAuto ? autoLabel : null,
+        ),
       ],
+      ),
     );
   }
 }
@@ -504,6 +520,7 @@ class ModelConfigFormState extends State<ModelConfigForm>
   late String _selectedModel;
   late String _selectedVisionModel;
   late String _selectedImageGenModel;
+  late String _selectedImageEditModel;
   late List<Map<String, dynamic>> _functions;
   late List<Map<String, dynamic>> _skillItems;
 
@@ -536,6 +553,8 @@ class ModelConfigFormState extends State<ModelConfigForm>
         pickModel(widget.initial.vision?.name, data.visionModelIds);
     _selectedImageGenModel =
         pickModel(widget.initial.imageGen?.name, data.imageGenModelIds);
+    _selectedImageEditModel =
+        pickModel(widget.initial.imageEdit?.name, data.imageEditModelIds);
 
     // When the caller specifies an `initial.text` (even with an empty tools
     // map), treat that as the authoritative selection. An explicit empty map
@@ -573,6 +592,11 @@ class ModelConfigFormState extends State<ModelConfigForm>
         data.imageGenModelIds.isNotEmpty) {
       setState(() => _selectedImageGenModel = data.imageGenModelIds.first);
     }
+    if (!keepEmpty(_selectedImageEditModel) &&
+        !data.imageEditModelIds.contains(_selectedImageEditModel) &&
+        data.imageEditModelIds.isNotEmpty) {
+      setState(() => _selectedImageEditModel = data.imageEditModelIds.first);
+    }
   }
 
   @override
@@ -588,6 +612,7 @@ class ModelConfigFormState extends State<ModelConfigForm>
       text: Model(name: _selectedModel, params: null, tools: toolsMap),
       vision: Model(name: _selectedVisionModel, params: null, tools: toolsMap),
       imageGen: Model(name: _selectedImageGenModel, params: null),
+      imageEdit: Model(name: _selectedImageEditModel, params: null),
     );
   }
 
@@ -625,12 +650,15 @@ class ModelConfigFormState extends State<ModelConfigForm>
                 text: _selectedModel,
                 vision: _selectedVisionModel,
                 imageGen: _selectedImageGenModel,
+                imageEdit: _selectedImageEditModel,
                 allowAuto: widget.allowAutoModel,
                 onText: (v) => setState(() => _selectedModel = v ?? ''),
                 onVision: (v) =>
                     setState(() => _selectedVisionModel = v ?? ''),
                 onImageGen: (v) =>
                     setState(() => _selectedImageGenModel = v ?? ''),
+                onImageEdit: (v) =>
+                    setState(() => _selectedImageEditModel = v ?? ''),
               ),
               FunctionsListView(
                 functions: _functions,

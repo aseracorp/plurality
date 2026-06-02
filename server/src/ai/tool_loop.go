@@ -515,7 +515,13 @@ func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.To
 			if argsMap == nil {
 				argsMap = make(map[string]string)
 			}
-			if payload.ModelSelected.ImageGen != nil && payload.ModelSelected.ImageGen.Name != "" {
+			// Edit vs generate: an attachment/path means there's an input image,
+			// so swap in the image-edit model (mirrors SelectModel's text→vision
+			// swap). Fall back to the generation model if no edit model is set.
+			isEdit := argsMap["attachment"] != "" || argsMap["path"] != ""
+			if isEdit && payload.ModelSelected.ImageEdit != nil && payload.ModelSelected.ImageEdit.Name != "" {
+				argsMap["model"] = payload.ModelSelected.ImageEdit.Name
+			} else if payload.ModelSelected.ImageGen != nil && payload.ModelSelected.ImageGen.Name != "" {
 				argsMap["model"] = payload.ModelSelected.ImageGen.Name
 			}
 			if payload.ModelSelected.Text != nil {

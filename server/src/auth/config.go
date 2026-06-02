@@ -31,9 +31,10 @@ type ShortcutModel struct {
 
 // ShortcutModels groups the per-mode model selections for a shortcut.
 type ShortcutModels struct {
-	Text     *ShortcutModel `json:"text,omitempty"`
-	Vision   *ShortcutModel `json:"vision,omitempty"`
-	ImageGen *ShortcutModel `json:"imagegen,omitempty"`
+	Text      *ShortcutModel `json:"text,omitempty"`
+	Vision    *ShortcutModel `json:"vision,omitempty"`
+	ImageGen  *ShortcutModel `json:"imagegen,omitempty"`
+	ImageEdit *ShortcutModel `json:"imageedit,omitempty"`
 }
 
 // Shortcut is a named bundle of model selections + tool defaults shown in the
@@ -384,25 +385,28 @@ func defaultShortcuts() map[string]Shortcut {
 		"fast": {
 			Name: "fast", Label: "Fast and low cost", Pricing: "$", Color: "green",
 			Models: ShortcutModels{
-				Text:     &ShortcutModel{Name: "gpt-oss-20b", Tools: cloneTools(defaultShortcutFastTools)},
-				Vision:   &ShortcutModel{Name: "gpt-oss-20b", Tools: cloneTools(defaultShortcutFastTools)},
-				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.1-schnell"},
+				Text:      &ShortcutModel{Name: "gpt-oss-20b", Tools: cloneTools(defaultShortcutFastTools)},
+				Vision:    &ShortcutModel{Name: "gemini-3.1-flash-lite", Tools: cloneTools(defaultShortcutFastTools)},
+				ImageGen:  &ShortcutModel{Name: "gemini-3.1-flash-image"},
+				ImageEdit: &ShortcutModel{Name: "gemini-3.1-flash-image-edit"},
 			},
 		},
 		"medium": {
 			Name: "medium", Label: "Recommended", Pricing: "$$", Color: "blue",
 			Models: ShortcutModels{
-				Text:     &ShortcutModel{Name: "gpt-oss-120b", Tools: cloneTools(defaultShortcutMediumTools)},
-				Vision:   &ShortcutModel{Name: "qwen3p6-plus", Tools: cloneTools(defaultShortcutMediumTools)},
-				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.1-dev"},
+				Text:      &ShortcutModel{Name: "gpt-oss-120b", Tools: cloneTools(defaultShortcutMediumTools)},
+				Vision:    &ShortcutModel{Name: "gemini-3.5-flash", Tools: cloneTools(defaultShortcutMediumTools)},
+				ImageGen:  &ShortcutModel{Name: "gemini-3.1-flash-image"},
+				ImageEdit: &ShortcutModel{Name: "gemini-3.1-flash-image-edit"},
 			},
 		},
 		"smart": {
 			Name: "smart", Label: "Best quality but slow", Pricing: "$$$", Color: "purple",
 			Models: ShortcutModels{
-				Text:     &ShortcutModel{Name: "qwen3p6-plus", Tools: cloneTools(defaultShortcutSmartTools)},
-				Vision:   &ShortcutModel{Name: "qwen3p6-plus", Tools: cloneTools(defaultShortcutSmartTools)},
-				ImageGen: &ShortcutModel{Name: "black-forest-labs/FLUX.1-pro"},
+				Text:      &ShortcutModel{Name: "kimi-k2.6", Tools: cloneTools(defaultShortcutSmartTools)},
+				Vision:    &ShortcutModel{Name: "kimi-k2.6", Tools: cloneTools(defaultShortcutSmartTools)},
+				ImageGen:  &ShortcutModel{Name: "gemini-3.1-flash-image"},
+				ImageEdit: &ShortcutModel{Name: "gemini-3.1-flash-image-edit"},
 			},
 		},
 	}

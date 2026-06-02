@@ -133,9 +133,10 @@ func HandleSetShortcut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	existing.Models = ShortcutModels{
-		Text:     fromUtilsModel(ms.Text),
-		Vision:   fromUtilsModel(ms.Vision),
-		ImageGen: fromUtilsModel(ms.ImageGen),
+		Text:      fromUtilsModel(ms.Text),
+		Vision:    fromUtilsModel(ms.Vision),
+		ImageGen:  fromUtilsModel(ms.ImageGen),
+		ImageEdit: fromUtilsModel(ms.ImageEdit),
 	}
 
 	if err := SetShortcut(existing); err != nil {

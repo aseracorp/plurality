@@ -44,6 +44,7 @@ ModelSelected mergePresetOnto(ModelSelected preset, ModelSelected current) {
     text: mergeModel(preset.text, current.text),
     vision: mergeModel(preset.vision, current.vision),
     imageGen: mergeModel(preset.imageGen, current.imageGen),
+    imageEdit: mergeModel(preset.imageEdit, current.imageEdit),
     audioGen: mergeModel(preset.audioGen, current.audioGen),
     voiceGen: mergeModel(preset.voiceGen, current.voiceGen),
     audioTranscribe: mergeModel(preset.audioTranscribe, current.audioTranscribe),
@@ -113,6 +114,7 @@ ModelSelected diffPresetAgainst(
     text: diffModelAgainst(user.text, serverDefault.text),
     vision: diffModelAgainst(user.vision, serverDefault.vision),
     imageGen: diffModelAgainst(user.imageGen, serverDefault.imageGen),
+    imageEdit: diffModelAgainst(user.imageEdit, serverDefault.imageEdit),
     audioGen: diffModelAgainst(user.audioGen, serverDefault.audioGen),
     voiceGen: diffModelAgainst(user.voiceGen, serverDefault.voiceGen),
     audioTranscribe:

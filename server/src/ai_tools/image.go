@@ -12,6 +12,7 @@ import (
 	_ "image/png"
 	"io"
 	"math"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"strconv"
@@ -76,17 +77,6 @@ var ImageGenTool = utils.AITool{
 		}
 
 		model := params["model"]
-		if model == "" {
-			model = "black-forest-labs/FLUX.1-schnell"
-		}
-
-		// Set steps based on model
-		// steps := 12
-		// if model == "black-forest-labs/FLUX.2-dev" {
-		// 	steps = 4
-		// } else if model == "black-forest-labs/FLUX.2-pro" {
-		// 	steps = 28
-		// }
 
 		// Resolve input image (either attachment ID or server-side path).
 		attachmentID := params["attachment"]
@@ -126,33 +116,58 @@ var ImageGenTool = utils.AITool{
 			}
 		}
 
-		// Build request. Use the OpenAI-standard `size` param ("WxH") rather than
-		// width/height: every litellm provider config translates `size` to its
-		// native shape (fal -> image_size, bedrock -> width/height, vertex ->
-		// aspect_ratio, ...), whereas width/height are non-standard and dropped.
-		requestBody := map[string]interface{}{
-			"model":           model,
-			"prompt":          prompt,
-			"size":            sizeStr,
-			"n":               1,
-			"response_format": "b64_json",
-		}
-
+		// Generation and editing are different endpoints (mirroring OpenAI's
+		// /v1/images/generations vs /v1/images/edits). The model was already
+		// swapped to the edit model upstream (tool_loop.go) when an input image
+		// is present; here we just pick the matching endpoint and request shape.
+		// `size` is the OpenAI-standard param — every litellm provider config
+		// translates it to its native shape (fal -> image_size, bedrock ->
+		// width/height, vertex -> aspect_ratio, ...).
+		var req *http.Request
 		if inputImageURI != "" {
-			requestBody["image_url"] = inputImageURI
-		}
+			// Edit: multipart POST carrying the input image bytes.
+			imgBytes, imgMime, decErr := decodeDataURI(inputImageURI)
+			if decErr != nil {
+				return utils.NewTextContent(fmt.Sprintf("Error decoding input image: %s", decErr.Error()))
+			}
+			var buf bytes.Buffer
+			mw := multipart.NewWriter(&buf)
+			fw, fErr := mw.CreateFormFile("image", "image"+extForImageMime(imgMime))
+			if fErr != nil {
+				return utils.NewTextContent(fmt.Sprintf("Error building edit request: %s", fErr.Error()))
+			}
+			fw.Write(imgBytes)
+			mw.WriteField("model", model)
+			mw.WriteField("prompt", prompt)
+			mw.WriteField("size", sizeStr)
+			mw.WriteField("n", "1")
+			mw.WriteField("response_format", "b64_json")
+			mw.Close()
 
-		jsonData, err := json.Marshal(requestBody)
-		if err != nil {
-			return utils.NewTextContent(fmt.Sprintf("Error marshaling request: %s", err.Error()))
+			req, err = http.NewRequestWithContext(ctx, "POST", LiteLLMBaseURL+"/v1/images/edits", &buf)
+			if err != nil {
+				return utils.NewTextContent(fmt.Sprintf("Error creating request: %s", err.Error()))
+			}
+			req.Header.Set("Content-Type", mw.FormDataContentType())
+		} else {
+			// Generate: JSON POST.
+			requestBody := map[string]interface{}{
+				"model":           model,
+				"prompt":          prompt,
+				"size":            sizeStr,
+				"n":               1,
+				"response_format": "b64_json",
+			}
+			jsonData, mErr := json.Marshal(requestBody)
+			if mErr != nil {
+				return utils.NewTextContent(fmt.Sprintf("Error marshaling request: %s", mErr.Error()))
+			}
+			req, err = http.NewRequestWithContext(ctx, "POST", LiteLLMBaseURL+"/v1/images/generations", bytes.NewBuffer(jsonData))
+			if err != nil {
+				return utils.NewTextContent(fmt.Sprintf("Error creating request: %s", err.Error()))
+			}
+			req.Header.Set("Content-Type", "application/json")
 		}
-
-		req, err := http.NewRequestWithContext(ctx, "POST", LiteLLMBaseURL+"/v1/images/generations", bytes.NewBuffer(jsonData))
-		if err != nil {
-			return utils.NewTextContent(fmt.Sprintf("Error creating request: %s", err.Error()))
-		}
-
-		req.Header.Set("Content-Type", "application/json")
 
 		client := &http.Client{}
 		resp, err := client.Do(req)
@@ -167,7 +182,7 @@ var ImageGenTool = utils.AITool{
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			return utils.NewTextContent(fmt.Sprintf("Image generation failed with status %d: %s", resp.StatusCode, string(body)))
+			return utils.NewTextContent(fmt.Sprintf("Image request failed with status %d: %s", resp.StatusCode, string(body)))
 		}
 
 		// Parse response
@@ -301,4 +316,45 @@ func sniffImageMime(b []byte) string {
 		return "image/gif"
 	}
 	return ""
+}
+
+// decodeDataURI parses a "data:<mime>;base64,<payload>" URI (as produced by
+// ResolveAttachmentImage / loadImageFromPath) into raw bytes plus the mime type.
+func decodeDataURI(uri string) ([]byte, string, error) {
+	if !strings.HasPrefix(uri, "data:") {
+		return nil, "", fmt.Errorf("not a data URI")
+	}
+	comma := strings.IndexByte(uri, ',')
+	if comma < 0 {
+		return nil, "", fmt.Errorf("malformed data URI")
+	}
+	meta := uri[len("data:"):comma] // e.g. "image/png;base64"
+	mimeType := "image/png"
+	if semi := strings.IndexByte(meta, ';'); semi >= 0 {
+		if meta[:semi] != "" {
+			mimeType = meta[:semi]
+		}
+	} else if meta != "" {
+		mimeType = meta
+	}
+	data, err := base64.StdEncoding.DecodeString(uri[comma+1:])
+	if err != nil {
+		return nil, "", err
+	}
+	return data, mimeType, nil
+}
+
+// extForImageMime returns a file extension for a multipart filename so the
+// upstream provider can sniff the format.
+func extForImageMime(m string) string {
+	switch m {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	case "image/gif":
+		return ".gif"
+	default:
+		return ".png"
+	}
 }

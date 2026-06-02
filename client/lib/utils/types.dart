@@ -615,6 +615,8 @@ class ModelSelected {
   final Model? imageGen;
   @HiveField(3)
   final Model? audioTranscribe;
+  @HiveField(12)
+  final Model? imageEdit;
   @HiveField(4)
   final Model? voiceGen;
   @HiveField(5)
@@ -653,6 +655,7 @@ class ModelSelected {
     this.text,
     this.vision,
     this.imageGen,
+    this.imageEdit,
     this.audioGen,
     this.voiceGen,
     this.audioTranscribe,
@@ -668,6 +671,7 @@ class ModelSelected {
     Model? text,
     Model? vision,
     Model? imageGen,
+    Model? imageEdit,
     Model? audioTranscribe,
     Model? voiceGen,
     Model? audioGen,
@@ -682,6 +686,7 @@ class ModelSelected {
       text: text ?? this.text,
       vision: vision ?? this.vision,
       imageGen: imageGen ?? this.imageGen,
+      imageEdit: imageEdit ?? this.imageEdit,
       audioTranscribe: audioTranscribe ?? this.audioTranscribe,
       voiceGen: voiceGen ?? this.voiceGen,
       audioGen: audioGen ?? this.audioGen,
@@ -702,6 +707,7 @@ class ModelSelected {
     'text': text?.toJson(),
     'vision': vision?.toJson(),
     'image_gen': imageGen?.toJson(),
+    'image_edit': imageEdit?.toJson(),
     'audio_gen': audioGen?.toJson(),
     'voice_gen': voiceGen?.toJson(),
     'audio_transcribe': audioTranscribe?.toJson(),
@@ -719,6 +725,8 @@ class ModelSelected {
       vision: json['vision'] != null ? Model.fromJson(json['vision']) : null,
       imageGen:
           json['image_gen'] != null ? Model.fromJson(json['image_gen']) : null,
+      imageEdit:
+          json['image_edit'] != null ? Model.fromJson(json['image_edit']) : null,
       audioGen:
           json['audio_gen'] != null ? Model.fromJson(json['audio_gen']) : null,
       voiceGen:
