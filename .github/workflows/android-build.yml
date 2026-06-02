@@ -1,0 +1,56 @@
+name: Android Build
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - 'client/**'
+      - '.github/workflows/android-build.yml'
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.8'
+          channel: 'stable'
+
+      - name: Build Android APK
+        run: |
+          cd client
+          flutter pub get
+          flutter build apk --release
+
+      - name: Collect APK
+        run: |
+          mkdir -p downloads/android
+          cp client/build/app/outputs/flutter-apk/app-release.apk \
+            downloads/android/plurality-android-latest.apk
+
+      - name: Read app version
+        id: appversion
+        run: |
+          VERSION=$(grep '^version:' client/pubspec.yaml | sed -E 's/^version:[[:space:]]*//' | tr -d '[:space:]')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.appversion.outputs.version }}
+          name: v${{ steps.appversion.outputs.version }}
+          fail_on_unmatched_files: false
+          files: downloads/android/plurality-android-latest.apk
