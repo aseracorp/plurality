@@ -10,7 +10,9 @@ on:
 jobs:
   build-macos:
     runs-on: macos-latest
-    
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v3
       
@@ -38,9 +40,17 @@ jobs:
             -ov -format UDZO \
             downloads/macos/plurality-macos-latest.dmg
       
-      - name: Upload macOS artifact
-        uses: actions/upload-artifact@v4
+      - name: Read app version
+        id: appversion
+        run: |
+          VERSION=$(grep '^version:' client/pubspec.yaml | sed -E 's/^version:[[:space:]]*//' | tr -d '[:space:]')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: macos-artifact
-          path: downloads/macos/
-          retention-days: 1
+          tag_name: v${{ steps.appversion.outputs.version }}
+          name: v${{ steps.appversion.outputs.version }}
+          fail_on_unmatched_files: false
+          files: downloads/macos/plurality-macos-latest.dmg

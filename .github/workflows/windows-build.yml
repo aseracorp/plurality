@@ -1,3 +1,5 @@
+name: Windows Build
+
 on:
   push:
     branches: [ master ]
@@ -8,7 +10,9 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
-    
+    permissions:
+      contents: write
+
     env: # Define environment variables for the job
       INSTALLER_FILENAME: plurality-windows-latest.exe # <-- Set your desired installer name here
 
@@ -63,9 +67,17 @@ jobs:
           # This assumes the installer is created in client/windows/${{ env.INSTALLER_FILENAME }}
           cp client/windows/${{ env.INSTALLER_FILENAME }} downloads/windows/${{ env.INSTALLER_FILENAME }}
       
-      - name: Upload Windows artifact
-        uses: actions/upload-artifact@v4
+      - name: Read app version
+        id: appversion
+        run: |
+          VERSION=$(grep '^version:' client/pubspec.yaml | sed -E 's/^version:[[:space:]]*//' | tr -d '[:space:]')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: windows-artifact
-          path: downloads/windows/
-          retention-days: 1
+          tag_name: v${{ steps.appversion.outputs.version }}
+          name: v${{ steps.appversion.outputs.version }}
+          fail_on_unmatched_files: false
+          files: downloads/windows/${{ env.INSTALLER_FILENAME }}

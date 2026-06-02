@@ -10,7 +10,9 @@ on:
 jobs:
   build-linux:
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v3
       
@@ -57,9 +59,17 @@ jobs:
         shell: bash 
 
 
-      - name: Upload Linux artifact
-        uses: actions/upload-artifact@v4
+      - name: Read app version
+        id: appversion
+        run: |
+          VERSION=$(grep '^version:' client/pubspec.yaml | sed -E 's/^version:[[:space:]]*//' | tr -d '[:space:]')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: linux-artifact
-          path: downloads/linux/
-          retention-days: 1
+          tag_name: v${{ steps.appversion.outputs.version }}
+          name: v${{ steps.appversion.outputs.version }}
+          fail_on_unmatched_files: false
+          files: downloads/linux/linux-build.zip
