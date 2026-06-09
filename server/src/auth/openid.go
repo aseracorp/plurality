@@ -9,12 +9,16 @@ import (
 
 	"github.com/azukaar/plurality/src/utils"
 	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/oauth2"
 )
 
 // oidcRuntime holds just what we need to verify ID tokens. The OAuth flow
 // (authorization code exchange, client secret, redirect URL) lives entirely in
-// the client, which uses PKCE — so the server never needs a secret.
+// the client, which uses PKCE — so the server never needs a secret. The
+// provider is kept so we can call the userinfo endpoint for providers (e.g.
+// Ory) that return only "sub" in the ID token.
 type oidcRuntime struct {
+	provider *oidc.Provider
 	verifier *oidc.IDTokenVerifier
 }
 
@@ -33,7 +37,7 @@ func setupOIDC(ctx context.Context) (*oidcRuntime, error) {
 		return nil, err
 	}
 	verifier := provider.Verifier(&oidc.Config{ClientID: c.ClientID})
-	return &oidcRuntime{verifier: verifier}, nil
+	return &oidcRuntime{provider: provider, verifier: verifier}, nil
 }
 
 func getOIDC(ctx context.Context) (*oidcRuntime, error) {
@@ -54,13 +58,14 @@ func HandleOIDCExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		IDToken string `json:"id_token"`
+		IDToken     string `json:"id_token"`
+		AccessToken string `json:"access_token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IDToken == "" {
 		http.Error(w, "id_token required", http.StatusBadRequest)
 		return
 	}
-	username, status, err := exchangeIDTokenForUsername(r.Context(), rt, req.IDToken)
+	username, status, err := exchangeIDTokenForUsername(r.Context(), rt, req.IDToken, req.AccessToken)
 	if err != nil {
 		http.Error(w, err.Error(), status)
 		return
@@ -104,7 +109,12 @@ func (c oidcClaims) userName() string {
 // exchangeIDTokenForUsername verifies the ID token, runs the allowlist check,
 // and returns the canonical username. On failure it returns an HTTP status
 // suitable for surfacing to the client.
-func exchangeIDTokenForUsername(ctx context.Context, rt *oidcRuntime, rawID string) (string, int, error) {
+//
+// Some providers (e.g. Ory/Hydra) return only "sub" in the ID token and expose
+// email/profile at the userinfo endpoint. When the verified ID token has no
+// email and an access token is supplied, we fetch userinfo to fill the gaps,
+// binding the result to the ID token via the "sub" claim.
+func exchangeIDTokenForUsername(ctx context.Context, rt *oidcRuntime, rawID, accessToken string) (string, int, error) {
 	idTok, err := rt.verifier.Verify(ctx, rawID)
 	if err != nil {
 		return "", http.StatusUnauthorized, errors.New("id_token verify failed: " + err.Error())
@@ -113,6 +123,29 @@ func exchangeIDTokenForUsername(ctx context.Context, rt *oidcRuntime, rawID stri
 	if err := idTok.Claims(&claims); err != nil {
 		return "", http.StatusBadRequest, errors.New("claims parse failed")
 	}
+
+	// Fall back to userinfo when the ID token didn't carry an email.
+	if claims.Email == "" && accessToken != "" && rt.provider != nil {
+		ui, err := rt.provider.UserInfo(ctx, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: accessToken}))
+		if err != nil {
+			return "", http.StatusBadGateway, errors.New("userinfo lookup failed: " + err.Error())
+		}
+		// Security: the userinfo response must describe the same subject as the
+		// verified ID token, otherwise a mismatched access token could inject a
+		// different identity.
+		if claims.Sub != "" && ui.Subject != "" && ui.Subject != claims.Sub {
+			return "", http.StatusUnauthorized, errors.New("userinfo subject mismatch")
+		}
+		var uiClaims oidcClaims
+		if err := ui.Claims(&uiClaims); err == nil {
+			claims.Email = firstNonEmpty([]string{claims.Email, uiClaims.Email})
+			claims.PreferredUsername = firstNonEmpty([]string{claims.PreferredUsername, uiClaims.PreferredUsername})
+			claims.Username = firstNonEmpty([]string{claims.Username, uiClaims.Username})
+			claims.Nickname = firstNonEmpty([]string{claims.Nickname, uiClaims.Nickname})
+			claims.Name = firstNonEmpty([]string{claims.Name, uiClaims.Name})
+		}
+	}
+
 	username := claims.userName()
 	if username == "" {
 		return "", http.StatusBadRequest, errors.New("provider did not return email or username")

@@ -180,11 +180,11 @@ class AuthService {
     if (!methods.openidReady) {
       throw AuthException('OpenID is not configured on this server');
     }
-    final idToken = await getOpenIDIdToken(
+    final tokens = await getOpenIDIdToken(
       issuer: methods.openidIssuer!,
       clientId: methods.openidClientId!,
     );
-    return _exchangeOpenIDToken(idToken);
+    return _exchangeOpenIDToken(tokens.idToken, tokens.accessToken);
   }
 
   /// On web startup, check whether the provider just redirected us back with an
@@ -196,26 +196,30 @@ class AuthService {
       return false;
     }
     try {
-      final idToken = await completeOpenIDRedirect(
+      final tokens = await completeOpenIDRedirect(
         issuer: methods.openidIssuer!,
         clientId: methods.openidClientId!,
       );
-      if (idToken == null) {
+      if (tokens == null) {
         return false;
       }
-      await _exchangeOpenIDToken(idToken);
+      await _exchangeOpenIDToken(tokens.idToken, tokens.accessToken);
       return true;
     } catch (_) {
       return false;
     }
   }
 
-  /// Exchange a provider id_token for a Plurality JWT and store the session.
-  Future<User> _exchangeOpenIDToken(String idToken) async {
+  /// Exchange a provider id_token (+ access token for the userinfo fallback)
+  /// for a Plurality JWT and store the session.
+  Future<User> _exchangeOpenIDToken(String idToken, String? accessToken) async {
     final resp = await http.post(
       Uri.parse('$baseUrl/auth/openid/exchange'),
       headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'id_token': idToken}),
+      body: jsonEncode({
+        'id_token': idToken,
+        if (accessToken != null) 'access_token': accessToken,
+      }),
     );
     if (resp.statusCode != 200) {
       throw AuthException(_decodeError(resp));
