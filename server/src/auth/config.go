@@ -327,7 +327,8 @@ func AllowlistMatch(email string) bool {
 func randomHex(n int) string {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
-		utils.Error("[Auth] randomHex failed", err)
+		// Entropy failure must not silently weaken secrets (e.g. the JWT secret).
+		utils.Fatal("[Auth] randomHex: failed to read from crypto/rand", err)
 	}
 	return hex.EncodeToString(b)
 }

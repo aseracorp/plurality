@@ -121,7 +121,9 @@ func getMatchedMessages(db *sql.DB, r ScoredResult) []MatchedMessage {
 	if r.SourceID != "" {
 		msgID, err := strconv.ParseInt(r.SourceID, 10, 64)
 		if err == nil {
-			db.QueryRow(`SELECT seq FROM messages WHERE id = ?`, msgID).Scan(&matchedSeq)
+			if err := db.QueryRow(`SELECT seq FROM messages WHERE id = ?`, msgID).Scan(&matchedSeq); err != nil && err != sql.ErrNoRows {
+				utils.Debug("[Search] getMatchedMessages: failed to load seq for message %d: %v", msgID, err)
+			}
 		}
 	}
 
@@ -147,7 +149,10 @@ func getMatchedMessages(db *sql.DB, r ScoredResult) []MatchedMessage {
 	for rows.Next() {
 		var m MatchedMessage
 		var content, timestamp sql.NullString
-		rows.Scan(&m.Role, &content, &timestamp)
+		if err := rows.Scan(&m.Role, &content, &timestamp); err != nil {
+			utils.Debug("[Search] getMatchedMessages: row scan failed for conversation %s: %v", r.ConversationID, err)
+			return messages
+		}
 		if content.Valid {
 			m.Content = truncate(content.String, 500)
 		}
@@ -156,15 +161,21 @@ func getMatchedMessages(db *sql.DB, r ScoredResult) []MatchedMessage {
 		}
 		messages = append(messages, m)
 	}
+	if err := rows.Err(); err != nil {
+		utils.Debug("[Search] getMatchedMessages: row iteration error for conversation %s: %v", r.ConversationID, err)
+		return messages
+	}
 
 	// Fallback: if no matched message found, return first user message
 	if len(messages) == 0 {
 		var m MatchedMessage
 		var content, timestamp sql.NullString
-		db.QueryRow(
+		if err := db.QueryRow(
 			`SELECT role, content, timestamp FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY seq LIMIT 1`,
 			r.ConversationID,
-		).Scan(&m.Role, &content, &timestamp)
+		).Scan(&m.Role, &content, &timestamp); err != nil && err != sql.ErrNoRows {
+			utils.Debug("[Search] getMatchedMessages: fallback query failed for conversation %s: %v", r.ConversationID, err)
+		}
 		if content.Valid {
 			m.Content = truncate(content.String, 500)
 			if timestamp.Valid {

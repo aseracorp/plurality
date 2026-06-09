@@ -2,6 +2,7 @@ package search
 
 import (
 	"database/sql"
+	"strconv"
 	"strings"
 )
 
@@ -34,7 +35,7 @@ func FTSSearch(db *sql.DB, query string, limit int) ([]ScoredResult, error) {
 		if err := rows.Scan(&r.ConversationID, &messageID, &r.Score); err != nil {
 			return nil, err
 		}
-		r.SourceID = string(rune(messageID)) // store for reference
+		r.SourceID = strconv.FormatInt(messageID, 10) // store for reference
 		results = append(results, r)
 	}
 	return results, rows.Err()
