@@ -102,6 +102,11 @@ class AuthService {
     final token = prefs.getString(_tokenKey);
     final username = prefs.getString(_usernameKey);
     if (token == null || username == null) {
+      // We may have just been redirected back from an OpenID provider with the
+      // id_token in the URL fragment (web). Pick it up and finish the login.
+      if (await _tryCompleteOpenIDRedirect()) {
+        return;
+      }
       _current = null;
       return;
     }
@@ -179,6 +184,34 @@ class AuthService {
       issuer: methods.openidIssuer!,
       clientId: methods.openidClientId!,
     );
+    return _exchangeOpenIDToken(idToken);
+  }
+
+  /// On web startup, check whether the provider just redirected us back with an
+  /// id_token in the URL fragment; if so, exchange it and complete the login.
+  /// Returns true when a session was established. No-op on other platforms.
+  Future<bool> _tryCompleteOpenIDRedirect() async {
+    final methods = await getAuthMethods();
+    if (methods == null || !methods.openidReady) {
+      return false;
+    }
+    try {
+      final idToken = await completeOpenIDRedirect(
+        issuer: methods.openidIssuer!,
+        clientId: methods.openidClientId!,
+      );
+      if (idToken == null) {
+        return false;
+      }
+      await _exchangeOpenIDToken(idToken);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Exchange a provider id_token for a Plurality JWT and store the session.
+  Future<User> _exchangeOpenIDToken(String idToken) async {
     final resp = await http.post(
       Uri.parse('$baseUrl/auth/openid/exchange'),
       headers: {'Content-Type': 'application/json'},

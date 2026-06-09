@@ -99,8 +99,6 @@ func main() {
 	// --- Auth (no middleware on login/methods; everything else requires JWT) ---
 	r.HandleFunc("/auth/methods", auth.HandleAuthMethods).Methods("GET", "OPTIONS")
 	r.HandleFunc("/auth/login", auth.HandleLogin).Methods("POST", "OPTIONS")
-	r.HandleFunc("/auth/openid/start", auth.HandleOIDCStart).Methods("GET")
-	r.HandleFunc("/auth/openid/callback", auth.HandleOIDCCallback).Methods("GET")
 	r.HandleFunc("/auth/openid/exchange", auth.HandleOIDCExchange).Methods("POST", "OPTIONS")
 	r.HandleFunc("/auth/me", auth.AuthMiddleware(auth.HandleMe)).Methods("GET", "OPTIONS")
 	r.HandleFunc("/auth/logout", auth.AuthMiddleware(auth.HandleLogout)).Methods("POST", "OPTIONS")

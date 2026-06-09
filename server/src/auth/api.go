@@ -82,6 +82,11 @@ func HandleAuthMethods(w http.ResponseWriter, r *http.Request) {
 	}
 	if OpenIDEnabled() {
 		c := GetConfig().OpenID
+		name := c.Name
+		if name == "" {
+			name = "OpenID"
+		}
+		resp["openid_name"] = name
 		resp["openid_issuer"] = c.Issuer
 		resp["openid_client_id"] = c.ClientID
 	}

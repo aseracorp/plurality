@@ -34,3 +34,11 @@ Future<String> getOpenIDIdToken({
   }
   return idToken;
 }
+
+/// Native uses a self-contained loopback flow that completes within a single
+/// getOpenIDIdToken() call, so there's no pending redirect to pick up here.
+Future<String?> completeOpenIDRedirect({
+  required String issuer,
+  required String clientId,
+}) async =>
+    null;

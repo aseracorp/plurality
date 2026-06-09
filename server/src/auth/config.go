@@ -13,13 +13,18 @@ import (
 	"github.com/azukaar/plurality/src/utils"
 )
 
+// OpenIDConfig configures login via an external OpenID Connect provider. The
+// client (Flutter web/native) drives the OAuth flow itself using PKCE, so no
+// client secret or redirect URL is needed server-side — the server only
+// verifies the resulting ID token.
 type OpenIDConfig struct {
-	Enabled      bool     `json:"enabled"`
-	Issuer       string   `json:"issuer"`
-	ClientID     string   `json:"client_id"`
-	ClientSecret string   `json:"client_secret"`
-	RedirectURL  string   `json:"redirect_url"`
-	Allowlist    []string `json:"allowlist"`
+	Enabled bool `json:"enabled"`
+	// Name is the human-friendly provider label shown in the UI (e.g.
+	// "Login with Authentik"). Defaults to "OpenID" when empty.
+	Name      string   `json:"name"`
+	Issuer    string   `json:"issuer"`
+	ClientID  string   `json:"client_id"`
+	Allowlist []string `json:"allowlist"`
 }
 
 // ShortcutModel is one model entry inside a shortcut. Tools maps tool keys
@@ -208,14 +213,11 @@ func applyEnvOverrides() {
 		cfg.OpenID.Issuer = v
 		cfg.OpenID.Enabled = true
 	}
+	if v := os.Getenv("OPENID_NAME"); v != "" {
+		cfg.OpenID.Name = v
+	}
 	if v := os.Getenv("OPENID_CLIENT_ID"); v != "" {
 		cfg.OpenID.ClientID = v
-	}
-	if v := os.Getenv("OPENID_CLIENT_SECRET"); v != "" {
-		cfg.OpenID.ClientSecret = v
-	}
-	if v := os.Getenv("OPENID_REDIRECT_URL"); v != "" {
-		cfg.OpenID.RedirectURL = v
 	}
 	if v := os.Getenv("OPENID_ALLOWLIST"); v != "" {
 		parts := strings.Split(v, ",")
@@ -292,15 +294,40 @@ func OpenIDEnabled() bool {
 	return cfg.OpenID.Enabled && cfg.OpenID.Issuer != "" && cfg.OpenID.ClientID != ""
 }
 
-// AllowlistMatch returns true if the email matches any allowlist entry.
-// "*" alone allows any authenticated email; "*@domain" matches that domain;
-// a literal entry must match exactly (case-insensitive).
-func AllowlistMatch(email string) bool {
+// AllowlistMatch returns true if the email or any of the given names (e.g.
+// username/nickname) matches an allowlist entry. The allowlist is OPTIONAL:
+// when it contains no usable entries, every authenticated user is allowed.
+// Otherwise "*" allows any authenticated user; "*@domain" matches that email
+// domain; any other entry must match the email or one of the names exactly
+// (case-insensitive).
+func AllowlistMatch(email string, names ...string) bool {
 	cfgMu.RLock()
 	defer cfgMu.RUnlock()
 
 	email = strings.ToLower(strings.TrimSpace(email))
-	if email == "" {
+
+	// Normalise the candidate names, dropping empties.
+	normNames := make([]string, 0, len(names))
+	for _, n := range names {
+		n = strings.ToLower(strings.TrimSpace(n))
+		if n != "" {
+			normNames = append(normNames, n)
+		}
+	}
+
+	// Optional whitelist: no usable entries => allow everyone.
+	hasEntry := false
+	for _, entry := range cfg.OpenID.Allowlist {
+		if strings.TrimSpace(entry) != "" {
+			hasEntry = true
+			break
+		}
+	}
+	if !hasEntry {
+		return true
+	}
+
+	if email == "" && len(normNames) == 0 {
 		return false
 	}
 	for _, entry := range cfg.OpenID.Allowlist {
@@ -312,13 +339,18 @@ func AllowlistMatch(email string) bool {
 			return true
 		}
 		if strings.HasPrefix(entry, "*@") {
-			if strings.HasSuffix(email, entry[1:]) {
+			if email != "" && strings.HasSuffix(email, entry[1:]) {
 				return true
 			}
 			continue
 		}
-		if entry == email {
+		if email != "" && entry == email {
 			return true
+		}
+		for _, n := range normNames {
+			if entry == n {
+				return true
+			}
 		}
 	}
 	return false
