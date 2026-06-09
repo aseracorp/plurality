@@ -1,3 +1,0 @@
-- Bug: the scheduler CRON always show keep same conversation even if I edit it!!
-- display issue on mobile editing mini apps
-- also I htink they dont work anymore?
