@@ -1481,81 +1481,86 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
         // message stream but skip tool dispatch. "Move conversation here"
         // claims the lock on this device — disabled while any client is
         // mid-step so we don't yank ownership during a tool execution.
-        Builder(builder: (context) {
-          final lock = currentConversation.modelSelected.clientLock;
-          final myId = ClientIdentity().id;
-          if (lock == null || myId.isEmpty || lock.id == myId) {
-            return const SizedBox.shrink();
-          }
-          final busy = isProcessing ||
-              _session.value.state == ConversationState.waitingForTool;
-          final onBg = Theme.of(context).colorScheme.onSecondaryContainer;
-          return Container(
-            margin: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            padding: EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.secondaryContainer,
-              borderRadius: BorderRadius.circular(5),
-              border: Border.all(
-                color: Theme.of(context).colorScheme.outline,
+        // Only mounted for real conversations: on the new-conversation screen
+        // with a preset selected, every other Stack child is Positioned, so a
+        // non-positioned SizedBox.shrink would size the whole Stack to 0x0
+        // and blank the page.
+        if (widget.conversationId.isNotEmpty)
+          Builder(builder: (context) {
+            final lock = currentConversation.modelSelected.clientLock;
+            final myId = ClientIdentity().id;
+            if (lock == null || myId.isEmpty || lock.id == myId) {
+              return const SizedBox.shrink();
+            }
+            final busy = isProcessing ||
+                _session.value.state == ConversationState.waitingForTool;
+            final onBg = Theme.of(context).colorScheme.onSecondaryContainer;
+            return Container(
+              margin: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              padding: EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.secondaryContainer,
+                borderRadius: BorderRadius.circular(5),
+                border: Border.all(
+                  color: Theme.of(context).colorScheme.outline,
+                ),
               ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.lock_outline, size: 14, color: onBg),
-                SizedBox(width: 6),
-                Flexible(
-                  child: Tooltip(
-                    message:
-                        "Client tools (files, shell) only run on '${lock.label}'.",
-                    child: Text(
-                      "Locked on '${lock.label}'",
-                      style: TextStyle(color: onBg, fontSize: 12),
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 1,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.lock_outline, size: 14, color: onBg),
+                  SizedBox(width: 6),
+                  Flexible(
+                    child: Tooltip(
+                      message:
+                          "Client tools (files, shell) only run on '${lock.label}'.",
+                      child: Text(
+                        "Locked on '${lock.label}'",
+                        style: TextStyle(color: onBg, fontSize: 12),
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                      ),
                     ),
                   ),
-                ),
-                SizedBox(width: 4),
-                Tooltip(
-                  message: busy
-                      ? 'Wait for the current step to finish'
-                      : 'Take ownership on this device',
-                  child: TextButton(
-                    style: TextButton.styleFrom(
-                      padding: EdgeInsets.symmetric(horizontal: 8),
-                      minimumSize: const Size(0, 28),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      visualDensity: VisualDensity.compact,
+                  SizedBox(width: 4),
+                  Tooltip(
+                    message: busy
+                        ? 'Wait for the current step to finish'
+                        : 'Take ownership on this device',
+                    child: TextButton(
+                      style: TextButton.styleFrom(
+                        padding: EdgeInsets.symmetric(horizontal: 8),
+                        minimumSize: const Size(0, 28),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onPressed: busy
+                          ? null
+                          : () {
+                              final claim = ClientIdentity().asLock();
+                              if (claim == null) return;
+                              // Drop the previous holder's folder attachment
+                              // along with the lock claim — the path lives on
+                              // the OTHER machine's filesystem.
+                              ref
+                                  .read(conversationsProvider.notifier)
+                                  .updateConversationMetaData(
+                                    conversationId: widget.conversationId,
+                                    modelSelected: currentConversation
+                                        .modelSelected
+                                        .copyWith(
+                                          clientLock: claim,
+                                          clientFolderPath: null,
+                                        ),
+                                  );
+                            },
+                      child: const Text('Move here', style: TextStyle(fontSize: 12)),
                     ),
-                    onPressed: busy
-                        ? null
-                        : () {
-                            final claim = ClientIdentity().asLock();
-                            if (claim == null) return;
-                            // Drop the previous holder's folder attachment
-                            // along with the lock claim — the path lives on
-                            // the OTHER machine's filesystem.
-                            ref
-                                .read(conversationsProvider.notifier)
-                                .updateConversationMetaData(
-                                  conversationId: widget.conversationId,
-                                  modelSelected: currentConversation
-                                      .modelSelected
-                                      .copyWith(
-                                        clientLock: claim,
-                                        clientFolderPath: null,
-                                      ),
-                                );
-                          },
-                    child: const Text('Move here', style: TextStyle(fontSize: 12)),
                   ),
-                ),
-              ],
-            ),
-          );
-        }),
+                ],
+              ),
+            );
+          }),
 
         if (widget.conversationId.isEmpty && _miniAppSelected != null)
           Positioned(

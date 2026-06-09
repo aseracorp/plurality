@@ -37,10 +37,13 @@ type RunOptions struct {
 	// conversation and report the new ID through OnConversationResolved.
 	ConversationID string
 
-	// OnConversationResolved fires exactly once with the conversation ID
-	// that messages actually landed on. Callers compare it to whatever they
-	// passed in via ConversationID and persist the new value back when it
-	// differs (i.e. after a fallback). Optional.
+	// OnConversationResolved fires at most once with the conversation ID
+	// that messages actually landed on, and only when ConversationID was
+	// non-empty to begin with. Callers compare it to whatever they passed
+	// in and persist the new value back when it differs (i.e. after a
+	// fallback). It never fires for runs that intentionally start fresh
+	// (empty ConversationID), so "new conversation every run" stays sticky.
+	// Optional.
 	OnConversationResolved func(conversationID string)
 }
 
@@ -91,7 +94,11 @@ func RunPrompt(ctx context.Context, userID string, opts RunOptions) {
 		return
 	}
 
-	if opts.OnConversationResolved != nil {
+	// Only report back when the caller configured an append target that had
+	// to be replaced. An intentionally empty ConversationID means "new
+	// conversation every run" — persisting the new ID would flip the job
+	// into append mode from the second fire onwards.
+	if opts.OnConversationResolved != nil && opts.ConversationID != "" {
 		opts.OnConversationResolved(updated.ID)
 	}
 
