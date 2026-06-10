@@ -21,7 +21,15 @@ type OpenIDConfig struct {
 	Enabled bool `json:"enabled"`
 	// Name is the human-friendly provider label shown in the UI (e.g.
 	// "Login with Authentik"). Defaults to "OpenID" when empty.
-	Name      string   `json:"name"`
+	Name string `json:"name"`
+	// BtnColor / BtnBg1 / BtnBg2 style the login button in the UI. All are hex
+	// strings (e.g. "#FFFFFF"); empty falls back to the app theme's secondary
+	// colours. BtnColor is the foreground (text) colour. BtnBg1 is the
+	// background; when BtnBg2 is also set the background is a linear gradient
+	// from BtnBg1 to BtnBg2, otherwise BtnBg1 is a plain fill.
+	BtnColor  string   `json:"btn_color"`
+	BtnBg1    string   `json:"btn_bg1"`
+	BtnBg2    string   `json:"btn_bg2"`
 	Issuer    string   `json:"issuer"`
 	ClientID  string   `json:"client_id"`
 	Allowlist []string `json:"allowlist"`
@@ -215,6 +223,15 @@ func applyEnvOverrides() {
 	}
 	if v := os.Getenv("OPENID_NAME"); v != "" {
 		cfg.OpenID.Name = v
+	}
+	if v := os.Getenv("OPENID_BTN_COLOR"); v != "" {
+		cfg.OpenID.BtnColor = v
+	}
+	if v := os.Getenv("OPENID_BTN_BG1"); v != "" {
+		cfg.OpenID.BtnBg1 = v
+	}
+	if v := os.Getenv("OPENID_BTN_BG2"); v != "" {
+		cfg.OpenID.BtnBg2 = v
 	}
 	if v := os.Getenv("OPENID_CLIENT_ID"); v != "" {
 		cfg.OpenID.ClientID = v

@@ -15,13 +15,21 @@ class User {
 class AuthMethods {
   final bool local;
   final bool openid;
+  final String? openidName;
   final String? openidIssuer;
   final String? openidClientId;
+  final String? openidBtnColor;
+  final String? openidBtnBg1;
+  final String? openidBtnBg2;
   AuthMethods({
     required this.local,
     required this.openid,
+    this.openidName,
     this.openidIssuer,
     this.openidClientId,
+    this.openidBtnColor,
+    this.openidBtnBg1,
+    this.openidBtnBg2,
   });
 
   bool get openidReady =>
@@ -166,8 +174,12 @@ class AuthService {
         return AuthMethods(
           local: data['local'] == true,
           openid: data['openid'] == true,
+          openidName: data['openid_name'] as String?,
           openidIssuer: data['openid_issuer'] as String?,
           openidClientId: data['openid_client_id'] as String?,
+          openidBtnColor: data['openid_btn_color'] as String?,
+          openidBtnBg1: data['openid_btn_bg1'] as String?,
+          openidBtnBg2: data['openid_btn_bg2'] as String?,
         );
       }
     } catch (_) {}

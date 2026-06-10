@@ -89,6 +89,9 @@ func HandleAuthMethods(w http.ResponseWriter, r *http.Request) {
 		resp["openid_name"] = name
 		resp["openid_issuer"] = c.Issuer
 		resp["openid_client_id"] = c.ClientID
+		resp["openid_btn_color"] = c.BtnColor
+		resp["openid_btn_bg1"] = c.BtnBg1
+		resp["openid_btn_bg2"] = c.BtnBg2
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)

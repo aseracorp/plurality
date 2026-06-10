@@ -270,20 +270,7 @@ class _LoginFormState extends ConsumerState<LoginForm> {
       ],
       if (showOpenId) ...[
         SizedBox(height: 20.0),
-        ElevatedButton(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Theme.of(context).colorScheme.secondary,
-            foregroundColor: Theme.of(context).colorScheme.onSecondary,
-          ),
-          child: _openidLoading
-              ? const SizedBox(
-                  height: 16,
-                  width: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : Text('Sign In With OpenID'),
-          onPressed: disabled ? null : _handleOpenID,
-        ),
+        _buildOpenIdButton(context, methods, disabled),
         if (_openidError != null)
           Padding(
             padding: const EdgeInsets.only(top: 8.0),
@@ -294,5 +281,72 @@ class _LoginFormState extends ConsumerState<LoginForm> {
           ),
       ],
     ];
+  }
+
+  /// The OpenID sign-in button. Label comes from the server's openid_name
+  /// (falling back to "OpenID"); foreground/background colours come from the
+  /// server too. When both bg colours are set the background is a gradient,
+  /// otherwise it's a plain fill (bg1, or the theme's secondary colour).
+  Widget _buildOpenIdButton(
+      BuildContext context, AuthMethods? methods, bool disabled) {
+    final name = (methods?.openidName ?? '').isNotEmpty
+        ? methods!.openidName!
+        : 'OpenID';
+    final fg = _parseHexColor(methods?.openidBtnColor) ??
+        Theme.of(context).colorScheme.onSecondary;
+    final bg1 = _parseHexColor(methods?.openidBtnBg1);
+    final bg2 = _parseHexColor(methods?.openidBtnBg2);
+
+    final Widget child = _openidLoading
+        ? const SizedBox(
+            height: 16,
+            width: 16,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        : Text('Sign In With $name');
+
+    // Gradient background: both colours set. Use a transparent ElevatedButton
+    // layered over a gradient-decorated container.
+    if (bg1 != null && bg2 != null) {
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(colors: [bg1, bg2]),
+          borderRadius: BorderRadius.circular(4.0),
+        ),
+        child: ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.transparent,
+            foregroundColor: fg,
+            shadowColor: Colors.transparent,
+          ),
+          onPressed: disabled ? null : _handleOpenID,
+          child: child,
+        ),
+      );
+    }
+
+    // Plain fill: bg1 if set, else the theme's secondary colour.
+    return ElevatedButton(
+      style: ElevatedButton.styleFrom(
+        backgroundColor: bg1 ?? Theme.of(context).colorScheme.secondary,
+        foregroundColor: fg,
+      ),
+      onPressed: disabled ? null : _handleOpenID,
+      child: child,
+    );
+  }
+
+  /// Parse a "#RRGGBB" / "#AARRGGBB" (with or without leading '#') hex string
+  /// into a [Color]. Returns null for null/empty/malformed input so callers can
+  /// fall back to a theme colour.
+  Color? _parseHexColor(String? hex) {
+    if (hex == null) return null;
+    var h = hex.trim();
+    if (h.isEmpty) return null;
+    if (h.startsWith('#')) h = h.substring(1);
+    if (h.length == 6) h = 'FF$h';
+    if (h.length != 8) return null;
+    final value = int.tryParse(h, radix: 16);
+    return value == null ? null : Color(value);
   }
 }

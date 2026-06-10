@@ -26,13 +26,6 @@ jobs:
           docker_layer_caching: true
 
       - run:
-          name: Generate Version Info
-          command: |
-            GIT_HASH=$(git rev-parse --short HEAD)
-            echo "{\"version\": \"$GIT_HASH\"}" > version.json
-            echo "Generated version.json with version: $GIT_HASH"
-
-      - run:
           name: Log in to Docker Hub
           command: |
             echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_LOGIN" --password-stdin
@@ -56,13 +49,6 @@ jobs:
       DOCKER_BUILDKIT: "1"
     steps:
       - checkout
-
-      - run:
-          name: Generate Version Info
-          command: |
-            GIT_HASH=$(git rev-parse --short HEAD)
-            echo "{\"version\": \"$GIT_HASH\"}" > version.json
-            echo "Generated version.json with version: $GIT_HASH"
 
       - run:
           name: Log in to Docker Hub

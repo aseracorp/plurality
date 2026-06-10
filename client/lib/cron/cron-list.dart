@@ -22,6 +22,9 @@ class _CronListScreenState extends ConsumerState<CronListScreen> {
   void initState() {
     super.initState();
     _presetsFuture = MiniAppsService().getAllMiniApps();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) ref.read(cronsProvider.notifier).refresh();
+    });
   }
 
   @override

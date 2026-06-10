@@ -24,9 +24,12 @@ configuration is done through environment variables (env always wins over
 | Env var | Required | Purpose |
 |---|---|---|
 | `OPENID_ISSUER` | ✅ | Provider issuer URL — setting this **enables** OpenID. e.g. `https://auth.example.com` |
-| `OPENID_NAME` | optional | Human-friendly provider label shown in the UI (e.g. `Authentik`). Defaults to `OpenID`. |
+| `OPENID_NAME` | optional | Human-friendly provider label shown in the UI (e.g. `Authentik`). The login button reads `Sign In With <name>`. Defaults to `OpenID`. |
 | `OPENID_CLIENT_ID` | ✅ | OAuth **public** client ID registered with the provider. |
 | `OPENID_ALLOWLIST` | optional | Comma-separated list of allowed emails / usernames / nicknames. Empty = anyone with a valid login is allowed. |
+| `OPENID_BTN_COLOR` | optional | Hex colour for the login button **text** (e.g. `#FFFFFF`). Falls back to the app theme. |
+| `OPENID_BTN_BG1` | optional | Hex colour for the login button **background** (e.g. `#1E40AF`). Falls back to the app theme. |
+| `OPENID_BTN_BG2` | optional | Second hex colour — when set, the background is a **gradient** from `BG1` to `BG2`. Without it, `BG1` is a plain fill. |
 | `JWT_SECRET` | optional | Override the auto-generated JWT signing secret. |
 
 ### Example
@@ -37,6 +40,10 @@ export OPENID_NAME="Authentik"
 export OPENID_CLIENT_ID="plurality"
 # optional — omit entirely to allow everyone:
 export OPENID_ALLOWLIST="azukaar@gmail.com, alice, *@mycompany.com"
+# optional — style the login button (CSS linear-gradient(to right, #FF64C8, #C864FF)):
+export OPENID_BTN_COLOR="#FFFFFF"
+export OPENID_BTN_BG1="#FF64C8"
+export OPENID_BTN_BG2="#C864FF"
 ```
 
 ## The whitelist (`OPENID_ALLOWLIST`)
@@ -77,7 +84,7 @@ On the provider side, register an **application / public client** and:
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/auth/methods` | GET | Reports available login methods. When OpenID is enabled, also returns `openid_name`, `openid_issuer`, and `openid_client_id`. |
+| `/auth/methods` | GET | Reports available login methods. When OpenID is enabled, also returns `openid_name`, `openid_issuer`, `openid_client_id`, `openid_btn_color`, `openid_btn_bg1`, and `openid_btn_bg2`. |
 | `/auth/openid/exchange` | POST | The client POSTs `{"id_token": "..."}` and receives `{"token", "username"}`. The server verifies the token signature, applies the allowlist, and issues a Plurality JWT. |
 
 ## Notes

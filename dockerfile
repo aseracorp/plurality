@@ -29,6 +29,12 @@ ENV PATH="/flutter/bin:${PATH}"
 # Copy the Flutter app source
 WORKDIR /app
 COPY client/ ./client/
+COPY scripts/ ./scripts/
+
+# Sync the bundled version asset with the pubspec version so the web update
+# check can't drift into a reload loop (see scripts/version.sh).
+RUN sh scripts/version.sh
+
 WORKDIR /app/client
 
 

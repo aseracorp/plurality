@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+#
+# Pre-commit hook: keep client/assets/version.json in sync with the pubspec
+# version and stage it, so every commit carries a matching bundled version.
+#
+# This file is tracked in the repo. Git does not run tracked hooks directly;
+# install it into a fresh clone with either:
+#   git config core.hooksPath scripts/hooks
+# or:
+#   cp scripts/hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+set -eu
+
+ROOT=$(git rev-parse --show-toplevel)
+sh "$ROOT/scripts/version.sh"
+git add "$ROOT/client/assets/version.json"

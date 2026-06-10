@@ -23,6 +23,9 @@ class _WebhookListScreenState extends ConsumerState<WebhookListScreen> {
   void initState() {
     super.initState();
     _presetsFuture = MiniAppsService().getAllMiniApps();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) ref.read(webhooksProvider.notifier).refresh();
+    });
   }
 
   @override
