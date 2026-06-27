@@ -1,2 +1,2 @@
-litellm[proxy]==1.87.0
+litellm[proxy]>=1.55.0
 httpx>=0.27.0

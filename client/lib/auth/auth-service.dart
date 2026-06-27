@@ -89,6 +89,12 @@ class AuthService {
   User? _current;
   bool _bootstrapped = false;
 
+  /// The last error from completing an OpenID redirect, if any. Set when a
+  /// provider redirect comes back but the login can't be finished (clobbered
+  /// fragment, state mismatch, or a server rejection like allowlist/userinfo).
+  /// The login screen reads this once to show the real reason, then clears it.
+  String? lastOpenIDError;
+
   /// Auth-state stream — emits null when logged out, a User when logged in.
   Stream<User?> get authStateChanges async* {
     if (!_bootstrapped) {
@@ -203,6 +209,7 @@ class AuthService {
   /// id_token in the URL fragment; if so, exchange it and complete the login.
   /// Returns true when a session was established. No-op on other platforms.
   Future<bool> _tryCompleteOpenIDRedirect() async {
+    lastOpenIDError = null;
     final methods = await getAuthMethods();
     if (methods == null || !methods.openidReady) {
       return false;
@@ -217,7 +224,12 @@ class AuthService {
       }
       await _exchangeOpenIDToken(tokens.idToken, tokens.accessToken);
       return true;
-    } catch (_) {
+    } catch (e) {
+      // Surface the real reason instead of silently dropping back to the login
+      // form. _exchangeOpenIDToken throws AuthException carrying the server's
+      // error body (e.g. allowlist/userinfo), and completeOpenIDRedirect throws
+      // a descriptive message when the redirect response is lost.
+      lastOpenIDError = e.toString();
       return false;
     }
   }

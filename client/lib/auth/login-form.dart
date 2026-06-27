@@ -34,6 +34,9 @@ class _LoginFormState extends ConsumerState<LoginForm> {
   String? _methodsError;
   bool _openidLoading = false;
   String? _openidError;
+  // Error left behind by a failed OpenID *redirect* completion during app
+  // startup (read once from AuthService), as opposed to a button-press failure.
+  String? _redirectError;
 
   @override
   void initState() {
@@ -47,6 +50,10 @@ class _LoginFormState extends ConsumerState<LoginForm> {
       // Web talks to its own origin — there's no URL step, so go straight to
       // querying the server for its supported methods.
       _serverUrlValid = true;
+      // If a just-completed OpenID redirect failed during startup, the real
+      // reason is waiting on the service. Show it once, then clear it.
+      _redirectError = _authService.lastOpenIDError;
+      _authService.lastOpenIDError = null;
       _loadMethods();
     }
   }
@@ -199,6 +206,7 @@ class _LoginFormState extends ConsumerState<LoginForm> {
   // Step 2: render whichever login methods the server reported.
   List<Widget> _buildAuthStep(BuildContext context) {
     final methods = _methods;
+    final methodsLoaded = methods != null;
     final showLocal = methods?.local == true;
     final showOpenId = methods?.openidReady == true;
     final disabled = widget.loading || _openidLoading;
@@ -218,7 +226,29 @@ class _LoginFormState extends ConsumerState<LoginForm> {
                     }),
           ),
         ),
-      if (!showLocal && !showOpenId)
+      // A failed OpenID redirect from startup — the real reason the user landed
+      // back here. Shown above the form, not the misleading "no methods" flash.
+      if (_redirectError != null)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8.0),
+          child: Text(
+            _redirectError!,
+            style: const TextStyle(color: Colors.red, fontSize: 14.0),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      // Methods are still loading — show a spinner rather than wrongly claiming
+      // the server has no login methods (which would flash red every load).
+      if (!methodsLoaded)
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 12.0),
+          child: SizedBox(
+            height: 24,
+            width: 24,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      if (methodsLoaded && !showLocal && !showOpenId)
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 12.0),
           child: Text(

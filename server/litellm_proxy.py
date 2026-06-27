@@ -27,11 +27,23 @@ logger = logging.getLogger("litellm_proxy")
 # every request. litellm passes extra_headers through to the provider API call,
 # so these reach OpenRouter even though the Go server only talks to this proxy.
 # Sent regardless of provider — harmless on non-OpenRouter backends.
-EXTRA_HEADERS = {
+#
+# IMPORTANT: never pass this dict directly to a litellm/router call. Some litellm
+# provider handlers (e.g. fireworks_ai) MUTATE the extra_headers dict in place,
+# injecting an "Authorization" header. Because this is a single shared module-level
+# dict, that leaked credential would then ride on every subsequent request and hit
+# the wrong provider (e.g. a Fireworks key sent to api.openai.com → 401). Always
+# pass a fresh copy via extra_headers() instead.
+_EXTRA_HEADERS = {
     "HTTP-Referer": "https://plurality-ai.com/",
     "X-OpenRouter-Title": "Plurality",
     "X-OpenRouter-Categories": "personal-agent,general-chat",
 }
+
+
+def extra_headers():
+    """Return a fresh copy of the attribution headers (see note above)."""
+    return dict(_EXTRA_HEADERS)
 
 app = FastAPI()
 router = None
@@ -122,7 +134,7 @@ async def embeddings(request: Request):
     model = body.get("model", "")
     input_text = body.get("input", "")
 
-    response = await router.aembedding(model=model, input=[input_text] if isinstance(input_text, str) else input_text, extra_headers=EXTRA_HEADERS)
+    response = await router.aembedding(model=model, input=[input_text] if isinstance(input_text, str) else input_text, extra_headers=extra_headers())
     return JSONResponse(content=response.model_dump())
 
 
@@ -140,7 +152,7 @@ async def chat_completions(request: Request):
         "model": model,
         "messages": messages,
         "stream": stream,
-        "extra_headers": EXTRA_HEADERS,
+        "extra_headers": extra_headers(),
     }
     if tools:
         kwargs["tools"] = tools
@@ -283,7 +295,7 @@ async def images_generations(request: Request):
     response_format = body.get("response_format")
 
     try:
-        response = await router.aimage_generation(prompt=prompt, model=model, extra_headers=EXTRA_HEADERS, **body)
+        response = await router.aimage_generation(prompt=prompt, model=model, extra_headers=extra_headers(), **body)
     except Exception as e:
         return _image_error_response(e)
     result = response.model_dump()
@@ -332,7 +344,7 @@ async def images_edits(request: Request):
             model=litellm_model,
             prompt=prompt,
             api_key=api_key,
-            extra_headers=EXTRA_HEADERS,
+            extra_headers=extra_headers(),
             **kwargs,
         )
     except Exception as e:
@@ -353,7 +365,7 @@ async def audio_speech(request: Request):
     voice = body.pop("voice", "")
     response_format = body.get("response_format", "mp3")
 
-    response = await router.aspeech(model=model, input=input_text, voice=voice, extra_headers=EXTRA_HEADERS, **body)
+    response = await router.aspeech(model=model, input=input_text, voice=voice, extra_headers=extra_headers(), **body)
     # litellm returns an HttpxBinaryResponseContent wrapper; .content is the raw audio bytes.
     return Response(
         content=response.content,
@@ -380,7 +392,7 @@ async def audio_transcriptions(request: Request):
         if value is not None:
             kwargs[key] = value
 
-    response = await router.atranscription(file=(filename, file_bytes), model=model, extra_headers=EXTRA_HEADERS, **kwargs)
+    response = await router.atranscription(file=(filename, file_bytes), model=model, extra_headers=extra_headers(), **kwargs)
     # response_format=text/srt/vtt yields a plain string; JSON formats yield an object.
     if isinstance(response, str):
         return Response(content=response, media_type="text/plain")

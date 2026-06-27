@@ -100,16 +100,15 @@ WORKDIR /app
 COPY --from=go_builder /app/server/build/ /app/
 
 # Build LiteLLM venv using runtime Python (avoids glibc version mismatch)
-# Stub out pyroscope-io (needs Rust/cargo to build, not needed at runtime).
-# litellm pins pyroscope-io exactly (==0.8.16 for 1.87.0), so the dummy must
-# carry that same version: pip then sees the requirement already satisfied and
-# never tries to build the real package.
+# Stub out pyroscope-io (needs Rust/cargo to build, not needed at runtime)
 RUN mkdir -p /tmp/dummy-pyroscope && \
-    printf '[project]\nname = "pyroscope-io"\nversion = "0.8.16"\n' > /tmp/dummy-pyroscope/pyproject.toml && \
+    printf '[project]\nname = "pyroscope-io"\nversion = "99.0.0"\n' > /tmp/dummy-pyroscope/pyproject.toml && \
+    echo 'pyroscope-io>=99.0.0' > /tmp/pip-constraints.txt && \
     python3 -m venv /app/litellm/litellm_venv && \
     /app/litellm/litellm_venv/bin/pip install --no-cache-dir /tmp/dummy-pyroscope && \
+    PIP_CONSTRAINT=/tmp/pip-constraints.txt \
     /app/litellm/litellm_venv/bin/pip install --no-cache-dir -r /app/litellm/litellm_requirements.txt && \
-    rm -rf /tmp/dummy-pyroscope
+    rm -rf /tmp/dummy-pyroscope /tmp/pip-constraints.txt
 
 # Copy the Flutter web build to the static directory
 RUN mkdir -p /app/web
