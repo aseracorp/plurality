@@ -71,6 +71,22 @@
 </head>
 <body>
   <div class="spinner"></div>
+  <script>
+    // OIDC implicit-flow responses arrive in the URL fragment
+    // (#id_token=...&access_token=...&state=...). Flutter web's default hash
+    // routing also lives in the fragment and rewrites it on startup, which
+    // would wipe the tokens before openid_client can read them. Stash the OAuth
+    // fragment here, before Flutter boots, so the Dart side can restore it.
+    (function () {
+      var h = window.location.hash;
+      if (h.length > 1) {
+        var frag = h.substring(1);
+        if (/(^|&)(id_token|access_token)=/.test(frag) && /(^|&)state=/.test(frag)) {
+          window.sessionStorage.setItem('plurality_oauth_fragment', frag);
+        }
+      }
+    })();
+  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

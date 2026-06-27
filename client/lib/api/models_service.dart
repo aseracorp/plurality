@@ -144,7 +144,7 @@ class ModelsData {
       models.where((m) => m.imageEdit).map((m) => m.id).toList();
 
   PresetConfig? get fastPreset =>
-      presets.where((p) => p.name == 'Fast').firstOrNull;
+      presets.where((p) => p.name == 'fast').firstOrNull;
 
   factory ModelsData.fromJson(Map<String, dynamic> json) {
     final data = (json['data'] as List? ?? const [])

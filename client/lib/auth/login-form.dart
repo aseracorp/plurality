@@ -180,6 +180,9 @@ class _LoginFormState extends ConsumerState<LoginForm> {
         style: ElevatedButton.styleFrom(
           backgroundColor: Theme.of(context).colorScheme.primary,
           foregroundColor: Theme.of(context).colorScheme.onPrimary,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(4.0),
+          ),
         ),
         onPressed: (!_serverUrlValid || _methodsLoading) ? null : _handleContinue,
         child: _methodsLoading
@@ -253,8 +256,10 @@ class _LoginFormState extends ConsumerState<LoginForm> {
           style: ElevatedButton.styleFrom(
             backgroundColor: Theme.of(context).colorScheme.primary,
             foregroundColor: Theme.of(context).colorScheme.onPrimary,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(4.0),
+            ),
           ),
-          child: Text('Sign In'),
           onPressed: disabled
               ? null
               : () async {
@@ -266,6 +271,7 @@ class _LoginFormState extends ConsumerState<LoginForm> {
                     widget.onSubmit(username, password);
                   }
                 },
+          child: Text('Sign In'),
         ),
       ],
       if (showOpenId) ...[
@@ -318,6 +324,9 @@ class _LoginFormState extends ConsumerState<LoginForm> {
             backgroundColor: Colors.transparent,
             foregroundColor: fg,
             shadowColor: Colors.transparent,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(4.0),
+            ),
           ),
           onPressed: disabled ? null : _handleOpenID,
           child: child,
@@ -330,6 +339,9 @@ class _LoginFormState extends ConsumerState<LoginForm> {
       style: ElevatedButton.styleFrom(
         backgroundColor: bg1 ?? Theme.of(context).colorScheme.secondary,
         foregroundColor: fg,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(4.0),
+        ),
       ),
       onPressed: disabled ? null : _handleOpenID,
       child: child,

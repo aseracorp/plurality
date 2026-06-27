@@ -141,6 +141,10 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
       home: authState.when(
         data: (user) {
           if (user == null) {
+            // Logged out (or token rejected) — tear down any live SSE/status
+            // streams so their retry loops stop hammering the server with a
+            // stale token while we sit on the login screen.
+            ChatService().disconnect();
             return LoginScreen();
           }
           ChatService().ensureConnected();

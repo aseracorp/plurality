@@ -8,6 +8,7 @@ import 'package:plurality/api/filesystem_service.dart';
 import 'package:plurality/api/shell_service.dart';
 import 'package:plurality/api/client_identity.dart';
 
+import '../auth/auth-service.dart';
 import '../utils/types.dart';
 import 'api.dart';
 import 'sse_event.dart';
@@ -435,6 +436,10 @@ class ChatService {
   /// clears any stale entry in [conversationStatuses].
   Future<void> reconnect(String conversationId) async {
     if (conversationId.isEmpty) return;
+    // Not logged in (or torn down on sign-out) — never touch the network.
+    // Otherwise a reconnect scheduled before logout would fire afterwards
+    // with a stale/absent token and 401 against the server.
+    if (!_connected) return;
     if (_activeStreams.containsKey(conversationId)) return;
     // Another caller is already attaching — wait for it instead of racing.
     if (_connecting.contains(conversationId)) return;
@@ -459,6 +464,16 @@ class ChatService {
         state: ConversationState.processing,
       );
       _connectSSE(conversationId, stream, null);
+    } on APIException catch (e) {
+      if (e.statusCode == 401) {
+        _handleUnauthorized();
+        return;
+      }
+      // No active stream on server — force local state to idle so a stale
+      // "processing" UI doesn't get stuck.
+      final session = getSession(conversationId);
+      session.value = session.value.copyWith(state: ConversationState.idle);
+      _clearStatus(conversationId);
     } catch (_) {
       // No active stream on server — force local state to idle so a stale
       // "processing" UI doesn't get stuck.
@@ -500,10 +515,44 @@ class ChatService {
     connectStatusStream();
   }
 
+  /// Tear down every live SSE/status stream and reset connection state.
+  /// Called on sign-out (and on a 401) so the retry loops below stop firing
+  /// with a stale or absent token — left running they spam the server with
+  /// unauthorized requests every few seconds and trip its brute-force
+  /// lockout, which is exactly what happens when the UI falls back to the
+  /// login screen mid-session.
+  void disconnect() {
+    _connected = false;
+    _statusStreamSubscription?.cancel();
+    _statusStreamSubscription = null;
+    for (final sub in _activeStreams.values) {
+      sub.cancel();
+    }
+    _activeStreams.clear();
+    _connecting.clear();
+    conversationStatuses.value = {};
+  }
+
+  /// True when the current token was rejected (401). Forces a clean logout
+  /// instead of retrying — retrying a rejected token never succeeds and only
+  /// hammers the server.
+  void _handleUnauthorized() {
+    debugPrint('[ChatService] Token rejected (401) — signing out');
+    disconnect();
+    AuthService().signOut();
+  }
+
   /// Connect to the global status stream. Call once on app start (after auth).
   Future<void> connectStatusStream() async {
+    // Bail if we've been torn down (signed out). Without this the timer-based
+    // retries below keep reconnecting after logout with no valid token.
+    if (!_connected) return;
+
     // Refresh tool metadata cache
     await refreshToolMetadata();
+
+    // Re-check: refreshToolMetadata awaited, so a sign-out may have landed.
+    if (!_connected) return;
 
     // Cancel existing status stream if any
     _statusStreamSubscription?.cancel();
@@ -588,15 +637,26 @@ class ChatService {
         },
         onError: (e) {
           debugPrint('[ChatService] Status stream error: $e');
+          // Stop retrying once signed out — the timer would otherwise keep
+          // reconnecting with no valid token.
+          if (!_connected) return;
           // Reconnect after a delay
           Future.delayed(const Duration(seconds: 5), connectStatusStream);
         },
         onDone: () {
+          if (!_connected) return;
           // Stream closed — reconnect
           Future.delayed(const Duration(seconds: 2), connectStatusStream);
         },
       );
     } catch (e) {
+      // A rejected token (401) never recovers by retrying — it just hammers
+      // the server. Force a clean logout to the login screen instead.
+      if (e is APIException && e.statusCode == 401) {
+        _handleUnauthorized();
+        return;
+      }
+      if (!_connected) return;
       debugPrint('[ChatService] Failed to connect status stream: $e — retrying in 5s');
       Future.delayed(const Duration(seconds: 5), connectStatusStream);
     }

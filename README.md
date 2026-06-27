@@ -11,10 +11,12 @@ A free, self-hosted AI assistant that you can see in action, steer in real time,
 Sort emails, messages, calendar... Virtually connect anything to it, with no config: just ask the AI to do it (no... Seriously!)
 
  * Conversation and agents workflow in one UI
- * (almost) Any models from (almost) any providers
  * Fully open-source, free, and local
- * Tool calls, MCP, Image generation, skills and more (compatible with openClaw skills)
- * Attach a folder to a conversation, and use Plurality as coding agent like Claude Code or Codex, for some office work, or simply to organize your desktop
+ * (almost) Any models from (almost) any providers
+ * Sandboxed agents with full control over their virtual environment (They can setup software in their VM)
+ * Tool calls, MCP, Image generation, Shell execution, skills and more (compatible with openClaw skills)
+ * Custom harness with tool approval
+ * Attach a folder to any conversation — code in it like Claude Code, draft documents, or let it organize your desktop
  * Remote clients (vibe code on your PC from your phone)
  * Native application (mobile and desktop) and web
  * More features such as: CRON Scheduler, Webhook interception, Agent preset library, etc...

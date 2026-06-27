@@ -2,6 +2,21 @@ import 'dart:html' as html;
 
 import 'package:openid_client/openid_client_browser.dart';
 
+/// Flutter web's hash URL strategy clobbers the URL fragment on startup, which
+/// would wipe an OIDC implicit-flow response (#id_token=...&access_token=...)
+/// before openid_client reads window.location. A script in web/index.html
+/// stashes that fragment in sessionStorage before Flutter boots; restore it
+/// here so the openid_client browser flow can pick up the tokens. Idempotent:
+/// the stash is consumed on first use.
+void _restoreOAuthFragment() {
+  final frag = html.window.sessionStorage['plurality_oauth_fragment'];
+  if (frag == null || frag.isEmpty) return;
+  html.window.sessionStorage.remove('plurality_oauth_fragment');
+  final loc = html.window.location;
+  html.window.history
+      .replaceState(null, '', '${loc.pathname}${loc.search}#$frag');
+}
+
 /// Runs the openid_client browser flow. On the first call this redirects the
 /// page to the provider's authorization endpoint and never returns. After the
 /// provider redirects back, the call returns the stored credential's ID token.
@@ -12,6 +27,7 @@ Future<({String idToken, String? accessToken})> getOpenIDIdToken({
   required String issuer,
   required String clientId,
 }) async {
+  _restoreOAuthFragment();
   final issuerInfo = await Issuer.discover(Uri.parse(issuer));
   final client = Client(issuerInfo, clientId);
 
@@ -42,6 +58,7 @@ Future<({String idToken, String? accessToken})?> completeOpenIDRedirect({
   required String issuer,
   required String clientId,
 }) async {
+  _restoreOAuthFragment();
   final issuerInfo = await Issuer.discover(Uri.parse(issuer));
   final client = Client(issuerInfo, clientId);
   final authenticator = Authenticator(
