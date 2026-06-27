@@ -65,7 +65,6 @@ type StandardChatRequest struct {
 	Messages          []StandardMessageReq `json:"messages"`
 	MaxTokens         *int                 `json:"max_tokens,omitempty"`
 	MaxCompletionToks *int                 `json:"max_completion_tokens,omitempty"`
-	Temperature       *float64             `json:"temperature,omitempty"`
 	TopP              float64              `json:"top_p,omitempty"`
 	TopK              int                  `json:"top_k,omitempty"`
 	RepetitionPenalty float64              `json:"repetition_penalty,omitempty"`

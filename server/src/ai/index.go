@@ -150,12 +150,9 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	optimizedMessages, hasAttachments, hasDocAttachments := PrepareMessagesForAI(allMessages, model)
 	msgReqList, _ := convertMessagesToOpenAI(optimizedMessages, model)
 
-	Temperature := 0.7
-
 	requestData := StandardChatRequest{
 		Model:         model.Name,
 		Messages:      msgReqList,
-		Temperature:   &Temperature,
 		Stream:        true,
 		StreamOptions: &StreamOptions{IncludeUsage: true},
 	}
@@ -473,12 +470,10 @@ func GenerateTitleForMessage(message, model string) (string, error) {
 	}
 
 	maxTokens := 500
-	temperature := 0.3
 	requestData := StandardChatRequest{
 		Model:           model,
 		Messages:        msgReqList,
 		MaxTokens:       &maxTokens,
-		Temperature:     &temperature,
 		Stream:          false,
 		ReasoningEffort: "low",
 	}
@@ -566,12 +561,10 @@ func GenerateCheckpointSummary(text, model string) (string, error) {
 	}
 
 	maxTokens := 8192
-	temperature := 0.2
 	requestData := StandardChatRequest{
 		Model:       model,
 		Messages:    msgReqList,
 		MaxTokens:   &maxTokens,
-		Temperature: &temperature,
 		Stream:      false,
 	}
 

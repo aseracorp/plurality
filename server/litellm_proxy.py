@@ -133,7 +133,6 @@ async def chat_completions(request: Request):
     stream = body.get("stream", False)
     messages = body.get("messages", [])
     tools = body.get("tools", None)
-    temperature = body.get("temperature", None)
     max_tokens = body.get("max_tokens", None)
     stream_options = body.get("stream_options", None)
 
@@ -145,8 +144,6 @@ async def chat_completions(request: Request):
     }
     if tools:
         kwargs["tools"] = tools
-    if temperature is not None:
-        kwargs["temperature"] = temperature
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
     if stream_options:
@@ -378,7 +375,7 @@ async def audio_transcriptions(request: Request):
 
     # Forward the standard optional transcription params if present.
     kwargs = {}
-    for key in ("language", "prompt", "response_format", "temperature", "timestamp_granularities"):
+    for key in ("language", "prompt", "response_format", "timestamp_granularities"):
         value = form.get(key)
         if value is not None:
             kwargs[key] = value

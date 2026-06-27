@@ -20,7 +20,6 @@ type OpenAIChatRequest struct {
 	Messages    []utils.Message      `json:"messages"`
 	Stream      bool                 `json:"stream"`
 	Tools       []utils.ToolsRequest `json:"tools,omitempty"`
-	Temperature *float64             `json:"temperature,omitempty"`
 	MaxTokens   *int                 `json:"max_tokens,omitempty"`
 	TopP        *float64             `json:"top_p,omitempty"`
 }
@@ -155,18 +154,6 @@ func HandleOpenAIChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	// Build internal model and conversation
 	model := utils.Model{Name: req.Model}
-	if req.Temperature != nil || req.TopP != nil || req.MaxTokens != nil {
-		model.Params = make(map[string]string)
-		if req.Temperature != nil {
-			model.Params["temperature"] = fmt.Sprintf("%f", *req.Temperature)
-		}
-		if req.TopP != nil {
-			model.Params["top_p"] = fmt.Sprintf("%f", *req.TopP)
-		}
-		if req.MaxTokens != nil {
-			model.Params["max_tokens"] = fmt.Sprintf("%d", *req.MaxTokens)
-		}
-	}
 
 	// Extract tool names for model.Tools
 	if model.Tools == nil {
