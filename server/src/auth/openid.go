@@ -58,11 +58,34 @@ func HandleOIDCExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		IDToken     string `json:"id_token"`
-		AccessToken string `json:"access_token"`
+		IDToken      string `json:"id_token"`
+		AccessToken  string `json:"access_token"`
+		Code         string `json:"code"`
+		CodeVerifier string `json:"code_verifier"`
+		RedirectURI  string `json:"redirect_uri"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IDToken == "" {
-		http.Error(w, "id_token required", http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Web clients send an authorization code + PKCE verifier instead of an
+	// id_token: the browser can't reliably call the provider's token endpoint
+	// (CORS) and providers forbid the implicit grant, so the server performs the
+	// Authorization Code + PKCE exchange here. Native clients still send the
+	// id_token they obtained via the loopback flow.
+	if req.Code != "" {
+		idTok, accTok, status, err := exchangeAuthCode(
+			r.Context(), rt, req.Code, req.CodeVerifier, req.RedirectURI)
+		if err != nil {
+			http.Error(w, err.Error(), status)
+			return
+		}
+		req.IDToken = idTok
+		req.AccessToken = accTok
+	}
+	if req.IDToken == "" {
+		http.Error(w, "id_token or code required", http.StatusBadRequest)
 		return
 	}
 	username, status, err := exchangeIDTokenForUsername(r.Context(), rt, req.IDToken, req.AccessToken)
@@ -77,6 +100,40 @@ func HandleOIDCExchange(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"token": jwtTok, "username": username})
+}
+
+// exchangeAuthCode performs the OAuth 2.0 Authorization Code + PKCE token
+// exchange against the provider's token endpoint, on behalf of a web client
+// that cannot do it in-browser. The client is public (no secret) — PKCE's
+// code_verifier authenticates the request. Returns the raw id_token and access
+// token from the provider's response.
+func exchangeAuthCode(ctx context.Context, rt *oidcRuntime, code, verifier, redirectURI string) (string, string, int, error) {
+	if rt.provider == nil {
+		return "", "", http.StatusServiceUnavailable, errors.New("OpenID provider unavailable")
+	}
+	if verifier == "" || redirectURI == "" {
+		return "", "", http.StatusBadRequest, errors.New("code_verifier and redirect_uri are required for the code flow")
+	}
+	c := GetConfig().OpenID
+	// Public client: send client_id in the request body (AuthStyleInParams) and
+	// no client secret.
+	endpoint := rt.provider.Endpoint()
+	endpoint.AuthStyle = oauth2.AuthStyleInParams
+	conf := oauth2.Config{
+		ClientID:    c.ClientID,
+		Endpoint:    endpoint,
+		RedirectURL: redirectURI,
+		Scopes:      []string{"openid", "email", "profile"},
+	}
+	tok, err := conf.Exchange(ctx, code, oauth2.SetAuthURLParam("code_verifier", verifier))
+	if err != nil {
+		return "", "", http.StatusBadGateway, errors.New("authorization code exchange failed: " + err.Error())
+	}
+	rawID, _ := tok.Extra("id_token").(string)
+	if rawID == "" {
+		return "", "", http.StatusBadGateway, errors.New("token response did not include an id_token")
+	}
+	return rawID, tok.AccessToken, http.StatusOK, nil
 }
 
 // oidcClaims holds the subset of ID-token claims we care about. Providers

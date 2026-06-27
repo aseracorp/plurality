@@ -218,11 +218,11 @@ class AuthService {
     if (!methods.openidReady) {
       throw AuthException('OpenID is not configured on this server');
     }
-    final tokens = await getOpenIDIdToken(
+    final result = await getOpenIDIdToken(
       issuer: methods.openidIssuer!,
       clientId: methods.openidClientId!,
     );
-    return _exchangeOpenIDToken(tokens.idToken, tokens.accessToken);
+    return _exchangeOpenIDToken(result);
   }
 
   /// On web startup, check whether the provider just redirected us back with an
@@ -237,16 +237,16 @@ class AuthService {
       return false;
     }
     try {
-      final tokens = await completeOpenIDRedirect(
+      final result = await completeOpenIDRedirect(
         issuer: methods.openidIssuer!,
         clientId: methods.openidClientId!,
       );
-      if (tokens == null) {
-        print('[OpenID] _tryCompleteOpenIDRedirect: no redirect in progress (null tokens)');
+      if (result == null) {
+        print('[OpenID] _tryCompleteOpenIDRedirect: no redirect in progress');
         return false;
       }
-      print('[OpenID] _tryCompleteOpenIDRedirect: got tokens, exchanging with server');
-      await _exchangeOpenIDToken(tokens.idToken, tokens.accessToken);
+      print('[OpenID] _tryCompleteOpenIDRedirect: got redirect result, exchanging with server');
+      await _exchangeOpenIDToken(result);
       print('[OpenID] _tryCompleteOpenIDRedirect: exchange succeeded, logged in');
       return true;
     } catch (e) {
@@ -260,17 +260,23 @@ class AuthService {
     }
   }
 
-  /// Exchange a provider id_token (+ access token for the userinfo fallback)
-  /// for a Plurality JWT and store the session.
-  Future<User> _exchangeOpenIDToken(String idToken, String? accessToken) async {
+  /// Exchange an OpenID sign-in result for a Plurality JWT and store the
+  /// session. Native sends an id_token (+ access token for the userinfo
+  /// fallback); web sends an authorization code + PKCE verifier and the server
+  /// performs the token exchange.
+  Future<User> _exchangeOpenIDToken(OpenIDResult result) async {
     print('[OpenID] exchange: POST $baseUrl/auth/openid/exchange '
-        '(idTokenLen=${idToken.length}, hasAccessToken=${accessToken != null})');
+        '(mode=${result.code != null ? 'code+PKCE' : 'id_token'}, '
+        'hasAccessToken=${result.accessToken != null})');
     final resp = await http.post(
       Uri.parse('$baseUrl/auth/openid/exchange'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
-        'id_token': idToken,
-        if (accessToken != null) 'access_token': accessToken,
+        if (result.idToken != null) 'id_token': result.idToken,
+        if (result.accessToken != null) 'access_token': result.accessToken,
+        if (result.code != null) 'code': result.code,
+        if (result.codeVerifier != null) 'code_verifier': result.codeVerifier,
+        if (result.redirectUri != null) 'redirect_uri': result.redirectUri,
       }),
     );
     print('[OpenID] exchange: server responded ${resp.statusCode} '

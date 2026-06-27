@@ -1,6 +1,8 @@
+import 'openid_result.dart';
+
 // Stub implementation. Replaced at compile time via conditional imports in
 // `openid_signin.dart`.
-Future<({String idToken, String? accessToken})> getOpenIDIdToken({
+Future<OpenIDResult> getOpenIDIdToken({
   required String issuer,
   required String clientId,
 }) {
@@ -8,7 +10,7 @@ Future<({String idToken, String? accessToken})> getOpenIDIdToken({
 }
 
 /// No redirect-based flow on unsupported platforms.
-Future<({String idToken, String? accessToken})?> completeOpenIDRedirect({
+Future<OpenIDResult?> completeOpenIDRedirect({
   required String issuer,
   required String clientId,
 }) async =>

@@ -1,81 +1,60 @@
+import 'dart:convert';
 import 'dart:html' as html;
+import 'dart:math';
 
+import 'package:crypto/crypto.dart';
 import 'package:openid_client/openid_client_browser.dart';
 
-/// Flutter web's hash URL strategy clobbers the URL fragment on startup, which
-/// would wipe an OIDC implicit-flow response (#id_token=...&access_token=...)
-/// before openid_client reads window.location. A script in web/index.html
-/// stashes that fragment in sessionStorage before Flutter boots; restore it
-/// here so the openid_client browser flow can pick up the tokens. Idempotent:
-/// the stash is consumed on first use.
-void _restoreOAuthFragment() {
-  final frag = html.window.sessionStorage['plurality_oauth_fragment'];
-  if (frag == null || frag.isEmpty) return;
-  html.window.sessionStorage.remove('plurality_oauth_fragment');
+import 'openid_result.dart';
+
+// Web uses the OAuth 2.0 Authorization Code flow with PKCE — NOT the implicit
+// flow. openid_client_browser's Authenticator only supports the implicit flow
+// (response_type=id_token token), which modern providers (Ory, Auth0, Keycloak…)
+// forbid: "the OAuth 2.0 Client is not allowed to use the authorization grant
+// 'implicit'". So we drive the code+PKCE flow by hand here and let the server do
+// the code->token exchange (the provider's token endpoint usually isn't
+// CORS-enabled for browser calls). openid_client is used only for discovery.
+
+const _kVerifierKey = 'plurality_oidc_verifier';
+const _kStateKey = 'plurality_oidc_state';
+const _kRedirectKey = 'plurality_oidc_redirect';
+
+/// PKCE-safe random string (RFC 7636 unreserved characters).
+String _randomString(int length) {
+  const chars =
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+  final r = Random.secure();
+  return List.generate(length, (_) => chars[r.nextInt(chars.length)]).join();
+}
+
+/// S256 code challenge: base64url(sha256(verifier)) without padding.
+String _codeChallenge(String verifier) {
+  final digest = sha256.convert(ascii.encode(verifier));
+  return base64Url.encode(digest.bytes).replaceAll('=', '');
+}
+
+/// The redirect URI registered with the provider: the app's origin + path,
+/// without any query or fragment. Must be byte-identical between the authorize
+/// request and the token exchange, so it is stored at initiate time and reused
+/// on callback.
+String _redirectUri() {
   final loc = html.window.location;
-  html.window.history
-      .replaceState(null, '', '${loc.pathname}${loc.search}#$frag');
+  final origin = loc.origin ?? '';
+  final path = loc.pathname ?? '/';
+  return '$origin$path';
 }
 
-/// Runs the openid_client browser flow. On the first call this redirects the
-/// page to the provider's authorization endpoint and never returns. After the
-/// provider redirects back, [completeOpenIDRedirect] (not this) picks up the
-/// tokens during app startup.
-Future<({String idToken, String? accessToken})> getOpenIDIdToken({
-  required String issuer,
-  required String clientId,
-}) async {
-  print('[OpenID] getOpenIDIdToken: discovering issuer=$issuer clientId=$clientId');
-  // Discover the issuer FIRST (this awaits a network round-trip). Only restore
-  // the OAuth fragment immediately before constructing the Authenticator, which
-  // reads window.location eagerly — any await between the two lets Flutter's
-  // hash router run and wipe the fragment again.
-  final issuerInfo = await Issuer.discover(Uri.parse(issuer));
-  print('[OpenID] issuer discovered: '
-      'authEndpoint=${issuerInfo.metadata.authorizationEndpoint} '
-      'responseTypes=${issuerInfo.metadata.responseTypesSupported}');
-  final client = Client(issuerInfo, clientId);
-
-  _restoreOAuthFragment();
-  final authenticator = Authenticator(
-    client,
-    scopes: const ['openid', 'email', 'profile'],
-  );
-
-  final credential = await authenticator.credential;
-  if (credential == null) {
-    print('[OpenID] no credential yet — redirecting to provider authorize URL');
-    authenticator.authorize();
-    // The page is about to be replaced by the provider's auth screen.
-    await Future.delayed(const Duration(seconds: 30));
-    throw Exception('OpenID redirect did not complete');
-  }
-  print('[OpenID] credential present on initiate path — fetching token');
-  final tokenResponse = await credential.getTokenResponse();
-  final idToken = tokenResponse.idToken.toCompactSerialization();
-  if (idToken.isEmpty) {
-    throw Exception('Provider did not return an id_token');
-  }
-  return (idToken: idToken, accessToken: tokenResponse.accessToken);
-}
-
-/// Consumes the OIDC implicit-flow response captured by web/index.html before
-/// Flutter booted (sessionStorage), falling back to the live URL fragment and
-/// query string. Returns the raw `key=value&...` response string, or null when
-/// there is no OAuth response in play (a normal startup). Removes the stash so
-/// a reload doesn't replay it.
+/// Reads the OAuth response the provider sent back. The Authorization Code flow
+/// returns `?code=...&state=...` in the QUERY string (which, unlike the URL
+/// fragment, survives Flutter web's hash router). Also checks the fragment and
+/// the index.html sessionStorage stash as fallbacks. Returns the raw
+/// `key=value&...` string, or null when there is no OAuth response in play.
 String? _consumeOAuthResponse() {
   var raw = html.window.sessionStorage['plurality_oauth_fragment'];
   html.window.sessionStorage.remove('plurality_oauth_fragment');
-
   String source = 'sessionStorage';
-  if (raw == null || raw.isEmpty) {
-    final h = html.window.location.hash ?? '';
-    raw = h.startsWith('#') ? h.substring(1) : h;
-    source = 'url#fragment';
-  }
-  // Some providers/proxies put the response in the query string instead.
-  if (raw.isEmpty || !_looksLikeOAuthResponse(raw)) {
+
+  if (raw == null || !_looksLikeOAuthResponse(raw)) {
     final s = html.window.location.search ?? '';
     final q = s.startsWith('?') ? s.substring(1) : s;
     if (_looksLikeOAuthResponse(q)) {
@@ -83,27 +62,72 @@ String? _consumeOAuthResponse() {
       source = 'url?query';
     }
   }
+  if (raw == null || !_looksLikeOAuthResponse(raw)) {
+    final h = html.window.location.hash ?? '';
+    final f = h.startsWith('#') ? h.substring(1) : h;
+    if (_looksLikeOAuthResponse(f)) {
+      raw = f;
+      source = 'url#fragment';
+    }
+  }
 
   print('[OpenID] consume: source=$source '
-      'hash="${html.window.location.hash}" '
-      'search="${html.window.location.search}" '
-      'rawLen=${raw.length}');
+      'hash="${html.window.location.hash}" search="${html.window.location.search}"');
 
-  if (raw.isEmpty || !_looksLikeOAuthResponse(raw)) return null;
+  if (raw == null || !_looksLikeOAuthResponse(raw)) return null;
   return raw;
 }
 
 bool _looksLikeOAuthResponse(String s) =>
-    RegExp(r'(^|&)(id_token|access_token|code|error)=').hasMatch(s);
+    RegExp(r'(^|&)(code|id_token|access_token|error)=').hasMatch(s);
 
-/// Picks up an OpenID redirect that has already happened by parsing the tokens
-/// straight out of the captured response, WITHOUT re-running the openid_client
-/// browser flow. This avoids the fragile race where Flutter's hash router wipes
-/// window.location before openid_client can read it. Returns the tokens, or null
-/// when there is no redirect in progress. The server fully verifies the id_token
-/// (signature/issuer/audience/expiry), so this client side only needs to relay
-/// it and check the CSRF `state`.
-Future<({String idToken, String? accessToken})?> completeOpenIDRedirect({
+/// Starts the Authorization Code + PKCE flow: redirects the page to the
+/// provider's authorization endpoint and never returns (the await below is just
+/// to keep the caller pending until the navigation tears down the page).
+/// [completeOpenIDRedirect] picks up the result on the next app load.
+Future<OpenIDResult> getOpenIDIdToken({
+  required String issuer,
+  required String clientId,
+}) async {
+  print('[OpenID] getOpenIDIdToken: discovering issuer=$issuer clientId=$clientId');
+  final issuerInfo = await Issuer.discover(Uri.parse(issuer));
+  final authEndpoint = issuerInfo.metadata.authorizationEndpoint;
+  print('[OpenID] issuer discovered: authEndpoint=$authEndpoint '
+      'responseTypes=${issuerInfo.metadata.responseTypesSupported}');
+
+  final verifier = _randomString(64);
+  final state = _randomString(24);
+  final nonce = _randomString(24);
+  final redirectUri = _redirectUri();
+
+  // Persist what we need to validate and complete the flow after the redirect.
+  html.window.sessionStorage[_kVerifierKey] = verifier;
+  html.window.sessionStorage[_kStateKey] = state;
+  html.window.sessionStorage[_kRedirectKey] = redirectUri;
+
+  final authUrl = authEndpoint.replace(queryParameters: {
+    'response_type': 'code',
+    'client_id': clientId,
+    'redirect_uri': redirectUri,
+    'scope': 'openid email profile',
+    'state': state,
+    'nonce': nonce,
+    'code_challenge': _codeChallenge(verifier),
+    'code_challenge_method': 'S256',
+  });
+
+  print('[OpenID] redirecting to authorize (code+PKCE), redirect_uri=$redirectUri');
+  html.window.location.assign(authUrl.toString());
+  // The page is being replaced by the provider's login screen.
+  await Future.delayed(const Duration(seconds: 30));
+  throw Exception('OpenID redirect did not start');
+}
+
+/// Picks up an Authorization Code redirect that has already happened. Returns
+/// the code + PKCE verifier for the server to exchange, or null when there is no
+/// redirect in progress. The server performs the token exchange and verifies
+/// the resulting id_token.
+Future<OpenIDResult?> completeOpenIDRedirect({
   required String issuer,
   required String clientId,
 }) async {
@@ -120,22 +144,14 @@ Future<({String idToken, String? accessToken})?> completeOpenIDRedirect({
         'OpenID provider returned error: $err${desc != null ? ' — $desc' : ''}');
   }
 
-  final idToken = params['id_token'];
-  if (idToken == null || idToken.isEmpty) {
-    // We had an OAuth response but no id_token — e.g. the provider is set up for
-    // the authorization-code flow (returns `code`) instead of implicit.
-    if (params.containsKey('code')) {
-      throw Exception(
-          'OpenID provider returned an authorization code, not an id_token. '
-          'This client uses the implicit flow — enable implicit/"id_token token" '
-          'for this client, or it will never complete.');
-    }
+  final code = params['code'];
+  if (code == null || code.isEmpty) {
     throw Exception(
-        'OpenID redirect contained no id_token (params: ${params.keys.join(", ")})');
+        'OpenID redirect contained no authorization code (params: ${params.keys.join(", ")})');
   }
 
-  // CSRF defense: the returned state must match what authorize() stored.
-  final expectedState = html.window.localStorage['openid_client:state'];
+  // CSRF defense: the returned state must match what we stored at initiate time.
+  final expectedState = html.window.sessionStorage[_kStateKey];
   final returnedState = params['state'];
   if (expectedState != null &&
       expectedState.isNotEmpty &&
@@ -143,13 +159,29 @@ Future<({String idToken, String? accessToken})?> completeOpenIDRedirect({
       returnedState != expectedState) {
     throw Exception('OpenID state mismatch (stale redirect or CSRF)');
   }
-  html.window.localStorage.remove('openid_client:state');
 
-  // Strip the OAuth response from the URL so a reload/logout doesn't replay it.
-  html.window.history
-      .replaceState(null, '', html.window.location.pathname ?? '/');
+  final verifier = html.window.sessionStorage[_kVerifierKey];
+  final redirectUri = html.window.sessionStorage[_kRedirectKey] ?? _redirectUri();
 
-  print('[OpenID] parsed id_token (len=${idToken.length}), '
-      'access_token=${params['access_token'] != null}');
-  return (idToken: idToken, accessToken: params['access_token']);
+  // Consume the one-time flow state and strip the response from the URL so a
+  // reload or logout can't replay it.
+  html.window.sessionStorage.remove(_kStateKey);
+  html.window.sessionStorage.remove(_kVerifierKey);
+  html.window.sessionStorage.remove(_kRedirectKey);
+  html.window.history.replaceState(null, '', html.window.location.pathname ?? '/');
+
+  if (verifier == null || verifier.isEmpty) {
+    throw Exception(
+        'OpenID PKCE verifier missing (sessionStorage was cleared mid-flow)');
+  }
+
+  print('[OpenID] got authorization code (len=${code.length}); '
+      'server will exchange with redirect_uri=$redirectUri');
+  return (
+    idToken: null,
+    accessToken: null,
+    code: code,
+    codeVerifier: verifier,
+    redirectUri: redirectUri,
+  );
 }
