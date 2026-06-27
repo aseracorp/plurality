@@ -47,10 +47,20 @@ class AuthService {
 
   static String _nativeServerUrl = '';
 
+  /// Optional compile-time override for the backend origin. Set it for local dev
+  /// when the server runs separately from the web client, e.g.:
+  ///   flutter run -d chrome --dart-define=API_BASE_URL=http://localhost:8080
+  /// Empty (the default) falls back to the origin that served the app.
+  static const _apiBaseUrlOverride =
+      String.fromEnvironment('API_BASE_URL', defaultValue: '');
+
   /// Base URL for all backend requests.
-  /// - Web: the origin that served the JS, so the app always talks to its own host.
+  /// - Web: the API_BASE_URL override if set, else the origin that served the
+  ///   JS, so the app always talks to its own host.
   /// - Native: a user-supplied URL persisted in SharedPreferences (empty until set).
-  static String get baseUrl => kIsWeb ? Uri.base.origin : _nativeServerUrl;
+  static String get baseUrl => kIsWeb
+      ? (_apiBaseUrlOverride.isNotEmpty ? _apiBaseUrlOverride : Uri.base.origin)
+      : _nativeServerUrl;
 
   /// True when [baseUrl] is usable. On web this is always true; on native it
   /// requires the user to have set a server URL via the login screen.
@@ -108,6 +118,7 @@ class AuthService {
 
   Future<void> _bootstrap() async {
     _bootstrapped = true;
+    print('[OpenID] _bootstrap: isConfigured=$isConfigured baseUrl=$baseUrl');
     if (!isConfigured) {
       _current = null;
       return;
@@ -115,12 +126,16 @@ class AuthService {
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString(_tokenKey);
     final username = prefs.getString(_usernameKey);
+    print('[OpenID] _bootstrap: cachedToken=${token != null} '
+        'cachedUser=${username != null}');
     if (token == null || username == null) {
       // We may have just been redirected back from an OpenID provider with the
       // id_token in the URL fragment (web). Pick it up and finish the login.
       if (await _tryCompleteOpenIDRedirect()) {
+        print('[OpenID] _bootstrap: OpenID redirect completed, session established');
         return;
       }
+      print('[OpenID] _bootstrap: no OpenID session established → logged out');
       _current = null;
       return;
     }
@@ -175,6 +190,7 @@ class AuthService {
   Future<AuthMethods?> getAuthMethods() async {
     try {
       final resp = await http.get(Uri.parse('$baseUrl/auth/methods'));
+      print('[OpenID] getAuthMethods: GET $baseUrl/auth/methods → ${resp.statusCode}');
       if (resp.statusCode == 200) {
         final data = jsonDecode(resp.body) as Map<String, dynamic>;
         return AuthMethods(
@@ -188,13 +204,17 @@ class AuthService {
           openidBtnBg2: data['openid_btn_bg2'] as String?,
         );
       }
-    } catch (_) {}
+    } catch (e) {
+      print('[OpenID] getAuthMethods: request failed → $e');
+    }
     return null;
   }
 
   /// Run the openid_client flow, then exchange the resulting ID token for a
   /// Plurality JWT via POST /auth/openid/exchange.
   Future<User> signInWithOpenID(AuthMethods methods) async {
+    print('[OpenID] signInWithOpenID: starting flow '
+        'issuer=${methods.openidIssuer} clientId=${methods.openidClientId}');
     if (!methods.openidReady) {
       throw AuthException('OpenID is not configured on this server');
     }
@@ -211,6 +231,8 @@ class AuthService {
   Future<bool> _tryCompleteOpenIDRedirect() async {
     lastOpenIDError = null;
     final methods = await getAuthMethods();
+    print('[OpenID] _tryCompleteOpenIDRedirect: methods=${methods == null ? 'null (server unreachable?)' : 'loaded'} '
+        'openidReady=${methods?.openidReady}');
     if (methods == null || !methods.openidReady) {
       return false;
     }
@@ -220,15 +242,19 @@ class AuthService {
         clientId: methods.openidClientId!,
       );
       if (tokens == null) {
+        print('[OpenID] _tryCompleteOpenIDRedirect: no redirect in progress (null tokens)');
         return false;
       }
+      print('[OpenID] _tryCompleteOpenIDRedirect: got tokens, exchanging with server');
       await _exchangeOpenIDToken(tokens.idToken, tokens.accessToken);
+      print('[OpenID] _tryCompleteOpenIDRedirect: exchange succeeded, logged in');
       return true;
     } catch (e) {
       // Surface the real reason instead of silently dropping back to the login
       // form. _exchangeOpenIDToken throws AuthException carrying the server's
       // error body (e.g. allowlist/userinfo), and completeOpenIDRedirect throws
       // a descriptive message when the redirect response is lost.
+      print('[OpenID] _tryCompleteOpenIDRedirect: FAILED → $e');
       lastOpenIDError = e.toString();
       return false;
     }
@@ -237,6 +263,8 @@ class AuthService {
   /// Exchange a provider id_token (+ access token for the userinfo fallback)
   /// for a Plurality JWT and store the session.
   Future<User> _exchangeOpenIDToken(String idToken, String? accessToken) async {
+    print('[OpenID] exchange: POST $baseUrl/auth/openid/exchange '
+        '(idTokenLen=${idToken.length}, hasAccessToken=${accessToken != null})');
     final resp = await http.post(
       Uri.parse('$baseUrl/auth/openid/exchange'),
       headers: {'Content-Type': 'application/json'},
@@ -245,6 +273,8 @@ class AuthService {
         if (accessToken != null) 'access_token': accessToken,
       }),
     );
+    print('[OpenID] exchange: server responded ${resp.statusCode} '
+        'body="${resp.body.length > 200 ? '${resp.body.substring(0, 200)}…' : resp.body}"');
     if (resp.statusCode != 200) {
       throw AuthException(_decodeError(resp));
     }

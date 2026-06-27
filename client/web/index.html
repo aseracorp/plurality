@@ -79,11 +79,17 @@
     // fragment here, before Flutter boots, so the Dart side can restore it.
     (function () {
       var h = window.location.hash;
-      if (h.length > 1) {
-        var frag = h.substring(1);
-        if (/(^|&)(id_token|access_token)=/.test(frag) && /(^|&)state=/.test(frag)) {
-          window.sessionStorage.setItem('plurality_oauth_fragment', frag);
-        }
+      var s = window.location.search;
+      console.log('[OpenID] index.html boot: hash="' + h + '" search="' + s + '"');
+      var frag = h.length > 1 ? h.substring(1) : '';
+      // Implicit flow returns tokens in the fragment; capture it before Flutter
+      // boots and rewrites the URL. Be lenient: stash anything that smells like
+      // an OAuth response (token, code, or error) so the Dart side can report it.
+      if (/(^|&)(id_token|access_token|code|error)=/.test(frag)) {
+        console.log('[OpenID] index.html: stashing OAuth fragment (len=' + frag.length + ')');
+        window.sessionStorage.setItem('plurality_oauth_fragment', frag);
+      } else if (h.length > 1) {
+        console.log('[OpenID] index.html: hash present but not an OAuth response, ignoring');
       }
     })();
   </script>
