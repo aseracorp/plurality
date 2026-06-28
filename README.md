@@ -6,6 +6,12 @@
 
 <p align="center"><i>AI virtual assistant</i></p>
 
+<p align="center">
+  <a href="https://cosmos-cloud.io">
+    <img src="art/cosmos-banner.svg" alt="One-click deploy Plurality on Cosmos Cloud — secure authentication (MFA) and no-setup HTTPS" width="720">
+  </a>
+</p>
+
 A free, self-hosted AI assistant that you can see in action, steer in real time, and easily debug.
 
 Sort emails, messages, calendar... Virtually connect anything to it, with no config: just ask the AI to do it (no... Seriously!)
