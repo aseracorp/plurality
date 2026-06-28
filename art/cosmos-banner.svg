@@ -12,8 +12,8 @@
       <path d="M11 24a9 9 0 0 1 1-18 12 12 0 0 1 23 3 8 8 0 0 1-2 15z" fill="#ffffff"/>
       <path d="M14 17l5 5 9-10" fill="none" stroke="#C864FF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
     </g>
-    <text x="110" y="48" font-size="27" font-weight="700">One-click deploy Plurality on Cosmos Cloud</text>
-    <text x="110" y="80" font-size="18" font-weight="500" opacity="0.95">Secure authentication (MFA)  &#183;  zero-setup HTTPS  &#183;  no config</text>
+    <text x="110" y="48" font-size="27" font-weight="700">Deploy Plurality in one click with Cosmos</text>
+    <text x="110" y="80" font-size="18" font-weight="500" opacity="0.95">Automatic HTTPS  &#183;  extra security with MFA  &#183;  easy to configure</text>
     <!-- arrow -->
     <g transform="translate(840,55)" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" fill="none">
       <path d="M-10 0h22"/>
