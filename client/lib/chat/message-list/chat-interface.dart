@@ -162,10 +162,13 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
   void didUpdateWidget(ChatInterface oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    _miniAppPrePrompt = '';
-
     // Check if the conversationId has changed
     if (oldWidget.conversationId != widget.conversationId) {
+      // Only clear the form-generated pre-prompt when actually switching
+      // conversations. Resetting it on every rebuild wiped the prompt before
+      // the user could send it.
+      _miniAppPrePrompt = '';
+
       if (oldWidget.conversationId != "") {
         // If the conversationId has changed, stop TTS and load the new conversation
         TTSService().stop();
@@ -541,15 +544,29 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
 
   Future<void> _handleSubmit(BuildContext context) async {
     if (_formKey.currentState!.validate()) {
-      final userMessage = _miniAppPrePrompt + _messageController.text;
+      final prePrompt = _miniAppPrePrompt;
+      final text = _messageController.text;
+      final userMessage = prePrompt + text;
       _messageController.clear();
       _miniAppPrePrompt = '';
-      await _submitMessage(userMessage);
+      final ok = await _submitMessage(userMessage);
+      if (!ok && mounted) {
+        // The send failed (e.g. a rejected model). Restore the composer so the
+        // mini-app's form-generated prompt and any typed text survive for a
+        // retry — otherwise the form looks filled but its values are gone and
+        // an empty message box can no longer be sent.
+        setState(() {
+          _miniAppPrePrompt = prePrompt;
+          if (_messageController.text.isEmpty) _messageController.text = text;
+        });
+      }
     }
   }
 
   /// Create a Message from user input and delegate to ChatService.
-  Future<void> _submitMessage(String? userMessage) async {
+  /// Returns true when the message was accepted (or is being handled normally),
+  /// false when it failed to send so the caller can restore the composer.
+  Future<bool> _submitMessage(String? userMessage) async {
     // Refuse to submit while any attachment is still uploading or has errored.
     if (attachments.any((a) => a.uploading)) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -558,7 +575,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
           showCloseIcon: true,
         ),
       );
-      return;
+      return false;
     }
     if (attachments.any((a) => a.uploadError != null)) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -567,7 +584,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
           showCloseIcon: true,
         ),
       );
-      return;
+      return false;
     }
     _needsBottomMargin = true;
     final conversationsNotifier = ref.read(conversationsProvider.notifier);
@@ -615,7 +632,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
       );
     }
 
-    if (newMessage == null) return;
+    if (newMessage == null) return false;
 
     setState(() {
       attachments.clear();
@@ -679,15 +696,20 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
       // Title is generated server-side automatically.
       if (isNew && resolvedId != null && resolvedId.isNotEmpty) {
         if (mounted) widget.setConversationID?.call(resolvedId, true);
-        return;
+        return true;
       }
 
-      if (!mounted) return;
+      // A new conversation that never resolved an id failed to start (e.g. the
+      // server rejected the model). Report failure so the composer is restored.
+      if (isNew) return false;
+
+      if (!mounted) return true;
       if (!widget.isMobile) {
         Future.delayed(Duration(milliseconds: 150), () {
           if (mounted) _inputFocusNode.requestFocus();
         });
       }
+      return true;
     } catch (e, s) {
       print('Error: $e');
       print('Stack: $s');
@@ -697,6 +719,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
           PrettySnackbar(message: e.toString(), type: SnackbarType.error),
         );
       }
+      return false;
     }
   }
 

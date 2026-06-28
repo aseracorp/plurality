@@ -112,7 +112,7 @@ class MiniAppForm extends StatelessWidget {
                     final String prompt = field['prompt'] as String;
                     final dynamic value = formData[name];
 
-                    if (value != null) {
+                    if (value != null && value != '') {
                       result += "$prompt $value\n";
                     }
                   }

@@ -7,6 +7,7 @@ import '../api/models_service.dart';
 import '../api/preferences_provider.dart';
 import '../widgets/model_config/model_config_form.dart';
 import '../widgets/model_config/model_config_helpers.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'dart:io' show Platform;
 
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -30,6 +31,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   String? _memoryError;
   bool _memoryDirty = false;
 
+  SecurityStatus? _securityStatus;
+
   String get _userEmail =>
       _authService.currentUser?.username ?? 'Not logged in';
 
@@ -37,6 +40,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   void initState() {
     super.initState();
     _loadMemory();
+    _loadSecurityStatus();
+  }
+
+  Future<void> _loadSecurityStatus() async {
+    final status = await _authService.getSecurityStatus();
+    if (!mounted) return;
+    setState(() => _securityStatus = status);
   }
 
   @override
@@ -237,25 +247,56 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 constraints: const BoxConstraints(maxWidth: 720),
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        width: 160,
-                        child: Column(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      // On narrow screens the fixed-width side menu is too
+                      // cramped, so move the tabs into a horizontal selector
+                      // above the content.
+                      final isNarrow = constraints.maxWidth < 600;
+                      if (isNarrow) {
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            for (var i = 0; i < tabs.length; i++)
-                              _buildTabEntry(tabs[i], i),
+                            SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: Row(
+                                children: [
+                                  for (var i = 0; i < tabs.length; i++)
+                                    _buildTabEntry(tabs[i], i,
+                                        horizontal: true),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            Expanded(
+                              child: SingleChildScrollView(
+                                child: _buildTabContent(),
+                              ),
+                            ),
                           ],
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: SingleChildScrollView(
-                          child: _buildTabContent(),
-                        ),
-                      ),
-                    ],
+                        );
+                      }
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            width: 160,
+                            child: Column(
+                              children: [
+                                for (var i = 0; i < tabs.length; i++)
+                                  _buildTabEntry(tabs[i], i),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: SingleChildScrollView(
+                              child: _buildTabContent(),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
                   ),
                 ),
               ),
@@ -263,11 +304,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  Widget _buildTabEntry(_SettingsTab tab, int index) {
+  Widget _buildTabEntry(_SettingsTab tab, int index,
+      {bool horizontal = false}) {
     final theme = Theme.of(context);
     final isSelected = _selectedTab == index;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
+      padding: horizontal
+          ? const EdgeInsets.only(right: 8)
+          : const EdgeInsets.only(bottom: 8),
       child: InkWell(
         onTap: () => setState(() => _selectedTab = index),
         borderRadius: BorderRadius.circular(8),
@@ -286,6 +330,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ),
           ),
           child: Row(
+            mainAxisSize: horizontal ? MainAxisSize.min : MainAxisSize.max,
             children: [
               Icon(
                 tab.icon,
@@ -325,11 +370,155 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
+  Widget _buildSecurityWarning(SecurityStatus status) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final headingColor = isDark ? Colors.amber.shade300 : Colors.amber.shade900;
+    final bodyColor = isDark ? Colors.amber.shade100 : Colors.amber.shade900;
+    final bulletColor = isDark ? Colors.amber.shade300 : Colors.amber.shade800;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.amber.withOpacity(isDark ? 0.16 : 0.12),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.amber.shade700, width: 1.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: headingColor),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Your server is not fully secured',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: headingColor,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'To secure your server, please address the following:',
+            style: TextStyle(color: bodyColor),
+          ),
+          const SizedBox(height: 8),
+          if (status.insecureHttp)
+            _buildSecurityWarningItem(
+              'This server is served over plain HTTP. Use HTTPS so your '
+              'traffic and credentials are encrypted.',
+              bodyColor,
+              bulletColor,
+            ),
+          if (status.openidMissing)
+            _buildSecurityWarningItem(
+              'OpenID is not configured. Set up an OpenID provider to enable '
+              'secure single sign-on including multi-factor authentication.',
+              bodyColor,
+              bulletColor,
+            ),
+          const SizedBox(height: 16),
+          _buildCosmosCloudButton(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSecurityWarningItem(
+    String text,
+    Color textColor,
+    Color bulletColor,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Icon(Icons.circle, size: 6, color: bulletColor),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(color: textColor),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCosmosCloudButton() {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFF64C8), Color(0xFFC864FF)],
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFFC864FF).withOpacity(0.45),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: () => launchUrl(
+            Uri.parse('https://cosmos-cloud.io'),
+            mode: LaunchMode.externalApplication,
+          ),
+          child: const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.cloud_done_rounded, color: Colors.white, size: 20),
+                SizedBox(width: 10),
+                Flexible(
+                  child: Text(
+                    'Setup Plurality more securely in one click with Cosmos Cloud',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 14.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                SizedBox(width: 8),
+                Icon(Icons.arrow_forward_rounded,
+                    color: Colors.white, size: 18),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildAccountTab() {
     final colorScheme = Theme.of(context).colorScheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (_securityStatus?.hasWarning == true) ...[
+          _buildSecurityWarning(_securityStatus!),
+          const SizedBox(height: 16),
+        ],
         Card(
           elevation: 2,
           child: Padding(

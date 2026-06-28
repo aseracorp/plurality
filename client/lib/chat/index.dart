@@ -8,6 +8,7 @@ import '../api/service.dart';
 import '../api/api.dart';
 import '../utils/types.dart';
 import '../auth/account.dart';
+import '../auth/auth-service.dart';
 import '../cron/cron-list.dart';
 import '../webhook/webhook-list.dart';
 import '../preset/preset-list.dart';
@@ -33,6 +34,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final ApiService _apiService = ApiService();
   Conversation? selectedConv;
   bool hasUpdate = false;
+  SecurityStatus? _securityStatus;
 
   // Extract the model selection logic to a separate method
   void _updateTitle() {
@@ -62,6 +64,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         _updateTitle();
       });
     }
+    AuthService().getSecurityStatus().then((status) {
+      if (mounted) setState(() => _securityStatus = status);
+    });
     checkVersion().then((value) {
       if (value) {
         showDialog(
@@ -424,7 +429,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       IconButton(
-                        icon: Icon(Icons.account_circle, color: Colors.white),
+                        icon: _securityStatus?.hasWarning == true
+                            ? Badge(
+                                backgroundColor: Colors.amber.shade700,
+                                label: const Icon(
+                                  Icons.priority_high,
+                                  size: 10,
+                                  color: Colors.white,
+                                ),
+                                child: const Icon(
+                                  Icons.account_circle,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Icon(
+                                Icons.account_circle,
+                                color: Colors.white,
+                              ),
+                        tooltip: _securityStatus?.hasWarning == true
+                            ? 'Security: action required'
+                            : null,
                         onPressed: () async {
                           setState(() {
                             _selectedIndex = destinations.indexWhere(

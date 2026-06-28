@@ -243,7 +243,7 @@ class ChatService {
         ],
         availableSkills: skillNames,
       );
-      _connectSSE(conversationId, stream, modelSelected);
+      _connectSSE(conversationId, stream, modelSelected, miniApp: miniApp);
     } catch (e) {
       session.value = ChatSessionState(
         state: ConversationState.idle,
@@ -667,8 +667,9 @@ class ChatService {
   void _connectSSE(
     String initialConversationId,
     Stream<SSEEvent> stream,
-    ModelSelected? modelSelected,
-  ) {
+    ModelSelected? modelSelected, {
+    MiniApp? miniApp,
+  }) {
     _disconnectSSE(initialConversationId);
 
     // Use a mutable reference so re-keying in _handleSSEEvent is reflected
@@ -677,7 +678,7 @@ class ChatService {
 
     final subscription = stream.listen(
       (event) {
-        currentId = _handleSSEEvent(currentId, event, modelSelected);
+        currentId = _handleSSEEvent(currentId, event, modelSelected, miniApp: miniApp);
       },
       onError: (error) {
         debugPrint('[ChatService] SSE error for $currentId: $error');
@@ -686,6 +687,10 @@ class ChatService {
           state: ConversationState.idle,
           error: error.toString(),
         );
+        // Unblock any new-conversation send waiting on the server-assigned id;
+        // without this the awaiting sendMessage future would hang forever.
+        final completer = _pendingIdCompleters.remove(currentId);
+        if (completer != null && !completer.isCompleted) completer.complete(null);
         _activeStreams.remove(currentId);
         // After a transient socket abort (e.g. phone locked, network blip)
         // the conversation may still be running server-side. Try to reattach
@@ -717,8 +722,9 @@ class ChatService {
   String _handleSSEEvent(
     String conversationId,
     SSEEvent event,
-    ModelSelected? modelSelected,
-  ) {
+    ModelSelected? modelSelected, {
+    MiniApp? miniApp,
+  }) {
     final session = getSession(conversationId);
 
     // Detect new conversation ID from server (for new conversations)
@@ -737,6 +743,7 @@ class ChatService {
           id: realId,
           title: event.title ?? 'New Chat',
           modelSelected: modelSelected,
+          miniApp: miniApp,
         );
       }
 
@@ -872,6 +879,12 @@ class ChatService {
           state: ConversationState.idle,
           error: event.content,
         );
+        // A new-conversation send awaits the server-assigned id; complete it so
+        // the awaiting future resolves (null) instead of hanging on failure.
+        final completer = _pendingIdCompleters.remove(conversationId);
+        if (completer != null && !completer.isCompleted) {
+          completer.complete(null);
+        }
         break;
     }
 

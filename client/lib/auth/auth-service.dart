@@ -36,6 +36,23 @@ class AuthMethods {
       openid && (openidIssuer ?? '').isNotEmpty && (openidClientId ?? '').isNotEmpty;
 }
 
+/// Snapshot of server-hardening problems we surface to the user. Both flags are
+/// false when the server is properly secured.
+class SecurityStatus {
+  /// The server has no working OpenID configuration.
+  final bool openidMissing;
+
+  /// The server is reached over plain HTTP instead of HTTPS.
+  final bool insecureHttp;
+
+  const SecurityStatus({
+    required this.openidMissing,
+    required this.insecureHttp,
+  });
+
+  bool get hasWarning => openidMissing || insecureHttp;
+}
+
 class AuthService {
   static final AuthService _instance = AuthService._internal();
   factory AuthService() => _instance;
@@ -208,6 +225,22 @@ class AuthService {
       print('[OpenID] getAuthMethods: request failed → $e');
     }
     return null;
+  }
+
+  /// Whether [baseUrl] talks to the server over plain HTTP. Works on both web
+  /// (origin that served the app) and native (user-supplied server URL).
+  static bool get isInsecureHttp =>
+      Uri.tryParse(baseUrl)?.scheme.toLowerCase() == 'http';
+
+  /// Inspect the connected server for hardening issues: a missing OpenID setup
+  /// and/or an insecure HTTP connection. When the server can't be reached we
+  /// don't flag OpenID, to avoid a false alarm.
+  Future<SecurityStatus> getSecurityStatus() async {
+    final methods = await getAuthMethods();
+    return SecurityStatus(
+      openidMissing: methods != null && !methods.openidReady,
+      insecureHttp: isInsecureHttp,
+    );
   }
 
   /// Run the openid_client flow, then exchange the resulting ID token for a
