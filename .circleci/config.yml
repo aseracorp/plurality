@@ -70,6 +70,7 @@ jobs:
     environment:
       DOCKER_REPOSITORY: azukaar/plurality
     steps:
+      - checkout
       - setup_remote_docker:
           docker_layer_caching: true
 
@@ -81,9 +82,17 @@ jobs:
       - run:
           name: Assemble multi-arch manifest
           command: |
-            echo "Merging per-arch images into multi-arch manifest..."
+            # Tag with the pubspec version (single source of truth, e.g. 2.0.6),
+            # stripping the +build suffix to keep the docker tag clean.
+            VERSION=$(grep -m1 -E '^version:' client/pubspec.yaml | sed -E 's/^version:[[:space:]]*//; s/\+.*$//')
+            if [ -z "$VERSION" ]; then
+              echo "Could not read version from client/pubspec.yaml" >&2
+              exit 1
+            fi
+            echo "Merging per-arch images into multi-arch manifest (version $VERSION)..."
             docker buildx imagetools create \
               -t "$DOCKER_REPOSITORY:$CIRCLE_SHA1" \
+              -t "$DOCKER_REPOSITORY:$VERSION" \
               -t "$DOCKER_REPOSITORY:latest" \
               "$DOCKER_REPOSITORY:$CIRCLE_SHA1-amd64" \
               "$DOCKER_REPOSITORY:$CIRCLE_SHA1-arm64"
@@ -91,8 +100,10 @@ jobs:
       - run:
           name: Deployment notification
           command: |
+            VERSION=$(grep -m1 -E '^version:' client/pubspec.yaml | sed -E 's/^version:[[:space:]]*//; s/\+.*$//')
             echo "Multi-arch image successfully built and pushed!"
             echo "  $DOCKER_REPOSITORY:$CIRCLE_SHA1"
+            echo "  $DOCKER_REPOSITORY:$VERSION"
             echo "  $DOCKER_REPOSITORY:latest"
 
 workflows:

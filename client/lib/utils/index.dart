@@ -26,6 +26,40 @@ String sanitizeMessages(String message) {
   );
 }
 
+/// Compares two semantic version strings (e.g. "1.2.3").
+///
+/// Returns a negative number if [a] < [b], zero if they are equal, and a
+/// positive number if [a] > [b]. Any pre-release/build suffix (after `-` or
+/// `+`) is stripped before comparison, and missing components are treated as 0
+/// so that "1.2" == "1.2.0". Non-numeric components compare as 0.
+int compareSemver(String a, String b) {
+  List<int> parse(String v) {
+    final core = v.trim().split(RegExp(r'[-+]')).first;
+    return core
+        .split('.')
+        .map((part) => int.tryParse(part.trim()) ?? 0)
+        .toList();
+  }
+
+  final pa = parse(a);
+  final pb = parse(b);
+  final length = pa.length > pb.length ? pa.length : pb.length;
+
+  for (var i = 0; i < length; i++) {
+    final na = i < pa.length ? pa[i] : 0;
+    final nb = i < pb.length ? pb[i] : 0;
+    if (na != nb) return na - nb;
+  }
+  return 0;
+}
+
+/// Whether [latest] is a strictly newer version than [current].
+bool isNewerVersion(String latest, String current) {
+  if (current.isEmpty) return true;
+  if (latest.isEmpty) return false;
+  return compareSemver(latest, current) > 0;
+}
+
 Future<bool> checkVersion() async {
   final uri = Uri.parse(
     kIsWeb
@@ -52,7 +86,7 @@ Future<bool> checkVersion() async {
     print('Current version: $currentVersion');
     print('Latest version: $latestVersion');
 
-    if (currentVersion == "" || currentVersion != latestVersion) {
+    if (isNewerVersion(latestVersion ?? '', currentVersion ?? '')) {
       print('New version available: $latestVersion');
       if (kIsWeb) {
         platformSpecificReload();

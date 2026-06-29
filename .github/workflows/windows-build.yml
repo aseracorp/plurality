@@ -15,6 +15,10 @@ jobs:
 
     env: # Define environment variables for the job
       INSTALLER_FILENAME: plurality-windows-latest.exe # <-- Set your desired installer name here
+      # flutter_tts still includes <experimental/coroutine>, which recent MSVC
+      # toolsets turn into a hard error. The CL var prepends this define to every
+      # cl.exe invocation, silencing the deprecation so the build can proceed.
+      CL: /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
 
     steps:
       - name: Setup Visual Studio

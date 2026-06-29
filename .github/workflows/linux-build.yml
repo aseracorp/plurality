@@ -38,7 +38,7 @@ jobs:
           # Define the source and target directories using workspace root
           SOURCE_DIR="${{ github.workspace }}/client/build/linux/x64/release/bundle"
           TARGET_DIR="${{ github.workspace }}/downloads/linux"
-          ZIP_FILE_NAME="linux-build.zip"
+          ZIP_FILE_NAME="plurality-linux-latest.zip"
           
           # Go into the source directory
           cd "$SOURCE_DIR"
@@ -72,4 +72,4 @@ jobs:
           tag_name: v${{ steps.appversion.outputs.version }}
           name: v${{ steps.appversion.outputs.version }}
           fail_on_unmatched_files: false
-          files: downloads/linux/linux-build.zip
+          files: downloads/linux/plurality-linux-latest.zip
