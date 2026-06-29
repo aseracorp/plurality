@@ -23,6 +23,7 @@ import (
 	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/user"
 	"github.com/azukaar/plurality/src/utils"
+	"github.com/azukaar/plurality/src/version"
 	"github.com/azukaar/plurality/src/webhook"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
@@ -78,6 +79,9 @@ func main() {
 	cron.Init()
 	ai_tools.RegisterTool(cron.Tool)
 	defer cron.Shutdown()
+
+	// Periodic server update check (logs when a newer release is published).
+	version.Init()
 
 	// Webhooks: rebuild the in-memory ID -> userID index from disk.
 	webhook.Init()

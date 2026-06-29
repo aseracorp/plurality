@@ -2,6 +2,7 @@ import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:convert';
+import 'dart:io' show Platform;
 import '../api/stub_reload_helper.dart'
     // If dart.library.html is available (meaning we are compiling for web),
     // import the web-specific implementation instead.
@@ -60,12 +61,31 @@ bool isNewerVersion(String latest, String current) {
   return compareSemver(latest, current) > 0;
 }
 
+/// Maps the current native platform to its update-check slug.
+/// Returns null on web or any unsupported platform.
+String? _updateCheckPlatform() {
+  if (kIsWeb) return null;
+  if (Platform.isAndroid) return 'android';
+  if (Platform.isLinux) return 'linux';
+  if (Platform.isMacOS) return 'macos';
+  if (Platform.isWindows) return 'windows';
+  return null;
+}
+
 Future<bool> checkVersion() async {
-  final uri = Uri.parse(
-    kIsWeb
-        ? '/version.json?cacheBust=${DateTime.now().millisecondsSinceEpoch}'
-        : 'https://app.plurality-ai.com/version.json?cacheBust=${DateTime.now().millisecondsSinceEpoch}',
-  );
+  final cacheBust = DateTime.now().millisecondsSinceEpoch;
+  final String url;
+  if (kIsWeb) {
+    url = '/version.json?cacheBust=$cacheBust';
+  } else {
+    final platform = _updateCheckPlatform();
+    if (platform == null) {
+      print('Version check skipped: unsupported platform');
+      return false;
+    }
+    url = 'https://cosmos-cloud.io/update-check/plurality/$platform?cacheBust=$cacheBust';
+  }
+  final uri = Uri.parse(url);
 
   print('Fetching version info from: $uri');
 
@@ -73,7 +93,9 @@ Future<bool> checkVersion() async {
 
   if (response.statusCode == 200) {
     final data = json.decode(response.body);
-    final latestVersion = data['version'] as String?;
+    // The native update-check endpoint returns {"latest": "x.y.z", "link": ...};
+    // the web build's bundled /version.json uses {"version": "x.y.z"}.
+    final latestVersion = (data['latest'] ?? data['version']) as String?;
 
     // store value in shared preferences
 
