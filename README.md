@@ -133,7 +133,7 @@ Plurality covers both. Need a quick answer? Spawn a plain conversation — insta
 
 ## Quickstart
 
-From Cosmos cloud, install in one click: [install](https://cosmos-cloud.io/proxy#cosmos-ui/market-listing/plurality)
+From Cosmos cloud, install in one click: [install](https://cosmos-cloud.io/proxy#cosmos-ui/market-listing/cosmos-cloud/Plurality)
 
 Or from your server's terminal (This assumes you are using Open Router, see [deployments](./deployment.md) and [litellm.md](litellm.md) for details on how to setup your AI models accesses)
 
