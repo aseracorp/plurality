@@ -4,7 +4,15 @@
 
 <h1 align="center">Plurality</h1>
 
-<p align="center"><i>AI virtual assistant</i></p>
+<p align="center"><i>AI agentic assistant you can see and steer in real time</i></p>
+
+<p align="center">
+  <a href="https://flutter.dev"><img src="https://img.shields.io/badge/Flutter-02569B?logo=flutter&logoColor=white" alt="Built with Flutter"></a>
+  <a href="https://go.dev"><img src="https://img.shields.io/badge/Go-00ADD8?logo=go&logoColor=white" alt="Built with Go"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT License"></a>
+  <img src="https://img.shields.io/badge/Open%20Source-FOSS-3DA639?logo=opensourceinitiative&logoColor=white" alt="Free and open-source software">
+  <img src="https://img.shields.io/badge/%F0%9F%A4%96%20AI-powered-FF6F61" alt="AI powered">
+</p>
 
 <p align="center">
   <a href="https://cosmos-cloud.io">
@@ -14,7 +22,7 @@
 
 A free, self-hosted AI assistant that you can see in action, steer in real time, and easily debug.
 
-Sort emails, messages, calendar... Virtually connect anything to it, with no config: just ask the AI to do it (no... Seriously!)
+Sort emails, messages, calendar... Virtually connect anything to it, with no config: just ask the AI to set it up for you
 
  * Conversation and agents workflow in one UI
  * Fully open-source, free, and local
@@ -76,19 +84,92 @@ Plurality covers both. Need a quick answer? Spawn a plain conversation — insta
   Google, …) via PKCE — see [openid.md](openid.md).
 - **Self-contained.** Per-user SQLite, no external database to run.
 
+## Gallery
+
+<table>
+  <tr>
+    <td align="center" valign="top">
+      <img src="art/Screenshot_20260629_210529.png" alt="Conversations and a daily digest in one UI" height="240"><br>
+      <sub>🗂️ &nbsp;Conversations and agents, one UI</sub>
+    </td>
+    <td align="center" valign="top">
+      <img src="art/Screenshot_20260629_211122.png" alt="Schedule prompts with cron" height="240"><br>
+      <sub>⏰ &nbsp;Schedule prompts with cron</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" valign="top">
+      <img src="art/Screenshot_20260629_210926-1.png" alt="Spawn background sub-agents" height="280"><br>
+      <sub>🤖 &nbsp;Spawn background sub-agents</sub>
+    </td>
+    <td align="center" valign="top">
+      <img src="art/Screenshot_20260629_210959.png" alt="Generate and edit images inline" height="280"><br>
+      <sub>🎨 &nbsp;Generate &amp; edit images inline</sub>
+    </td>
+    <td align="center" valign="top">
+      <img src="art/Screenshot_20260629_211057.png" alt="One-tap preset mini-apps" height="280"><br>
+      <sub>✨ &nbsp;One-tap preset mini-apps</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" valign="top">
+      <img src="art/Screenshot_20260629_211027.png" alt="Pick a model preset by cost" height="200"><br>
+      <sub>⚙️ &nbsp;Pick a model preset by cost</sub>
+    </td>
+    <td align="center" valign="top">
+      <img src="art/Screenshot_20260629_211046.png" alt="Per-tool approval: off, ask, or on" height="200"><br>
+      <sub>🔐 &nbsp;Per-tool approval (Off / Ask / On)</sub>
+    </td>
+    <td align="center" valign="top">
+      <img src="art/Screenshot_20260629_211150-1.png" alt="Guided preset launch" height="200"><br>
+      <sub>🚀 &nbsp;Guided preset launch</sub>
+    </td>
+    <td align="center" valign="top">
+      <img src="art/Screenshot_sub-agents.png" alt="Nested sub-conversations with live status" height="200"><br>
+      <sub>🌿 &nbsp;Nested sub-conversations</sub>
+    </td>
+  </tr>
+</table>
+
 ## Quickstart
+
+From Cosmos cloud, install in one click: [install](https://cosmos-cloud.io/proxy#cosmos-ui/market-listing/plurality)
+
+Or from your server's terminal (This assumes you are using Open Router, see [deployments](./deployment.md) and [litellm.md](litellm.md) for details on how to setup your AI models accesses)
 
 ```bash
 docker run -d --name plurality \
   -p 8090:8090 \
   -v plurality-users:/app/users-data \
   -v plurality-data:/app/data \
+  -e OPENROUTER_API_KEY=xxxxx \
   -e INIT_ADMIN_USER=admin \
   -e INIT_ADMIN_PASSWORD=change-me \
-  plurality
+  azukaar/plurality
 ```
 
-Then open <http://localhost:8090> and log in with the admin credentials you set.
+```yml
+services:
+  plurality2:
+    image: azukaar/plurality
+    container_name: plurality2
+    ports:
+      - "8090:8090"
+    volumes:
+      - plurality-data:/app/data
+      - plurality-users:/app/users-data
+    environment:
+      - OPENROUTER_API_KEY=xxxxx
+      - INIT_ADMIN_USER=admin
+      - INIT_ADMIN_PASSWORD=change-me
+    restart: unless-stopped
+
+volumes:
+  plurality-data:
+  plurality-users:
+```
+
+Then open <http://<ip>:8090> or your domain and log in with the admin credentials you set.
 Before the assistant can answer anything, point it at a model — edit
 `data/litellm_config.yaml` and add your provider key. See **[deployment.md](deployment.md)**
 for the full walkthrough.

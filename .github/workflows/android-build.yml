@@ -28,6 +28,51 @@ jobs:
           flutter-version: '3.41.8'
           channel: 'stable'
 
+      - name: Verify signing secrets are set
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          missing=0
+          for v in KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD:STORE_PASSWORD ANDROID_KEY_PASSWORD:KEY_PASSWORD ANDROID_KEY_ALIAS:KEY_ALIAS; do
+            name="${v%%:*}"; var="${v##*:}"
+            if [ -z "${!var}" ]; then echo "::error::Missing secret: ${name/KEYSTORE_BASE64/ANDROID_KEYSTORE_BASE64}"; missing=1; fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Set the required Android signing secrets in repo Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          echo "All Android signing secrets are present."
+
+      - name: Decode keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > client/android/app/upload-keystore.jks
+          # Fail fast if the decoded keystore can't be opened with the provided alias/password
+          keytool -list \
+            -keystore client/android/app/upload-keystore.jks \
+            -storepass "$STORE_PASSWORD" \
+            -alias "$KEY_ALIAS" >/dev/null
+          echo "Keystore decoded and opened successfully."
+
+      - name: Create key.properties
+        env:
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          cat > client/android/key.properties <<EOF
+          storePassword=$STORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=upload-keystore.jks
+          EOF
+
       - name: Build Android APK
         run: |
           cd client

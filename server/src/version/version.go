@@ -124,7 +124,9 @@ func checkVersion() {
 		return
 	}
 
-	resp, err := http.Get(updateCheckURL)
+	// Cache-bust so intermediary caches/CDNs don't serve a stale version.
+	url := fmt.Sprintf("%s?cacheBust=%d", updateCheckURL, time.Now().UnixMilli())
+	resp, err := http.Get(url)
 	if err != nil {
 		utils.Error("checkVersion - request", err)
 		return

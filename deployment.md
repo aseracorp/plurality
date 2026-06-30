@@ -6,18 +6,44 @@ and the web app from there.
 
 ## Run it
 
+From Cosmos cloud, install in one click: [install](https://cosmos-cloud.io/proxy#cosmos-ui/market-listing/plurality)
+
+Or from your server's terminal (This assumes you are using Open Router, see details on how to setup your AI models accesses)
+
 ```bash
 docker run -d --name plurality \
   -p 8090:8090 \
   -v plurality-users:/app/users-data \
   -v plurality-data:/app/data \
-  -v plurality-home:/root \
+  -e OPENROUTER_API_KEY=xxxxx \
   -e INIT_ADMIN_USER=admin \
   -e INIT_ADMIN_PASSWORD=change-me \
-  plurality
+  azukaar/plurality
 ```
 
-Open <http://localhost:8090> and log in. Until you configure at least one model, the
+```yml
+services:
+  plurality2:
+    image: azukaar/plurality
+    container_name: plurality2
+    ports:
+      - "8090:8090"
+    volumes:
+      - plurality-data:/app/data
+      - plurality-users:/app/users-data
+    environment:
+      - OPENROUTER_API_KEY=xxxxx
+      - INIT_ADMIN_USER=admin
+      - INIT_ADMIN_PASSWORD=change-me
+    restart: unless-stopped
+
+volumes:
+  plurality-data:
+  plurality-users:
+```
+
+
+Open <http://<ip>:8090> or domain.com and log in. Until you configure at least one model, the
 assistant has nothing to talk to — do that next.
 
 ### Volumes

@@ -17,10 +17,17 @@ Future<OpenIDResult> getOpenIDIdToken({
   final issuerInfo = await Issuer.discover(Uri.parse(issuer));
   final client = Client(issuerInfo, clientId);
 
-  final authenticator = Authenticator(
-    client,
-    scopes: const ['openid', 'email', 'profile'],
-    port: 4567,
+  // Build the PKCE flow explicitly so we can point redirectUri at the loopback
+  // IP literal (127.0.0.1) rather than `localhost`. Note: passing redirectUri to
+  // the Authenticator() constructor would silently downgrade to the non-PKCE
+  // authorizationCode flow, so we set it on the flow and use fromFlow instead.
+  // RFC 8252 §7.3 recommends 127.0.0.1 over localhost for the loopback redirect.
+  final flow = Flow.authorizationCodeWithPKCE(client)
+    ..scopes.addAll(const ['openid', 'email', 'profile'])
+    ..redirectUri = Uri.parse('http://127.0.0.1:4567/');
+
+  final authenticator = Authenticator.fromFlow(
+    flow,
     urlLancher: (url) async {
       await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
     },
