@@ -15,6 +15,14 @@
 </p>
 
 <p align="center">
+  <a href="https://discord.gg/PwMWwsrwHA"><img src="https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white&style=for-the-badge" alt="Join our Discord"></a>
+  <a href="https://www.reddit.com/r/PluralityAI/"><img src="https://img.shields.io/badge/Reddit-r%2FPluralityAI-FF4500?logo=reddit&logoColor=white&style=for-the-badge" alt="Reddit community"></a>
+  <a href="https://x.com/the_only_yann"><img src="https://img.shields.io/badge/Follow-%40the__only__yann-000000?logo=x&logoColor=white&style=for-the-badge" alt="Follow on X"></a>
+</p>
+
+<br>
+
+<p align="center">
   <a href="https://cosmos-cloud.io">
     <img src="art/cosmos-banner.svg" alt="One-click deploy Plurality on Cosmos Cloud — secure authentication (MFA) and no-setup HTTPS" width="720">
   </a>

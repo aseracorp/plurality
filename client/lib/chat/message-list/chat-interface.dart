@@ -1374,7 +1374,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
                 margin: const EdgeInsets.only(left: 16.0),
                 child: IconButton(
                   onPressed:
-                      () => launchUrlString('https://discord.gg/qHMS7rvNjE'),
+                      () => launchUrlString('https://discord.gg/PwMWwsrwHA'),
                   icon: Icon(Icons.discord),
                 ),
               ),
@@ -1386,6 +1386,20 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
                         'https://www.reddit.com/r/PluralityAI/',
                       ),
                   icon: Icon(Icons.reddit),
+                ),
+              ),
+              Container(
+                margin: const EdgeInsets.only(left: 16.0),
+                child: IconButton(
+                  onPressed:
+                      () => launchUrlString('https://x.com/the_only_yann'),
+                  icon: const Text(
+                    '𝕏',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
               ),
               SizedBox(width: 16),
