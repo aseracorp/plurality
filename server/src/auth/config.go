@@ -105,8 +105,14 @@ type Config struct {
 const (
 	defaultPerClientPerMinute  = 200
 	defaultPerWebhookPerMinute = 10
-	defaultEcoTriggerTokens    = 100000
-	defaultEcoTargetTokens     = 50000
+	// Eco compaction fires when the previous prompt crosses TriggerTokens
+	// and trims the rolling checkpoint so the live tail is roughly
+	// TargetTokens wide. The defaults are deliberately below the usual
+	// 100k+ provider windows: letting history grow to 100k before
+	// compacting makes every turn re-serialize an enormous prompt and
+	// degrades latency super-linearly on long, tool-heavy conversations.
+	defaultEcoTriggerTokens = 60000
+	defaultEcoTargetTokens  = 30000
 )
 
 // ReservedShortcutNames are the picker-visible shortcut names, in display order.
@@ -304,7 +310,6 @@ func SetShortcut(s Shortcut) error {
 	return writeConfigLocked()
 }
 
-
 func OpenIDEnabled() bool {
 	cfgMu.RLock()
 	defer cfgMu.RUnlock()
@@ -405,19 +410,19 @@ var defaultShortcutMediumTools = map[string]string{
 
 // defaultShortcutSmartTools is the full on-by-default tool set for the "smart" shortcut.
 var defaultShortcutSmartTools = map[string]string{
-	"search_web":                                          "true",
-	"place_search":                                        "true",
-	"visit_link":                                          "true",
-	"generate_image":                                      "true",
-	"long_task":                                           "true",
-	"manage_cron":                                         "true",
-	"manage_webhook":                                      "true",
-	"list_presets":                                        "true",
-	"update_important_memory":                             "true",
-	"conversations__search_conversations":                 "true",
-	"conversations__retrieve_conversation":                "true",
-	"conversations__create_conversation":                  "true",
-	"conversations__parallel_sub_agent":                   "true",
+	"search_web":                           "true",
+	"place_search":                         "true",
+	"visit_link":                           "true",
+	"generate_image":                       "true",
+	"long_task":                            "true",
+	"manage_cron":                          "true",
+	"manage_webhook":                       "true",
+	"list_presets":                         "true",
+	"update_important_memory":              "true",
+	"conversations__search_conversations":  "true",
+	"conversations__retrieve_conversation": "true",
+	"conversations__create_conversation":   "true",
+	"conversations__parallel_sub_agent":    "true",
 	"conversations__parallel_sub_agent_background_manage": "true",
 }
 

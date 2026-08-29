@@ -248,7 +248,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 					ModelSelected:  &msSnap,
 				})
 
-				resultContent = executeServerTool(ar.Ctx, ar, *tc, payload)
+				resultContent = executeServerTool(ar.Ctx, ar, *tc, payload, &conversation)
 			}
 
 			// Extract blobs from tool result before saving
@@ -453,7 +453,12 @@ func categorizeToolCalls(userID string, toolCalls []utils.ToolCall) (serverTools
 // executeServerTool runs a server-side tool.
 // MCP tools are checked first (so namespaced MCP names don't collide with
 // builtins); builtin tools come from ai_tools.Registry.
-func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.ToolCall, payload ChatPayload) (result utils.MessageContent) {
+//
+// The conversation is passed in (rather than re-loaded from DB) so a
+// long tool-heavy loop doesn't re-read and re-unmarshal the entire history
+// on every single tool call. `conv` must be the live, DB-fresh
+// conversation for the current request.
+func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.ToolCall, payload ChatPayload, conv *utils.Conversation) (result utils.MessageContent) {
 	defer func() {
 		if r := recover(); r != nil {
 			utils.Error(fmt.Sprintf("[LLMLoop] Tool %s panicked: %v", toolCall.Function.Name, r), nil)
@@ -495,15 +500,13 @@ func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.To
 		}
 	}
 
-	// Fetch current conversation — all tools receive it. Tools may inspect
-	// raw history (read_message etc.), so use the internal variant; if a
-	// tool returns conversation slices back to the LLM it's already inside
-	// the LLM context so eco checkpoints are fine.
-	conv, convErr := db.GetConversationByIdInternal(ctx, ar.ConversationID)
-	if convErr != nil {
-		utils.Error("[LLMLoop] Error loading conversation for tool execution", convErr)
-		return utils.NewTextContent("Error: could not load conversation data")
-	}
+	// Use the live conversation passed in by the caller — it is already
+	// DB-fresh (reloaded after every stream finalize and after every push),
+	// so re-reading the entire history here would be pure overhead.
+	// Tools may inspect raw history (read_message etc.), so the internal
+	// variant is what the caller keeps; if a tool returns conversation
+	// slices back to the LLM it's already inside the LLM context so eco
+	// checkpoints are fine.
 
 	// Inject user's selected image model and the fs_read gate into args.
 	// The gate flag tells the image tool's Exec it's allowed to honor a 'path'
@@ -642,6 +645,22 @@ func injectLongTaskReminder(ctx context.Context, ar *ActiveRequest, conv *utils.
 	}
 	*conv = updated
 
+	// Prune older synthetic reminder/wait pairs. The pair we just pushed is
+	// now the newest for its kind, so it is kept and every older long_task
+	// reminder / wait resume pair is dropped. Without this, each reminder
+	// appends a fresh copy of the full task list to the conversation history
+	// forever, which is a major contributor to the progressive context bloat
+	// (and resulting sluggishness) on long, tool-heavy sessions.
+	if pruned, pruneErr := db.DeleteStaleSyntheticPairs(ctx, ar.ConversationID); pruneErr != nil {
+		utils.Error("[LLMLoop] long_task reminder: failed to prune stale synthetic pairs", pruneErr)
+	} else if pruned > 0 {
+		utils.Log("[LLMLoop] long_task reminder: pruned %d stale synthetic message(s)", pruned)
+		// Re-read so the in-memory copy matches the pruned DB history.
+		if refreshed, refErr := db.GetConversationByIdInternal(ctx, ar.ConversationID); refErr == nil {
+			*conv = *refreshed
+		}
+	}
+
 	ar.Broadcast(SSEEvent{
 		Type:           "tool_use",
 		ToolCall:       &tc,
@@ -661,12 +680,23 @@ func injectLongTaskReminder(ctx context.Context, ar *ActiveRequest, conv *utils.
 	return true
 }
 
+// maxOpenTitlesInNudge caps how many open task titles are echoed into a
+// reminder's nudge text. A very long checklist would otherwise put the
+// entire task list back into the LLM context on every reminder, which is
+// exactly the context bloat we're trying to avoid.
+const maxOpenTitlesInNudge = 8
+
 func openTitles(s ai_tools.LongTaskState) []string {
 	out := make([]string, 0, len(s.Tasks))
 	for _, t := range s.Tasks {
 		if !t.Done {
 			out = append(out, t.ID+": "+t.Title)
 		}
+	}
+	// Keep the reminder body compact on long lists — the full list is still
+	// available in the kept newest long_task tool result.
+	if len(out) > maxOpenTitlesInNudge {
+		out = out[:maxOpenTitlesInNudge]
 	}
 	return out
 }
@@ -742,6 +772,18 @@ func pauseForWait(ctx context.Context, ar *ActiveRequest, conv *utils.Conversati
 		return false
 	}
 	*conv = updated
+
+	// Prune older synthetic wait/long_task pairs — keeps only the newest
+	// pair of each kind so these timer/reminder markers don't pile up in
+	// history across many waits. (See DeleteStaleSyntheticPairs.)
+	if pruned, pruneErr := db.DeleteStaleSyntheticPairs(ctx, ar.ConversationID); pruneErr != nil {
+		utils.Error("[Wait] failed to prune stale synthetic pairs", pruneErr)
+	} else if pruned > 0 {
+		utils.Log("[Wait] pruned %d stale synthetic message(s)", pruned)
+		if refreshed, refErr := db.GetConversationByIdInternal(ctx, ar.ConversationID); refErr == nil {
+			*conv = *refreshed
+		}
+	}
 
 	ar.Broadcast(SSEEvent{
 		Type:           "tool_use",
