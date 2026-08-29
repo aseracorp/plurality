@@ -1,2 +1,10 @@
-litellm[proxy]>=1.55.0
+# LiteLLM is pinned to a recent stable release. It must not float to the
+# latest: newer litellm has churned its OpenAI-compatible pydantic response
+# models (Message/StreamingChoices gained fields), which triggered
+# "PydanticSerializationUnexpectedValue (Expected 10 fields but got 6)"
+# crashes at the exact moment a streaming AI workflow finished
+# (azukaar/plurality issue #3). The proxy additionally serializes via
+# safe_model_dump() as a defensive layer, but a reproducible dependency
+# version is the primary guard.
+litellm[proxy]>=1.98.0,<1.99.0
 httpx>=0.27.0

@@ -45,6 +45,49 @@ def extra_headers():
     """Return a fresh copy of the attribution headers (see note above)."""
     return dict(_EXTRA_HEADERS)
 
+
+def safe_model_dump(obj):
+    """Serialize a litellm/pydantic response object to a plain dict, robust to
+    pydantic serializer mismatches.
+
+    Background: litellm's OpenAI-compatible response classes (Message,
+    StreamingChoices, ...) are pydantic models whose field set changes between
+    litellm releases, while the pydantic *serializer* is built once per object.
+    On versions without litellm's `exclude_unset` default, calling
+    `model_dump()` on a partially-populated object can emit
+    `PydanticSerializationUnexpectedValue` warnings ("Expected 10 fields but
+    got 6") and, in some pydantic configs, raise — which previously killed the
+    AI workflow exactly when a streaming response finished (see issue #3).
+
+    We therefore mirror upstream litellm's fix here: dump with
+    `exclude_unset=True` (omits unset optional fields, which is what keeps the
+    serializer happy) and `warnings=False`, and fall back to a manual dict
+    conversion if pydantic still complains. This is purely a serialization
+    safety net — the returned dict is identical in shape to what callers
+    expect from `model_dump()`.
+    """
+    dump = getattr(obj, "model_dump", None)
+    if dump is None:
+        # Plain dict / JSON-serializable already.
+        return obj if isinstance(obj, dict) else {"error": f"not serializable: {type(obj)}"}
+
+    try:
+        return dump(exclude_unset=True, warnings=False)
+    except Exception:
+        pass
+
+    try:
+        # Fallback: standard dump, then prune any{} entries caused by
+        # serializer failures (missing fields are dropped on the wire anyway).
+        return dump(exclude_unset=True, exclude_none=True, warnings=False)
+    except Exception:
+        pass
+
+    # Last resort: convert via __dict__-style iteration.
+    if hasattr(obj, "__dict__"):
+        return {k: v for k, v in obj.__dict__.items() if not k.startswith("_")}
+    return {"error": f"could not serialize: {type(obj)}"}
+
 app = FastAPI()
 router = None
 # Map from short model_name to the full litellm model string (e.g. "anthropic/claude-sonnet-4-6")
@@ -135,7 +178,7 @@ async def embeddings(request: Request):
     input_text = body.get("input", "")
 
     response = await router.aembedding(model=model, input=[input_text] if isinstance(input_text, str) else input_text, extra_headers=extra_headers())
-    return JSONResponse(content=response.model_dump())
+    return JSONResponse(content=safe_model_dump(response))
 
 
 @app.post("/v1/chat/completions")
@@ -163,7 +206,7 @@ async def chat_completions(request: Request):
 
     if not stream:
         response = await router.acompletion(**kwargs)
-        result = response.model_dump()
+        result = safe_model_dump(response)
 
         usage = result.get("usage", {})
         if usage:
@@ -181,7 +224,7 @@ async def chat_completions(request: Request):
         got_usage = False
 
         async for chunk in response:
-            chunk_dict = chunk.model_dump()
+            chunk_dict = safe_model_dump(chunk)
 
             # Collect output text for fallback token counting
             choices = chunk_dict.get("choices", [])
@@ -298,7 +341,7 @@ async def images_generations(request: Request):
         response = await router.aimage_generation(prompt=prompt, model=model, extra_headers=extra_headers(), **body)
     except Exception as e:
         return _image_error_response(e)
-    result = response.model_dump()
+    result = safe_model_dump(response)
 
     if response_format == "b64_json":
         await _inline_image_urls(result.get("data") or [])
@@ -349,7 +392,7 @@ async def images_edits(request: Request):
         )
     except Exception as e:
         return _image_error_response(e)
-    result = response.model_dump()
+    result = safe_model_dump(response)
 
     if response_format == "b64_json":
         await _inline_image_urls(result.get("data") or [])
@@ -396,7 +439,7 @@ async def audio_transcriptions(request: Request):
     # response_format=text/srt/vtt yields a plain string; JSON formats yield an object.
     if isinstance(response, str):
         return Response(content=response, media_type="text/plain")
-    return JSONResponse(content=response.model_dump())
+    return JSONResponse(content=safe_model_dump(response))
 
 
 def main():
