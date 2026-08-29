@@ -22,17 +22,13 @@ FROM --platform=$BUILDPLATFORM dart:stable AS flutter_builder
 RUN apt-get update && apt-get install -y curl git unzip xz-utils zip libglu1-mesa
 
 # Get Stable Branch
-# The Flutter SDK (~2GB) is cached in the BuildKit cache mount so it doesn't
-# re-clone on every build. --refspec pins to the stable tag to keep the cache
-# branch-compatible. We clone then checkout "stable" (a moving tag); the
-# refspec fetch keeps it fast.
-RUN --mount=type=cache,target=/flutter \
-  if [ -d /flutter/.git ]; then \
-    git -C /flutter fetch --depth 1 origin stable && \
-    git -C /flutter checkout --force stable; \
-  else \
-    git clone --branch stable --depth 1 https://github.com/flutter/flutter.git /flutter; \
-  fi
+# The Flutter SDK (~2GB) is cloned into the image layer (NOT a BuildKit cache
+# mount): cache mounts only persist for the single RUN they're declared on, so
+# mounting /flutter here would leave it empty for the later 'flutter pub get' /
+# 'flutter build web' steps ('command not found', exit 127). Reuse across runs
+# comes from the GHA layer cache (cache-from in the workflow) keyed on this
+# unchanged step.
+RUN git clone --branch stable --depth 1 https://github.com/flutter/flutter.git /flutter
 ENV PATH="/flutter/bin:${PATH}"
 
 # Copy the Flutter app source
@@ -118,10 +114,12 @@ COPY --from=go_builder /app/server/build/ /app/
 
 # Build LiteLLM venv using runtime Python (avoids glibc version mismatch)
 # Stub out pyroscope-io (needs Rust/cargo to build, not needed at runtime)
-# The venv is persisted in a BuildKit cache mount keyed by the litellm
-# requirements file, so unchanged deps don't re-download/re-install.
-RUN --mount=type=cache,target=/app/litellm/litellm_venv \
-    mkdir -p /tmp/dummy-pyroscope && \
+# NOTE: no --mount=type=cache here. A cache mount is ephemeral (discarded
+# at the end of the RUN), so the venv MUST be written into the image layer
+# or the runtime image ships without LiteLLM. Cross-run reuse of this slow
+# install comes from the GHA layer cache (cache-from) keyed on the
+# unchanged litellm_requirements.txt + this step.
+RUN mkdir -p /tmp/dummy-pyroscope && \
     printf '[project]\nname = "pyroscope-io"\nversion = "99.0.0"\n' > /tmp/dummy-pyroscope/pyproject.toml && \
     echo 'pyroscope-io>=99.0.0' > /tmp/pip-constraints.txt && \
     python3 -m venv /app/litellm/litellm_venv && \
