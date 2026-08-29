@@ -44,10 +44,13 @@ WORKDIR /app/client
 
 
 # Build the Flutter web app
-# Dependencies are cached via the Pub cache mount (avoids re-resolving the
-# entire pub universe every build).
-RUN --mount=type=cache,target=/root/.pub-cache \
-  flutter pub get
+# NOTE: no --mount=type=cache on pub-cache here. The pub cache is needed
+# by the NEXT RUN ('flutter build web'), and cache mounts are ephemeral
+# (discarded at end of their RUN), which caused 'Error when reading
+# /root/.pub-cache/... (No such file or directory)' during the web build.
+# Reuse comes from the GHA layer cache (cache-from) keyed on the unchanged
+# pubspec.lock + this step.
+RUN flutter pub get
 RUN flutter build web --release
 
 # Stage 2: Build the Go server
@@ -113,20 +116,17 @@ WORKDIR /app
 COPY --from=go_builder /app/server/build/ /app/
 
 # Build LiteLLM venv using runtime Python (avoids glibc version mismatch)
-# Stub out pyroscope-io (needs Rust/cargo to build, not needed at runtime)
 # NOTE: no --mount=type=cache here. A cache mount is ephemeral (discarded
 # at the end of the RUN), so the venv MUST be written into the image layer
 # or the runtime image ships without LiteLLM. Cross-run reuse of this slow
 # install comes from the GHA layer cache (cache-from) keyed on the
 # unchanged litellm_requirements.txt + this step.
-RUN mkdir -p /tmp/dummy-pyroscope && \
-    printf '[project]\nname = "pyroscope-io"\nversion = "99.0.0"\n' > /tmp/dummy-pyroscope/pyproject.toml && \
-    echo 'pyroscope-io>=99.0.0' > /tmp/pip-constraints.txt && \
-    python3 -m venv /app/litellm/litellm_venv && \
-    /app/litellm/litellm_venv/bin/pip install --no-cache-dir /tmp/dummy-pyroscope && \
-    PIP_CONSTRAINT=/tmp/pip-constraints.txt \
-    /app/litellm/litellm_venv/bin/pip install --no-cache-dir -r /app/litellm/litellm_requirements.txt && \
-    rm -rf /tmp/dummy-pyroscope /tmp/pip-constraints.txt
+# No dummy-pyroscope stub: litellm's own dependency on pyroscope-io is
+# satisfied by the published wheel (pyroscope-io 0.8.16+ has prebuilt
+# wheels), so forcing a local >=99.0.0 stub via PIP_CONSTRAINT only broke
+# resolution. Plain 'pip install -r' resolves whatever it needs.
+RUN python3 -m venv /app/litellm/litellm_venv && \
+    /app/litellm/litellm_venv/bin/pip install --no-cache-dir -r /app/litellm/litellm_requirements.txt
 
 # Copy the Flutter web build to the static directory
 RUN mkdir -p /app/web
