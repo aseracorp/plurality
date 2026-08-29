@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -276,8 +277,19 @@ func writeContentParts(b *strings.Builder, parts []utils.ContentPart) {
 // When all gates pass, it summarises the oldest turns into a new checkpoint
 // pair and atomically swaps out any prior pair via db.ReplaceCheckpoint.
 // Errors are logged and swallowed — the next user turn will retry.
+// runEcoSummary compacts a long conversation at the end of an LLM loop by
+// writing a rolling eco checkpoint. It runs as a fire-and-forget goroutine
+// (spawned in RunLLMLoop when a workflow finishes), so any panic here would
+// crash the WHOLE process with no log output (the goroutine's stderr panic
+// trace is not surfaced to the request that triggered it). We therefore wrap
+// the body in a recover that logs and contains the failure instead.
 func runEcoSummary(ctx context.Context, conversationID string) {
 	utils.Log("[Eco] tick for conv %s", conversationID)
+	defer func() {
+		if r := recover(); r != nil {
+			utils.Error("[Eco] runEcoSummary panicked (contained)", fmt.Errorf("%v", r))
+		}
+	}()
 	if !summaryInFlight.CompareAndSwap(false, true) {
 		utils.Log("[Eco] summary already in flight — skipping conv %s", conversationID)
 		return
@@ -359,6 +371,10 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	}
 
 	textModel, _ := fastShortcutModels()
+	if textModel == "" {
+		utils.Error("[Eco] no 'fast' text model configured — skipping compaction", nil)
+		return
+	}
 	summary, err := GenerateCheckpointSummary(input, textModel)
 	if err != nil {
 		utils.Error("[Eco] checkpoint summary generation failed", err)

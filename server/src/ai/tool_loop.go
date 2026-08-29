@@ -110,10 +110,18 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				ModelSelected:  &modelSelectedSnap,
 			})
 
-			// Auto-generate title for new conversations
+			// Auto-generate title for new conversations.
+			// This runs in a fire-and-forget goroutine right as the workflow
+			// finishes — recover any panic so it can't silently crash the
+			// whole server (same rationale as runEcoSummary).
 			if conversation.Title == "New Chat" {
 				titleMsSnap := conversation.ModelSelected
 				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							utils.Error("[LLMLoop] auto title goroutine panicked (contained)", fmt.Errorf("%v", r))
+						}
+					}()
 					title, icon, err := generateTitleAndIcon(ctx, conversation)
 					if err != nil {
 						utils.Error("[LLMLoop] Auto title generation failed", err)
