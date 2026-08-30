@@ -24,6 +24,18 @@ import (
 //   - Client-side tool calls are needed (state set to waiting_for_tool)
 //   - The context is canceled (user cancellation or timeout)
 func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conversation, payload ChatPayload) {
+	// RunLLMLoop is spawned as a detached goroutine (from /chat and the
+	// scheduled/trigger paths), so a panic anywhere in the loop — including
+	// the workflow-finish path — would otherwise crash the whole process
+	// with the trace lost. Recover here, log it, and shut down cleanly.
+	defer func() {
+		if rec := recover(); rec != nil {
+			utils.Error(fmt.Sprintf("[LLMLoop] RunLLMLoop panicked (contained): %v", rec), nil)
+			ar.setState(ctx, utils.StateIdle)
+			ar.BroadcastStatus("", "")
+			ar.Broadcast(SSEEvent{Type: "error", Content: "internal error", ConversationID: ar.ConversationID})
+		}
+	}()
 	defer ar.cleanup(ctx)
 
 	utils.Log("[LLMLoop] Starting for conversation %s with %d connected clients", ar.ConversationID, ar.ClientCount())

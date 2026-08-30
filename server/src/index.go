@@ -196,6 +196,18 @@ func main() {
 	r.PathPrefix("/").Handler(utils.SPAHandler(p))
 
 	// CORS middleware wrapper for the entire router
+	recoverMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					log.Printf("[recover] panic in %s %s: %v", r.Method, r.URL.Path, rec)
+					http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+
 	corsMiddleware := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -211,7 +223,11 @@ func main() {
 		})
 	}
 
-	http.Handle("/", corsMiddleware(r))
+	// Panic-recovery wrapper around the entire router. Any panic in a
+	// handler is logged and turned into a 500, instead of crashing the
+	// whole server process (which is what made the app appear "dead" with
+	// the frontend still loading but no data, and little to no log output).
+	http.Handle("/", recoverMiddleware(corsMiddleware(r)))
 
 	log.Printf("Server starting on port 8090...")
 	log.Fatal(http.ListenAndServe(":8090", nil))
