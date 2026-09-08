@@ -16,12 +16,12 @@ import (
 // --- OpenAI-Compatible Types ---
 
 type OpenAIChatRequest struct {
-	Model       string               `json:"model"`
-	Messages    []utils.Message      `json:"messages"`
-	Stream      bool                 `json:"stream"`
-	Tools       []utils.ToolsRequest `json:"tools,omitempty"`
-	MaxTokens   *int                 `json:"max_tokens,omitempty"`
-	TopP        *float64             `json:"top_p,omitempty"`
+	Model     string               `json:"model"`
+	Messages  []utils.Message      `json:"messages"`
+	Stream    bool                 `json:"stream"`
+	Tools     []utils.ToolsRequest `json:"tools,omitempty"`
+	MaxTokens *int                 `json:"max_tokens,omitempty"`
+	TopP      *float64             `json:"top_p,omitempty"`
 }
 
 type OpenAIChatResponse struct {
@@ -226,17 +226,40 @@ func streamOpenAIResponse(w http.ResponseWriter, r *http.Request, response io.Re
 
 		// Stream tool call deltas
 		for _, tc := range newToolCalls {
-			idx, exists := toolCallIndexMap[tc.id]
-			if !exists {
+			// Route by provider index (OpenAI puts it on every tool-call chunk,
+			// including continuation deltas whose id/name are null). Fall back to
+			// id when the index is absent, extending the slice as needed.
+			idx := -1
+			if tc.index >= 0 {
+				idx = tc.index
+			} else if tc.id != "" {
+				if existing, ok := toolCallIndexMap[tc.id]; ok {
+					idx = existing
+				}
+			}
+			if idx < 0 || idx >= len(toolCalls) {
 				idx = len(toolCalls)
-				toolCallIndexMap[tc.id] = idx
+			}
+			if idx == len(toolCalls) {
 				toolCalls = append(toolCalls, utils.ToolCall{ID: tc.id, Type: "function", Function: utils.FunctionCall{Name: tc.name}})
+			}
+			if tc.id != "" {
+				toolCallIndexMap[tc.id] = idx
+			}
 
-				// Send new tool call delta with name
+			if toolCalls[idx].Function.Name == "" && tc.name != "" {
+				toolCalls[idx].Function.Name = tc.name
+			}
+			if toolCalls[idx].ID == "" && tc.id != "" {
+				toolCalls[idx].ID = tc.id
+			}
+
+			// Forward a fresh-name delta only on the first chunk for a call.
+			if tc.name != "" {
 				writeOpenAIChunk(w, completionID, created, modelName, OpenAIDelta{
 					ToolCalls: []OpenAIToolDelta{{
 						Index:    idx,
-						ID:       tc.id,
+						ID:       toolCalls[idx].ID,
 						Type:     "function",
 						Function: &OpenAIFnDelta{Name: tc.name},
 					}},
@@ -294,7 +317,7 @@ func collectOpenAIResponse(w http.ResponseWriter, response io.ReadCloser, modelN
 
 	var fullText strings.Builder
 	var toolCalls []utils.ToolCall
-	toolCallMap := make(map[string]*utils.ToolCall)
+	toolCallMap := make(map[string]int) // toolCallID -> index in toolCalls
 
 	scanner := bufio.NewScanner(response)
 	for scanner.Scan() {
@@ -310,15 +333,34 @@ func collectOpenAIResponse(w http.ResponseWriter, response io.ReadCloser, modelN
 		text, newToolCalls := parseProviderChunk(data, modelName)
 		fullText.WriteString(text)
 
+		// Same index-routing as the streaming path — providers like DeepSeek v4
+		// Flash interleave multiple concurrent tool calls, and continuation
+		// deltas carry null ids, so keying by id alone collapses calls.
 		for _, tc := range newToolCalls {
-			existing, ok := toolCallMap[tc.id]
-			if !ok {
-				newTC := utils.ToolCall{ID: tc.id, Type: "function", Function: utils.FunctionCall{Name: tc.name}}
-				toolCalls = append(toolCalls, newTC)
-				toolCallMap[tc.id] = &toolCalls[len(toolCalls)-1]
-				existing = toolCallMap[tc.id]
+			idx := -1
+			if tc.index >= 0 {
+				idx = tc.index
+			} else if tc.id != "" {
+				if existing, ok := toolCallMap[tc.id]; ok {
+					idx = existing
+				}
 			}
-			existing.Function.Arguments += tc.arguments
+			if idx < 0 || idx >= len(toolCalls) {
+				idx = len(toolCalls)
+			}
+			if idx == len(toolCalls) {
+				toolCalls = append(toolCalls, utils.ToolCall{ID: tc.id, Type: "function", Function: utils.FunctionCall{Name: tc.name}})
+			}
+			if tc.id != "" {
+				toolCallMap[tc.id] = idx
+			}
+			if toolCalls[idx].Function.Name == "" && tc.name != "" {
+				toolCalls[idx].Function.Name = tc.name
+			}
+			if toolCalls[idx].ID == "" && tc.id != "" {
+				toolCalls[idx].ID = tc.id
+			}
+			toolCalls[idx].Function.Arguments += tc.arguments
 		}
 	}
 
@@ -351,6 +393,7 @@ func collectOpenAIResponse(w http.ResponseWriter, response io.ReadCloser, modelN
 // --- Provider Chunk Parsing ---
 
 type parsedToolDelta struct {
+	index     int
 	id        string
 	name      string
 	arguments string
@@ -376,6 +419,7 @@ func parseProviderChunk(data string, modelName string) (string, []parsedToolDelt
 	var tools []parsedToolDelta
 	for _, tc := range choice.Delta.ToolCalls {
 		tools = append(tools, parsedToolDelta{
+			index:     tc.Index,
 			id:        tc.ID,
 			name:      tc.Function.Name,
 			arguments: tc.Function.Arguments,
