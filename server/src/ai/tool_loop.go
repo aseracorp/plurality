@@ -28,6 +28,12 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 
 	utils.Log("[LLMLoop] Starting for conversation %s with %d connected clients", ar.ConversationID, ar.ClientCount())
 
+	// streamRetries counts how many times we've re-issued the whole LLM call
+	// after a mid-stream upstream failure. Bounded so a persistently dying
+	// provider can't loop forever.
+	streamRetries := 0
+	maxStreamRetries := 1
+
 	for {
 		select {
 		case <-ar.Ctx.Done():
@@ -68,6 +74,32 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				ar.flushPartialResponse(ctx, conversation)
 				return
 			}
+
+			// Mid-stream upstream failure (e.g. OpenRouter partner provider
+			// dying ~100s in with "model stopped before completing the
+			// response"). If nothing was emitted yet — no text and no tool
+			// calls — retry the whole turn (bounded): nothing was executed
+			// so a fresh request is safe and side-effect free. If partial
+			// content already flowed to the client, fail loudly instead of
+			// silently falling through and leaving the conversation stuck in
+			// "working" state with no "done"/"error" event.
+			if len(ar.TextBuffer.String()) == 0 && len(assistantMessage.ToolCalls) == 0 && streamRetries < maxStreamRetries {
+				streamRetries++
+				utils.Log("[LLMLoop] Stream failed before any output, retrying (attempt %d/%d)", streamRetries+1, maxStreamRetries+1)
+				ar.ResetBuffer()
+				ar.BroadcastStatus("typing", "")
+				continue
+			}
+
+			utils.Error("[LLMLoop] Stream failed after partial output; cannot retry safely", nil)
+			ar.setState(ctx, utils.StateIdle)
+			ar.Broadcast(SSEEvent{
+				Type:           "error",
+				Content:        "The AI backend stopped responding mid-stream (provider timeout). Please try again.",
+				ConversationID: ar.ConversationID,
+			})
+			ar.BroadcastStatus("", "")
+			return
 		}
 
 		utils.Log("[LLMLoop] Stream complete. Text length: %d, Tool calls: %d", len(ar.TextBuffer.String()), len(assistantMessage.ToolCalls))
