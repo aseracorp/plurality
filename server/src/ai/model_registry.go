@@ -140,6 +140,29 @@ func (r *ModelRegistry) IsVisionModel(name string) bool {
 	return entry.SupportsVision
 }
 
+// FindVisionModel returns the name of a vision-capable chat model, or "" if
+// none is configured. Used as a safety net when the user-configured "vision"
+// model turns out not to support vision (e.g. deepseek-v4-flash-0731 on
+// OpenRouter is text-only despite being configured as a vision model).
+// Preferences: action-capable vision models first, then any vision chat model.
+func (r *ModelRegistry) FindVisionModel() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var best string
+	for _, entry := range r.list {
+		if entry.Mode != "chat" || !entry.SupportsVision {
+			continue
+		}
+		if best == "" {
+			best = entry.Name
+		}
+		if entry.SupportsFunctionCalling {
+			return entry.Name
+		}
+	}
+	return best
+}
+
 // IsImageGenModel reports whether the model produces images.
 func (r *ModelRegistry) IsImageGenModel(name string) bool {
 	entry, ok := r.Get(name)

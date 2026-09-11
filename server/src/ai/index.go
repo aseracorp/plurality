@@ -197,9 +197,17 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 // convertMessagesToOpenAI converts internal utils.Message slices into
 // StandardMessageReq for sending to the LiteLLM proxy (OpenAI-compatible format).
 // Returns the converted messages and the concatenated input text (for debugging/logging).
-func convertMessagesToOpenAI(messages []utils.Message, _ utils.Model) ([]StandardMessageReq, string) {
+//
+// If the target model does not support vision, image_url parts are replaced
+// with a short text placeholder instead of being sent — providers (e.g.
+// deepseek-v4-flash-0731 on OpenRouter, which is text-only) reject image
+// input with a 404, and that rejection used to crash the litellm proxy.
+func convertMessagesToOpenAI(messages []utils.Message, model utils.Model) ([]StandardMessageReq, string) {
 	result := make([]StandardMessageReq, 0, len(messages))
 	inputText := ""
+
+	visionCapable := Models.IsVisionModel(model.Name)
+	const noVisionPlaceholder = "[Image omitted: the selected model does not support vision.]"
 
 	for _, msg := range messages {
 		switch msg.Role {
@@ -223,6 +231,14 @@ func convertMessagesToOpenAI(messages []utils.Message, _ utils.Model) ([]Standar
 			contentParts := make([]StandardContentReq, 0, len(parts))
 			for _, part := range parts {
 				if part.Type == "image_url" && part.ImageURL != nil {
+					if !visionCapable {
+						inputText += "user " + noVisionPlaceholder + " {}{}{}{}{}{}{}"
+						contentParts = append(contentParts, StandardContentReq{
+							Type: "text",
+							Text: noVisionPlaceholder,
+						})
+						continue
+					}
 					contentParts = append(contentParts, StandardContentReq{
 						Type: "image_url",
 						ImageURL: &utils.ContentImageURL{
@@ -299,6 +315,18 @@ func convertMessagesToOpenAI(messages []utils.Message, _ utils.Model) ([]Standar
 				contentParts := make([]StandardContentReq, 0, len(parts))
 				for _, part := range parts {
 					if part.Type == "image_url" && part.ImageURL != nil {
+						if !visionCapable {
+							text := noVisionPlaceholder
+							if msg.Name != "conversation_attachments" && ai_tools.ShouldStripResponse(text) {
+								text = "Tool result displayed to user."
+							}
+							inputText += "tool " + text + " {}{}{}{}{}{}{}"
+							contentParts = append(contentParts, StandardContentReq{
+								Type: "text",
+								Text: text,
+							})
+							continue
+						}
 						contentParts = append(contentParts, StandardContentReq{
 							Type:     "image_url",
 							ImageURL: &utils.ContentImageURL{URL: part.ImageURL.URL},
@@ -391,7 +419,14 @@ func convertMessagesToOpenAI(messages []utils.Message, _ utils.Model) ([]Standar
 // that an image which has been stripped from the actual payload doesn't trigger
 // a vision swap — otherwise we'd pay for the vision model on text-only turns.
 func SelectModel(modelSelected utils.ModelSelected, conv utils.Conversation) utils.Model {
-	if modelSelected.Vision != nil && modelSelected.Text != nil &&
+	// The configured "vision" model is only used if it genuinely supports
+	// vision. Some providers (e.g. deepseek-v4-flash-0731 on OpenRouter) are
+	// text-only but get configured as vision, which made Plurality send
+	// image_url content to a model that rejects it (OpenRouter 404 -> proxy
+	// crash). If the chosen vision model can't take images, fall back to the
+	// text model and let convertMessagesToOpenAI strip image parts.
+	visionUsable := modelSelected.Vision != nil && Models.IsVisionModel(modelSelected.Vision.Name)
+	if visionUsable && modelSelected.Text != nil &&
 		!Models.IsVisionModel(modelSelected.Text.Name) {
 		prepared, _, _ := PrepareMessagesForAI(conv.Messages, *modelSelected.Text)
 		for _, m := range prepared {
@@ -403,9 +438,26 @@ func SelectModel(modelSelected utils.ModelSelected, conv utils.Conversation) uti
 	}
 
 	if modelSelected.Text != nil {
+		// The user picked a text-only model (or their "vision" model is
+		// text-only). If the conversation contains images the model can't
+		// ingest, swap to a real vision-capable model so the AI can still
+		// view screenshots instead of failing.
+		textUsable := Models.IsVisionModel(modelSelected.Text.Name)
+		if !textUsable {
+			prepared, _, _ := PrepareMessagesForAI(conv.Messages, *modelSelected.Text)
+			for _, m := range prepared {
+				if m.HasImages() {
+					if v := Models.FindVisionModel(); v != "" {
+						utils.Log("Swapping to vision-capable model %s for image content", v)
+						return utils.Model{Name: v}
+					}
+					break
+				}
+			}
+		}
 		return *modelSelected.Text
 	}
-	if modelSelected.Vision != nil {
+	if modelSelected.Vision != nil && Models.IsVisionModel(modelSelected.Vision.Name) {
 		return *modelSelected.Vision
 	}
 	return utils.Model{}
@@ -562,10 +614,10 @@ func GenerateCheckpointSummary(text, model string) (string, error) {
 
 	maxTokens := 8192
 	requestData := StandardChatRequest{
-		Model:       model,
-		Messages:    msgReqList,
-		MaxTokens:   &maxTokens,
-		Stream:      false,
+		Model:     model,
+		Messages:  msgReqList,
+		MaxTokens: &maxTokens,
+		Stream:    false,
 	}
 
 	jsonData, err := json.Marshal(requestData)
