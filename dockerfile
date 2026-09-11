@@ -143,6 +143,9 @@ VOLUME /root
 # Expose the port the server listens on
 EXPOSE 8090
 
-# Run the server under tini so PID 1 reaps zombies and forwards signals
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["/app/Plurality"]
+# Run the server under tini so PID 1 reaps zombies and forwards signals.
+# Tee stdout/stderr into the persistent /app/data volume so any crash
+# (panic, segfault, OOM, or external restart) leaves a durable trace that
+# survives the container restart.
+ENTRYPOINT ["/usr/bin/tini", "--", "sh", "-c"]
+CMD ["/app/Plurality 2>&1 | tee -a /app/data/server.log"]
