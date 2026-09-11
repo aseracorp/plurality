@@ -146,6 +146,11 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			if conversation.Title == "New Chat" {
 				titleMsSnap := conversation.ModelSelected
 				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							utils.Error("[LLMLoop] title gen panicked", nil, fmt.Sprintf("%v", r))
+						}
+					}()
 					title, icon, err := generateTitleAndIcon(ctx, conversation)
 					if err != nil {
 						utils.Error("[LLMLoop] Auto title generation failed", err)

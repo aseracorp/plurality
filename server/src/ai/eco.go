@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -277,6 +278,16 @@ func writeContentParts(b *strings.Builder, parts []utils.ContentPart) {
 // pair and atomically swaps out any prior pair via db.ReplaceCheckpoint.
 // Errors are logged and swallowed — the next user turn will retry.
 func runEcoSummary(ctx context.Context, conversationID string) {
+	// A panic anywhere in this goroutine must never take down the whole
+	// server — it runs at the end of every LLM turn ("finished workflow")
+	// and a nil deref / DB error here would crash the process and restart
+	// the container. Recover and log instead.
+	defer func() {
+		if r := recover(); r != nil {
+			utils.Error("[Eco] panic in runEcoSummary for %s", nil, fmt.Sprintf("%v", r))
+		}
+	}()
+
 	utils.Log("[Eco] tick for conv %s", conversationID)
 	if !summaryInFlight.CompareAndSwap(false, true) {
 		utils.Log("[Eco] summary already in flight — skipping conv %s", conversationID)
