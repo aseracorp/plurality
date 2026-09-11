@@ -358,8 +358,22 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 		input = excerpt
 	}
 
-	textModel, _ := fastShortcutModels()
-	summary, err := GenerateCheckpointSummary(input, textModel)
+	// Use the conversation's own text model for the summary. The user picked
+	// it because it handles the conversation's context window (e.g.
+	// deepseek-v4-flash-0731 has a ~1.3M token context), so the full excerpt
+	// fits. Using the "fast" shortcut model (gpt-oss-20b, 131k context)
+	// overflowed on long conversations — the request exceeded the model's
+	// max context length, OpenRouter returned a 400, and the eco compaction
+	// failed (and could contribute to a turn dying).
+	summaryModel := ""
+	if conv.ModelSelected.Text != nil {
+		summaryModel = conv.ModelSelected.Text.Name
+	}
+	if summaryModel == "" || !Models.IsKnown(summaryModel) {
+		summaryModel, _ = fastShortcutModels()
+	}
+	utils.Log("[Eco] summary model: %s", summaryModel)
+	summary, err := GenerateCheckpointSummary(input, summaryModel)
 	if err != nil {
 		utils.Error("[Eco] checkpoint summary generation failed", err)
 		return
