@@ -362,6 +362,36 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	}
 
 	excerpt := renderMessagesForSummary(conv.Messages[startIdx:cutoff])
+	// Bound the actual rendered excerpt, not just the message index.
+	// prompt_tokens is CUMULATIVE across the whole conversation (it comes
+	// from litellm's usage.prompt_tokens and includes the compacted
+	// checkpoint), so targetDrop = lastPT - target grows without bound as
+	// the conversation grows — the excerpt between checkpoint and cutoff
+	// grows with it (observed: 774k → 899k+ tokens). A single summary call
+	// over that much text takes many minutes and the process gets killed
+	// while it hangs. Keep the tail (most recent part) of the window and
+	// cap it at a fixed size so every eco pass is small and fast.
+	const maxExcerptBytes = 250 * 1024 // ~60k tokens per pass
+	if len(excerpt) > maxExcerptBytes {
+		// Find a message boundary near the start of the tail window by
+		// re-rendering from progressively later indexes. Cheap: the
+		// renderer is linear and the window rarely needs trimming.
+		trimmedStart := startIdx
+		for trimmedStart < cutoff {
+			trimmed := renderMessagesForSummary(conv.Messages[trimmedStart:cutoff])
+			if len(trimmed) <= maxExcerptBytes {
+				excerpt = trimmed
+				startIdx = trimmedStart
+				break
+			}
+			trimmedStart++
+		}
+		// If we ran off the end (pathological), last resort: hard cut.
+		if len(excerpt) > maxExcerptBytes {
+			excerpt = excerpt[len(excerpt)-maxExcerptBytes:]
+		}
+	}
+	utils.Log("[Eco] excerpt %d bytes (msgs %d..%d)", len(excerpt), startIdx, cutoff)
 	var input string
 	if priorSummary != "" {
 		input = "PRIOR CHECKPOINT:\n" + priorSummary + "\n\nNEW MESSAGES:\n" + excerpt
@@ -385,51 +415,13 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	}
 	utils.Log("[Eco] summary model: %s", summaryModel)
 
-	// Chunk the input so no single completion request is enormous. A huge
-	// non-streaming request (hundreds of thousands of tokens) takes minutes
-	// to process and stalls the eco goroutine around the finished-workflow
-	// point — which has coincided with the process being killed. Bounding
-	// each chunk keeps every request well under OpenRouter's per-request
-	// time limits. Each chunk is summarised, then the per-chunk summaries
-	// are folded into one final summary.
-	const maxChunkBytes = 300 * 1024 // ~75k tokens per chunk, safe & fast
-	var chunks []string
-	if len(input) <= maxChunkBytes {
-		chunks = []string{input}
-	} else {
-		// Split on line boundaries to avoid chopping mid-line.
-		cur := strings.Builder{}
-		for _, line := range strings.SplitAfter(input, "\n") {
-			if cur.Len()+len(line) > maxChunkBytes && cur.Len() > 0 {
-				chunks = append(chunks, cur.String())
-				cur.Reset()
-			}
-			cur.WriteString(line)
-		}
-		if cur.Len() > 0 {
-			chunks = append(chunks, cur.String())
-		}
-	}
-	utils.Log("[Eco] input %d bytes split into %d chunk(s)", len(input), len(chunks))
-
-	partials := make([]string, 0, len(chunks))
-	for i, chunk := range chunks {
-		utils.Log("[Eco] summarizing chunk %d/%d (%d bytes)", i+1, len(chunks), len(chunk))
-		part, err := GenerateCheckpointSummary(chunk, summaryModel)
-		if err != nil {
-			utils.Error("[Eco] checkpoint summary generation failed (chunk %d/%d)", err, i+1, len(chunks))
-			return
-		}
-		part = strings.TrimSpace(part)
-		if part != "" {
-			partials = append(partials, part)
-		}
-	}
-	if len(partials) == 0 {
-		utils.Error("[Eco] checkpoint summary returned empty", nil)
+	// Summarise the bounded excerpt in ONE request. It is capped to
+	// ~60k tokens above, so the call completes in well under a minute.
+	summary, err := GenerateCheckpointSummary(input, summaryModel)
+	if err != nil {
+		utils.Error("[Eco] checkpoint summary generation failed", err)
 		return
 	}
-	summary := strings.Join(partials, "\n\n---\n\n")
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
 		utils.Error("[Eco] checkpoint summary returned empty", nil)
