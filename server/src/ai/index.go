@@ -146,6 +146,57 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// older than it. When eco is off: drop the checkpoint pair entirely
 	// and send the raw history.
 	visibleMessages := filterCheckpointsForRequest(conv.Messages, conv.ModelSelected.EcoMode)
+
+	// Safety net: never send an unbounded prompt. If eco-mode has been
+	// enabled but no checkpoint has been created yet (the compacting
+	// summary may have failed), filterCheckpointsForRequest returns the
+	// ENTIRE conversation — observed at 917k tokens on a long-running
+	// conversation. A prompt that large makes every turn take minutes and
+	// the workflow dies mid-stream while the provider processes it (the
+	// server itself stays up — a "workflow crash"). Also, some models have
+	// hard context limits well below the growing history.
+	// Keep the system message (already prepended), the latest user message,
+	// and as much of the tail as fits within a bounded budget.
+	const maxPromptChars = 600 * 1024 // ~150k tokens (chars/4), generous for big models
+	if len(visibleMessages) > 1 {
+		// Measure roughly: sum of text content lengths + fixed overhead
+		// per message (~64 chars for JSON envelope/role labels).
+		total := 0
+		for _, m := range visibleMessages {
+			mt := 0
+			for _, part := range m.ContentParts() {
+				mt += len(part.Text)
+			}
+			total += mt + 64
+		}
+		if total > maxPromptChars {
+			// Drop the oldest messages until we fit. Always keep the last
+			// message (the current user turn) and at least one assistant
+			// exchange before it.
+			keep := len(visibleMessages)
+			acc := 0
+			for i := len(visibleMessages) - 1; i >= 0; i-- {
+				mt := 0
+				for _, part := range visibleMessages[i].ContentParts() {
+					mt += len(part.Text)
+				}
+				acc += mt + 64
+				if acc > maxPromptChars {
+					keep = i + 1
+					if keep < 2 {
+						keep = 2
+					}
+					break
+				}
+			}
+			if keep < len(visibleMessages) {
+				utils.Log("[Send] capping conversation from %d to %d messages (~%d chars)",
+					len(visibleMessages), keep, acc)
+				visibleMessages = visibleMessages[len(visibleMessages)-keep:]
+			}
+		}
+	}
+
 	allMessages := append([]utils.Message{systemMsg}, visibleMessages...)
 	optimizedMessages, hasAttachments, hasDocAttachments := PrepareMessagesForAI(allMessages, model)
 	msgReqList, _ := convertMessagesToOpenAI(optimizedMessages, model)
