@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 
 	"github.com/azukaar/plurality/src/ai"
@@ -211,7 +212,29 @@ func main() {
 		})
 	}
 
-	http.Handle("/", corsMiddleware(r))
+	// Global panic recovery: net/http does NOT recover handler panics — a
+	// panic in any request handler (e.g. while processing a huge
+	// conversation at "finished workflow") would terminate the entire
+	// process and restart the container. Wrap the router so a panic is
+	// caught, logged with its stack, and returned as a clean 500 instead
+	// of crashing the server.
+	recoveryMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					log.Printf("PANIC RECOVERED in %s %s: %v\n%s",
+						r.Method, r.URL.Path, rec, debug.Stack())
+					// Flusher may already have written SSE frames; we can't
+					// change the status then. Best effort only.
+					w.Header().Set("Content-Type", "application/json")
+					http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	http.Handle("/", recoveryMiddleware(corsMiddleware(r)))
 
 	log.Printf("Server starting on port 8090...")
 	log.Fatal(http.ListenAndServe(":8090", nil))
