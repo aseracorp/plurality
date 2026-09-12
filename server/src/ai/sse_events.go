@@ -40,6 +40,20 @@ func WriteSSEEvent(w http.ResponseWriter, event SSEEvent) error {
 	if err != nil {
 		return err
 	}
+
+	// Writing to an SSE connection whose client has disconnected panics with
+	// http.ErrAbortHandler (a fatal in Go's net/http that is not auto-recovered
+	// in a streaming goroutine). This happens at the most painful time — right
+	// after the final "done" event is emitted, when the user has typically
+	// navigated away or the tab/connection dropped. An uncaught ErrAbortHandler
+	// kills the whole process. Recover it here so a dead client can never take
+	// down the server.
+	defer func() {
+		if r := recover(); r != nil {
+			// http.ErrAbortHandler is the expected "client went away" case.
+			utils.Log("[SSE] client connection aborted during write: %v", r)
+		}
+	}()
 	_, err = fmt.Fprintf(w, "data: %s\n\n", data)
 	if err != nil {
 		return err
@@ -74,6 +88,13 @@ func WriteStatusEvent(w http.ResponseWriter, event StatusEvent) error {
 	if err != nil {
 		return err
 	}
+	// Same ErrAbortHandler protection as WriteSSEEvent — writing to a
+	// disconnected global-status-stream client must never crash the process.
+	defer func() {
+		if r := recover(); r != nil {
+			utils.Log("[SSE] status client connection aborted during write: %v", r)
+		}
+	}()
 	_, err = fmt.Fprintf(w, "data: %s\n\n", data)
 	if err != nil {
 		return err

@@ -284,11 +284,19 @@ func streamOpenAIResponse(w http.ResponseWriter, r *http.Request, response io.Re
 	}
 	writeOpenAIChunk(w, completionID, created, modelName, OpenAIDelta{}, &finishReason)
 
-	// Send [DONE]
-	fmt.Fprintf(w, "data: [DONE]\n\n")
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
+	// Send [DONE] (guarded against client-disconnect abort panic)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				utils.Log("[OpenAI] client ab write: %v", r)
+			}
+		}()
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}()
 }
 
 func writeOpenAIChunk(w http.ResponseWriter, id string, created int64, model string, delta OpenAIDelta, finishReason *string) {
@@ -304,6 +312,13 @@ func writeOpenAIChunk(w http.ResponseWriter, id string, created int64, model str
 		}},
 	}
 	data, _ := json.Marshal(chunk)
+	// Guard against http.ErrAbortHandler when the downstream SSE client
+	// disconnects mid-stream — an uncaught abort panic kills the process.
+	defer func() {
+		if r := recover(); r != nil {
+			utils.Log("[OpenAI] client connection aborted during chunk write: %v", r)
+		}
+	}()
 	fmt.Fprintf(w, "data: %s\n\n", data)
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
