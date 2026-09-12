@@ -384,11 +384,52 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 		summaryModel, _ = fastShortcutModels()
 	}
 	utils.Log("[Eco] summary model: %s", summaryModel)
-	summary, err := GenerateCheckpointSummary(input, summaryModel)
-	if err != nil {
-		utils.Error("[Eco] checkpoint summary generation failed", err)
+
+	// Chunk the input so no single completion request is enormous. A huge
+	// non-streaming request (hundreds of thousands of tokens) takes minutes
+	// to process and stalls the eco goroutine around the finished-workflow
+	// point — which has coincided with the process being killed. Bounding
+	// each chunk keeps every request well under OpenRouter's per-request
+	// time limits. Each chunk is summarised, then the per-chunk summaries
+	// are folded into one final summary.
+	const maxChunkBytes = 300 * 1024 // ~75k tokens per chunk, safe & fast
+	var chunks []string
+	if len(input) <= maxChunkBytes {
+		chunks = []string{input}
+	} else {
+		// Split on line boundaries to avoid chopping mid-line.
+		cur := strings.Builder{}
+		for _, line := range strings.SplitAfter(input, "\n") {
+			if cur.Len()+len(line) > maxChunkBytes && cur.Len() > 0 {
+				chunks = append(chunks, cur.String())
+				cur.Reset()
+			}
+			cur.WriteString(line)
+		}
+		if cur.Len() > 0 {
+			chunks = append(chunks, cur.String())
+		}
+	}
+	utils.Log("[Eco] input %d bytes split into %d chunk(s)", len(input), len(chunks))
+
+	partials := make([]string, 0, len(chunks))
+	for i, chunk := range chunks {
+		utils.Log("[Eco] summarizing chunk %d/%d (%d bytes)", i+1, len(chunks), len(chunk))
+		part, err := GenerateCheckpointSummary(chunk, summaryModel)
+		if err != nil {
+			utils.Error("[Eco] checkpoint summary generation failed (chunk %d/%d)", err, i+1, len(chunks))
+			return
+		}
+		part = strings.TrimSpace(part)
+		if part != "" {
+			partials = append(partials, part)
+		}
+	}
+	if len(partials) == 0 {
+		utils.Error("[Eco] checkpoint summary returned empty", nil)
 		return
 	}
+	summary := strings.Join(partials, "\n\n---\n\n")
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
 		utils.Error("[Eco] checkpoint summary returned empty", nil)
