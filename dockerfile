@@ -155,4 +155,4 @@ EXPOSE 8090
 # records the exact exit code/signal on crash; otherwise it execs the binary
 # directly (stock behavior), keeping the tee as a fallback.
 ENTRYPOINT ["/usr/bin/tini", "--", "sh", "-c"]
-CMD ["if [ "${DEBUG:-0}" = "1" ] || [ "${DEBUG:-0}" = "yes" ]; then exec /app/run.sh; else exec /app/Plurality 2>&1 | tee -a /app/data/server.log; fi"]
+CMD if [ "${DEBUG:-0}" = "1" ] || [ "${DEBUG:-0}" = "yes" ]; then exec /app/run.sh; else exec /app/Plurality 2>&1 | tee -a /app/data/server.log; fi
