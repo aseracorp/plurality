@@ -114,6 +114,10 @@ WORKDIR /app
 
 # Copy the compiled Go binary and litellm files from the builder stage
 COPY --from=go_builder /app/server/build/ /app/
+# Crash-telemetry launcher (run.sh) — survives orchestrator CMD overrides
+# so crashes leave a durable trace in /app/data when DEBUG=1.
+COPY --from=go_builder /app/server/run.sh /app/run.sh
+RUN chmod +x /app/run.sh
 
 # Build LiteLLM venv using runtime Python (avoids glibc version mismatch)
 # NOTE: no --mount=type=cache here. A cache mount is ephemeral (discarded
@@ -147,5 +151,8 @@ EXPOSE 8090
 # Tee stdout/stderr into the persistent /app/data volume so any crash
 # (panic, segfault, OOM, or external restart) leaves a durable trace that
 # survives the container restart.
+# Run under tini. When DEBUG=1 the launcher tees output to /app/data and
+# records the exact exit code/signal on crash; otherwise it execs the binary
+# directly (stock behavior), keeping the tee as a fallback.
 ENTRYPOINT ["/usr/bin/tini", "--", "sh", "-c"]
-CMD ["/app/Plurality 2>&1 | tee -a /app/data/server.log"]
+CMD ["if [ "${DEBUG:-0}" = "1" ] || [ "${DEBUG:-0}" = "yes" ]; then exec /app/run.sh; else exec /app/Plurality 2>&1 | tee -a /app/data/server.log; fi"]
