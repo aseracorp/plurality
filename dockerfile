@@ -114,10 +114,15 @@ WORKDIR /app
 
 # Copy the compiled Go binary and litellm files from the builder stage
 COPY --from=go_builder /app/server/build/ /app/
-# Crash-telemetry launcher (run.sh) — survives orchestrator CMD overrides
-# so crashes leave a durable trace in /app/data when DEBUG=1.
+# Robust crash telemetry: /app/Plurality becomes a DEBUG-aware shim and the
+# real binary lives at /app/Plurality.bin. Survives orchestrator CMD overrides,
+# so DEBUG=1 always captures to /app/data/server.log + crash.log.
 COPY --from=go_builder /app/server/run.sh /app/run.sh
-RUN chmod +x /app/run.sh
+COPY --from=go_builder /app/server/plurality_shim.sh /app/Plurality.shim
+RUN chmod +x /app/run.sh /app/Plurality.shim \
+    && mv /app/Plurality /app/Plurality.bin \
+    && mv /app/Plurality.shim /app/Plurality \
+    && chmod +x /app/Plurality /app/Plurality.bin
 
 # Build LiteLLM venv using runtime Python (avoids glibc version mismatch)
 # NOTE: no --mount=type=cache here. A cache mount is ephemeral (discarded
