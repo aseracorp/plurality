@@ -199,6 +199,16 @@ func truncate(s string, max int) string {
 // EmbedAndStore generates an embedding for the given text and stores it.
 // Intended to be called asynchronously after a message is saved.
 func EmbedAndStore(db *sql.DB, liteLLMBaseURL string, sourceType string, sourceID string, text string) {
+	// A panic anywhere in this goroutine must never take down the whole
+	// server — it runs in the hot path after every saved message and shares
+	// native sqlite-vec code. Recover and log instead of crashing the
+	// process (same pattern as ai/eco.go runEcoSummary).
+	defer func() {
+		if r := recover(); r != nil {
+			utils.Error("[Search] panic in EmbedAndStore for %s/%s", nil, fmt.Sprintf("%v", r))
+		}
+	}()
+
 	if liteLLMBaseURL == "" || text == "" {
 		return
 	}
