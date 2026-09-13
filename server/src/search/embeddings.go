@@ -10,12 +10,24 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"sync"
 
 	"github.com/azukaar/plurality/src/utils"
 )
 
 var embeddingModel = "text-embedding-3-small"
 var embeddingDimension = 1536
+
+// sqliteVecMu serializes every native sqlite-vec (vec0) operation in this
+// process. sqlite-vec v0.1.7-alpha.2 registers ONE global virtual-table
+// implementation via sqlite3_auto_extension, so concurrent vec0 calls on
+// different *sql.DB handles (multiple users, or a store racing a search)
+// still execute in the same C code and are NOT safe to overlap. Async
+// embedding goroutines (one per saved message) used to be able to collide
+// with each other or with request-time vector searches; a native bug there
+// segfaults the process with no Go panic to recover. Serializing here makes
+// the crash mode impossible.
+var sqliteVecMu sync.Mutex
 
 func init() {
 	if m := os.Getenv("EMBEDDING_MODEL"); m != "" {
@@ -70,8 +82,19 @@ func GenerateEmbedding(liteLLMBaseURL string, text string) ([]float32, error) {
 }
 
 // StoreEmbedding inserts or replaces a vector in the vec_embeddings table.
+// Serialized: the vec0 virtual table is a single global C implementation
+// (registered via sqlite3_auto_extension), so concurrent inserts — even on
+// different DB handles — race inside native sqlite-vec code. That race was
+// observed as a hard process crash (no Go panic to recover) right after
+// embeddings API calls when async embed goroutines overlapped. Holding the
+// mutex across the native INSERT makes the crash mode impossible. It also
+// covers the request-time VectorSearch reads, which share the same C code.
 func StoreEmbedding(db *sql.DB, sourceType string, sourceID string, embedding []float32) error {
 	blob := float32ToBytes(embedding)
+
+	sqliteVecMu.Lock()
+	defer sqliteVecMu.Unlock()
+
 	_, err := db.Exec(
 		`INSERT INTO vec_embeddings(source_type, source_id, embedding) VALUES (?, ?, ?)`,
 		sourceType, sourceID, blob,
@@ -83,6 +106,13 @@ func StoreEmbedding(db *sql.DB, sourceType string, sourceID string, embedding []
 // Results with distance above the threshold are discarded.
 func VectorSearch(db *sql.DB, queryVec []float32, sourceType string, k int) ([]ScoredResult, error) {
 	blob := float32ToBytes(queryVec)
+
+	// Same global-native-code protection as StoreEmbedding: the vec0 virtual
+	// table is one C implementation shared process-wide, and a KNN read can
+	// race an async embed insert on another DB handle.
+	sqliteVecMu.Lock()
+	defer sqliteVecMu.Unlock()
+
 	rows, err := db.Query(
 		`SELECT source_id, distance FROM vec_embeddings WHERE embedding MATCH ? AND k = ? AND source_type = ?`,
 		blob, k, sourceType,
