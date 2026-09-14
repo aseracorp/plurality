@@ -67,14 +67,14 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 			return utils.Conversation{}, false, err
 		}
 
-		// Async embedding for searchable messages. Held under asyncDBWriteMu
+		// Async embedding for searchable messages. Held under AsyncDBWriteMu
 		// so it cannot race eco-mode checkpoint compaction
-		// (asyncDBWriteMu) or another embed goroutine on the same DB —
+		// (AsyncDBWriteMu) or another embed goroutine on the same DB —
 		// an overlap there aborts the process (see sqlite.go).
 		if message.Role == "user" || message.Role == "assistant" {
 			go func() {
-				asyncDBWriteMu.Lock()
-				defer asyncDBWriteMu.Unlock()
+				AsyncDBWriteMu.Lock()
+				defer AsyncDBWriteMu.Unlock()
 				search.EmbedMessage(db, LiteLLMBaseURL, msgID, message.TextContent())
 			}()
 		}
@@ -132,12 +132,12 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 	}
 
 	// Async embedding for searchable messages. Serialized under
-	// asyncDBWriteMu (see sqlite.go) so it can never race eco compaction
+	// AsyncDBWriteMu (see sqlite.go) so it can never race eco compaction
 	// or another embed goroutine on the same DB.
 	if message.Role == "user" || message.Role == "assistant" {
 		go func() {
-			asyncDBWriteMu.Lock()
-			defer asyncDBWriteMu.Unlock()
+			AsyncDBWriteMu.Lock()
+			defer AsyncDBWriteMu.Unlock()
 			search.EmbedMessage(db, LiteLLMBaseURL, msgID, message.TextContent())
 		}()
 	}
