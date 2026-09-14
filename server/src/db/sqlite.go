@@ -30,8 +30,8 @@ var (
 	// checkpoint compaction) so they can never overlap on the same user's
 	// SQLite database. Per-user granularity would be nicer, but a single
 	// mutex is the exact sync.Mutex idiom used throughout the codebase and
-	// the operations it guards are short (a few ms). See asyncDBWriteMu.
-	asyncDBWriteMu sync.Mutex
+	// the operations it guards are short (a few ms). See AsyncDBWriteMu.
+	AsyncDBWriteMu sync.Mutex
 )
 
 const schema = `
@@ -157,7 +157,7 @@ func GetUserDB(userID string) (*sql.DB, error) {
 	return actual.(*sql.DB), nil
 }
 
-// asyncDBWriteMu (declared above) is the one lock every async goroutine that
+// AsyncDBWriteMu (declared above) is the one lock every async goroutine that
 // mutates a user's SQLite database must hold. Without it, concurrent
 // goroutines on the same *sql.DB — e.g. an eco-mode checkpoint transaction
 // (ReplaceCheckpoint: DELETE+2×UPDATE+INSERT) racing an async embedding
