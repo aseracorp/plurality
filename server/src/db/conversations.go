@@ -223,6 +223,14 @@ func GetConversationByIdInternal(ctx context.Context, id string) (*utils.Convers
 		return nil, err
 	}
 
+	// Serialize this multi-query read against the async embed's vec0 INSERT
+	// on the same user DB (see DBWriteMu) — a native read/write overlap on
+	// the single SQLite connection aborts the process. Called at the top of
+	// the eco-summary path and on every LLMLoop iteration, so this must be
+	// guarded just like the writes.
+	DBWriteMu.Lock()
+	defer DBWriteMu.Unlock()
+
 	conv, err := getConversationFromDB(db, id)
 	if err != nil {
 		return nil, err
