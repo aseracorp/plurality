@@ -67,9 +67,16 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 			return utils.Conversation{}, false, err
 		}
 
-		// Async embedding for searchable messages
+		// Async embedding for searchable messages. Held under asyncDBWriteMu
+		// so it cannot race eco-mode checkpoint compaction
+		// (asyncDBWriteMu) or another embed goroutine on the same DB —
+		// an overlap there aborts the process (see sqlite.go).
 		if message.Role == "user" || message.Role == "assistant" {
-			go search.EmbedMessage(db, LiteLLMBaseURL, msgID, message.TextContent())
+			go func() {
+				asyncDBWriteMu.Lock()
+				defer asyncDBWriteMu.Unlock()
+				search.EmbedMessage(db, LiteLLMBaseURL, msgID, message.TextContent())
+			}()
 		}
 
 		utils.Log("Created new conversation ID: %s for user ID: %s", conversation.ID, userID)
@@ -124,9 +131,15 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 		return utils.Conversation{}, false, err
 	}
 
-	// Async embedding for searchable messages
+	// Async embedding for searchable messages. Serialized under
+	// asyncDBWriteMu (see sqlite.go) so it can never race eco compaction
+	// or another embed goroutine on the same DB.
 	if message.Role == "user" || message.Role == "assistant" {
-		go search.EmbedMessage(db, LiteLLMBaseURL, msgID, message.TextContent())
+		go func() {
+			asyncDBWriteMu.Lock()
+			defer asyncDBWriteMu.Unlock()
+			search.EmbedMessage(db, LiteLLMBaseURL, msgID, message.TextContent())
+		}()
 	}
 
 	// Reload the full conversation

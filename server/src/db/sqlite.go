@@ -26,6 +26,12 @@ func init() {
 var (
 	userDataPath string
 	userDBs      sync.Map // map[string]*sql.DB
+	// Serializes async DB-mutating goroutines (async embedding, eco-mode
+	// checkpoint compaction) so they can never overlap on the same user's
+	// SQLite database. Per-user granularity would be nicer, but a single
+	// mutex is the exact sync.Mutex idiom used throughout the codebase and
+	// the operations it guards are short (a few ms). See asyncDBWriteMu.
+	asyncDBWriteMu sync.Mutex
 )
 
 const schema = `
@@ -150,6 +156,15 @@ func GetUserDB(userID string) (*sql.DB, error) {
 
 	return actual.(*sql.DB), nil
 }
+
+// asyncDBWriteMu (declared above) is the one lock every async goroutine that
+// mutates a user's SQLite database must hold. Without it, concurrent
+// goroutines on the same *sql.DB — e.g. an eco-mode checkpoint transaction
+// (ReplaceCheckpoint: DELETE+2×UPDATE+INSERT) racing an async embedding
+// insert (StoreEmbedding) — overlap inside SQLite/native sqlite-vec code
+// with no Go-level serialization and can abort the process with no
+// recoverable panic in sight (matches the observed hard crashes seconds
+// after an aembedding 200 OK, normal RSS, silent death).
 
 // ensureColumn adds a column to an existing table if it does not yet exist.
 // SQLite has no "ALTER TABLE ... ADD COLUMN IF NOT EXISTS", so we just attempt
