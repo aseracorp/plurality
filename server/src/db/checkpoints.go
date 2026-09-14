@@ -79,6 +79,15 @@ func GetCheckpoint(ctx context.Context, conversationID string) (*CheckpointPair,
 		return nil, err
 	}
 
+	// Hold DBWriteMu across the SQLite reads here: they run on the same
+	// user DB and can overlap the async embed goroutine's vec0 INSERT (which
+	// also holds DBWriteMu) on the single native SQLite connection. A read
+	// overlapping a vec0/FTS5 write in native C aborts the process with no
+	// recoverable panic (see DBWriteMu). This read runs at eco-compaction
+	// time — exactly when the crash was observed.
+	DBWriteMu.Lock()
+	defer DBWriteMu.Unlock()
+
 	// Find the assistant row. The tool_calls column is a JSON array; the
 	// LIKE filter is a cheap pre-filter, the canonical check happens after
 	// we unmarshal and compare function names.
@@ -171,6 +180,13 @@ func MessageSeqAt(ctx context.Context, conversationID string, sliceOffset int) (
 	if err != nil {
 		return 0, err
 	}
+
+	// Serialize this SQLite read against the async embed's vec0 INSERT on
+	// the same user DB (see DBWriteMu) — a native read/write overlap aborts
+	// the process.
+	DBWriteMu.Lock()
+	defer DBWriteMu.Unlock()
+
 	var seq int64
 	err = d.QueryRowContext(ctx,
 		`SELECT seq FROM messages WHERE conversation_id = ?
