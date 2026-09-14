@@ -72,17 +72,12 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 			return utils.Conversation{}, false, err
 		}
 
-		// Async embedding for searchable messages. Held under DBWriteMu so this
-		// vec0 insert cannot race other SQLite writes (eco compaction FTS
-		// delete trigger, PushMessage FTS insert) on the same user DB — an
-		// overlap on the native C virtual tables aborts the process (see
-		// sqlite.go).
+		// Async embedding for searchable messages. The vec0 INSERT is
+		// serialized inside StoreEmbedding (short) — we must NOT hold
+		// DBWriteMu across the LiteLLM HTTP call (no-timeout Post) or one
+		// stuck embed would wedge every SQLite write in the server.
 		if message.Role == "user" || message.Role == "assistant" {
-			go func() {
-				DBWriteMu.Lock()
-				defer DBWriteMu.Unlock()
-				search.EmbedMessage(db, LiteLLMBaseURL, msgID, message.TextContent())
-			}()
+			go search.EmbedMessage(db, LiteLLMBaseURL, msgID, message.TextContent())
 		}
 
 		utils.Log("Created new conversation ID: %s for user ID: %s", conversation.ID, userID)
@@ -139,15 +134,11 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 		return utils.Conversation{}, false, err
 	}
 
-	// Async embedding for searchable messages. Held under DBWriteMu so this
-	// vec0 insert cannot race other SQLite writes on the same user DB (see
-	// sqlite.go).
+	// Async embedding for searchable messages. The vec0 INSERT is
+	// serialized inside StoreEmbedding (short) — DBWriteMu must not be
+	// held across the LiteLLM HTTP call.
 	if message.Role == "user" || message.Role == "assistant" {
-		go func() {
-			DBWriteMu.Lock()
-			defer DBWriteMu.Unlock()
-			search.EmbedMessage(db, LiteLLMBaseURL, msgID, message.TextContent())
-		}()
+		go search.EmbedMessage(db, LiteLLMBaseURL, msgID, message.TextContent())
 	}
 
 	// Reload the full conversation
