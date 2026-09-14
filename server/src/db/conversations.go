@@ -223,14 +223,16 @@ func GetConversationByIdInternal(ctx context.Context, id string) (*utils.Convers
 		return nil, err
 	}
 
-	// Serialize this multi-query read against the async embed's vec0 INSERT
-	// on the same user DB (see DBWriteMu) — a native read/write overlap on
-	// the single SQLite connection aborts the process. Called at the top of
-	// the eco-summary path and on every LLMLoop iteration, so this must be
-	// guarded just like the writes.
-	DBWriteMu.Lock()
-	defer DBWriteMu.Unlock()
-
+	// NOTE: this function deliberately does NOT take DBWriteMu. It is a pure
+	// batch SELECT that can load a very large conversation (1,000+ messages,
+	// hundreds of KB of content). Holding the global write lock - and with it
+	// the single SQLite connection (SetMaxOpenConns(1)) - across that whole
+	// load would starve the async embed goroutine and every other writer at
+	// exactly the moment a conversation ends, creating a contention/block
+	// window that wedges the server right before the eco compaction. SQLite
+	// WAL allows concurrent readers, so a plain read does not need the write
+	// lock; the eco path takes DBWriteMu around its short, targeted
+	// GetCheckpoint/MessageSeqAt reads and the ReplaceCheckpoint write.
 	conv, err := getConversationFromDB(db, id)
 	if err != nil {
 		return nil, err
