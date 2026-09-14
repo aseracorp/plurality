@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"unicode/utf8"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -327,6 +328,7 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	existingCheckpointEndIdx := -1
 	var oldPairIDs []int64
 	var priorSummary string
+	utils.Log("[Eco] conv %s checkpoint lookup done", conversationID)
 	if pair, err := db.GetCheckpoint(ctx, conversationID); err == nil && pair != nil {
 		priorSummary = pair.Summary
 		oldPairIDs = []int64{pair.AssistantID}
@@ -360,6 +362,7 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	if startIdx >= cutoff {
 		return
 	}
+	utils.Log("[Eco] conv %s rendering window msgs %d..%d", conversationID, startIdx, cutoff)
 
 	excerpt := renderMessagesForSummary(conv.Messages[startIdx:cutoff])
 	// Bound the actual rendered excerpt, not just the message index.
@@ -373,25 +376,42 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	// cap it at a fixed size so every eco pass is small and fast.
 	const maxExcerptBytes = 250 * 1024 // ~60k tokens per pass
 	if len(excerpt) > maxExcerptBytes {
-		// Find a message boundary near the start of the tail window by
-		// re-rendering from progressively later indexes. Cheap: the
-		// renderer is linear and the window rarely needs trimming.
-		trimmedStart := startIdx
-		for trimmedStart < cutoff {
-			trimmed := renderMessagesForSummary(conv.Messages[trimmedStart:cutoff])
+		// Find the earliest message boundary whose tail render fits the cap.
+		// The linear scan below was O(N^2): on the huge 778f conversation
+		// (1,380+ messages, lastPT 277k) it re-rendered hundreds of ~600KB
+		// strings and never completed — the eco goroutine died there on
+		// EVERY conversation end, taking the whole container down silently
+		// (no excerpt log was EVER produced). renderMessagesForSummary is
+		// monotonic in the slice start (later start => smaller output), so
+		// binary search finds the boundary in O(N log N): at most ~11
+		// renders instead of ~600.
+		lo, hi := startIdx, cutoff // lo = earliest index, hi = cutoff (exclusive)
+		for lo < hi {
+			mid := lo + (hi-lo)/2
+			trimmed := renderMessagesForSummary(conv.Messages[mid:cutoff])
 			if len(trimmed) <= maxExcerptBytes {
+				// Mid renders within the cap; try an earlier start.
 				excerpt = trimmed
-				startIdx = trimmedStart
-				break
+				startIdx = mid
+				hi = mid
+			} else {
+				// Too big; the boundary is later.
+				lo = mid + 1
 			}
-			trimmedStart++
 		}
-		// If we ran off the end (pathological), last resort: hard cut.
+		// If we ran off the end (pathological, e.g. a single message alone
+		// exceeds the cap), last resort: hard cut at a rune boundary.
 		if len(excerpt) > maxExcerptBytes {
 			excerpt = excerpt[len(excerpt)-maxExcerptBytes:]
+			// Ensure we never split a multi-byte UTF-8 rune at the head of
+			// the sliced tail (the slice start lands mid-rune otherwise).
+			for len(excerpt) > 0 && !utf8.RuneStart(excerpt[0]) {
+				excerpt = excerpt[1:]
+			}
 		}
 	}
 	utils.Log("[Eco] excerpt %d bytes (msgs %d..%d)", len(excerpt), startIdx, cutoff)
+	utils.Log("[Eco] conv %s calling summary model", conversationID)
 	var input string
 	if priorSummary != "" {
 		input = "PRIOR CHECKPOINT:\n" + priorSummary + "\n\nNEW MESSAGES:\n" + excerpt
