@@ -460,19 +460,20 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 		Timestamp:  now,
 	}
 
-	// Serialize the checkpoint write against async embedding goroutines on
-	// the same user DB. ReplaceCheckpoint is a multi-statement transaction
-	// (DELETE old pair + 2×UPDATE seq + INSERT new pair); overlapping an
-	// embed insert on the same *sql.DB can abort the process with no
-	// recoverable panic (see db.AsyncDBWriteMu). The slow LLM summary call
-	// above is intentionally OUTSIDE this lock.
-	db.AsyncDBWriteMu.Lock()
+	// Serialize the checkpoint write against all other SQLite writes on the
+	// same user DB. ReplaceCheckpoint is a multi-statement transaction
+	// (DELETE old pair + 2×UPDATE seq + INSERT new pair) that also fires
+	// the FTS5 delete trigger; overlapping any other write (embed vec0
+	// insert, PushMessage FTS insert) on the same native SQLite connection
+	// can abort the process with no recoverable panic (see db.DBWriteMu).
+	// The slow LLM summary call above is intentionally OUTSIDE this lock.
+	db.DBWriteMu.Lock()
 	if err := db.ReplaceCheckpoint(ctx, conversationID, oldPairIDs, assistantMsg, toolMsg, insertSeq); err != nil {
-		db.AsyncDBWriteMu.Unlock()
+		db.DBWriteMu.Unlock()
 		utils.Error("[Eco] persisting checkpoint failed", err)
 		return
 	}
-	db.AsyncDBWriteMu.Unlock()
+	db.DBWriteMu.Unlock()
 	utils.Log("[Eco] checkpoint written for conv %s (cutoff=%d, lastPT=%d → kept tail ≈%d tokens)", conversationID, cutoff, lastPT, lastPT-tokensBeforeCutoff(conv.Messages, cutoff))
 }
 

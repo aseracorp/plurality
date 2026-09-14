@@ -36,6 +36,11 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 		conversation.UserID = userID
 		conversation.Messages = append(conversation.Messages, message)
 
+		// Hold DBWriteMu around the write transaction: this inserts into
+		// messages_fts (FTS5) which must not overlap the async vec0 embed
+		// insert or eco compaction on the same native SQLite connection.
+		DBWriteMu.Lock()
+		defer DBWriteMu.Unlock()
 		tx, err := db.Begin()
 		if err != nil {
 			return utils.Conversation{}, false, err
@@ -67,14 +72,15 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 			return utils.Conversation{}, false, err
 		}
 
-		// Async embedding for searchable messages. Held under AsyncDBWriteMu
-		// so it cannot race eco-mode checkpoint compaction
-		// (AsyncDBWriteMu) or another embed goroutine on the same DB —
-		// an overlap there aborts the process (see sqlite.go).
+		// Async embedding for searchable messages. Held under DBWriteMu so this
+		// vec0 insert cannot race other SQLite writes (eco compaction FTS
+		// delete trigger, PushMessage FTS insert) on the same user DB — an
+		// overlap on the native C virtual tables aborts the process (see
+		// sqlite.go).
 		if message.Role == "user" || message.Role == "assistant" {
 			go func() {
-				AsyncDBWriteMu.Lock()
-				defer AsyncDBWriteMu.Unlock()
+				DBWriteMu.Lock()
+				defer DBWriteMu.Unlock()
 				search.EmbedMessage(db, LiteLLMBaseURL, msgID, message.TextContent())
 			}()
 		}
@@ -86,6 +92,8 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 	// Existing conversation — push message
 	utils.Debug("Pushing message to conversation ID: %s for user ID: %s", conversation.ID, userID)
 
+	DBWriteMu.Lock()
+	defer DBWriteMu.Unlock()
 	tx, err := db.Begin()
 	if err != nil {
 		return utils.Conversation{}, false, err
@@ -131,13 +139,13 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 		return utils.Conversation{}, false, err
 	}
 
-	// Async embedding for searchable messages. Serialized under
-	// AsyncDBWriteMu (see sqlite.go) so it can never race eco compaction
-	// or another embed goroutine on the same DB.
+	// Async embedding for searchable messages. Held under DBWriteMu so this
+	// vec0 insert cannot race other SQLite writes on the same user DB (see
+	// sqlite.go).
 	if message.Role == "user" || message.Role == "assistant" {
 		go func() {
-			AsyncDBWriteMu.Lock()
-			defer AsyncDBWriteMu.Unlock()
+			DBWriteMu.Lock()
+			defer DBWriteMu.Unlock()
 			search.EmbedMessage(db, LiteLLMBaseURL, msgID, message.TextContent())
 		}()
 	}

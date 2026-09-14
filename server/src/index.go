@@ -266,7 +266,9 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	db.LockDBWrite()
 	results, err := search.Search(r.Context(), userDB, ai.LiteLLMBaseURL, query, limit)
+	db.UnlockDBWrite()
 	if err != nil {
 		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
 		return

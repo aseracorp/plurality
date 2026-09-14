@@ -82,13 +82,13 @@ func GenerateEmbedding(liteLLMBaseURL string, text string) ([]float32, error) {
 }
 
 // StoreEmbedding inserts or replaces a vector in the vec_embeddings table.
-// Serialized: the vec0 virtual table is a single global C implementation
-// (registered via sqlite3_auto_extension), so concurrent inserts — even on
-// different DB handles — race inside native sqlite-vec code. That race was
-// observed as a hard process crash (no Go panic to recover) right after
-// embeddings API calls when async embed goroutines overlapped. Holding the
-// mutex across the native INSERT makes the crash mode impossible. It also
-// covers the request-time VectorSearch reads, which share the same C code.
+// Callers must hold db.DBWriteMu (the embed goroutine in db.PushMessage does
+// so) so the native vec0 INSERT cannot overlap other SQLite writes on the
+// same user DB (PushMessage's messages_fts insert, eco compaction's
+// DELETE+UPDATE) — the vec0 virtual table is C code and overlapping it with
+// FTS5 writes aborts the process with no Go panic to recover.
+// sqliteVecMu additionally guards the global vec0 implementation across DB
+// handles.
 func StoreEmbedding(db *sql.DB, sourceType string, sourceID string, embedding []float32) error {
 	blob := float32ToBytes(embedding)
 
@@ -109,7 +109,9 @@ func VectorSearch(db *sql.DB, queryVec []float32, sourceType string, k int) ([]S
 
 	// Same global-native-code protection as StoreEmbedding: the vec0 virtual
 	// table is one C implementation shared process-wide, and a KNN read can
-	// race an async embed insert on another DB handle.
+	// race an async embed insert on another DB handle. Callers (search.Search
+	// via ai_tools/index) hold db.DBWriteMu so this read is also serialized
+	// against FTS5 writes on the same user DB.
 	sqliteVecMu.Lock()
 	defer sqliteVecMu.Unlock()
 
