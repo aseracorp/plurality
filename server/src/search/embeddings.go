@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/azukaar/plurality/src/utils"
 )
@@ -59,14 +58,11 @@ func GenerateEmbedding(liteLLMBaseURL string, text string) ([]float32, error) {
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
 
-	// Use a bounded client: the default http.Client has NO timeout, so a
-	// stuck LiteLLM/OpenRouter embed request would hang forever. The embed
-	// goroutine historically held the global DBWriteMu across this call,
-	// wedging every SQLite write in the server (UI alive, chats won't
-	// load/create) after a few conversations. Even without that lock, a
-	// hard bound prevents runaway goroutines piling up.
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Post(liteLLMBaseURL+"/v1/embeddings", "application/json", bytes.NewReader(body))
+	// Use the shared bounded client (see utils.HTTPClient): no-timeout HTTP
+	// here historically wedged the server — the embed goroutine held the
+	// global DBWriteMu across this call, so a stuck request blocked every
+	// SQLite write (UI alive, chats won't load/create) after a few chats.
+	resp, err := utils.HTTPClient.Post(liteLLMBaseURL+"/v1/embeddings", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("calling embeddings API: %w", err)
 	}
