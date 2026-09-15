@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/mattn/go-sqlite3"
@@ -174,12 +175,38 @@ func GetUserDB(userID string) (*sql.DB, error) {
 // DB access against writes. Always pair with UnlockDBWrite.
 func LockDBWrite() {
 	DBWriteMu.Lock()
+	stampDBActivity()
 }
 
 // UnlockDBWrite releases the global SQLite write lock acquired by
 // LockDBWrite.
 func UnlockDBWrite() {
+	stampDBActivity()
 	DBWriteMu.Unlock()
+}
+
+// stampDBActivity records that a DB write just completed (or started). The
+// stall watchdog in index.go uses this to detect a wedged server: if no DB
+// write has stamped within its window, it dumps all goroutine stacks to the
+// persistent volume so we can see exactly which goroutine holds the single
+// SQLite connection / DBWriteMu.
+var dbActivityMu sync.Mutex
+var lastDBActivity time.Time
+
+func stampDBActivity() {
+	dbActivityMu.Lock()
+	lastDBActivity = time.Now()
+	dbActivityMu.Unlock()
+}
+
+// SinceDBActivity returns how long it's been since the last DB write stamp.
+func SinceDBActivity() time.Duration {
+	dbActivityMu.Lock()
+	defer dbActivityMu.Unlock()
+	if lastDBActivity.IsZero() {
+		return time.Duration(1<<62) // effectively "never"
+	}
+	return time.Since(lastDBActivity)
 }
 
 // ensureColumn adds a column to an existing table if it does not yet exist.
