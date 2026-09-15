@@ -1,6 +1,9 @@
 package main
 
 import (
+	"time"
+	"runtime"
+	"fmt"
 	"context"
 	"encoding/json"
 	"log"
@@ -75,6 +78,24 @@ func main() {
 	// Pass LiteLLM URL to packages that talk to the proxy directly.
 	db.LiteLLMBaseURL = ai.LiteLLMBaseURL
 	ai_tools.LiteLLMBaseURL = ai.LiteLLMBaseURL
+
+	// Stall watchdog: if no SQLite write has completed for 90 seconds the
+	// server is wedged (a goroutine holding the single connection or
+	// DBWriteMu). Dump all goroutine stacks to the persistent volume so the
+	// exact blocker is visible in the next crash post-mortem. Diagnostic only.
+	go func() {
+		for {
+			time.Sleep(30 * time.Second)
+			if db.SinceDBActivity() > 90*time.Second {
+				os.MkdirAll("/app/users-data/sam/crashwatch", 0o755)
+				path := fmt.Sprintf("/app/users-data/sam/crashwatch/stall_%d.txt", time.Now().Unix())
+				buf := make([]byte, 1<<20)
+				n := runtime.Stack(buf, true)
+				os.WriteFile(path, buf[:n], 0o644)
+				log.Printf("STALL WATCHDOG: no DB write for %v; dumped goroutines to %s", db.SinceDBActivity(), path)
+			}
+		}
+	}()
 
 	// CRON scheduler: rebuild every user's jobs from disk and start the loop.
 	cron.Init()
