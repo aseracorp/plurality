@@ -77,6 +77,17 @@ type StandardChatRequest struct {
 
 // --- Standard streaming chunk (OpenAI format, used for all providers via LiteLLM) ---
 
+// ToolCallDelta mirrors one tool-call delta inside a streaming chunk's
+// choices[].delta.tool_calls[]. `Index` is the provider-assigned position of
+// the tool call within the response, used to route interleaved deltas to the
+// right accumulator slot (see accumulateToolCall).
+type ToolCallDelta struct {
+	Index    int                `json:"index"`
+	ID       string             `json:"id"`
+	Type     string             `json:"type"`
+	Function utils.FunctionCall `json:"function"`
+}
+
 type AIChunk struct {
 	Model string `json:"model"`
 	Usage struct {
@@ -88,8 +99,8 @@ type AIChunk struct {
 	Choices []struct {
 		Text  string `json:"text"`
 		Delta struct {
-			Content   string           `json:"content"`
-			ToolCalls []utils.ToolCall `json:"tool_calls"`
+			Content   string          `json:"content"`
+			ToolCalls []ToolCallDelta `json:"tool_calls"`
 		} `json:"delta"`
 	} `json:"choices"`
 }

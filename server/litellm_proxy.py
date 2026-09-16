@@ -79,12 +79,26 @@ def load_config(config_path):
     return model_list
 
 
+_OR_PRICING_CACHE = {}
+
+
 def get_cost(model_name, prompt_tokens, completion_tokens):
-    """Compute cost using litellm's pricing database."""
+    """Compute cost using litellm's pricing database.
+
+    Falls back to OpenRouter's /api/v1/models endpoint for models litellm
+    doesn't map yet (newer V4-era models like deepseek-v4-flash-0731 ship
+    their pricing on OpenRouter before litellm's local map is updated).
+    Never raises: unparseable pricing yields None and is surfaced as a
+    warning only.
+    """
     from litellm.utils import ModelResponse, Usage
 
     litellm_model = model_to_litellm.get(model_name, model_name)
 
+    # Try litellm's pricing db with the full litellm string first, then the
+    # short name. completion_cost() accepts (completion_response) where the
+    # response.model carries the string — pass model= explicitly too, which
+    # helps litellm resolve provider prefixes (e.g. openrouter/...).
     for try_model in [litellm_model, model_name] if litellm_model != model_name else [litellm_model]:
         try:
             mock_response = ModelResponse()
@@ -94,10 +108,43 @@ def get_cost(model_name, prompt_tokens, completion_tokens):
                 completion_tokens=completion_tokens,
                 total_tokens=prompt_tokens + completion_tokens,
             )
-            cost = litellm.completion_cost(completion_response=mock_response)
-            return cost
+            cost = litellm.completion_cost(
+                completion_response=mock_response,
+                model=try_model,
+            )
+            if cost is not None:
+                return cost
         except Exception as e:
             logger.warning(f"Could not compute cost for {try_model}: {e}")
+
+    # OpenRouter fallback: new models carry per-token pricing in OpenRouter's
+    # model catalog. Fetch once per model and cache; on any failure, None.
+    # Uses a sync httpx client on purpose — get_cost is a plain function called
+    # from async handlers, so any asyncio loop dance would collide with the
+    # running event loop.
+    try:
+        key = model_to_litellm.get(model_name, model_name)
+        if key not in _OR_PRICING_CACHE:
+            import httpx
+            with httpx.Client(timeout=10.0, headers=extra_headers()) as client:
+                r = client.get("https://openrouter.ai/api/v1/models")
+                r.raise_for_status()
+                catalog = r.json()
+            price_map = {}
+            for m in catalog.get("data", []):
+                pid = m.get("id", "")
+                pricing = m.get("pricing", {}) or {}
+                price_map[pid] = {
+                    "prompt": float(pricing.get("prompt") or 0),
+                    "completion": float(pricing.get("completion") or 0),
+                }
+            _OR_PRICING_CACHE[key] = price_map.get(key.replace("openrouter/", "", 1), {})
+        p = _OR_PRICING_CACHE[key]
+        if p:
+            cost = p["prompt"] * prompt_tokens / 1_000_000 + p["completion"] * completion_tokens / 1_000_000
+            return cost
+    except Exception as e:
+        logger.warning(f"Could not compute OpenRouter cost for {model_name}: {e}")
 
     return None
 
@@ -144,6 +191,36 @@ async def chat_completions(request: Request):
     model = body.get("model", "")
     stream = body.get("stream", False)
     messages = body.get("messages", [])
+
+    # Vision guard: if this request carries image_url parts to a model that
+    # does not support vision, reject it cleanly instead of letting the
+    # upstream provider fail (OpenRouter 404 -> unhandled exception -> the
+    # proxy process crashes and watchProcess restarts it mid-turn).
+    if (model_to_info.get(model) or {}).get("supports_vision") is not True:
+        _has_image = False
+        for _m in messages:
+            _c = _m.get("content")
+            if isinstance(_c, list):
+                for _p in _c:
+                    if isinstance(_p, dict) and _p.get("type") == "image_url":
+                        _has_image = True
+                        break
+                if _has_image:
+                    break
+        if _has_image:
+            logger.warning("Rejecting image_url content for text-only model %s", model)
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "message": f"Model {model} does not support image input. "
+                                   "The image was omitted. Switch to a vision-capable model to view images.",
+                        "type": "invalid_request_error",
+                        "code": "model_cannot_ingest_images",
+                    }
+                },
+            )
+
     tools = body.get("tools", None)
     max_tokens = body.get("max_tokens", None)
     stream_options = body.get("stream_options", None)

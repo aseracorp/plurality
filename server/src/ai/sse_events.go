@@ -4,9 +4,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/azukaar/plurality/src/utils"
 )
+
+// sseWriteTimeout bounds each individual SSE frame write+flush. The HTTP
+// server runs with no WriteTimeout (http.ListenAndServe), so a dead-but-open
+// client socket can make ResponseWriter.Flush() block forever. That used to
+// wedge Broadcast (and with it the LLM loop) whenever a client vanished at
+// the worst moment. Setting a per-frame deadline synchronously — no
+// goroutine, no leak — makes a stuck socket fail the write instead of
+// hanging the turn.
+const sseWriteTimeout = 10 * time.Second
+
+func setWriteDeadline(w http.ResponseWriter) func() {
+	rc := http.NewResponseController(w)
+	// Best effort: if the ResponseWriter does not support deadlines this is
+	// a no-op and the previous behavior applies (socket normally fails fast).
+	_ = rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
+	return func() {
+		_ = rc.SetWriteDeadline(time.Time{})
+	}
+}
 
 // SSEEvent is the unified event type streamed to clients over SSE.
 type SSEEvent struct {
@@ -40,13 +60,31 @@ func WriteSSEEvent(w http.ResponseWriter, event SSEEvent) error {
 	if err != nil {
 		return err
 	}
+
+	// Writing to an SSE connection whose client has disconnected panics with
+	// http.ErrAbortHandler (a fatal in Go's net/http that is not auto-recovered
+	// in a streaming goroutine). This happens at the most painful time — right
+	// after the final "done" event is emitted, when the user has typically
+	// navigated away or the tab/connection dropped. An uncaught ErrAbortHandler
+	// kills the whole process. Recover it here so a dead client can never take
+	// down the server.
+	defer func() {
+		if r := recover(); r != nil {
+			// http.ErrAbortHandler is the expected "client went away" case.
+			utils.Log("[SSE] client connection aborted during write: %v", r)
+		}
+	}()
+
+	restore := setWriteDeadline(w)
 	_, err = fmt.Fprintf(w, "data: %s\n\n", data)
 	if err != nil {
+		restore()
 		return err
 	}
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
+	restore()
 	return nil
 }
 
@@ -74,13 +112,24 @@ func WriteStatusEvent(w http.ResponseWriter, event StatusEvent) error {
 	if err != nil {
 		return err
 	}
+	// Same ErrAbortHandler protection as WriteSSEEvent — writing to a
+	// disconnected global-status-stream client must never crash the process.
+	defer func() {
+		if r := recover(); r != nil {
+			utils.Log("[SSE] status client connection aborted during write: %v", r)
+		}
+	}()
+
+	restore := setWriteDeadline(w)
 	_, err = fmt.Fprintf(w, "data: %s\n\n", data)
 	if err != nil {
+		restore()
 		return err
 	}
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
+	restore()
 	return nil
 }
 

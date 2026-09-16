@@ -242,7 +242,22 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 // reInflateImageURLs reads image files from disk for any ContentPart that uses
 // an internal /attachments/... URL, converting back to a data: URI.
 // This is called on the ephemeral copy of messages before sending to LLMs.
+//
+// Memory-safety: a conversation can reference the same attachment URL many
+// times (and many distinct large blobs). Reading + base64-encoding every one
+// of them on every LLM loop can spike memory hard right when the process is
+// busiest. So this:
+//   - caches already-converted URLs so a blob is read+encoded at most once
+//     per call (duplicate URLs just reuse the cached data URI);
+//   - honors a total budget (maxInflatedBytes), beyond which further
+//     attachments are replaced with a short placeholder so the request
+//     payload cannot grow without bound.
+const maxInflatedBytes = 8 * 1024 * 1024 // 8 MB of re-inflated attachment data
+
 func reInflateImageURLs(messages []utils.Message) []utils.Message {
+	inflated := make(map[string]string) // internal URL -> data URI (this call)
+	total := 0
+
 	for i, msg := range messages {
 		parts := msg.ContentParts()
 		if len(parts) == 0 {
@@ -255,7 +270,23 @@ func reInflateImageURLs(messages []utils.Message) []utils.Message {
 
 		for j, part := range newParts {
 			if part.Type == "image_url" && part.ImageURL != nil && storage.IsInternalURL(part.ImageURL.URL) {
-				data, mimeType, err := storage.ReadBlob(part.ImageURL.URL)
+				url := part.ImageURL.URL
+				// Reuse this call's cache for duplicate URLs.
+				if cached, ok := inflated[url]; ok {
+					newParts[j].ImageURL = &utils.ContentImageURL{URL: cached}
+					changed = true
+					continue
+				}
+				// Only read new blobs while we're within budget.
+				if total+len(url) > maxInflatedBytes {
+					newParts[j] = utils.ContentPart{
+						Type: "text",
+						Text: "[Large attachment omitted; re-run conversation_attachments to inspect]",
+					}
+					changed = true
+					continue
+				}
+				data, mimeType, err := storage.ReadBlob(url)
 				if err != nil {
 					utils.Error("[Attachments] Error reading blob for re-inflation", err)
 					// Replace with text so the LLM doesn't see an opaque internal URL
@@ -267,9 +298,10 @@ func reInflateImageURLs(messages []utils.Message) []utils.Message {
 					continue
 				}
 				b64 := base64.StdEncoding.EncodeToString(data)
-				newParts[j].ImageURL = &utils.ContentImageURL{
-					URL: fmt.Sprintf("data:%s;base64,%s", mimeType, b64),
-				}
+				dataURI := fmt.Sprintf("data:%s;base64,%s", mimeType, b64)
+				total += len(data)
+				inflated[url] = dataURI
+				newParts[j].ImageURL = &utils.ContentImageURL{URL: dataURI}
 				changed = true
 			}
 		}

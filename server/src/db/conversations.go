@@ -36,6 +36,11 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 		conversation.UserID = userID
 		conversation.Messages = append(conversation.Messages, message)
 
+		// Hold DBWriteMu around the write transaction: this inserts into
+		// messages_fts (FTS5) which must not overlap the async vec0 embed
+		// insert or eco compaction on the same native SQLite connection.
+		DBWriteMu.Lock()
+		defer DBWriteMu.Unlock()
 		tx, err := db.Begin()
 		if err != nil {
 			return utils.Conversation{}, false, err
@@ -67,7 +72,10 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 			return utils.Conversation{}, false, err
 		}
 
-		// Async embedding for searchable messages
+		// Async embedding for searchable messages. The vec0 INSERT is
+		// serialized inside StoreEmbedding (short) — we must NOT hold
+		// DBWriteMu across the LiteLLM HTTP call (no-timeout Post) or one
+		// stuck embed would wedge every SQLite write in the server.
 		if message.Role == "user" || message.Role == "assistant" {
 			go search.EmbedMessage(db, LiteLLMBaseURL, msgID, message.TextContent())
 		}
@@ -79,6 +87,8 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 	// Existing conversation — push message
 	utils.Debug("Pushing message to conversation ID: %s for user ID: %s", conversation.ID, userID)
 
+	DBWriteMu.Lock()
+	defer DBWriteMu.Unlock()
 	tx, err := db.Begin()
 	if err != nil {
 		return utils.Conversation{}, false, err
@@ -124,7 +134,9 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 		return utils.Conversation{}, false, err
 	}
 
-	// Async embedding for searchable messages
+	// Async embedding for searchable messages. The vec0 INSERT is
+	// serialized inside StoreEmbedding (short) — DBWriteMu must not be
+	// held across the LiteLLM HTTP call.
 	if message.Role == "user" || message.Role == "assistant" {
 		go search.EmbedMessage(db, LiteLLMBaseURL, msgID, message.TextContent())
 	}
@@ -202,6 +214,16 @@ func GetConversationByIdInternal(ctx context.Context, id string) (*utils.Convers
 		return nil, err
 	}
 
+	// NOTE: this function deliberately does NOT take DBWriteMu. It is a pure
+	// batch SELECT that can load a very large conversation (1,000+ messages,
+	// hundreds of KB of content). Holding the global write lock - and with it
+	// the single SQLite connection (SetMaxOpenConns(1)) - across that whole
+	// load would starve the async embed goroutine and every other writer at
+	// exactly the moment a conversation ends, creating a contention/block
+	// window that wedges the server right before the eco compaction. SQLite
+	// WAL allows concurrent readers, so a plain read does not need the write
+	// lock; the eco path takes DBWriteMu around its short, targeted
+	// GetCheckpoint/MessageSeqAt reads and the ReplaceCheckpoint write.
 	conv, err := getConversationFromDB(db, id)
 	if err != nil {
 		return nil, err

@@ -49,21 +49,55 @@ func (sp *StreamProcessor) broadcastText(content string) {
 	})
 }
 
-// accumulateToolCall collects a new tool call or appends arguments to the last one.
-func (sp *StreamProcessor) accumulateToolCall(id, name, arguments string) {
-	if name != "" {
-		sp.request.ToolCallBuffer = append(sp.request.ToolCallBuffer, utils.ToolCall{
-			ID:   id,
-			Type: "function",
-			Function: utils.FunctionCall{
-				Name:      name,
-				Arguments: "",
-			},
-		})
+// accumulateToolCall collects a tool call delta into the buffer.
+//
+// Streaming providers (notably DeepSeek v4 Flash over OpenRouter) may emit
+// multiple tool calls in parallel, interleaving their chunks: the delta for
+// call index 1 can arrive while index 0's arguments are still streaming, and
+// continuation deltas often carry a null id / null name. Routing by "append to
+// the last entry" corrupts the arguments of every concurrent call, producing
+// invalid JSON that finalizeStream then fails. We therefore key by the delta's
+// index (falling back to the call id when the index is absent) so each call's
+// name and arguments land on the correct slot regardless of interleaving.
+func (sp *StreamProcessor) accumulateToolCall(index int, id, name, arguments string) {
+	if len(sp.request.ToolCallBuffer) == 0 {
+		sp.request.ToolCallBuffer = append(sp.request.ToolCallBuffer, utils.ToolCall{})
 	}
-	if arguments != "" && len(sp.request.ToolCallBuffer) > 0 {
-		last := &sp.request.ToolCallBuffer[len(sp.request.ToolCallBuffer)-1]
-		last.Function.Arguments += arguments
+
+	slot := index
+	if slot < 0 {
+		// No usable index: reuse the slot already created for this call id
+		// (providers often keep the same id across continuation deltas), or
+		// extend to the next free slot.
+		slot = -1
+		for i := range sp.request.ToolCallBuffer {
+			if sp.request.ToolCallBuffer[i].ID == id && id != "" {
+				slot = i
+				break
+			}
+		}
+		if slot < 0 {
+			slot = len(sp.request.ToolCallBuffer)
+		}
+	}
+	// Gap-fill so a non-sequential index (e.g. only call 1 present so far,
+	// index 3 first) doesn't run out of bounds.
+	for len(sp.request.ToolCallBuffer) <= slot {
+		sp.request.ToolCallBuffer = append(sp.request.ToolCallBuffer, utils.ToolCall{})
+	}
+
+	tc := &sp.request.ToolCallBuffer[slot]
+	if tc.Type == "" {
+		tc.Type = "function"
+	}
+	if id != "" {
+		tc.ID = id
+	}
+	if name != "" {
+		tc.Function.Name = name
+	}
+	if arguments != "" {
+		tc.Function.Arguments += arguments
 	}
 }
 
@@ -209,8 +243,9 @@ func (sp *StreamProcessor) ProcessStandardStream(ctx context.Context, response i
 			} else if choice.Text != "" {
 				sp.broadcastText(choice.Text)
 			} else if len(choice.Delta.ToolCalls) > 0 {
-				tc := choice.Delta.ToolCalls[0]
-				sp.accumulateToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
+				for _, tc := range choice.Delta.ToolCalls {
+					sp.accumulateToolCall(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments)
+				}
 			}
 		}
 	}

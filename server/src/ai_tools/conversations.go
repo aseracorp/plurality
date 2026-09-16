@@ -49,7 +49,9 @@ var SearchConversationsTool = utils.AITool{
 			return utils.NewTextContent(fmt.Sprintf("Error: %v", err))
 		}
 
+		db.LockDBWrite()
 		results, err := search.Search(ctx, userDB, db.LiteLLMBaseURL, query, 10)
+		db.UnlockDBWrite()
 		if err != nil {
 			return utils.NewTextContent(fmt.Sprintf("Error searching: %v", err))
 		}
