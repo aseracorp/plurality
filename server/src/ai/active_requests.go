@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/azukaar/plurality/src/utils"
 )
@@ -34,6 +35,24 @@ func NewSSEClient(w http.ResponseWriter) *SSEClient {
 func (c *SSEClient) Send(event SSEEvent) bool {
 	err := WriteSSEEvent(c.writer, event)
 	return err == nil
+}
+
+// SendBounded writes an SSEEvent but gives up after timeout, so a dead-but-
+// open socket (whose ResponseWriter.Flush blocks forever) can never wedge the
+// caller's lock. Returns true iff the write completed within the timeout.
+func (c *SSEClient) SendBounded(event SSEEvent, timeout time.Duration) bool {
+	done := make(chan bool, 1)
+	go func() {
+		done <- c.Send(event)
+	}()
+	select {
+	case ok := <-done:
+		return ok
+	case <-time.After(timeout):
+		return false
+	case <-c.Done:
+		return false
+	}
 }
 
 // ActiveRequest tracks an in-progress LLM request for a conversation.
@@ -98,19 +117,40 @@ func (ar *ActiveRequest) ClientCount() int {
 // Broadcast sends an SSEEvent to all connected clients.
 // Disconnected clients are automatically removed.
 func (ar *ActiveRequest) Broadcast(event SSEEvent) {
-	ar.mu.Lock()
-	defer ar.mu.Unlock()
-	if len(ar.clients) == 0 && event.Type != "text" {
+	// Snapshot the client set under the lock, then send WITHOUT holding
+	// ar.mu. The old code wrote to clients while holding ar.mu: if one SSE
+	// socket was dead-but-open, ResponseWriter.Flush() blocked forever,
+	// wedging ar.mu. Then every AddClient/RemoveClient/CloseAllClients
+	// (cleanup at the end of a turn) blocked too — the UI stayed up (SPA)
+	// but chats wouldn't load or start, exactly the reported symptom, until
+	// a watchdog killed the container. This fires at 'No tool calls,
+	// setting idle and broadcasting done' — the conversation-end teardown.
+	ar.mu.RLock()
+	clients := make([]*SSEClient, 0, len(ar.clients))
+	for c := range ar.clients {
+		clients = append(clients, c)
+	}
+	ar.mu.RUnlock()
+
+	if len(clients) == 0 && event.Type != "text" {
 		utils.Debug("[Broadcast] No clients connected for %s event on %s", event.Type, ar.ConversationID)
 	}
-	for client := range ar.clients {
-		if !client.Send(event) {
-			delete(ar.clients, client)
-			select {
-			case <-client.Done:
-			default:
-				close(client.Done)
+
+	for _, client := range clients {
+		// Send outside the lock, with a hard bound so a stuck socket can
+		// never jam the registry. If the write doesn't finish in 3s, treat
+		// the client as dead and drop it.
+		if !client.SendBounded(event, 3*time.Second) {
+			ar.mu.Lock()
+			if _, ok := ar.clients[client]; ok {
+				delete(ar.clients, client)
+				select {
+				case <-client.Done:
+				default:
+					close(client.Done)
+				}
 			}
+			ar.mu.Unlock()
 		}
 	}
 }
