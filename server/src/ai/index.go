@@ -229,14 +229,17 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 
 	req.Header.Set("Content-Type", "application/json")
 
-	client := utils.HTTPClient
-	resp, err := client.Do(req)
+	// DoLLMHTTPWithRetry caps in-flight concurrency (OpenRouter free-tier
+	// budget) and retries 402/429/5xx with Retry-After backoff instead of
+	// letting the workflow die on a transient budget-exhaustion.
+	resp, err := utils.DoLLMHTTPWithRetry(req)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		strStatus := strconv.Itoa(resp.StatusCode)
 		utils.Error("LiteLLM API request failed with status", nil, strStatus, ":", string(respBody))
 		return nil, 0, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(respBody))
@@ -593,8 +596,7 @@ func GenerateTitleForMessage(message, model string) (string, error) {
 
 	req.Header.Set("Content-Type", "application/json")
 
-	client := utils.HTTPClient
-	resp, err := client.Do(req)
+	resp, err := utils.DoLLMHTTPWithRetry(req)
 	if err != nil {
 		return "", err
 	}
@@ -682,8 +684,7 @@ func GenerateCheckpointSummary(text, model string) (string, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := utils.HTTPClient
-	resp, err := client.Do(req)
+	resp, err := utils.DoLLMHTTPWithRetry(req)
 	if err != nil {
 		return "", err
 	}

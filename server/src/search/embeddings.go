@@ -62,7 +62,12 @@ func GenerateEmbedding(liteLLMBaseURL string, text string) ([]float32, error) {
 	// here historically wedged the server — the embed goroutine held the
 	// global DBWriteMu across this call, so a stuck request blocked every
 	// SQLite write (UI alive, chats won't load/create) after a few chats.
-	resp, err := utils.HTTPClient.Post(liteLLMBaseURL+"/v1/embeddings", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest("POST", liteLLMBaseURL+"/v1/embeddings", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating embeddings request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := utils.DoLLMHTTPWithRetry(req)
 	if err != nil {
 		return nil, fmt.Errorf("calling embeddings API: %w", err)
 	}
