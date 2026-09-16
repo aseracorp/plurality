@@ -22,8 +22,13 @@ FROM --platform=$BUILDPLATFORM dart:stable AS flutter_builder
 RUN apt-get update && apt-get install -y curl git unzip xz-utils zip libglu1-mesa
 
 # Get Stable Branch
-RUN git clone https://github.com/flutter/flutter.git /flutter && \
-  git -C /flutter checkout stable
+# The Flutter SDK (~2GB) is cloned into the image layer (NOT a BuildKit cache
+# mount): cache mounts only persist for the single RUN they're declared on, so
+# mounting /flutter here would leave it empty for the later 'flutter pub get' /
+# 'flutter build web' steps ('command not found', exit 127). Reuse across runs
+# comes from the GHA layer cache (cache-from in the workflow) keyed on this
+# unchanged step.
+RUN git clone --branch stable --depth 1 https://github.com/flutter/flutter.git /flutter
 ENV PATH="/flutter/bin:${PATH}"
 
 # Copy the Flutter app source
@@ -39,6 +44,12 @@ WORKDIR /app/client
 
 
 # Build the Flutter web app
+# NOTE: no --mount=type=cache on pub-cache here. The pub cache is needed
+# by the NEXT RUN ('flutter build web'), and cache mounts are ephemeral
+# (discarded at end of their RUN), which caused 'Error when reading
+# /root/.pub-cache/... (No such file or directory)' during the web build.
+# Reuse comes from the GHA layer cache (cache-from) keyed on the unchanged
+# pubspec.lock + this step.
 RUN flutter pub get
 RUN flutter build web --release
 
@@ -66,8 +77,13 @@ WORKDIR /app/server
 
 # Build the Go application (build.sh sets its own CGO_CFLAGS).
 # GOOS/GOARCH come from buildx's per-target args.
+# The module cache and Go build cache are persisted in BuildKit cache
+# mounts, so the heavy CGO deps (mattn/go-sqlite3, sqlite-vec) don't
+# re-download and recompile on every build.
 RUN chmod +x build.sh
-RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} ./build.sh
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} ./build.sh
 
 # Copy litellm requirements for installation in final stage
 RUN mkdir -p build/litellm && cp litellm_requirements.txt build/litellm/
@@ -100,15 +116,17 @@ WORKDIR /app
 COPY --from=go_builder /app/server/build/ /app/
 
 # Build LiteLLM venv using runtime Python (avoids glibc version mismatch)
-# Stub out pyroscope-io (needs Rust/cargo to build, not needed at runtime)
-RUN mkdir -p /tmp/dummy-pyroscope && \
-    printf '[project]\nname = "pyroscope-io"\nversion = "99.0.0"\n' > /tmp/dummy-pyroscope/pyproject.toml && \
-    echo 'pyroscope-io>=99.0.0' > /tmp/pip-constraints.txt && \
-    python3 -m venv /app/litellm/litellm_venv && \
-    /app/litellm/litellm_venv/bin/pip install --no-cache-dir /tmp/dummy-pyroscope && \
-    PIP_CONSTRAINT=/tmp/pip-constraints.txt \
-    /app/litellm/litellm_venv/bin/pip install --no-cache-dir -r /app/litellm/litellm_requirements.txt && \
-    rm -rf /tmp/dummy-pyroscope /tmp/pip-constraints.txt
+# NOTE: no --mount=type=cache here. A cache mount is ephemeral (discarded
+# at the end of the RUN), so the venv MUST be written into the image layer
+# or the runtime image ships without LiteLLM. Cross-run reuse of this slow
+# install comes from the GHA layer cache (cache-from) keyed on the
+# unchanged litellm_requirements.txt + this step.
+# No dummy-pyroscope stub: litellm's own dependency on pyroscope-io is
+# satisfied by the published wheel (pyroscope-io 0.8.16+ has prebuilt
+# wheels), so forcing a local >=99.0.0 stub via PIP_CONSTRAINT only broke
+# resolution. Plain 'pip install -r' resolves whatever it needs.
+RUN python3 -m venv /app/litellm/litellm_venv && \
+    /app/litellm/litellm_venv/bin/pip install --no-cache-dir -r /app/litellm/litellm_requirements.txt
 
 # Copy the Flutter web build to the static directory
 RUN mkdir -p /app/web
