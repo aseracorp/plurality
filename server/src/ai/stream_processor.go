@@ -200,7 +200,17 @@ func (sp *StreamProcessor) finalizeStream(ctx context.Context) utils.Message {
 func (sp *StreamProcessor) ProcessStandardStream(ctx context.Context, response io.ReadCloser) (utils.Message, error) {
 	defer response.Close()
 
-	scanner := bufio.NewScanner(response)
+	// Guard against a stalled upstream: LiteLLM/OpenRouter can stop sending
+	// bytes after the response headers are delivered, and the Scanner below
+	// would block forever on Read (observed in goroutine dumps: RunLLMLoop
+	// goroutines stuck in bufio.Scanner.Scan / chunkedReader.Read for
+	// 80-200 minutes, holding DBWriteMu/the single SQLite conn the whole
+	// time -> chats stop loading and the watchdog kills the container).
+	// idleTimeoutReader makes each Read give up if no byte arrives within
+	// the window, so a dead stream becomes a bounded error instead of an
+	// eternal wedge.
+	const idleTimeout = 90 * time.Second
+	scanner := bufio.NewScanner(&idleTimeoutReader{r: response, timeout: idleTimeout})
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -251,4 +261,31 @@ func (sp *StreamProcessor) ProcessStandardStream(ctx context.Context, response i
 	}
 
 	return sp.buildAssistantMessage(), scanner.Err()
+}
+
+// idleTimeoutReader wraps an io.Reader so every Read returns io.EOF if no
+// data arrives within timeout. This bounds the time a runLoop goroutine can
+// block reading a stalled SSE stream (see ProcessStandardStream), preventing
+// the multi-hour wedges observed in crash dumps.
+type idleTimeoutReader struct {
+	r       io.Reader
+	timeout time.Duration
+}
+
+func (t *idleTimeoutReader) Read(p []byte) (int, error) {
+	type result struct {
+		n   int
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		n, err := t.r.Read(p)
+		ch <- result{n, err}
+	}()
+	select {
+	case res := <-ch:
+		return res.n, res.err
+	case <-time.After(t.timeout):
+		return 0, io.EOF // treat as end-of-stream: caller finalizes what it has
+	}
 }
