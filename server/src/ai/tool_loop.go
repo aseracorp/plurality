@@ -34,6 +34,14 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 	streamRetries := 0
 	maxStreamRetries := 1
 
+	// llmCallRetries counts retries of the INITIAL SendChatCompletion when it
+	// fails with a transient provider error (OpenRouter 402 -> LiteLLM 500,
+	// 429, 5xx). Without this, a single budget-exhaustion 402 killed the
+	// whole workflow: the error path below aborted immediately even though
+	// the 402 resolves once other in-flight streams settle.
+	llmCallRetries := 0
+	maxLLMCallRetries := 3
+
 	for {
 		select {
 		case <-ar.Ctx.Done():
@@ -53,6 +61,20 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			if ar.Ctx.Err() != nil {
 				ar.flushPartialResponse(ctx, conversation)
 				return
+			}
+			// Transient provider failure (OpenRouter in-flight budget 402
+			// surfaced as LiteLLM 500, or 429/5xx): if no output has been
+			// emitted yet, back off and retry the whole call. Nothing was
+			// executed, so a fresh request is safe. Only give up after the
+			// bounded budget so a persistently down provider can't loop.
+			if len(ar.TextBuffer.String()) == 0 && llmCallRetries < maxLLMCallRetries {
+				llmCallRetries++
+				backoff := time.Duration(30 * llmCallRetries) * time.Second
+				utils.Log("[LLMLoop] LLM call failed up front (attempt %d/%d); backing off %v and retrying",
+					llmCallRetries, maxLLMCallRetries, backoff)
+				ar.BroadcastStatus("typing", "")
+				time.Sleep(backoff)
+				continue
 			}
 			utils.Error("[LLMLoop] Error calling LLM", err)
 			ar.Broadcast(SSEEvent{
