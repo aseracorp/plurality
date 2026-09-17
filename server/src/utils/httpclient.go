@@ -69,7 +69,7 @@ var HTTPClient = &http.Client{
 
 // LLMSem caps the number of in-flight outbound LLM/embedding requests.
 // Tuned for OpenRouter free-tier budgets (commonly 1-2 concurrent).
-var LLMSem = make(chan struct{}, 2)
+var LLMSem = make(chan struct{}, 1)
 
 // AcquireLLMSlot blocks until an outbound LLM slot is free.
 func AcquireLLMSlot() { LLMSem <- struct{}{} }
@@ -78,7 +78,7 @@ func AcquireLLMSlot() { LLMSem <- struct{}{} }
 func ReleaseLLMSlot() { <-LLMSem }
 
 // LLMRetryBudget is how many times we'll retry a rate/budget-limited call.
-const LLMRetryBudget = 3
+const LLMRetryBudget = 5
 
 // ParseRetryAfter extracts the Retry-After header (seconds). Returns 120s if
 // unparseable (OpenRouter's default for in-flight budget 402s).
