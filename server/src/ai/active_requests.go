@@ -276,13 +276,27 @@ func (r *statusRegistry) Remove(client *StatusClient) {
 	delete(r.clients, client)
 }
 
-// BroadcastToUser sends a StatusEvent to all status clients belonging to a specific user.
+// BroadcastToUser sends a StatusEvent to all status clients belonging to a
+// specific user. The client set is snapshotted under the lock and sent
+// WITHOUT holding r.mu: the old code wrote to clients while holding the
+// global status mutex, so one dead-but-open status socket (whose
+// ResponseWriter.Flush blocks forever) wedged EVERY BroadcastToUser and every
+// Add/Remove of the status stream — the whole backend froze, the SPA stayed
+// up but loaded nothing, and a watchdog eventually killed the container.
 func (r *statusRegistry) BroadcastToUser(userID string, event StatusEvent) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	clients := make([]*StatusClient, 0, len(r.clients))
 	for client := range r.clients {
 		if client.UserID == userID {
-			if !client.Send(event) {
+			clients = append(clients, client)
+		}
+	}
+	r.mu.RUnlock()
+
+	for _, client := range clients {
+		if !client.Send(event) {
+			r.mu.Lock()
+			if _, ok := r.clients[client]; ok {
 				delete(r.clients, client)
 				select {
 				case <-client.Done:
@@ -290,6 +304,7 @@ func (r *statusRegistry) BroadcastToUser(userID string, event StatusEvent) {
 					close(client.Done)
 				}
 			}
+			r.mu.Unlock()
 		}
 	}
 }
