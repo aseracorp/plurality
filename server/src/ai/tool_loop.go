@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"errors"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -101,13 +102,20 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			// dying ~100s in with "model stopped before completing the
 			// response"). If nothing was emitted yet — no text and no tool
 			// calls — retry the whole turn (bounded): nothing was executed
-			// so a fresh request is safe and side-effect free. If partial
-			// content already flowed to the client, fail loudly instead of
-			// silently falling through and leaving the conversation stuck in
-			// "working" state with no "done"/"error" event.
-			if len(ar.TextBuffer.String()) == 0 && len(assistantMessage.ToolCalls) == 0 && streamRetries < maxStreamRetries {
+			// so a fresh request is safe and side-effect free.
+			// ErrStreamIdleTimeout (the 90s no-data guard in
+			// ProcessStandardStream) is ALSO retryable, even with partial
+			// output: it means the provider stalled mid-stream, NOT that it
+			// finished. Without this, a slow/stalled stream was silently
+			// finalized as a partial assistant message — the conversation
+			// "stopped" with no error and no retry. Retrying (bounded)
+			// prevents that silent truncation; if partial content already
+			// flowed we clear it and re-request so the user gets a complete
+			// answer rather than a truncated one.
+			isIdleTimeout := errors.Is(err, ErrStreamIdleTimeout)
+			if (len(ar.TextBuffer.String()) == 0 || isIdleTimeout) && len(assistantMessage.ToolCalls) == 0 && streamRetries < maxStreamRetries {
 				streamRetries++
-				utils.Log("[LLMLoop] Stream failed before any output, retrying (attempt %d/%d)", streamRetries+1, maxStreamRetries+1)
+				utils.Log("[LLMLoop] Stream failed before output complete (idle-timeout=%v), retrying (attempt %d/%d)", isIdleTimeout, streamRetries+1, maxStreamRetries+1)
 				ar.ResetBuffer()
 				ar.BroadcastStatus("typing", "")
 				continue

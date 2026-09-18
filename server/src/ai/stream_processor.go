@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"fmt"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -286,6 +287,16 @@ func (t *idleTimeoutReader) Read(p []byte) (int, error) {
 	case res := <-ch:
 		return res.n, res.err
 	case <-time.After(t.timeout):
-		return 0, io.EOF // treat as end-of-stream: caller finalizes what it has
+		// A timeout is NOT a clean end-of-stream: the upstream went silent
+		// mid-response. Return a sentinel error so the caller can distinguish
+		// "stream completed" from "stream stalled and was cut off", and retry
+		// instead of silently finalizing a partial assistant message.
+		return 0, ErrStreamIdleTimeout
 	}
 }
+
+// ErrStreamIdleTimeout is returned by idleTimeoutReader when no bytes arrive
+// within the idle window. It is deliberately NOT io.EOF: EOF means the
+// provider finished; this sentinel means the stream stalled and was cut off,
+// so the workflow must retry rather than silently truncate the turn.
+var ErrStreamIdleTimeout = fmt.Errorf("stream idle timeout: provider stopped sending bytes")
