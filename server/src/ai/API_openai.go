@@ -197,7 +197,7 @@ func streamOpenAIResponse(w http.ResponseWriter, r *http.Request, response io.Re
 	// Send initial role delta
 	writeOpenAIChunk(w, completionID, created, modelName, OpenAIDelta{Role: "assistant"}, nil)
 
-	scanner := bufio.NewScanner(response)
+	scanner := bufio.NewScanner(&idleTimeoutReader{r: response, timeout: 90 * time.Second})
 	var toolCalls []utils.ToolCall
 	toolCallIndexMap := make(map[string]int) // toolCallID -> index
 
