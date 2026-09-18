@@ -80,6 +80,10 @@ WORKDIR /app/server
 # The module cache and Go build cache are persisted in BuildKit cache
 # mounts, so the heavy CGO deps (mattn/go-sqlite3, sqlite-vec) don't
 # re-download and recompile on every build.
+# CACHEBUST: pass --build-arg CACHEBUST=<git rev> so the Go binary is always
+# recompiled from the current source (prevents a stale cached 'go build' from
+# shipping an old server binary even when the checkout is up to date).
+ARG CACHEBUST=latest
 RUN chmod +x build.sh
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
