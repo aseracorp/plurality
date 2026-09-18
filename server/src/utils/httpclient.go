@@ -78,7 +78,12 @@ func AcquireLLMSlot() { LLMSem <- struct{}{} }
 func ReleaseLLMSlot() { <-LLMSem }
 
 // LLMRetryBudget is how many times we'll retry a rate/budget-limited call.
-const LLMRetryBudget = 5
+// OpenRouter's in-flight-budget 402 resolves as other in-flight streams
+// settle (Retry-After ~120s). 15 attempts x up to 120s backoff = up to
+// ~30 minutes of retrying a budget stall — long enough for even a busy key
+// to clear — so a transient 402 no longer kills the workflow. Bounded so a
+// genuinely dead provider still eventually errors out.
+const LLMRetryBudget = 15
 
 // ParseRetryAfter extracts the Retry-After header (seconds). Returns 120s if
 // unparseable (OpenRouter's default for in-flight budget 402s).

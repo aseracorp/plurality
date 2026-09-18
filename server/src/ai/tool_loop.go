@@ -40,7 +40,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 	// whole workflow: the error path below aborted immediately even though
 	// the 402 resolves once other in-flight streams settle.
 	llmCallRetries := 0
-	maxLLMCallRetries := 3
+	maxLLMCallRetries := 6
 
 	for {
 		select {
