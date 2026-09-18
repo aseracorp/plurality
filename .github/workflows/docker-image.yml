@@ -90,6 +90,15 @@ jobs:
           file: ./dockerfile
           platforms: ${{ matrix.platform }}
           push: true
+          # CACHEBUST = commit sha forces the dockerfile's Go build layer to be
+          # RECOMPILED on every push. Without this, the GHA layer cache
+          # (cache-to mode=max) + the dockerfile's BuildKit --mount=type=cache
+          # for the Go build cache reuse the previous compiled binary, so the
+          # published image ships a STALE server binary even though the source
+          # is up to date. This was the root cause of the recurring
+          # 'still crashing / old binary' issue.
+          build-args: |
+            CACHEBUST=${{ github.sha }}
           tags: |
             ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.arch }}
             ${{ env.IMAGE }}:${{ steps.appversion.outputs.version }}-${{ matrix.arch }}
