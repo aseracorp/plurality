@@ -1,6 +1,8 @@
 package jobs
 
 import (
+	"fmt"
+	"runtime/debug"
 	"context"
 	"time"
 
@@ -139,7 +141,19 @@ func RunPrompt(ctx context.Context, userID string, opts RunOptions) {
 		payload.MiniApp = *preset
 	}
 
-	go ar.RunLLMLoop(ctx, updated, payload)
+	// A panic in a background job workflow must never take down the whole
+	// server (net/http does not recover goroutine panics; without this a
+	// panic here aborts the process and kills every in-flight workflow).
+	// Recover, log the stack, and leak the request so the user can retry.
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				utils.Error("[Jobs] panic in RunPrompt workflow", nil, fmt.Sprintf("%v", r))
+				utils.Log("[Jobs] stack:\n%s", debug.Stack())
+			}
+		}()
+		ar.RunLLMLoop(ctx, updated, payload)
+	}()
 }
 
 // SubAgentOptions describes one sub-agent spawn.
@@ -223,6 +237,12 @@ func RunSubAgent(ctx context.Context, userID string, opts SubAgentOptions) (stri
 
 	done := make(chan struct{})
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				utils.Error("[SubAgent] panic in workflow", nil, fmt.Sprintf("%v", r))
+				utils.Log("[SubAgent] stack:\n%s", debug.Stack())
+			}
+		}()
 		defer close(done)
 		ar.RunLLMLoop(subCtx, updated, payload)
 	}()
