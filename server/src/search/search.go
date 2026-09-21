@@ -198,7 +198,7 @@ func truncate(s string, max int) string {
 
 // EmbedAndStore generates an embedding for the given text and stores it.
 // Intended to be called asynchronously after a message is saved.
-func EmbedAndStore(db *sql.DB, liteLLMBaseURL string, sourceType string, sourceID string, text string) {
+func EmbedAndStoreWithProtect(db *sql.DB, liteLLMBaseURL string, sourceType string, sourceID string, text string, protect func(func())) {
 	// A panic anywhere in this goroutine must never take down the whole
 	// server — it runs in the hot path after every saved message and shares
 	// native sqlite-vec code. Recover and log instead of crashing the
@@ -218,15 +218,21 @@ func EmbedAndStore(db *sql.DB, liteLLMBaseURL string, sourceType string, sourceI
 		return
 	}
 
+	// The LiteLLM HTTP call runs WITHOUT the DB write lock (bounded by its
+	// own 90s response timeout); only the native vec0 INSERT is protected.
 	vec, err := GenerateEmbedding(liteLLMBaseURL, truncate(text, 8000))
 	if err != nil {
 		utils.Debug("[Search] Failed to generate embedding for %s/%s: %v", sourceType, sourceID, err)
 		return
 	}
 
-	if err := StoreEmbedding(db, sourceType, sourceID, vec); err != nil {
+	if err := StoreEmbeddingLocked(db, sourceType, sourceID, vec, protect); err != nil {
 		utils.Debug("[Search] Failed to store embedding for %s/%s: %v", sourceType, sourceID, err)
 	}
+}
+
+func EmbedAndStore(db *sql.DB, liteLLMBaseURL string, sourceType string, sourceID string, text string) {
+	EmbedAndStoreWithProtect(db, liteLLMBaseURL, sourceType, sourceID, text, func(f func()) { f() })
 }
 
 // EmbedMessage is a convenience wrapper for embedding a conversation message.

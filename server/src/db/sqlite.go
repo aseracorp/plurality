@@ -185,6 +185,18 @@ func UnlockDBWrite() {
 	DBWriteMu.Unlock()
 }
 
+// WithDBWriteMu runs fn while holding the global SQLite write lock. Use it to
+// wrap short native operations (e.g. the vec0 INSERT in
+// search.StoreEmbeddingLocked) so they cannot overlap ANY other write on the
+// same user DB — an overlap on the native C virtual tables segfaults the
+// process with no Go panic to recover. Never hold the lock across an HTTP
+// call; keep the critical section tiny.
+func WithDBWriteMu(fn func()) {
+	LockDBWrite()
+	defer UnlockDBWrite()
+	fn()
+}
+
 var dbActivityMu sync.Mutex
 var lastDBActivity time.Time
 

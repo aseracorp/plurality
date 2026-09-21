@@ -111,6 +111,22 @@ func StoreEmbedding(db *sql.DB, sourceType string, sourceID string, embedding []
 	return err
 }
 
+// StoreEmbeddingLocked is StoreEmbedding but wraps the native vec0 INSERT in a
+// caller-supplied global-DB-write lock (injected as `protect func(func())`,
+// e.g. db.WithDBWriteMu). The vec0 virtual table is native C code; an INSERT
+// that overlaps ANY other write on the same single SQLite connection (FTS5
+// message inserts from PushMessage, eco compaction DELETEs) can segfault the
+// whole process with no Go panic to recover. sqliteVecMu alone only
+// serializes vec0-vs-vec0; the caller-provided lock serializes it against all
+// other SQLite writes on the same user DB.
+func StoreEmbeddingLocked(db *sql.DB, sourceType string, sourceID string, embedding []float32, protect func(func())) error {
+	var err error
+	protect(func() {
+		err = StoreEmbedding(db, sourceType, sourceID, embedding)
+	})
+	return err
+}
+
 // VectorSearch performs KNN search on vec_embeddings and returns ranked source IDs with distances.
 // Results with distance above the threshold are discarded.
 func VectorSearch(db *sql.DB, queryVec []float32, sourceType string, k int) ([]ScoredResult, error) {
