@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"context"
 	"database/sql"
 	"errors"
@@ -77,7 +78,7 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 		// DBWriteMu across the LiteLLM HTTP call (no-timeout Post) or one
 		// stuck embed would wedge every SQLite write in the server.
 		if message.Role == "user" || message.Role == "assistant" {
-			go search.EmbedMessage(db, LiteLLMBaseURL, msgID, message.TextContent())
+			go search.EmbedAndStoreWithProtect(db, LiteLLMBaseURL, "message", fmt.Sprintf("%d", msgID), message.TextContent(), func(f func()) { WithDBWriteMu(f) })
 		}
 
 		utils.Log("Created new conversation ID: %s for user ID: %s", conversation.ID, userID)
@@ -138,7 +139,7 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 	// serialized inside StoreEmbedding (short) — DBWriteMu must not be
 	// held across the LiteLLM HTTP call.
 	if message.Role == "user" || message.Role == "assistant" {
-		go search.EmbedMessage(db, LiteLLMBaseURL, msgID, message.TextContent())
+		go search.EmbedAndStoreWithProtect(db, LiteLLMBaseURL, "message", fmt.Sprintf("%d", msgID), message.TextContent(), func(f func()) { WithDBWriteMu(f) })
 	}
 
 	// Reload the full conversation
