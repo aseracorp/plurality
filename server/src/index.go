@@ -45,6 +45,7 @@ func main() {
 	auth.Init()
 	startup.Run()
 	db.InitSQLite()
+	search.InitEmbedWorker()
 	defer db.CloseAllUserDBs()
 	storage.Init()
 
