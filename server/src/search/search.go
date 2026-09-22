@@ -1,6 +1,7 @@
 package search
 
 import (
+	"sync/atomic"
 	"context"
 	"database/sql"
 	"fmt"
@@ -198,6 +199,48 @@ func truncate(s string, max int) string {
 
 // EmbedAndStore generates an embedding for the given text and stores it.
 // Intended to be called asynchronously after a message is saved.
+// ---------------------------------------------------------------------------
+// Serialized embedding worker.
+//
+// With SetMaxOpenConns(1), the server has ONE SQLite connection per user DB.
+// Spawning a goroutine per message to run EmbedAndStore means N concurrent
+// db.Exec calls queue up waiting for that single connection; combined with
+// PushMessage's own conn usage this produced 2-minute Mutex.Lock / conn-wait
+// pile-ups in goroutine dumps (a virtual deadlock that hangs the backend and
+// reads as a crash). Fix: route every embed through ONE worker goroutine so
+// at most ONE embed never runs at a time, and message pushes are never
+// starved by a backlog of concurrent embeds.
+// ---------------------------------------------------------------------------
+type embedJob struct {
+	db             *sql.DB
+	liteLLMBaseURL string
+	sourceType     string
+	sourceID       string
+	text           string
+}
+
+var embedQueue = make(chan embedJob, 256)
+var embedWorkerStarted atomic.Bool
+
+func embedWorker() {
+	for job := range embedQueue {
+		EmbedAndStore(job.db, job.liteLLMBaseURL, job.sourceType, job.sourceID, job.text)
+	}
+}
+
+func InitEmbedWorker() {
+	if embedWorkerStarted.CompareAndSwap(false, true) {
+		go embedWorker()
+	}
+}
+
+func EnqueueEmbed(db *sql.DB, liteLLMBaseURL string, sourceType string, sourceID string, text string) {
+	if text == "" || len(text) < 3 {
+		return
+	}
+	embedQueue <- embedJob{db, liteLLMBaseURL, sourceType, sourceID, text}
+}
+
 func EmbedAndStoreWithProtect(db *sql.DB, liteLLMBaseURL string, sourceType string, sourceID string, text string, protect func(func())) {
 	// protect is intentionally ignored: wrapping the vec0 insert in the global
 	// DB lock while the parent PushMessage holds the same lock (and the single
