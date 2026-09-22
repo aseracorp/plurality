@@ -199,6 +199,12 @@ func truncate(s string, max int) string {
 // EmbedAndStore generates an embedding for the given text and stores it.
 // Intended to be called asynchronously after a message is saved.
 func EmbedAndStoreWithProtect(db *sql.DB, liteLLMBaseURL string, sourceType string, sourceID string, text string, protect func(func())) {
+	// protect is intentionally ignored: wrapping the vec0 insert in the global
+	// DB lock while the parent PushMessage holds the same lock (and the single
+	// SQLite connection) deadlocks. sqliteVecMu inside StoreEmbedding already
+	// serializes vec0 ops; other writers hold DBWriteMu for their own short
+	// critical sections. Plain embed path is used instead.
+	_ = protect
 	// A panic anywhere in this goroutine must never take down the whole
 	// server — it runs in the hot path after every saved message and shares
 	// native sqlite-vec code. Recover and log instead of crashing the
