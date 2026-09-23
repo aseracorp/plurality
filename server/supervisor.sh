@@ -12,6 +12,16 @@
 # signals (SIGTERM on `docker stop`) are forwarded to this script, which
 # forwards them to the server and exits cleanly.
 set -u
+
+# Enable core dumps + full Go crash traces so a native crash (C segv in
+# sqlite/vec/http) leaves evidence on the persistent volume instead of dying
+# invisibly. ulimit -c unlimited allows core files; GOTRACEBACK=crash makes
+# the Go runtime print ALL goroutine stacks before aborting on a fatal/native
+# error. Coredumps land in /app/data/cores (persistent).
+mkdir -p /app/data/cores
+ulimit -c unlimited 2>/dev/null || true
+export GOTRACEBACK=crash
+
 LOG=/app/data/crash.log
 OUT=/app/data/server.log
 mkdir -p /app/data
