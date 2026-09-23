@@ -275,7 +275,16 @@ func EmbedAndStoreWithProtect(db *sql.DB, liteLLMBaseURL string, sourceType stri
 		return
 	}
 
-	if err := StoreEmbeddingLocked(db, sourceType, sourceID, vec, protect); err != nil {
+	// NOTE: we must NOT pass `protect` here. The comment above says it's
+	// intentionally ignored, and the code now honors that: the plain
+	// StoreEmbedding (sqliteVecMu only) is used regardless of caller. Passing
+	// protect to StoreEmbeddingLocked would wrap the native vec0 INSERT in the
+	// global DB write lock — and when this is reached from db.PushMessage
+	// (which already holds DBWriteMu + the single SQLite connection), that
+	// re-entrant lock deadlocks the whole backend (a crash). This is the
+	// residual half of the #23 deadlock that the #24 revert's comment claimed
+	// to remove but the code still performed.
+	if err := StoreEmbedding(db, sourceType, sourceID, vec); err != nil {
 		utils.Debug("[Search] Failed to store embedding for %s/%s: %v", sourceType, sourceID, err)
 	}
 }
