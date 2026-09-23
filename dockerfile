@@ -147,6 +147,11 @@ VOLUME /root
 # Expose the port the server listens on
 EXPOSE 8090
 
-# Run the server under tini so PID 1 reaps zombies and forwards signals
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["/app/Plurality"]
+# Run the server under the crash-capture supervisor (still under tini as PID 1,
+# so zombies are reaped and `docker stop` signals are forwarded). The
+# supervisor logs the exact exit code/signal of every server death to the
+# persistent /app/data/crash.log and auto-restarts the server, so a crash is
+# observable and self-healing instead of an invisible outage.
+COPY server/supervisor.sh /app/supervisor.sh
+RUN chmod +x /app/supervisor.sh
+ENTRYPOINT ["/usr/bin/tini", "--", "/app/supervisor.sh"]
