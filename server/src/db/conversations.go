@@ -41,6 +41,7 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 		// messages_fts (FTS5) which must not overlap the async vec0 embed
 		// insert or eco compaction on the same native SQLite connection.
 		DBWriteMu.Lock()
+		stampDBActivity()
 		defer DBWriteMu.Unlock()
 		tx, err := db.Begin()
 		if err != nil {
@@ -89,6 +90,7 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 	utils.Debug("Pushing message to conversation ID: %s for user ID: %s", conversation.ID, userID)
 
 	DBWriteMu.Lock()
+	stampDBActivity()
 	defer DBWriteMu.Unlock()
 	tx, err := db.Begin()
 	if err != nil {

@@ -86,6 +86,7 @@ func GetCheckpoint(ctx context.Context, conversationID string) (*CheckpointPair,
 	// recoverable panic (see DBWriteMu). This read runs at eco-compaction
 	// time — exactly when the crash was observed.
 	DBWriteMu.Lock()
+	stampDBActivity()
 	defer DBWriteMu.Unlock()
 
 	// Find the assistant row. The tool_calls column is a JSON array; the
@@ -185,6 +186,7 @@ func MessageSeqAt(ctx context.Context, conversationID string, sliceOffset int) (
 	// the same user DB (see DBWriteMu) — a native read/write overlap aborts
 	// the process.
 	DBWriteMu.Lock()
+	stampDBActivity()
 	defer DBWriteMu.Unlock()
 
 	var seq int64
