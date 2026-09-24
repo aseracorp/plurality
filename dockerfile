@@ -152,6 +152,18 @@ EXPOSE 8090
 # supervisor logs the exact exit code/signal of every server death to the
 # persistent /app/data/crash.log and auto-restarts the server, so a crash is
 # observable and self-healing instead of an invisible outage.
+#
+# IMPORTANT: the real binary is placed at /app/Plurality.bin and /app/Plurality
+# is a SHELL SHIM that execs the supervisor. Some launchers (e.g. Cosmos or a
+# `docker run ... /app/Plurality` command) OVERRIDE the ENTRYPOINT/CMD and
+# start /app/Plurality directly - in that case the ENTRYPOINT is bypassed and
+# the supervisor (crash capture + auto-restart) would never run. Making
+# /app/Plurality the shim guarantees the supervised entrypoint runs no matter
+# how the container is started.
 COPY server/supervisor.sh /app/supervisor.sh
 RUN chmod +x /app/supervisor.sh
+ARG CACHEBUST_BIN=latest
+# the binary COPY happens in the build stage; here we wrap it. This must run
+# AFTER /app/Plurality (real binary) is copied from the builder stage.
+RUN sh -c 'mv /app/Plurality /app/Plurality.bin && printf "#!/bin/sh\nexec /app/supervisor.sh\n" > /app/Plurality && chmod +x /app/Plurality && chmod +x /app/Plurality.bin'
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/supervisor.sh"]
