@@ -429,30 +429,40 @@ func convertMessagesToOpenAI(messages []utils.Message, model utils.Model) ([]Sta
 	// before the next user/assistant boundary. Strict providers (Fireworks)
 	// reject dangling tool_calls; this defense recovers conversations whose
 	// history was persisted before the stream-processor fix existed.
-	// Build a FULL-map lookup of every tool result in the array by ToolCallID.
-	// Previously the scan window stopped at the next user/assistant message.
-	// With interleaved EMPTY assistant messages (a known pattern in long tool-
-	// heavy conversations), a persisted tool result can live OUTSIDE that
-	// window, so the backfill wrongly reported it missing and substituted an
-	// EMPTY result — making the LLM see "every tool returns empty", loop, and
-	// spam retries. Matching by ID across the whole array is correct: IDs are
-	// unique and results can legally appear after interleaved assistants.
-	allSeen := make(map[string]bool, 32)
-	for _, m := range result {
-		if m.Role == "tool" && m.ToolCallID != "" {
-			allSeen[m.ToolCallID] = true
-		}
-	}
+	// Match tool results SCOPED TO THE SAME ASSISTANT BLOCK (not by bare
+	// ToolCallID across the whole array). Tool call IDs like "call_0" are
+	// REUSED by the provider across turns, so a whole-array lookup (PR #33)
+	// attached a STALE result from a previous turn to the current call — e.g.
+	// an old `ls` output coming back for `echo after-wait` — and when nothing
+	// matched it backfilled an EMPTY placeholder (every tool "returns empty").
+	//
+	// A tool result belongs to the nearest PRECEDING assistant message that
+	// issued tool calls. We scope the window from this assistant to the next
+	// USER message or the next assistant WITH tool calls (a new call block;
+	// interleaved text-only assistants do not end the block). This finds the
+	// real result for this turn's calls and can never cross a turn boundary.
 	out := make([]StandardMessageReq, 0, len(result))
 	i := 0
 	for i < len(result) {
 		out = append(out, result[i])
 		if result[i].Role == "assistant" && len(result[i].ToolCalls) > 0 {
 			j := i + 1
-			for j < len(result) && result[j].Role != "user" && result[j].Role != "assistant" {
+			for j < len(result) {
+				if result[j].Role == "user" {
+					break
+				}
+				if result[j].Role == "assistant" && len(result[j].ToolCalls) > 0 {
+					break // next call block starts here
+				}
 				j++
 			}
-			seen := allSeen
+			seen := make(map[string]bool, len(result[i].ToolCalls))
+			for k := i + 1; k < j; k++ {
+				if result[k].Role == "tool" && result[k].ToolCallID != "" {
+					seen[result[k].ToolCallID] = true
+				}
+				out = append(out, result[k])
+			}
 			for _, tc := range result[i].ToolCalls {
 				if !seen[tc.ID] {
 					utils.Log("[convertMessagesToOpenAI] backfilling missing tool result for tool_call %s (%s)", tc.ID, tc.Function.Name)
