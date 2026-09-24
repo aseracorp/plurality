@@ -13,15 +13,11 @@
 # forwards them to the server and exits cleanly.
 set -u
 
-# Enable core dumps + full Go crash traces so a native crash (C segv in
-# sqlite/vec/http) leaves evidence on the persistent volume instead of dying
-# invisibly. ulimit -c unlimited allows core files; GOTRACEBACK=crash makes
-# the Go runtime print ALL goroutine stacks before aborting on a fatal/native
-# error. Coredumps land in /app/data/cores (persistent).
-mkdir -p /app/data/cores
-ulimit -c unlimited 2>/dev/null || true
-export GOTRACEBACK=crash
-
+# NOTE: core-dump/GOTRACEBACK settings are applied ONLY to the server child
+# below (not exported globally) so that `/app/Plurality`-spawned TOOL
+# subprocesses (shell_exec `sh`, MCP stdio children, etc.) never inherit a
+# changed env/ulimit — a global export here altered every tool child's
+# runtime (observed: shell_exec returning wrong/stale output after #30).
 LOG=/app/data/crash.log
 OUT=/app/data/server.log
 mkdir -p /app/data
@@ -42,7 +38,10 @@ BIN=/app/Plurality.bin
 restart_delay=0
 while true; do
   echo "=== $(date -u +%FT%T) starting $BIN (attempt after ${restart_delay}s) ===" >> "$LOG"
-  "$BIN" >> "$OUT" 2>&1 &
+  # Enable core dumps + full Go crash traces FOR THE SERVER ONLY (see note
+  # above): core files land in /app/data/cores, GOTRACEBACK=crash prints all
+  # goroutine stacks before aborting on a fatal/native error.
+  ( ulimit -c unlimited 2>/dev/null; GOTRACEBACK=crash "$BIN" ) >> "$OUT" 2>&1 &
   SPID=$!
   wait "$SPID"
   rc=$?
