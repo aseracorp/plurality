@@ -146,57 +146,6 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// older than it. When eco is off: drop the checkpoint pair entirely
 	// and send the raw history.
 	visibleMessages := filterCheckpointsForRequest(conv.Messages, conv.ModelSelected.EcoMode)
-
-	// Safety net: never send an unbounded prompt. If eco-mode has been
-	// enabled but no checkpoint has been created yet (the compacting
-	// summary may have failed), filterCheckpointsForRequest returns the
-	// ENTIRE conversation — observed at 917k tokens on a long-running
-	// conversation. A prompt that large makes every turn take minutes and
-	// the workflow dies mid-stream while the provider processes it (the
-	// server itself stays up — a "workflow crash"). Also, some models have
-	// hard context limits well below the growing history.
-	// Keep the system message (already prepended), the latest user message,
-	// and as much of the tail as fits within a bounded budget.
-	const maxPromptChars = 600 * 1024 // ~150k tokens (chars/4), generous for big models
-	if len(visibleMessages) > 1 {
-		// Measure roughly: sum of text content lengths + fixed overhead
-		// per message (~64 chars for JSON envelope/role labels).
-		total := 0
-		for _, m := range visibleMessages {
-			mt := 0
-			for _, part := range m.ContentParts() {
-				mt += len(part.Text)
-			}
-			total += mt + 64
-		}
-		if total > maxPromptChars {
-			// Drop the oldest messages until we fit. Always keep the last
-			// message (the current user turn) and at least one assistant
-			// exchange before it.
-			keep := len(visibleMessages)
-			acc := 0
-			for i := len(visibleMessages) - 1; i >= 0; i-- {
-				mt := 0
-				for _, part := range visibleMessages[i].ContentParts() {
-					mt += len(part.Text)
-				}
-				acc += mt + 64
-				if acc > maxPromptChars {
-					keep = i + 1
-					if keep < 2 {
-						keep = 2
-					}
-					break
-				}
-			}
-			if keep < len(visibleMessages) {
-				utils.Log("[Send] capping conversation from %d to %d messages (~%d chars)",
-					len(visibleMessages), keep, acc)
-				visibleMessages = visibleMessages[len(visibleMessages)-keep:]
-			}
-		}
-	}
-
 	allMessages := append([]utils.Message{systemMsg}, visibleMessages...)
 	optimizedMessages, hasAttachments, hasDocAttachments := PrepareMessagesForAI(allMessages, model)
 	msgReqList, _ := convertMessagesToOpenAI(optimizedMessages, model)
@@ -229,17 +178,14 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 
 	req.Header.Set("Content-Type", "application/json")
 
-	// DoLLMHTTPWithRetry caps in-flight concurrency (OpenRouter free-tier
-	// budget) and retries 402/429/5xx with Retry-After backoff instead of
-	// letting the workflow die on a transient budget-exhaustion.
-	resp, err := utils.DoLLMHTTPWithRetry(req)
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
 		strStatus := strconv.Itoa(resp.StatusCode)
 		utils.Error("LiteLLM API request failed with status", nil, strStatus, ":", string(respBody))
 		return nil, 0, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(respBody))
@@ -251,17 +197,9 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 // convertMessagesToOpenAI converts internal utils.Message slices into
 // StandardMessageReq for sending to the LiteLLM proxy (OpenAI-compatible format).
 // Returns the converted messages and the concatenated input text (for debugging/logging).
-//
-// If the target model does not support vision, image_url parts are replaced
-// with a short text placeholder instead of being sent — providers (e.g.
-// deepseek-v4-flash-0731 on OpenRouter, which is text-only) reject image
-// input with a 404, and that rejection used to crash the litellm proxy.
-func convertMessagesToOpenAI(messages []utils.Message, model utils.Model) ([]StandardMessageReq, string) {
+func convertMessagesToOpenAI(messages []utils.Message, _ utils.Model) ([]StandardMessageReq, string) {
 	result := make([]StandardMessageReq, 0, len(messages))
 	inputText := ""
-
-	visionCapable := Models.IsVisionModel(model.Name)
-	const noVisionPlaceholder = "[Image omitted: the selected model does not support vision.]"
 
 	for _, msg := range messages {
 		switch msg.Role {
@@ -285,14 +223,6 @@ func convertMessagesToOpenAI(messages []utils.Message, model utils.Model) ([]Sta
 			contentParts := make([]StandardContentReq, 0, len(parts))
 			for _, part := range parts {
 				if part.Type == "image_url" && part.ImageURL != nil {
-					if !visionCapable {
-						inputText += "user " + noVisionPlaceholder + " {}{}{}{}{}{}{}"
-						contentParts = append(contentParts, StandardContentReq{
-							Type: "text",
-							Text: noVisionPlaceholder,
-						})
-						continue
-					}
 					contentParts = append(contentParts, StandardContentReq{
 						Type: "image_url",
 						ImageURL: &utils.ContentImageURL{
@@ -369,18 +299,6 @@ func convertMessagesToOpenAI(messages []utils.Message, model utils.Model) ([]Sta
 				contentParts := make([]StandardContentReq, 0, len(parts))
 				for _, part := range parts {
 					if part.Type == "image_url" && part.ImageURL != nil {
-						if !visionCapable {
-							text := noVisionPlaceholder
-							if msg.Name != "conversation_attachments" && ai_tools.ShouldStripResponse(text) {
-								text = "Tool result displayed to user."
-							}
-							inputText += "tool " + text + " {}{}{}{}{}{}{}"
-							contentParts = append(contentParts, StandardContentReq{
-								Type: "text",
-								Text: text,
-							})
-							continue
-						}
 						contentParts = append(contentParts, StandardContentReq{
 							Type:     "image_url",
 							ImageURL: &utils.ContentImageURL{URL: part.ImageURL.URL},
@@ -429,31 +347,13 @@ func convertMessagesToOpenAI(messages []utils.Message, model utils.Model) ([]Sta
 	// before the next user/assistant boundary. Strict providers (Fireworks)
 	// reject dangling tool_calls; this defense recovers conversations whose
 	// history was persisted before the stream-processor fix existed.
-	// Match tool results SCOPED TO THE SAME ASSISTANT BLOCK (not by bare
-	// ToolCallID across the whole array). Tool call IDs like "call_0" are
-	// REUSED by the provider across turns, so a whole-array lookup (PR #33)
-	// attached a STALE result from a previous turn to the current call — e.g.
-	// an old `ls` output coming back for `echo after-wait` — and when nothing
-	// matched it backfilled an EMPTY placeholder (every tool "returns empty").
-	//
-	// A tool result belongs to the nearest PRECEDING assistant message that
-	// issued tool calls. We scope the window from this assistant to the next
-	// USER message or the next assistant WITH tool calls (a new call block;
-	// interleaved text-only assistants do not end the block). This finds the
-	// real result for this turn's calls and can never cross a turn boundary.
 	out := make([]StandardMessageReq, 0, len(result))
 	i := 0
 	for i < len(result) {
 		out = append(out, result[i])
 		if result[i].Role == "assistant" && len(result[i].ToolCalls) > 0 {
 			j := i + 1
-			for j < len(result) {
-				if result[j].Role == "user" {
-					break
-				}
-				if result[j].Role == "assistant" && len(result[j].ToolCalls) > 0 {
-					break // next call block starts here
-				}
+			for j < len(result) && result[j].Role != "user" && result[j].Role != "assistant" {
 				j++
 			}
 			seen := make(map[string]bool, len(result[i].ToolCalls))
@@ -491,14 +391,7 @@ func convertMessagesToOpenAI(messages []utils.Message, model utils.Model) ([]Sta
 // that an image which has been stripped from the actual payload doesn't trigger
 // a vision swap — otherwise we'd pay for the vision model on text-only turns.
 func SelectModel(modelSelected utils.ModelSelected, conv utils.Conversation) utils.Model {
-	// The configured "vision" model is only used if it genuinely supports
-	// vision. Some providers (e.g. deepseek-v4-flash-0731 on OpenRouter) are
-	// text-only but get configured as vision, which made Plurality send
-	// image_url content to a model that rejects it (OpenRouter 404 -> proxy
-	// crash). If the chosen vision model can't take images, fall back to the
-	// text model and let convertMessagesToOpenAI strip image parts.
-	visionUsable := modelSelected.Vision != nil && Models.IsVisionModel(modelSelected.Vision.Name)
-	if visionUsable && modelSelected.Text != nil &&
+	if modelSelected.Vision != nil && modelSelected.Text != nil &&
 		!Models.IsVisionModel(modelSelected.Text.Name) {
 		prepared, _, _ := PrepareMessagesForAI(conv.Messages, *modelSelected.Text)
 		for _, m := range prepared {
@@ -510,26 +403,9 @@ func SelectModel(modelSelected utils.ModelSelected, conv utils.Conversation) uti
 	}
 
 	if modelSelected.Text != nil {
-		// The user picked a text-only model (or their "vision" model is
-		// text-only). If the conversation contains images the model can't
-		// ingest, swap to a real vision-capable model so the AI can still
-		// view screenshots instead of failing.
-		textUsable := Models.IsVisionModel(modelSelected.Text.Name)
-		if !textUsable {
-			prepared, _, _ := PrepareMessagesForAI(conv.Messages, *modelSelected.Text)
-			for _, m := range prepared {
-				if m.HasImages() {
-					if v := Models.FindVisionModel(); v != "" {
-						utils.Log("Swapping to vision-capable model %s for image content", v)
-						return utils.Model{Name: v}
-					}
-					break
-				}
-			}
-		}
 		return *modelSelected.Text
 	}
-	if modelSelected.Vision != nil && Models.IsVisionModel(modelSelected.Vision.Name) {
+	if modelSelected.Vision != nil {
 		return *modelSelected.Vision
 	}
 	return utils.Model{}
@@ -553,7 +429,7 @@ func GenerateImage(request ImageGenerationRequest) ([]byte, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := utils.HTTPClient
+	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -614,7 +490,8 @@ func GenerateTitleForMessage(message, model string) (string, error) {
 
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := utils.DoLLMHTTPWithRetry(req)
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -685,10 +562,10 @@ func GenerateCheckpointSummary(text, model string) (string, error) {
 
 	maxTokens := 8192
 	requestData := StandardChatRequest{
-		Model:     model,
-		Messages:  msgReqList,
-		MaxTokens: &maxTokens,
-		Stream:    false,
+		Model:       model,
+		Messages:    msgReqList,
+		MaxTokens:   &maxTokens,
+		Stream:      false,
 	}
 
 	jsonData, err := json.Marshal(requestData)
@@ -702,7 +579,8 @@ func GenerateCheckpointSummary(text, model string) (string, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := utils.DoLLMHTTPWithRetry(req)
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}

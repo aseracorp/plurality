@@ -1,11 +1,9 @@
 package ai
 
 import (
-	"unicode/utf8"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -279,16 +277,6 @@ func writeContentParts(b *strings.Builder, parts []utils.ContentPart) {
 // pair and atomically swaps out any prior pair via db.ReplaceCheckpoint.
 // Errors are logged and swallowed — the next user turn will retry.
 func runEcoSummary(ctx context.Context, conversationID string) {
-	// A panic anywhere in this goroutine must never take down the whole
-	// server — it runs at the end of every LLM turn ("finished workflow")
-	// and a nil deref / DB error here would crash the process and restart
-	// the container. Recover and log instead.
-	defer func() {
-		if r := recover(); r != nil {
-			utils.Error("[Eco] panic in runEcoSummary for %s", nil, fmt.Sprintf("%v", r))
-		}
-	}()
-
 	utils.Log("[Eco] tick for conv %s", conversationID)
 	if !summaryInFlight.CompareAndSwap(false, true) {
 		utils.Log("[Eco] summary already in flight — skipping conv %s", conversationID)
@@ -328,7 +316,6 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	existingCheckpointEndIdx := -1
 	var oldPairIDs []int64
 	var priorSummary string
-	utils.Log("[Eco] conv %s checkpoint lookup done", conversationID)
 	if pair, err := db.GetCheckpoint(ctx, conversationID); err == nil && pair != nil {
 		priorSummary = pair.Summary
 		oldPairIDs = []int64{pair.AssistantID}
@@ -362,56 +349,8 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	if startIdx >= cutoff {
 		return
 	}
-	utils.Log("[Eco] conv %s rendering window msgs %d..%d", conversationID, startIdx, cutoff)
 
 	excerpt := renderMessagesForSummary(conv.Messages[startIdx:cutoff])
-	// Bound the actual rendered excerpt, not just the message index.
-	// prompt_tokens is CUMULATIVE across the whole conversation (it comes
-	// from litellm's usage.prompt_tokens and includes the compacted
-	// checkpoint), so targetDrop = lastPT - target grows without bound as
-	// the conversation grows — the excerpt between checkpoint and cutoff
-	// grows with it (observed: 774k → 899k+ tokens). A single summary call
-	// over that much text takes many minutes and the process gets killed
-	// while it hangs. Keep the tail (most recent part) of the window and
-	// cap it at a fixed size so every eco pass is small and fast.
-	const maxExcerptBytes = 250 * 1024 // ~60k tokens per pass
-	if len(excerpt) > maxExcerptBytes {
-		// Find the earliest message boundary whose tail render fits the cap.
-		// The linear scan below was O(N^2): on the huge 778f conversation
-		// (1,380+ messages, lastPT 277k) it re-rendered hundreds of ~600KB
-		// strings and never completed — the eco goroutine died there on
-		// EVERY conversation end, taking the whole container down silently
-		// (no excerpt log was EVER produced). renderMessagesForSummary is
-		// monotonic in the slice start (later start => smaller output), so
-		// binary search finds the boundary in O(N log N): at most ~11
-		// renders instead of ~600.
-		lo, hi := startIdx, cutoff // lo = earliest index, hi = cutoff (exclusive)
-		for lo < hi {
-			mid := lo + (hi-lo)/2
-			trimmed := renderMessagesForSummary(conv.Messages[mid:cutoff])
-			if len(trimmed) <= maxExcerptBytes {
-				// Mid renders within the cap; try an earlier start.
-				excerpt = trimmed
-				startIdx = mid
-				hi = mid
-			} else {
-				// Too big; the boundary is later.
-				lo = mid + 1
-			}
-		}
-		// If we ran off the end (pathological, e.g. a single message alone
-		// exceeds the cap), last resort: hard cut at a rune boundary.
-		if len(excerpt) > maxExcerptBytes {
-			excerpt = excerpt[len(excerpt)-maxExcerptBytes:]
-			// Ensure we never split a multi-byte UTF-8 rune at the head of
-			// the sliced tail (the slice start lands mid-rune otherwise).
-			for len(excerpt) > 0 && !utf8.RuneStart(excerpt[0]) {
-				excerpt = excerpt[1:]
-			}
-		}
-	}
-	utils.Log("[Eco] excerpt %d bytes (msgs %d..%d)", len(excerpt), startIdx, cutoff)
-	utils.Log("[Eco] conv %s calling summary model", conversationID)
 	var input string
 	if priorSummary != "" {
 		input = "PRIOR CHECKPOINT:\n" + priorSummary + "\n\nNEW MESSAGES:\n" + excerpt
@@ -419,25 +358,8 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 		input = excerpt
 	}
 
-	// Use the conversation's own text model for the summary. The user picked
-	// it because it handles the conversation's context window (e.g.
-	// deepseek-v4-flash-0731 has a ~1.3M token context), so the full excerpt
-	// fits. Using the "fast" shortcut model (gpt-oss-20b, 131k context)
-	// overflowed on long conversations — the request exceeded the model's
-	// max context length, OpenRouter returned a 400, and the eco compaction
-	// failed (and could contribute to a turn dying).
-	summaryModel := ""
-	if conv.ModelSelected.Text != nil {
-		summaryModel = conv.ModelSelected.Text.Name
-	}
-	if summaryModel == "" || !Models.IsKnown(summaryModel) {
-		summaryModel, _ = fastShortcutModels()
-	}
-	utils.Log("[Eco] summary model: %s", summaryModel)
-
-	// Summarise the bounded excerpt in ONE request. It is capped to
-	// ~60k tokens above, so the call completes in well under a minute.
-	summary, err := GenerateCheckpointSummary(input, summaryModel)
+	textModel, _ := fastShortcutModels()
+	summary, err := GenerateCheckpointSummary(input, textModel)
 	if err != nil {
 		utils.Error("[Eco] checkpoint summary generation failed", err)
 		return
@@ -480,20 +402,10 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 		Timestamp:  now,
 	}
 
-	// Serialize the checkpoint write against all other SQLite writes on the
-	// same user DB. ReplaceCheckpoint is a multi-statement transaction
-	// (DELETE old pair + 2×UPDATE seq + INSERT new pair) that also fires
-	// the FTS5 delete trigger; overlapping any other write (embed vec0
-	// insert, PushMessage FTS insert) on the same native SQLite connection
-	// can abort the process with no recoverable panic (see db.DBWriteMu).
-	// The slow LLM summary call above is intentionally OUTSIDE this lock.
-	db.DBWriteMu.Lock()
 	if err := db.ReplaceCheckpoint(ctx, conversationID, oldPairIDs, assistantMsg, toolMsg, insertSeq); err != nil {
-		db.DBWriteMu.Unlock()
 		utils.Error("[Eco] persisting checkpoint failed", err)
 		return
 	}
-	db.DBWriteMu.Unlock()
 	utils.Log("[Eco] checkpoint written for conv %s (cutoff=%d, lastPT=%d → kept tail ≈%d tokens)", conversationID, cutoff, lastPT, lastPT-tokensBeforeCutoff(conv.Messages, cutoff))
 }
 

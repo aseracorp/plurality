@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/mattn/go-sqlite3"
@@ -27,17 +26,6 @@ func init() {
 var (
 	userDataPath string
 	userDBs      sync.Map // map[string]*sql.DB
-	// Serializes every SQLite write on a user's database. The databases use
-	// THREE native C virtual tables — messages_fts (FTS5), vec_embeddings
-	// (vec0), plus the messages FTS-delete trigger — all on the same single
-	// connection (SetMaxOpenConns(1)). These C extensions are not safe to
-	// overlap: an async embedding INSERT into vec0 racing a request-time
-	// message+FTS insert (PushMessage) or the eco compaction DELETE (which
-	// fires the FTS delete trigger) aborts the process natively with no Go
-	// panic to recover (observed: hard death right after an aembedding 200
-	// OK, normal RSS, silent restart, no exit code). Every mutating entry
-	// point on a user DB must hold this lock. See DBWriteMu.
-	DBWriteMu sync.Mutex
 )
 
 const schema = `
@@ -161,59 +149,6 @@ func GetUserDB(userID string) (*sql.DB, error) {
 	}
 
 	return actual.(*sql.DB), nil
-}
-
-// DBWriteMu (declared above) is the one lock every function that mutates a
-// user's SQLite database must hold. Without it, the native C virtual tables
-// (FTS5 messages_fts, vec0 vec_embeddings, and the messages FTS-delete
-// trigger) can overlap and abort the process with no recoverable panic in
-// sight (matches the observed hard crashes seconds after an aembedding 200
-// OK, normal RSS, silent death, no exit code written).
-
-// LockDBWrite acquires the global SQLite write lock. Callers outside the db
-// package (e.g. the search path that reads vec0) use this to serialize their
-// DB access against writes. Always pair with UnlockDBWrite.
-func LockDBWrite() {
-	DBWriteMu.Lock()
-	stampDBActivity()
-}
-
-// UnlockDBWrite releases the global SQLite write lock acquired by
-// LockDBWrite.
-func UnlockDBWrite() {
-	stampDBActivity()
-	DBWriteMu.Unlock()
-}
-
-// WithDBWriteMu runs fn while holding the global SQLite write lock. Use it to
-// wrap short native operations (e.g. the vec0 INSERT in
-// search.StoreEmbeddingLocked) so they cannot overlap ANY other write on the
-// same user DB — an overlap on the native C virtual tables segfaults the
-// process with no Go panic to recover. Never hold the lock across an HTTP
-// call; keep the critical section tiny.
-func WithDBWriteMu(fn func()) {
-	LockDBWrite()
-	defer UnlockDBWrite()
-	fn()
-}
-
-var dbActivityMu sync.Mutex
-var lastDBActivity time.Time
-
-func stampDBActivity() {
-	dbActivityMu.Lock()
-	lastDBActivity = time.Now()
-	dbActivityMu.Unlock()
-}
-
-// SinceDBActivity returns how long it's been since the last DB write stamp.
-func SinceDBActivity() time.Duration {
-	dbActivityMu.Lock()
-	defer dbActivityMu.Unlock()
-	if lastDBActivity.IsZero() {
-		return time.Duration(1 << 62)
-	}
-	return time.Since(lastDBActivity)
 }
 
 // ensureColumn adds a column to an existing table if it does not yet exist.

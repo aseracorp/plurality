@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"fmt"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -50,55 +49,21 @@ func (sp *StreamProcessor) broadcastText(content string) {
 	})
 }
 
-// accumulateToolCall collects a tool call delta into the buffer.
-//
-// Streaming providers (notably DeepSeek v4 Flash over OpenRouter) may emit
-// multiple tool calls in parallel, interleaving their chunks: the delta for
-// call index 1 can arrive while index 0's arguments are still streaming, and
-// continuation deltas often carry a null id / null name. Routing by "append to
-// the last entry" corrupts the arguments of every concurrent call, producing
-// invalid JSON that finalizeStream then fails. We therefore key by the delta's
-// index (falling back to the call id when the index is absent) so each call's
-// name and arguments land on the correct slot regardless of interleaving.
-func (sp *StreamProcessor) accumulateToolCall(index int, id, name, arguments string) {
-	if len(sp.request.ToolCallBuffer) == 0 {
-		sp.request.ToolCallBuffer = append(sp.request.ToolCallBuffer, utils.ToolCall{})
-	}
-
-	slot := index
-	if slot < 0 {
-		// No usable index: reuse the slot already created for this call id
-		// (providers often keep the same id across continuation deltas), or
-		// extend to the next free slot.
-		slot = -1
-		for i := range sp.request.ToolCallBuffer {
-			if sp.request.ToolCallBuffer[i].ID == id && id != "" {
-				slot = i
-				break
-			}
-		}
-		if slot < 0 {
-			slot = len(sp.request.ToolCallBuffer)
-		}
-	}
-	// Gap-fill so a non-sequential index (e.g. only call 1 present so far,
-	// index 3 first) doesn't run out of bounds.
-	for len(sp.request.ToolCallBuffer) <= slot {
-		sp.request.ToolCallBuffer = append(sp.request.ToolCallBuffer, utils.ToolCall{})
-	}
-
-	tc := &sp.request.ToolCallBuffer[slot]
-	if tc.Type == "" {
-		tc.Type = "function"
-	}
-	if id != "" {
-		tc.ID = id
-	}
+// accumulateToolCall collects a new tool call or appends arguments to the last one.
+func (sp *StreamProcessor) accumulateToolCall(id, name, arguments string) {
 	if name != "" {
-		tc.Function.Name = name
+		sp.request.ToolCallBuffer = append(sp.request.ToolCallBuffer, utils.ToolCall{
+			ID:   id,
+			Type: "function",
+			Function: utils.FunctionCall{
+				Name:      name,
+				Arguments: "",
+			},
+		})
 	}
-	if arguments != "" {
-		tc.Function.Arguments += arguments
+	if arguments != "" && len(sp.request.ToolCallBuffer) > 0 {
+		last := &sp.request.ToolCallBuffer[len(sp.request.ToolCallBuffer)-1]
+		last.Function.Arguments += arguments
 	}
 }
 
@@ -201,17 +166,7 @@ func (sp *StreamProcessor) finalizeStream(ctx context.Context) utils.Message {
 func (sp *StreamProcessor) ProcessStandardStream(ctx context.Context, response io.ReadCloser) (utils.Message, error) {
 	defer response.Close()
 
-	// Guard against a stalled upstream: LiteLLM/OpenRouter can stop sending
-	// bytes after the response headers are delivered, and the Scanner below
-	// would block forever on Read (observed in goroutine dumps: RunLLMLoop
-	// goroutines stuck in bufio.Scanner.Scan / chunkedReader.Read for
-	// 80-200 minutes, holding DBWriteMu/the single SQLite conn the whole
-	// time -> chats stop loading and the watchdog kills the container).
-	// idleTimeoutReader makes each Read give up if no byte arrives within
-	// the window, so a dead stream becomes a bounded error instead of an
-	// eternal wedge.
-	const idleTimeout = 90 * time.Second
-	scanner := bufio.NewScanner(&idleTimeoutReader{r: response, timeout: idleTimeout})
+	scanner := bufio.NewScanner(response)
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -254,49 +209,11 @@ func (sp *StreamProcessor) ProcessStandardStream(ctx context.Context, response i
 			} else if choice.Text != "" {
 				sp.broadcastText(choice.Text)
 			} else if len(choice.Delta.ToolCalls) > 0 {
-				for _, tc := range choice.Delta.ToolCalls {
-					sp.accumulateToolCall(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments)
-				}
+				tc := choice.Delta.ToolCalls[0]
+				sp.accumulateToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
 			}
 		}
 	}
 
 	return sp.buildAssistantMessage(), scanner.Err()
 }
-
-// idleTimeoutReader wraps an io.Reader so every Read returns io.EOF if no
-// data arrives within timeout. This bounds the time a runLoop goroutine can
-// block reading a stalled SSE stream (see ProcessStandardStream), preventing
-// the multi-hour wedges observed in crash dumps.
-type idleTimeoutReader struct {
-	r       io.Reader
-	timeout time.Duration
-}
-
-func (t *idleTimeoutReader) Read(p []byte) (int, error) {
-	type result struct {
-		n   int
-		err error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		n, err := t.r.Read(p)
-		ch <- result{n, err}
-	}()
-	select {
-	case res := <-ch:
-		return res.n, res.err
-	case <-time.After(t.timeout):
-		// A timeout is NOT a clean end-of-stream: the upstream went silent
-		// mid-response. Return a sentinel error so the caller can distinguish
-		// "stream completed" from "stream stalled and was cut off", and retry
-		// instead of silently finalizing a partial assistant message.
-		return 0, ErrStreamIdleTimeout
-	}
-}
-
-// ErrStreamIdleTimeout is returned by idleTimeoutReader when no bytes arrive
-// within the idle window. It is deliberately NOT io.EOF: EOF means the
-// provider finished; this sentinel means the stream stalled and was cut off,
-// so the workflow must retry rather than silently truncate the turn.
-var ErrStreamIdleTimeout = fmt.Errorf("stream idle timeout: provider stopped sending bytes")

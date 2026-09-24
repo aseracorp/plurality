@@ -22,13 +22,8 @@ FROM --platform=$BUILDPLATFORM dart:stable AS flutter_builder
 RUN apt-get update && apt-get install -y curl git unzip xz-utils zip libglu1-mesa
 
 # Get Stable Branch
-# The Flutter SDK (~2GB) is cloned into the image layer (NOT a BuildKit cache
-# mount): cache mounts only persist for the single RUN they're declared on, so
-# mounting /flutter here would leave it empty for the later 'flutter pub get' /
-# 'flutter build web' steps ('command not found', exit 127). Reuse across runs
-# comes from the GHA layer cache (cache-from in the workflow) keyed on this
-# unchanged step.
-RUN git clone --branch stable --depth 1 https://github.com/flutter/flutter.git /flutter
+RUN git clone https://github.com/flutter/flutter.git /flutter && \
+  git -C /flutter checkout stable
 ENV PATH="/flutter/bin:${PATH}"
 
 # Copy the Flutter app source
@@ -44,12 +39,6 @@ WORKDIR /app/client
 
 
 # Build the Flutter web app
-# NOTE: no --mount=type=cache on pub-cache here. The pub cache is needed
-# by the NEXT RUN ('flutter build web'), and cache mounts are ephemeral
-# (discarded at end of their RUN), which caused 'Error when reading
-# /root/.pub-cache/... (No such file or directory)' during the web build.
-# Reuse comes from the GHA layer cache (cache-from) keyed on the unchanged
-# pubspec.lock + this step.
 RUN flutter pub get
 RUN flutter build web --release
 
@@ -77,9 +66,6 @@ WORKDIR /app/server
 
 # Build the Go application (build.sh sets its own CGO_CFLAGS).
 # GOOS/GOARCH come from buildx's per-target args.
-# The module cache and Go build cache are persisted in BuildKit cache
-# mounts, so the heavy CGO deps (mattn/go-sqlite3, sqlite-vec) don't
-# re-download and recompile on every build.
 # CACHEBUST: pass --build-arg CACHEBUST=<git rev> so the Go binary is always
 # recompiled from the current source (prevents a stale cached 'go build' from
 # shipping an old server binary even when the checkout is up to date).
@@ -120,17 +106,15 @@ WORKDIR /app
 COPY --from=go_builder /app/server/build/ /app/
 
 # Build LiteLLM venv using runtime Python (avoids glibc version mismatch)
-# NOTE: no --mount=type=cache here. A cache mount is ephemeral (discarded
-# at the end of the RUN), so the venv MUST be written into the image layer
-# or the runtime image ships without LiteLLM. Cross-run reuse of this slow
-# install comes from the GHA layer cache (cache-from) keyed on the
-# unchanged litellm_requirements.txt + this step.
-# No dummy-pyroscope stub: litellm's own dependency on pyroscope-io is
-# satisfied by the published wheel (pyroscope-io 0.8.16+ has prebuilt
-# wheels), so forcing a local >=99.0.0 stub via PIP_CONSTRAINT only broke
-# resolution. Plain 'pip install -r' resolves whatever it needs.
-RUN python3 -m venv /app/litellm/litellm_venv && \
-    /app/litellm/litellm_venv/bin/pip install --no-cache-dir -r /app/litellm/litellm_requirements.txt
+# Stub out pyroscope-io (needs Rust/cargo to build, not needed at runtime)
+RUN mkdir -p /tmp/dummy-pyroscope && \
+    printf '[project]\nname = "pyroscope-io"\nversion = "99.0.0"\n' > /tmp/dummy-pyroscope/pyproject.toml && \
+    echo 'pyroscope-io>=99.0.0' > /tmp/pip-constraints.txt && \
+    python3 -m venv /app/litellm/litellm_venv && \
+    /app/litellm/litellm_venv/bin/pip install --no-cache-dir /tmp/dummy-pyroscope && \
+    PIP_CONSTRAINT=/tmp/pip-constraints.txt \
+    /app/litellm/litellm_venv/bin/pip install --no-cache-dir -r /app/litellm/litellm_requirements.txt && \
+    rm -rf /tmp/dummy-pyroscope /tmp/pip-constraints.txt
 
 # Copy the Flutter web build to the static directory
 RUN mkdir -p /app/web
@@ -153,13 +137,11 @@ EXPOSE 8090
 # persistent /app/data/crash.log and auto-restarts the server, so a crash is
 # observable and self-healing instead of an invisible outage.
 #
-# IMPORTANT: the real binary is placed at /app/Plurality.bin and /app/Plurality
-# is a SHELL SHIM that execs the supervisor. Some launchers (e.g. Cosmos or a
-# `docker run ... /app/Plurality` command) OVERRIDE the ENTRYPOINT/CMD and
-# start /app/Plurality directly - in that case the ENTRYPOINT is bypassed and
-# the supervisor (crash capture + auto-restart) would never run. Making
-# /app/Plurality the shim guarantees the supervised entrypoint runs no matter
-# how the container is started.
+# The real binary is placed at /app/Plurality.bin and /app/Plurality is a shell
+# SHIM that execs the supervisor: some launchers OVERRIDE the ENTRYPOINT/CMD and
+# start /app/Plurality directly — in that case the ENTRYPOINT is bypassed and
+# the supervisor would never run. Making /app/Plurality the shim guarantees the
+# supervised entrypoint runs no matter how the container is started.
 COPY server/supervisor.sh /app/supervisor.sh
 RUN chmod +x /app/supervisor.sh
 ARG CACHEBUST_BIN=latest

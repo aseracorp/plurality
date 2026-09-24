@@ -10,15 +10,10 @@ import (
 )
 
 // SSEClient represents a single connected SSE listener.
-// sendMu serializes writes to the underlying ResponseWriter: net/http is not
-// safe for concurrent writes on the same connection, and Broadcast snapshots
-// the client set so two Broadcast calls (mid-turn "text", end-turn "done")
-// can otherwise interleave frames on one socket.
 type SSEClient struct {
 	writer  http.ResponseWriter
 	flusher http.Flusher
 	Done    chan struct{}
-	sendMu  sync.Mutex
 }
 
 // NewSSEClient creates an SSEClient from an HTTP response writer.
@@ -36,14 +31,9 @@ func NewSSEClient(w http.ResponseWriter) *SSEClient {
 }
 
 // Send writes an SSEEvent to this client. Returns false if the write fails.
-// It does not hold any registry lock and never spawns a goroutine: a broken
-// socket surfaces as a failed write (WriteSSEEvent recovers
-// http.ErrAbortHandler — see sse_events.go), so a client disconnect cannot
-// panic the process nor wedge callers on a forever-blocking Flush.
 func (c *SSEClient) Send(event SSEEvent) bool {
-	c.sendMu.Lock()
-	defer c.sendMu.Unlock()
-	return WriteSSEEvent(c.writer, event) == nil
+	err := WriteSSEEvent(c.writer, event)
+	return err == nil
 }
 
 // ActiveRequest tracks an in-progress LLM request for a conversation.
@@ -108,45 +98,19 @@ func (ar *ActiveRequest) ClientCount() int {
 // Broadcast sends an SSEEvent to all connected clients.
 // Disconnected clients are automatically removed.
 func (ar *ActiveRequest) Broadcast(event SSEEvent) {
-	// Snapshot the client set under the lock, then send WITHOUT holding
-	// ar.mu. The old code wrote to clients while holding ar.mu: if one SSE
-	// socket was dead-but-open, ResponseWriter.Flush() blocked forever,
-	// wedging ar.mu. Then every AddClient/RemoveClient/CloseAllClients
-	// (cleanup at the end of a turn) blocked too — the UI stayed up (SPA)
-	// but chats wouldn't load or start, exactly the reported symptom, until
-	// a watchdog killed the container. This fires at 'No tool calls,
-	// setting idle and broadcasting done' — the conversation-end teardown.
-	ar.mu.RLock()
-	clients := make([]*SSEClient, 0, len(ar.clients))
-	for c := range ar.clients {
-		clients = append(clients, c)
-	}
-	ar.mu.RUnlock()
-
-	if len(clients) == 0 && event.Type != "text" {
+	ar.mu.Lock()
+	defer ar.mu.Unlock()
+	if len(ar.clients) == 0 && event.Type != "text" {
 		utils.Debug("[Broadcast] No clients connected for %s event on %s", event.Type, ar.ConversationID)
 	}
-
-	for _, client := range clients {
-		// Send outside the lock. A broken socket surfaces as a failed
-		// write (WriteSSEEvent recovers ErrAbortHandler), so we drop the
-		// client here instead of letting it wedge the registry on a
-		// forever-blocking Flush. No per-event goroutine is spawned: an
-		// uncancellable goroutine per event would leak forever on a stuck
-		// socket and could write to the same connection concurrently with
-		// the next Broadcast (sendMu prevents frame interleaving, not the
-		// leak).
+	for client := range ar.clients {
 		if !client.Send(event) {
-			ar.mu.Lock()
-			if _, ok := ar.clients[client]; ok {
-				delete(ar.clients, client)
-				select {
-				case <-client.Done:
-				default:
-					close(client.Done)
-				}
+			delete(ar.clients, client)
+			select {
+			case <-client.Done:
+			default:
+				close(client.Done)
 			}
-			ar.mu.Unlock()
 		}
 	}
 }
@@ -276,27 +240,13 @@ func (r *statusRegistry) Remove(client *StatusClient) {
 	delete(r.clients, client)
 }
 
-// BroadcastToUser sends a StatusEvent to all status clients belonging to a
-// specific user. The client set is snapshotted under the lock and sent
-// WITHOUT holding r.mu: the old code wrote to clients while holding the
-// global status mutex, so one dead-but-open status socket (whose
-// ResponseWriter.Flush blocks forever) wedged EVERY BroadcastToUser and every
-// Add/Remove of the status stream — the whole backend froze, the SPA stayed
-// up but loaded nothing, and a watchdog eventually killed the container.
+// BroadcastToUser sends a StatusEvent to all status clients belonging to a specific user.
 func (r *statusRegistry) BroadcastToUser(userID string, event StatusEvent) {
-	r.mu.RLock()
-	clients := make([]*StatusClient, 0, len(r.clients))
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for client := range r.clients {
 		if client.UserID == userID {
-			clients = append(clients, client)
-		}
-	}
-	r.mu.RUnlock()
-
-	for _, client := range clients {
-		if !client.Send(event) {
-			r.mu.Lock()
-			if _, ok := r.clients[client]; ok {
+			if !client.Send(event) {
 				delete(r.clients, client)
 				select {
 				case <-client.Done:
@@ -304,7 +254,6 @@ func (r *statusRegistry) BroadcastToUser(userID string, event StatusEvent) {
 					close(client.Done)
 				}
 			}
-			r.mu.Unlock()
 		}
 	}
 }
