@@ -34,10 +34,15 @@ forward() {
 }
 trap forward TERM INT
 
+# PR #30 made /app/Plurality a SHIM that execs this supervisor, so running
+# /app/Plurality here would recurse infinitely (startup loop). Run the real
+# binary; fall back to the old direct path on pre-#30 images.
+BIN=/app/Plurality.bin
+[ -x "$BIN" ] || BIN=/app/Plurality
 restart_delay=0
 while true; do
-  echo "=== $(date -u +%FT%T) starting /app/Plurality (attempt after ${restart_delay}s) ===" >> "$LOG"
-  /app/Plurality >> "$OUT" 2>&1 &
+  echo "=== $(date -u +%FT%T) starting $BIN (attempt after ${restart_delay}s) ===" >> "$LOG"
+  "$BIN" >> "$OUT" 2>&1 &
   SPID=$!
   wait "$SPID"
   rc=$?
