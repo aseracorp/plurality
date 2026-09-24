@@ -66,8 +66,14 @@ WORKDIR /app/server
 
 # Build the Go application (build.sh sets its own CGO_CFLAGS).
 # GOOS/GOARCH come from buildx's per-target args.
+# CACHEBUST: pass --build-arg CACHEBUST=<git rev> so the Go binary is always
+# recompiled from the current source (prevents a stale cached 'go build' from
+# shipping an old server binary even when the checkout is up to date).
+ARG CACHEBUST=latest
 RUN chmod +x build.sh
-RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} ./build.sh
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} ./build.sh
 
 # Copy litellm requirements for installation in final stage
 RUN mkdir -p build/litellm && cp litellm_requirements.txt build/litellm/
@@ -125,6 +131,21 @@ VOLUME /root
 # Expose the port the server listens on
 EXPOSE 8090
 
-# Run the server under tini so PID 1 reaps zombies and forwards signals
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["/app/Plurality"]
+# Run the server under the crash-capture supervisor (still under tini as PID 1,
+# so zombies are reaped and `docker stop` signals are forwarded). The
+# supervisor logs the exact exit code/signal of every server death to the
+# persistent /app/data/crash.log and auto-restarts the server, so a crash is
+# observable and self-healing instead of an invisible outage.
+#
+# The real binary is placed at /app/Plurality.bin and /app/Plurality is a shell
+# SHIM that execs the supervisor: some launchers OVERRIDE the ENTRYPOINT/CMD and
+# start /app/Plurality directly — in that case the ENTRYPOINT is bypassed and
+# the supervisor would never run. Making /app/Plurality the shim guarantees the
+# supervised entrypoint runs no matter how the container is started.
+COPY server/supervisor.sh /app/supervisor.sh
+RUN chmod +x /app/supervisor.sh
+ARG CACHEBUST_BIN=latest
+# the binary COPY happens in the build stage; here we wrap it. This must run
+# AFTER /app/Plurality (real binary) is copied from the builder stage.
+RUN sh -c 'mv /app/Plurality /app/Plurality.bin && printf "#!/bin/sh\nexec /app/supervisor.sh\n" > /app/Plurality && chmod +x /app/Plurality && chmod +x /app/Plurality.bin'
+ENTRYPOINT ["/usr/bin/tini", "--", "/app/supervisor.sh"]

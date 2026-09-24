@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"time"
 
 	"github.com/azukaar/plurality/src/ai"
 	"github.com/azukaar/plurality/src/ai_tools"
@@ -74,6 +77,26 @@ func main() {
 	// Pass LiteLLM URL to packages that talk to the proxy directly.
 	db.LiteLLMBaseURL = ai.LiteLLMBaseURL
 	ai_tools.LiteLLMBaseURL = ai.LiteLLMBaseURL
+
+	// Diagnostic watchdog: periodically dump ALL goroutine stacks to the
+	// persistent volume so a wedge (goroutine holding the single SQLite
+	// connection / a mutex forever) is observable after the fact, even when
+	// the process is subsequently killed. Diagnostic only; no behavior change.
+	go func() {
+		for {
+			time.Sleep(60 * time.Second)
+			buf := make([]byte, 1<<20)
+			n := runtime.Stack(buf, true)
+			base := os.Getenv("USER_DATA_STORAGE")
+			if base == "" {
+				base = "users-data"
+			}
+			dir := filepath.Join(base, "diagnostics")
+			os.MkdirAll(dir, 0o755)
+			path := filepath.Join(dir, fmt.Sprintf("goroutines_%d.txt", time.Now().Unix()))
+			os.WriteFile(path, buf[:n], 0o644)
+		}
+	}()
 
 	// CRON scheduler: rebuild every user's jobs from disk and start the loop.
 	cron.Init()
