@@ -178,7 +178,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := utils.HTTPClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, err
@@ -429,7 +429,7 @@ func GenerateImage(request ImageGenerationRequest) ([]byte, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := utils.HTTPClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -490,7 +490,7 @@ func GenerateTitleForMessage(message, model string) (string, error) {
 
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := utils.HTTPClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -579,7 +579,7 @@ func GenerateCheckpointSummary(text, model string) (string, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := utils.HTTPClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err

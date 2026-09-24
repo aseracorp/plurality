@@ -123,10 +123,16 @@ COPY --from=flutter_builder /app/client/build/web /app/web
 # Create directories for volumes
 RUN mkdir -p /app/users-data /app/data
 
-# Declare volumes
+# Declare runtime data volumes. These are ALWAYS explicitly mounted by the
+# host/compose (see deployment.md) — do NOT add anonymous VOLUME entries here:
+# a VOLUME /root (or any dir that holds build tooling / binaries) makes Docker
+# create a persistent anonymous volume that SHADOWS that path on every
+# container start. A stale anonymous volume survives image rebuilds, so a
+# freshly layered /app/Plurality.bin can be masked by an old one from a
+# previous container, and /root tooling (go cache, npx, playwright) silently
+# drifts. Data dirs only, declared, not materialized.
 VOLUME /app/users-data
 VOLUME /app/data
-VOLUME /root
 
 # Expose the port the server listens on
 EXPOSE 8090
