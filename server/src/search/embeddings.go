@@ -10,24 +10,12 @@ import (
 	"math"
 	"net/http"
 	"os"
-	"sync"
 
 	"github.com/azukaar/plurality/src/utils"
 )
 
 var embeddingModel = "text-embedding-3-small"
 var embeddingDimension = 1536
-
-// sqliteVecMu serializes every native sqlite-vec (vec0) operation in this
-// process. sqlite-vec v0.1.7-alpha.2 registers ONE global virtual-table
-// implementation via sqlite3_auto_extension, so concurrent vec0 calls on
-// different *sql.DB handles (multiple users, or a store racing a search)
-// still execute in the same C code and are NOT safe to overlap. Async
-// embedding goroutines (one per saved message) used to be able to collide
-// with each other or with request-time vector searches; a native bug there
-// segfaults the process with no Go panic to recover. Serializing here makes
-// the crash mode impossible.
-var sqliteVecMu sync.Mutex
 
 func init() {
 	if m := os.Getenv("EMBEDDING_MODEL"); m != "" {
@@ -58,16 +46,7 @@ func GenerateEmbedding(liteLLMBaseURL string, text string) ([]float32, error) {
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
 
-	// Use the shared bounded client (see utils.HTTPClient): no-timeout HTTP
-	// here historically wedged the server — the embed goroutine held the
-	// global DBWriteMu across this call, so a stuck request blocked every
-	// SQLite write (UI alive, chats won't load/create) after a few chats.
-	req, err := http.NewRequest("POST", liteLLMBaseURL+"/v1/embeddings", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("creating embeddings request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := utils.DoLLMHTTPWithRetry(req)
+	resp, err := http.Post(liteLLMBaseURL+"/v1/embeddings", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("calling embeddings API: %w", err)
 	}
@@ -91,19 +70,8 @@ func GenerateEmbedding(liteLLMBaseURL string, text string) ([]float32, error) {
 }
 
 // StoreEmbedding inserts or replaces a vector in the vec_embeddings table.
-// Callers must hold db.DBWriteMu (the embed goroutine in db.PushMessage does
-// so) so the native vec0 INSERT cannot overlap other SQLite writes on the
-// same user DB (PushMessage's messages_fts insert, eco compaction's
-// DELETE+UPDATE) — the vec0 virtual table is C code and overlapping it with
-// FTS5 writes aborts the process with no Go panic to recover.
-// sqliteVecMu additionally guards the global vec0 implementation across DB
-// handles.
 func StoreEmbedding(db *sql.DB, sourceType string, sourceID string, embedding []float32) error {
 	blob := float32ToBytes(embedding)
-
-	sqliteVecMu.Lock()
-	defer sqliteVecMu.Unlock()
-
 	_, err := db.Exec(
 		`INSERT INTO vec_embeddings(source_type, source_id, embedding) VALUES (?, ?, ?)`,
 		sourceType, sourceID, blob,
@@ -111,35 +79,10 @@ func StoreEmbedding(db *sql.DB, sourceType string, sourceID string, embedding []
 	return err
 }
 
-// StoreEmbeddingLocked is StoreEmbedding but wraps the native vec0 INSERT in a
-// caller-supplied global-DB-write lock (injected as `protect func(func())`,
-// e.g. db.WithDBWriteMu). The vec0 virtual table is native C code; an INSERT
-// that overlaps ANY other write on the same single SQLite connection (FTS5
-// message inserts from PushMessage, eco compaction DELETEs) can segfault the
-// whole process with no Go panic to recover. sqliteVecMu alone only
-// serializes vec0-vs-vec0; the caller-provided lock serializes it against all
-// other SQLite writes on the same user DB.
-func StoreEmbeddingLocked(db *sql.DB, sourceType string, sourceID string, embedding []float32, protect func(func())) error {
-	var err error
-	protect(func() {
-		err = StoreEmbedding(db, sourceType, sourceID, embedding)
-	})
-	return err
-}
-
 // VectorSearch performs KNN search on vec_embeddings and returns ranked source IDs with distances.
 // Results with distance above the threshold are discarded.
 func VectorSearch(db *sql.DB, queryVec []float32, sourceType string, k int) ([]ScoredResult, error) {
 	blob := float32ToBytes(queryVec)
-
-	// Same global-native-code protection as StoreEmbedding: the vec0 virtual
-	// table is one C implementation shared process-wide, and a KNN read can
-	// race an async embed insert on another DB handle. Callers (search.Search
-	// via ai_tools/index) hold db.DBWriteMu so this read is also serialized
-	// against FTS5 writes on the same user DB.
-	sqliteVecMu.Lock()
-	defer sqliteVecMu.Unlock()
-
 	rows, err := db.Query(
 		`SELECT source_id, distance FROM vec_embeddings WHERE embedding MATCH ? AND k = ? AND source_type = ?`,
 		blob, k, sourceType,

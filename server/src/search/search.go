@@ -1,7 +1,6 @@
 package search
 
 import (
-	"sync/atomic"
 	"context"
 	"database/sql"
 	"fmt"
@@ -199,65 +198,7 @@ func truncate(s string, max int) string {
 
 // EmbedAndStore generates an embedding for the given text and stores it.
 // Intended to be called asynchronously after a message is saved.
-// ---------------------------------------------------------------------------
-// Serialized embedding worker.
-//
-// With SetMaxOpenConns(1), the server has ONE SQLite connection per user DB.
-// Spawning a goroutine per message to run EmbedAndStore means N concurrent
-// db.Exec calls queue up waiting for that single connection; combined with
-// PushMessage's own conn usage this produced 2-minute Mutex.Lock / conn-wait
-// pile-ups in goroutine dumps (a virtual deadlock that hangs the backend and
-// reads as a crash). Fix: route every embed through ONE worker goroutine so
-// at most ONE embed never runs at a time, and message pushes are never
-// starved by a backlog of concurrent embeds.
-// ---------------------------------------------------------------------------
-type embedJob struct {
-	db             *sql.DB
-	liteLLMBaseURL string
-	sourceType     string
-	sourceID       string
-	text           string
-}
-
-var embedQueue = make(chan embedJob, 256)
-var embedWorkerStarted atomic.Bool
-
-func embedWorker() {
-	for job := range embedQueue {
-		EmbedAndStore(job.db, job.liteLLMBaseURL, job.sourceType, job.sourceID, job.text)
-	}
-}
-
-func InitEmbedWorker() {
-	if embedWorkerStarted.CompareAndSwap(false, true) {
-		go embedWorker()
-	}
-}
-
-func EnqueueEmbed(db *sql.DB, liteLLMBaseURL string, sourceType string, sourceID string, text string) {
-	if text == "" || len(text) < 3 {
-		return
-	}
-	embedQueue <- embedJob{db, liteLLMBaseURL, sourceType, sourceID, text}
-}
-
-func EmbedAndStoreWithProtect(db *sql.DB, liteLLMBaseURL string, sourceType string, sourceID string, text string, protect func(func())) {
-	// protect is intentionally ignored: wrapping the vec0 insert in the global
-	// DB lock while the parent PushMessage holds the same lock (and the single
-	// SQLite connection) deadlocks. sqliteVecMu inside StoreEmbedding already
-	// serializes vec0 ops; other writers hold DBWriteMu for their own short
-	// critical sections. Plain embed path is used instead.
-	_ = protect
-	// A panic anywhere in this goroutine must never take down the whole
-	// server — it runs in the hot path after every saved message and shares
-	// native sqlite-vec code. Recover and log instead of crashing the
-	// process (same pattern as ai/eco.go runEcoSummary).
-	defer func() {
-		if r := recover(); r != nil {
-			utils.Error("[Search] panic in EmbedAndStore for %s/%s", nil, fmt.Sprintf("%v", r))
-		}
-	}()
-
+func EmbedAndStore(db *sql.DB, liteLLMBaseURL string, sourceType string, sourceID string, text string) {
 	if liteLLMBaseURL == "" || text == "" {
 		return
 	}
@@ -267,30 +208,15 @@ func EmbedAndStoreWithProtect(db *sql.DB, liteLLMBaseURL string, sourceType stri
 		return
 	}
 
-	// The LiteLLM HTTP call runs WITHOUT the DB write lock (bounded by its
-	// own 90s response timeout); only the native vec0 INSERT is protected.
 	vec, err := GenerateEmbedding(liteLLMBaseURL, truncate(text, 8000))
 	if err != nil {
 		utils.Debug("[Search] Failed to generate embedding for %s/%s: %v", sourceType, sourceID, err)
 		return
 	}
 
-	// NOTE: we must NOT pass `protect` here. The comment above says it's
-	// intentionally ignored, and the code now honors that: the plain
-	// StoreEmbedding (sqliteVecMu only) is used regardless of caller. Passing
-	// protect to StoreEmbeddingLocked would wrap the native vec0 INSERT in the
-	// global DB write lock — and when this is reached from db.PushMessage
-	// (which already holds DBWriteMu + the single SQLite connection), that
-	// re-entrant lock deadlocks the whole backend (a crash). This is the
-	// residual half of the #23 deadlock that the #24 revert's comment claimed
-	// to remove but the code still performed.
 	if err := StoreEmbedding(db, sourceType, sourceID, vec); err != nil {
 		utils.Debug("[Search] Failed to store embedding for %s/%s: %v", sourceType, sourceID, err)
 	}
-}
-
-func EmbedAndStore(db *sql.DB, liteLLMBaseURL string, sourceType string, sourceID string, text string) {
-	EmbedAndStoreWithProtect(db, liteLLMBaseURL, sourceType, sourceID, text, func(f func()) { f() })
 }
 
 // EmbedMessage is a convenience wrapper for embedding a conversation message.

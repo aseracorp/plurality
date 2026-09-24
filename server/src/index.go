@@ -1,17 +1,16 @@
 package main
 
 import (
-	"time"
-	"runtime"
-	"fmt"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime/debug"
+	"runtime"
 	"strconv"
+	"time"
 
 	"github.com/azukaar/plurality/src/ai"
 	"github.com/azukaar/plurality/src/ai_tools"
@@ -45,7 +44,6 @@ func main() {
 	auth.Init()
 	startup.Run()
 	db.InitSQLite()
-	search.InitEmbedWorker()
 	defer db.CloseAllUserDBs()
 	storage.Init()
 
@@ -80,21 +78,23 @@ func main() {
 	db.LiteLLMBaseURL = ai.LiteLLMBaseURL
 	ai_tools.LiteLLMBaseURL = ai.LiteLLMBaseURL
 
-	// Stall watchdog: if no SQLite write has completed for 90s the server is
-	// wedged (a goroutine holding the single connection or a mutex). Dump all
-	// goroutine stacks to the persistent volume so the exact blocker is
-	// visible in the post-mortem. Diagnostic only; does not change behavior.
+	// Diagnostic watchdog: periodically dump ALL goroutine stacks to the
+	// persistent volume so a wedge (goroutine holding the single SQLite
+	// connection / a mutex forever) is observable after the fact, even when
+	// the process is subsequently killed. Diagnostic only; no behavior change.
 	go func() {
 		for {
-			time.Sleep(30 * time.Second)
-			if db.SinceDBActivity() > 90*time.Second {
-				os.MkdirAll("/app/users-data/sam/crashwatch", 0o755)
-				path := fmt.Sprintf("/app/users-data/sam/crashwatch/stall_%d.txt", time.Now().Unix())
-				buf := make([]byte, 1<<20)
-				n := runtime.Stack(buf, true)
-				os.WriteFile(path, buf[:n], 0o644)
-				log.Printf("STALL WATCHDOG: no DB write for %v; dumped goroutines to %s", db.SinceDBActivity(), path)
+			time.Sleep(60 * time.Second)
+			buf := make([]byte, 1<<20)
+			n := runtime.Stack(buf, true)
+			base := os.Getenv("USER_DATA_STORAGE")
+			if base == "" {
+				base = "users-data"
 			}
+			dir := filepath.Join(base, "diagnostics")
+			os.MkdirAll(dir, 0o755)
+			path := filepath.Join(dir, fmt.Sprintf("goroutines_%d.txt", time.Now().Unix()))
+			os.WriteFile(path, buf[:n], 0o644)
 		}
 	}()
 
@@ -234,29 +234,7 @@ func main() {
 		})
 	}
 
-	// Global panic recovery: net/http does NOT recover handler panics — a
-	// panic in any request handler (e.g. while processing a huge
-	// conversation at "finished workflow") would terminate the entire
-	// process and restart the container. Wrap the router so a panic is
-	// caught, logged with its stack, and returned as a clean 500 instead
-	// of crashing the server.
-	recoveryMiddleware := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			defer func() {
-				if rec := recover(); rec != nil {
-					log.Printf("PANIC RECOVERED in %s %s: %v\n%s",
-						r.Method, r.URL.Path, rec, debug.Stack())
-					// Flusher may already have written SSE frames; we can't
-					// change the status then. Best effort only.
-					w.Header().Set("Content-Type", "application/json")
-					http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
-				}
-			}()
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	http.Handle("/", recoveryMiddleware(corsMiddleware(r)))
+	http.Handle("/", corsMiddleware(r))
 
 	log.Printf("Server starting on port 8090...")
 	log.Fatal(http.ListenAndServe(":8090", nil))
@@ -288,9 +266,7 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	db.LockDBWrite()
 	results, err := search.Search(r.Context(), userDB, ai.LiteLLMBaseURL, query, limit)
-	db.UnlockDBWrite()
 	if err != nil {
 		utils.SendHTTPError(w, err.Error(), http.StatusInternalServerError)
 		return

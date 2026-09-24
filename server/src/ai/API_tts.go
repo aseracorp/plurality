@@ -151,7 +151,7 @@ func StreamGenerateAudio(ctx context.Context, w http.ResponseWriter, input strin
 	}
 
 	// Use a scanner to read the SSE events line by line
-	scanner := bufio.NewScanner(&idleTimeoutReader{r: resp.Body, timeout: 90 * time.Second})
+	scanner := bufio.NewScanner(resp.Body)
 
 	// Buffer for accumulating audio data
 	// var audioBuffer bytes.Buffer

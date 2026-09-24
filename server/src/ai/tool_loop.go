@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"errors"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -29,20 +28,6 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 
 	utils.Log("[LLMLoop] Starting for conversation %s with %d connected clients", ar.ConversationID, ar.ClientCount())
 
-	// streamRetries counts how many times we've re-issued the whole LLM call
-	// after a mid-stream upstream failure. Bounded so a persistently dying
-	// provider can't loop forever.
-	streamRetries := 0
-	maxStreamRetries := 1
-
-	// llmCallRetries counts retries of the INITIAL SendChatCompletion when it
-	// fails with a transient provider error (OpenRouter 402 -> LiteLLM 500,
-	// 429, 5xx). Without this, a single budget-exhaustion 402 killed the
-	// whole workflow: the error path below aborted immediately even though
-	// the 402 resolves once other in-flight streams settle.
-	llmCallRetries := 0
-	maxLLMCallRetries := 6
-
 	for {
 		select {
 		case <-ar.Ctx.Done():
@@ -62,20 +47,6 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			if ar.Ctx.Err() != nil {
 				ar.flushPartialResponse(ctx, conversation)
 				return
-			}
-			// Transient provider failure (OpenRouter in-flight budget 402
-			// surfaced as LiteLLM 500, or 429/5xx): if no output has been
-			// emitted yet, back off and retry the whole call. Nothing was
-			// executed, so a fresh request is safe. Only give up after the
-			// bounded budget so a persistently down provider can't loop.
-			if len(ar.TextBuffer.String()) == 0 && llmCallRetries < maxLLMCallRetries {
-				llmCallRetries++
-				backoff := time.Duration(30 * llmCallRetries) * time.Second
-				utils.Log("[LLMLoop] LLM call failed up front (attempt %d/%d); backing off %v and retrying",
-					llmCallRetries, maxLLMCallRetries, backoff)
-				ar.BroadcastStatus("typing", "")
-				time.Sleep(backoff)
-				continue
 			}
 			utils.Error("[LLMLoop] Error calling LLM", err)
 			ar.Broadcast(SSEEvent{
@@ -97,39 +68,6 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				ar.flushPartialResponse(ctx, conversation)
 				return
 			}
-
-			// Mid-stream upstream failure (e.g. OpenRouter partner provider
-			// dying ~100s in with "model stopped before completing the
-			// response"). If nothing was emitted yet — no text and no tool
-			// calls — retry the whole turn (bounded): nothing was executed
-			// so a fresh request is safe and side-effect free.
-			// ErrStreamIdleTimeout (the 90s no-data guard in
-			// ProcessStandardStream) is ALSO retryable, even with partial
-			// output: it means the provider stalled mid-stream, NOT that it
-			// finished. Without this, a slow/stalled stream was silently
-			// finalized as a partial assistant message — the conversation
-			// "stopped" with no error and no retry. Retrying (bounded)
-			// prevents that silent truncation; if partial content already
-			// flowed we clear it and re-request so the user gets a complete
-			// answer rather than a truncated one.
-			isIdleTimeout := errors.Is(err, ErrStreamIdleTimeout)
-			if (len(ar.TextBuffer.String()) == 0 || isIdleTimeout) && len(assistantMessage.ToolCalls) == 0 && streamRetries < maxStreamRetries {
-				streamRetries++
-				utils.Log("[LLMLoop] Stream failed before output complete (idle-timeout=%v), retrying (attempt %d/%d)", isIdleTimeout, streamRetries+1, maxStreamRetries+1)
-				ar.ResetBuffer()
-				ar.BroadcastStatus("typing", "")
-				continue
-			}
-
-			utils.Error("[LLMLoop] Stream failed after partial output; cannot retry safely", nil)
-			ar.setState(ctx, utils.StateIdle)
-			ar.Broadcast(SSEEvent{
-				Type:           "error",
-				Content:        "The AI backend stopped responding mid-stream (provider timeout). Please try again.",
-				ConversationID: ar.ConversationID,
-			})
-			ar.BroadcastStatus("", "")
-			return
 		}
 
 		utils.Log("[LLMLoop] Stream complete. Text length: %d, Tool calls: %d", len(ar.TextBuffer.String()), len(assistantMessage.ToolCalls))
@@ -176,11 +114,6 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			if conversation.Title == "New Chat" {
 				titleMsSnap := conversation.ModelSelected
 				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							utils.Error("[LLMLoop] title gen panicked", nil, fmt.Sprintf("%v", r))
-						}
-					}()
 					title, icon, err := generateTitleAndIcon(ctx, conversation)
 					if err != nil {
 						utils.Error("[LLMLoop] Auto title generation failed", err)

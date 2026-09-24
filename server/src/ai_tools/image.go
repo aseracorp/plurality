@@ -169,7 +169,7 @@ var ImageGenTool = utils.AITool{
 			req.Header.Set("Content-Type", "application/json")
 		}
 
-		client := utils.HTTPClient
+		client := &http.Client{}
 		resp, err := client.Do(req)
 		if err != nil {
 			return utils.NewTextContent(fmt.Sprintf("Error making request: %s", err.Error()))

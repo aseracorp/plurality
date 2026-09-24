@@ -45,12 +45,7 @@ func InjectAndReinvoke(parentID, userID, content string) error {
 
 	model := SelectModel(updated.ModelSelected, updated)
 	ar := NewActiveRequest(updated.ID, userID, model, updated.ModelSelected)
-	// Bound a single turn: WithCancel lets the user cancel; WithTimeout is
-	// a hard cap so a hung upstream (SSE stream that never EOFs, provider
-	// stall) cannot hold this ActiveRequest + the DB connection for hours
-	// (observed: runLoop goroutines wedged 80-200 min in crash dumps).
 	cancelCtx, cancelFunc := context.WithCancel(ctx)
-	cancelCtx, cancelFunc = context.WithTimeout(cancelCtx, 30 * time.Minute)
 	ar.Ctx = cancelCtx
 	ar.Cancel = cancelFunc
 	RequestRegistry.Set(updated.ID, ar)
