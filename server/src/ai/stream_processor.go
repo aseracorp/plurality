@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -67,6 +68,24 @@ func (sp *StreamProcessor) accumulateToolCall(id, name, arguments string) {
 	}
 }
 
+// mintProviderCallID makes an assistant tool-call id unique across the WHOLE
+// conversation, not just this turn. Providers (e.g. DeepSeek v4 Flash over
+// OpenRouter) recycle short ids like "call_0" on every turn, so an id that was
+// already persisted in an earlier assistant message collides with later turns.
+// Namespacing on the number of already-persisted messages guarantees two tool
+// calls can never share an id (even the same provider id twice in one turn),
+// while staying short and deterministic.
+func (sp *StreamProcessor) mintProviderCallID(providerID string) string {
+	// One namespace per persisted message: len() is the number of messages
+	// already persisted, and each new assistant message appends to the array,
+	// so the namespace strictly increases turn over turn.
+	ns := len(sp.conversation.Messages) + 1000
+	if providerID == "" {
+		return fmt.Sprintf("call_%d_a", ns)
+	}
+	return fmt.Sprintf("call_%d_%s", ns, providerID)
+}
+
 // buildAssistantMessage creates the final assistant Message from accumulated buffers.
 func (sp *StreamProcessor) buildAssistantMessage() utils.Message {
 	message := utils.Message{
@@ -86,6 +105,11 @@ func (sp *StreamProcessor) buildAssistantMessage() utils.Message {
 
 	if len(sp.request.ToolCallBuffer) > 0 {
 		for i := range sp.request.ToolCallBuffer {
+			// Namespace the provider id with this conversation's seq so ids
+			// are unique across turns (providers reuse call_0) — the persisted
+			// assistant message and every result pushed for it must carry the
+			// same minted id, otherwise the tool loop cannot match them.
+			sp.request.ToolCallBuffer[i].ID = sp.mintProviderCallID(sp.request.ToolCallBuffer[i].ID)
 			enrichToolCallMetadata(&sp.request.ToolCallBuffer[i])
 		}
 		message.ToolCalls = sp.request.ToolCallBuffer
