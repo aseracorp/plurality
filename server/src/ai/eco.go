@@ -57,20 +57,40 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool) []utils.M
 	tail := messages[lastCheckpointIdx:]
 
 	// Safety net: even with eco on, the live tail after the last checkpoint
-	// can grow unbounded (observed 3,740 messages when the compaction got
-	// stuck). Never ship a context-busting tail to the provider — cap it to
-	// the most recent maxTailMessages, always starting on a user message so
-	// the model still has a complete turn boundary to respond to. The
-	// checkpoint summary before the cap keeps the dropped middle coherent.
-	const maxTailMessages = 600
-	if len(tail) > maxTailMessages {
-		start := len(tail) - maxTailMessages
-		// Back up to a user boundary so we never start mid-turn (which
-		// would orphan tool results whose parent is in the dropped section).
-		for start > 0 && tail[start].Role != "user" {
-			start--
+	// can grow unbounded. Never ship a context-busting tail to the provider.
+	// Message-count caps are not enough: observed a 600-message tail that was
+	// ~400k tokens because every tool result is huge (this conversation: avg
+	// 2.5k chars/tool msg). Cap by BUDGET (sum of content length) instead,
+	// always starting on a user message so the model still has a complete turn
+	// boundary to respond to. The checkpoint summary before the cap keeps the
+	// dropped middle coherent.
+	const maxTailChars = 100_000 // ~25-30k tokens, safe for any 128k-context model
+	count := 0
+	chars := 0
+	var start int
+	start = len(tail) - 1
+	for start >= 0 {
+		chars += len(tail[start].TextContent())
+		count++
+		if chars > maxTailChars {
+			start++
+			break
 		}
-		utils.Log("[Eco] capping tail from %d to %d messages (start idx %d) for conv safety", len(tail), len(tail)-start, start)
+		if start == 0 {
+			break
+		}
+		start--
+	}
+	if start < 0 {
+		start = 0
+	}
+	// Always back up to a user boundary so we never start mid-turn (which
+	// would orphan tool results whose parent is in the dropped section).
+	for start > 0 && tail[start].Role != "user" {
+		start--
+	}
+	if start > 0 {
+		utils.Log("[Eco] capping tail by budget: kept %d msgs / %d chars (start idx %d) for context safety", len(tail)-start, chars, start)
 		tail = tail[start:]
 	}
 	return tail
