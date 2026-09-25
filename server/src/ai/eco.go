@@ -54,7 +54,26 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool) []utils.M
 	if lastCheckpointIdx < 0 {
 		return messages
 	}
-	return messages[lastCheckpointIdx:]
+	tail := messages[lastCheckpointIdx:]
+
+	// Safety net: even with eco on, the live tail after the last checkpoint
+	// can grow unbounded (observed 3,740 messages when the compaction got
+	// stuck). Never ship a context-busting tail to the provider — cap it to
+	// the most recent maxTailMessages, always starting on a user message so
+	// the model still has a complete turn boundary to respond to. The
+	// checkpoint summary before the cap keeps the dropped middle coherent.
+	const maxTailMessages = 600
+	if len(tail) > maxTailMessages {
+		start := len(tail) - maxTailMessages
+		// Back up to a user boundary so we never start mid-turn (which
+		// would orphan tool results whose parent is in the dropped section).
+		for start > 0 && tail[start].Role != "user" {
+			start--
+		}
+		utils.Log("[Eco] capping tail from %d to %d messages (start idx %d) for conv safety", len(tail), len(tail)-start, start)
+		tail = tail[start:]
+	}
+	return tail
 }
 
 // lastAssistantPromptTokens scans the conversation backwards and returns
@@ -115,8 +134,17 @@ func findCutoffIndex(messages []utils.Message, lastPromptTokens, targetTokens in
 	}
 
 	// Walk from oldest forward. PromptTokens is cumulative, so the first
-	// assistant with PT ≥ targetDrop is where we've crossed.
+	// assistant with PT ≥ targetDrop is where we've crossed. But we must
+	// pick the LAST such assistant (closest to the end): picking the first
+	// one makes cutoff land right after the old checkpoint, so on the next
+	// eco tick cutoff < minCutoff and compaction bails forever — leaving
+	// the live tail to grow unbounded (observed: one checkpoint at seq 139,
+	// then 3,740 raw messages with no further compaction).
+	//
+	// Walking farthest-forward maximises how much history each compact
+	// folds into the summary, so cutoff strictly advances every tick.
 	crossingAsst := -1
+	lastCrossing := -1
 	for i, m := range messages {
 		if i >= lastAsstIdx {
 			break
@@ -125,9 +153,17 @@ func findCutoffIndex(messages []utils.Message, lastPromptTokens, targetTokens in
 			continue
 		}
 		if m.PromptTokens >= targetDrop {
-			crossingAsst = i
-			break
+			if crossingAsst < 0 {
+				crossingAsst = i
+			}
+			lastCrossing = i
 		}
+	}
+	// Prefer the farthest-forward crossing (strictly past the old
+	// checkpoint) so cutoff advances; if none exists beyond the
+	// checkpoint, fall back to the plain first crossing.
+	if lastCrossing >= 0 {
+		crossingAsst = lastCrossing
 	}
 
 	// Fallback: nobody crossed. Use the last non-final assistant so we at
