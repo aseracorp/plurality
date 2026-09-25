@@ -233,6 +233,15 @@ func main() {
 		},
 	)).Methods("GET", "OPTIONS")
 
+	// Liveness probe for healthchecks / orchestrators (autoheal, k8s, etc.).
+	// Returns a real 200 JSON (not the SPA catch-all) so external watchers can
+	// distinguish "HTTP stack is up" from a missing route. Deliberately
+	// unauthenticated — healthcheckers have no session cookie.
+	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode({"status": "ok"})
+	}).Methods("GET", "OPTIONS")
+
 	// /static folder as SPA
 	exec, _ := os.Executable()
 	pwd := filepath.Dir(exec)
