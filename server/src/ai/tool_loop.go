@@ -48,6 +48,27 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				ar.flushPartialResponse(ctx, conversation)
 				return
 			}
+			if isContextLengthError(err) {
+				// The conversation outgrew the model's context window. Shrink
+				// the in-memory history and retry ONCE — otherwise a long
+				// conversation (this one hit 381k tokens vs 131k limit)
+				// dead-ends into an error/blank UI at workflow end.
+				utils.Error("[LLMLoop] context length exceeded — compacting history and retrying", err)
+				before := len(conversation.Messages)
+				conversation.Messages = CompactConversationForContext(conversation.Messages, 24)
+				after := len(conversation.Messages)
+				utils.Log("[LLMLoop] compacted conversation %s history %d -> %d messages", ar.ConversationID, before, after)
+				if after < before {
+					ar.Broadcast(SSEEvent{
+						Type:           "text",
+						Content:        "(The conversation was too long for the model's context window — older messages were compacted. Retrying …)",
+						ConversationID: ar.ConversationID,
+					})
+					continue
+				}
+				// Compaction left the history unchanged — fall through to the
+				// error path rather than looping forever.
+			}
 			utils.Error("[LLMLoop] Error calling LLM", err)
 			ar.Broadcast(SSEEvent{
 				Type:           "error",
