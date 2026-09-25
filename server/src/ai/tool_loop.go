@@ -139,12 +139,24 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			return
 		}
 
-		// Drop tool calls that already have a tool result in the conversation —
-		// the stream processor pushes synthetic failure results for tool calls
+		// Drop tool calls that already have a tool result in THIS TURN — the
+		// stream processor pushes synthetic failure results for tool calls
 		// whose args were truncated, so re-dispatching them here would just
-		// produce duplicate results in DB.
-		existingResults := make(map[string]bool, len(conversation.Messages))
-		for _, m := range conversation.Messages {
+		// produce duplicate results in DB. Scope to the turn: providers reuse
+		// short tool-call ids ("call_0") across turns, so a whole-history
+		// lookup would wrongly treat every old "call_0" result as this turn's
+		// result and drop the fresh call — the workflow then re-issues the
+		// same call forever (crash loop). Unique minted ids make the
+		// turn-scoped lookup exact.
+		existingResults := make(map[string]bool, len(assistantMessage.ToolCalls))
+		// The last user message demarcates this turn: only tool results
+		// persisted after it belong to the calls we just received. Results
+		// from earlier turns (same provider id "call_0") must never count.
+		for i := len(conversation.Messages) - 1; i >= 0; i-- {
+			m := conversation.Messages[i]
+			if m.Role == "user" {
+				break
+			}
 			if m.Role == "tool" && m.ToolCallID != "" {
 				existingResults[m.ToolCallID] = true
 			}
