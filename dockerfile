@@ -155,3 +155,11 @@ ARG CACHEBUST_BIN=latest
 # AFTER /app/Plurality (real binary) is copied from the builder stage.
 RUN sh -c 'mv /app/Plurality /app/Plurality.bin && printf "#!/bin/sh\nexec /app/supervisor.sh\n" > /app/Plurality && chmod +x /app/Plurality && chmod +x /app/Plurality.bin'
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/supervisor.sh"]
+
+# Healthcheck for orchestrators / autoheal watchers (e.g. willfarrell/autoheal),
+# which restart any container lacking a HEALTHCHECK every cycle. The server
+# exposes /health (returns 200 when the HTTP stack is up); the supervisor keeps
+# the server child alive and restarts it on real crashes, so a healthy HTTP
+# endpoint is the correct liveness signal. 20s interval, 3 retries, 5s timeout.
+HEALTHCHECK --interval=20s --timeout=5s --start-period=30s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8090/health >/dev/null 2>&1 || exit 1
