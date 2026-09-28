@@ -239,7 +239,7 @@ func main() {
 	// unauthenticated — healthcheckers have no session cookie.
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode({"status": "ok"})
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}).Methods("GET", "OPTIONS")
 
 	// /static folder as SPA
