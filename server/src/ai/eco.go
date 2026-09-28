@@ -84,6 +84,16 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool) []utils.M
 	if start < 0 {
 		start = 0
 	}
+	// The budget walker can break with start == len(tail) (it incremented
+	// past the last in-range index to mark "cap from here"). That is a
+	// VALID slice start — tail[len:] is the empty slice — but it is NOT a
+	// valid index to dereference. Clamp it down to the last element first
+	// so the boundary back-up loop below can never index out of range.
+	// (Observed panic: "index out of range [N] with length N" on this
+	// conversation's ~3500-message tail.)
+	if start > len(tail) - 1 {
+		start = len(tail) - 1
+	}
 	// Always back up to a user boundary so we never start mid-turn (which
 	// would orphan tool results whose parent is in the dropped section).
 	for start > 0 && tail[start].Role != "user" {
