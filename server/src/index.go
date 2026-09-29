@@ -47,6 +47,10 @@ func main() {
 	startup.Run()
 	db.InitSQLite()
 	defer db.CloseAllUserDBs()
+	// Single serialized embedding worker — without it, every message push
+	// spawns a goroutine that queues on the SetMaxOpenConns(1) SQLite pool
+	// and wedges the backend under load (see search/search.go).
+	search.InitEmbedWorker()
 	storage.Init()
 
 	// Load global server-side skills from data/skills/ and per-user skills from
