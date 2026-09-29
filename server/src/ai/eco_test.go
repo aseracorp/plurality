@@ -125,3 +125,124 @@ func TestFilterCheckpointsForRequest_EcoOff(t *testing.T) {
 		t.Fatalf("expected 2 messages, got %d", len(got))
 	}
 }
+
+// TestFilterCheckpointsForRequest_TruncatesOversizedSingleMessage ensures a
+// single oversized message in the tail (e.g. a multi-MB pasted blob or a
+// giant inline attachment dump) is truncated to the per-message bound
+// instead of being shipped in full. Before this fix, the tail-cap walker
+// re-included the whole message via the user-boundary back-up, so the
+// "WordPress Security Review" conversation (1858 msgs, ~4.2MB Cosmos dump
+// inline) shipped the blob on every resume and dead-ended with
+// context_length_exceeded.
+func TestFilterCheckpointsForRequest_TruncatesOversizedSingleMessage(t *testing.T) {
+	msgs := []utils.Message{
+		checkpointMsg(),
+		toolMsg(),
+		{Role: "user", Content: utils.NewTextContent(strings.Repeat("x", 150_000))},
+	}
+	got := filterCheckpointsForRequest(msgs, true)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 kept message, got %d", len(got))
+	}
+	if got[0].Role != "user" {
+		t.Fatalf("expected kept role user, got %q", got[0].Role)
+	}
+	text := got[0].TextContent()
+	if len(text) < 90_000 || len(text) >= 150_000 {
+		t.Fatalf("expected oversized user message truncated (head kept), got %d chars", len(text))
+	}
+	if !strings.Contains(text, "truncated by Plurality") {
+		t.Fatalf("expected truncation banner in retained content")
+	}
+}
+
+// TestFilterCheckpointsForRequest_TruncatesOversizedToolResult ensures a
+// huge tool result whose parent assistant call is STILL present in the tail
+// is truncated (not dropped), so the OpenAI tool_calls/result pairing stays
+// valid. Before this fix the giant result was shipped whole and blew the
+// context window.
+func TestFilterCheckpointsForRequest_TruncatesOversizedToolResult(t *testing.T) {
+	msgs := []utils.Message{
+		checkpointMsg(),
+		toolMsg(),
+		{Role: "user", Content: utils.NewTextContent("hi")},
+		{Role: "assistant", Content: utils.NewTextContent("calling tool"),
+			ToolCalls: []utils.ToolCall{{ID: "call_big", Type: "function", Function: utils.FunctionCall{Name: "some_tool", Arguments: "{}"}}}},
+		{Role: "tool", ToolCallID: "call_big", Name: "some_tool", Content: utils.NewTextContent(strings.Repeat("y", 120_000))},
+		{Role: "assistant", Content: utils.NewTextContent("done")},
+	}
+	got := filterCheckpointsForRequest(msgs, true)
+	if len(got) == 0 {
+		t.Fatalf("expected a non-empty tail")
+	}
+	for _, m := range got {
+		if m.Role == "tool" && (len(m.TextContent()) < 90_000 || len(m.TextContent()) >= 150_000) {
+			t.Fatalf("expected oversized tool result truncated (head kept), got %d chars", len(m.TextContent()))
+		}
+	}
+	// The tool call must still have its result (truncated, never dropped).
+	foundCall := false
+	foundResult := false
+	for _, m := range got {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if tc.ID == "call_big" {
+					foundCall = true
+				}
+			}
+		}
+		if m.Role == "tool" && m.ToolCallID == "call_big" {
+			foundResult = true
+		}
+	}
+	if !foundCall || !foundResult {
+		t.Fatalf("expected kept tool call call_big AND its truncated result (call=%v result=%v)", foundCall, foundResult)
+	}
+}
+
+// TestFilterCheckpointsForRequest_DropsDanglingOversizedToolResult ensures
+// a huge tool result whose parent call was already dropped from the tail is
+// removed entirely (pure context waste).
+func TestFilterCheckpointsForRequest_DropsDanglingOversizedToolResult(t *testing.T) {
+	// A dangling oversized tool result (no matching assistant tool_call in
+	// the tail — e.g. left behind by an interrupted stream) must be removed
+	// entirely: it has no parent call, so it is pure context waste.
+	msgs := []utils.Message{
+		checkpointMsg(),
+		toolMsg(),
+		{Role: "user", Content: utils.NewTextContent("hi")},
+		{Role: "tool", ToolCallID: "call_orphan", Name: "other_tool", Content: utils.NewTextContent(strings.Repeat("z", 120_000))},
+	}
+	got := filterCheckpointsForRequest(msgs, true)
+	for _, m := range got {
+		if m.Role == "tool" && m.ToolCallID == "call_orphan" {
+			t.Fatalf("expected dangling oversized tool result call_orphan to be dropped")
+		}
+	}
+}
+
+// TestCompactConversationForContext_TruncatesOversizedMessage ensures the
+// context-overflow recovery path (CompactConversationForContext +
+// TruncateOversizedMessages) also bounds a single oversized message that
+// sits inside the newest keep-window, so the retry cannot fail again with
+// context_length_exceeded on the same giant blob.
+func TestCompactConversationForContext_TruncatesOversizedMessage(t *testing.T) {
+	msgs := []utils.Message{
+		{Role: "system", Content: utils.NewTextContent("sys")},
+		{Role: "user", Content: utils.NewTextContent("hi")},
+		{Role: "user", Content: utils.NewTextContent(strings.Repeat("q", 250_000))}, // monster inline blob
+		{Role: "assistant", Content: utils.NewTextContent("ok")},
+	}
+	got := CompactConversationForContext(msgs, 30)
+	if len(got) != 4 {
+		t.Fatalf("expected all 4 messages preserved (truncated, not dropped), got %d", len(got))
+	}
+	for _, m := range got {
+		if m.Role == "user" && len(m.TextContent()) >= 250_000 {
+			t.Fatalf("expected oversized user message truncated, got %d chars", len(m.TextContent()))
+		}
+		if len(m.TextContent()) > 150_000 {
+			t.Fatalf("message still oversized after compaction: %d chars", len(m.TextContent()))
+		}
+	}
+}
