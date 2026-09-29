@@ -71,7 +71,7 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool) []utils.M
 	var start int
 	start = len(tail) - 1
 	for start >= 0 {
-		chars += len(tail[start].TextContent())
+		chars += tail[start].Content.TotalContentChars()
 		count++
 		if chars > maxTailChars {
 			start++
@@ -158,20 +158,33 @@ func truncateOversizedTail(tail []utils.Message) []utils.Message {
 	out := make([]utils.Message, 0, len(tail))
 	for i := range tail {
 		m := tail[i]
-		if len(m.TextContent()) <= maxKeepTailChars {
+		total := m.Content.TotalContentChars()
+		if total <= maxKeepTailChars {
 			out = append(out, m)
 			continue
 		}
 		if m.Role == "tool" && !keptCalls[m.ToolCallID] {
-			utils.Log("[Eco] dropping oversized tool result (%d chars) from tail", len(m.TextContent()))
+			utils.Log("[Eco] dropping oversized tool result (%d chars) from tail", total)
 			continue
 		}
-		txt := m.TextContent()
-		trunc := txt[:maxKeepTailChars]
+		// Multi-part message whose TOTAL size blows the bound. Keep the first
+		// text part (up to the bound, with a banner) and drop the rest so the
+		// hidden multi-MB later parts can never reach the provider.
+		txt := ""
+		for _, p := range m.Content.ContentParts() {
+			if p.Type == "text" {
+				txt += p.Text
+			}
+		}
+		truncLen := len(txt)
+		if truncLen > maxKeepTailChars {
+			truncLen = maxKeepTailChars
+		}
+		trunc := txt[:truncLen]
 		m.Content = utils.NewTextContent(trunc +
 			"\n\n[message truncated by Plurality: original length " +
-			fmt.Sprintf("%d", len(txt)) +
-			" chars exceeded the per-message context budget]")
+			fmt.Sprintf("%d", total) +
+			" chars across all content parts exceeded the per-message context budget]")
 		out = append(out, m)
 	}
 	return out

@@ -246,3 +246,39 @@ func TestCompactConversationForContext_TruncatesOversizedMessage(t *testing.T) {
 		}
 	}
 }
+
+
+// TestFilterCheckpointsForRequest_TruncatesOversizedMultipartMessage guards
+// the case TextContent() misses: a multi-part tool result whose FIRST part
+// is a short preamble and whose LATER text part carries a multi-MB blob.
+// Before TotalContentChars existed, truncation sized against the first part
+// only and shipped the hidden megabyte payload (the actual "New Chat stops
+// working" bug). It must now truncate to the bound and drop the blob part.
+func TestFilterCheckpointsForRequest_TruncatesOversizedMultipartMessage(t *testing.T) {
+	preamble := "[Attachment att_99, bytes 0-50000 of 4901042]"
+	blob := strings.Repeat("B", 4_900_000)
+	msgs := []utils.Message{
+		checkpointMsg(),
+		toolMsg(),
+		{Role: "user", Content: utils.NewTextContent("continue")},
+		{Role: "tool", ToolCallID: "call_huge", Name: "conversations__retrieve_conversation",
+			Content: utils.NewPartsContent([]utils.ContentPart{
+				{Type: "text", Text: preamble},
+				{Type: "text", Text: blob},
+			})},
+	}
+	got := filterCheckpointsForRequest(msgs, true)
+	for _, m := range got {
+		if m.Role != "tool" || m.ToolCallID != "call_huge" {
+			continue
+		}
+		// The giant later part must be gone: total retained text stays <= bound+a little.
+		total := m.Content.TotalContentChars()
+		if total >= 100_000+200 {
+			t.Fatalf("expected multi-part oversized tool result truncated, got %d total chars", total)
+		}
+		if !strings.Contains(m.TextContent(), "truncated by Plurality") {
+			t.Fatalf("expected truncation banner in multi-part result")
+		}
+	}
+}
