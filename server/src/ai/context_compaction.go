@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/azukaar/plurality/src/utils"
@@ -50,7 +51,18 @@ func CompactConversationForContext(messages []utils.Message, keep int) []utils.M
 	}
 	// Drop tool results whose originating assistant call was trimmed, so the
 	// LLM never sees a tool result without its assistant call.
-	return dropDanglingToolResults(kept)
+	kept = dropDanglingToolResults(kept)
+
+	// Hard-per-message bound: a single giant message (multi-MB pasted blob,
+	// huge tool result, inline attachment dump) can exceed the context
+	// window BY ITSELF. CompactConversationForContext only drops whole
+	// turns, so a huge message inside the newest `keep`-window would still
+	// be shipped as-is and the retry would fail again with
+	// context_length_exceeded (observed: "WordPress Security Review", a
+	// ~4.2MB Cosmos config dump inline; every resume dead-ended). Truncate
+	// such messages down to a safe per-message bound so the retry can
+	// actually succeed.
+	return TruncateOversizedMessages(kept)
 }
 
 // dropDanglingToolResults removes "tool" messages whose ToolCallID has no
@@ -70,6 +82,38 @@ func dropDanglingToolResults(msgs []utils.Message) []utils.Message {
 			continue
 		}
 		out = append(out, msgs[i])
+	}
+	return out
+}
+
+
+// maxCompactMessageChars is the per-message hard bound applied when the
+// in-memory history is compacted for a context-overflow retry. The eco
+// tail-cap uses the same bound so the two paths agree.
+const maxCompactMessageChars = 100_000
+
+// TruncateOversizedMessages bounds every message that would be sent to the
+// provider to maxCompactMessageChars characters. Messages are NOT dropped
+// (their role/turn boundary must be preserved so tool-call pairing stays
+// consistent); only their text body is truncated, with a clear banner, so
+// the model still sees the head of the content.
+//
+// Used by CompactConversationForContext so a context-overflow retry cannot
+// fail again on a single oversized message. Returns a NEW slice; the input
+// is not mutated.
+func TruncateOversizedMessages(messages []utils.Message) []utils.Message {
+	out := make([]utils.Message, 0, len(messages))
+	for _, m := range messages {
+		if len(m.TextContent()) > maxCompactMessageChars {
+			txt := m.TextContent()
+			trunc := txt[:maxCompactMessageChars]
+			utils.Log("[Compaction] truncating oversized message (%d chars -> %d)", len(txt), maxCompactMessageChars)
+			m.Content = utils.NewTextContent(trunc +
+				"\n\n[message truncated by Plurality: original length " +
+				fmt.Sprintf("%d", len(txt)) +
+				" chars exceeded the per-message context budget]")
+		}
+		out = append(out, m)
 	}
 	return out
 }
