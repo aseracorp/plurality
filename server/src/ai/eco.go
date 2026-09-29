@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -99,11 +100,81 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool) []utils.M
 	for start > 0 && tail[start].Role != "user" {
 		start--
 	}
+	// The budget must also bound INDIVIDUAL oversized messages. A single
+	// huge message (a multi-MB pasted blob, a giant tool result, an inline
+	// attachment dump) cannot be removed by the tail cap above — the walker
+	// breaks at it and then re-includes it via the user-boundary back-up —
+	// so a conversation that contains one keeps shipping it on every turn
+	// and eventually dies with context_length_exceeded (observed: the
+	// "WordPress Security Review" conversation, 1858 msgs, with a ~4.2MB
+	// Cosmos config dump inline; every "continue" resumed into a provider
+	// context error and the workflow dead-ended mid-work). Apply per-message
+	// bounds to whatever tail is actually kept below.
 	if start > 0 {
 		utils.Log("[Eco] capping tail by budget: kept %d msgs / %d chars (start idx %d) for context safety", len(tail)-start, chars, start)
 		tail = tail[start:]
 	}
-	return tail
+	return truncateOversizedTail(tail)
+}
+
+// maxKeepTailChars bounds how many characters of a tail message are kept
+// when a single message is too large to fit the budget whole. It preserves
+// the head of the message so the model still sees what the text was about.
+// (The tail-cap walker above uses the same overall budget; this is the
+// per-message bound so one giant message can never blow the context window
+// on its own.)
+const maxKeepTailChars = 100_000
+
+// truncateOversizedTail applies per-message bounds to the tail slice before
+// it is shipped to the provider:
+//
+//   - a "tool" message whose body is oversized is DROPPED entirely (its
+//     parent assistant call was already dropped or is itself being
+//     truncated, so a dangling huge result is pure context waste);
+//   - any other oversized message (user/assistant) is truncated to
+//     maxKeepTailChars with a clear banner, so the model still sees the
+//     head of the message and the message role (the turn boundary) is
+//     preserved — a 4MB pasted blob can never exceed the context window by
+//     itself.
+//
+// Returning a NEW slice; the input is not mutated.
+func truncateOversizedTail(tail []utils.Message) []utils.Message {
+	if len(tail) == 0 {
+		return tail
+	}
+	// Which assistant tool_calls survive in the trimmed tail? Only drop an
+	// oversized tool result when NO surviving assistant call references it
+	// (i.e. the call was dropped too). If the call is still present, we must
+	// keep the result (truncated) or OpenAPI rejects the dangling
+	// tool_calls/result pairing.
+	keptCalls := make(map[string]bool)
+	for _, m := range tail {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				keptCalls[tc.ID] = true
+			}
+		}
+	}
+	out := make([]utils.Message, 0, len(tail))
+	for i := range tail {
+		m := tail[i]
+		if len(m.TextContent()) <= maxKeepTailChars {
+			out = append(out, m)
+			continue
+		}
+		if m.Role == "tool" && !keptCalls[m.ToolCallID] {
+			utils.Log("[Eco] dropping oversized tool result (%d chars) from tail", len(m.TextContent()))
+			continue
+		}
+		txt := m.TextContent()
+		trunc := txt[:maxKeepTailChars]
+		m.Content = utils.NewTextContent(trunc +
+			"\n\n[message truncated by Plurality: original length " +
+			fmt.Sprintf("%d", len(txt)) +
+			" chars exceeded the per-message context budget]")
+		out = append(out, m)
+	}
+	return out
 }
 
 // lastAssistantPromptTokens scans the conversation backwards and returns
