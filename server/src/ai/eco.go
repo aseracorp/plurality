@@ -421,7 +421,17 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	}
 	defer summaryInFlight.Store(false)
 
-	conv, err := db.GetConversationByIdInternal(ctx, conversationID)
+	// Bound every DB access in this goroutine. The single SQLite connection
+	// (SetMaxOpenConns(1)) is shared with live reads/writes (message pushes,
+	// the embed worker, conversation loads); if the pool is wedged we must
+	// fail fast and release the global single-flight slot so normal traffic
+	// and future compactions are not starved. The summary LLM call
+	// (GenerateCheckpointSummary) runs on its own HTTP client and is not
+	// affected by this deadline.
+	dbCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+
+	conv, err := db.GetConversationByIdInternal(dbCtx, conversationID)
 	if err != nil {
 		utils.Error("[Eco] could not load conversation", err)
 		return
@@ -453,7 +463,7 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	existingCheckpointEndIdx := -1
 	var oldPairIDs []int64
 	var priorSummary string
-	if pair, err := db.GetCheckpoint(ctx, conversationID); err == nil && pair != nil {
+	if pair, err := db.GetCheckpoint(dbCtx, conversationID); err == nil && pair != nil {
 		priorSummary = pair.Summary
 		oldPairIDs = []int64{pair.AssistantID}
 		if pair.ToolID != 0 {
@@ -510,7 +520,7 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	// Build the assistant + tool pair. Look up the actual DB seq for the
 	// message at the cutoff slice position — gaps can exist after prior
 	// checkpoint replacements, so slice index != seq in general.
-	insertSeq, err := db.MessageSeqAt(ctx, conversationID, cutoff)
+	insertSeq, err := db.MessageSeqAt(dbCtx, conversationID, cutoff)
 	if err != nil {
 		utils.Error("[Eco] could not resolve insert seq", err)
 		return
@@ -539,7 +549,7 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 		Timestamp:  now,
 	}
 
-	if err := db.ReplaceCheckpoint(ctx, conversationID, oldPairIDs, assistantMsg, toolMsg, insertSeq); err != nil {
+	if err := db.ReplaceCheckpoint(dbCtx, conversationID, oldPairIDs, assistantMsg, toolMsg, insertSeq); err != nil {
 		utils.Error("[Eco] persisting checkpoint failed", err)
 		return
 	}
@@ -567,4 +577,3 @@ func randomHex(nBytes int) string {
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }
-
