@@ -104,14 +104,24 @@ const maxCompactMessageChars = 100_000
 func TruncateOversizedMessages(messages []utils.Message) []utils.Message {
 	out := make([]utils.Message, 0, len(messages))
 	for _, m := range messages {
-		if len(m.TextContent()) > maxCompactMessageChars {
-			txt := m.TextContent()
-			trunc := txt[:maxCompactMessageChars]
-			utils.Log("[Compaction] truncating oversized message (%d chars -> %d)", len(txt), maxCompactMessageChars)
+		total := m.Content.TotalContentChars()
+		if total > maxCompactMessageChars {
+			txt := ""
+			for _, p := range m.Content.ContentParts() {
+				if p.Type == "text" {
+					txt += p.Text
+				}
+			}
+			truncLen := len(txt)
+			if truncLen > maxCompactMessageChars {
+				truncLen = maxCompactMessageChars
+			}
+			trunc := txt[:truncLen]
+			utils.Log("[Compaction] truncating oversized message (%d chars -> %d)", total, maxCompactMessageChars)
 			m.Content = utils.NewTextContent(trunc +
 				"\n\n[message truncated by Plurality: original length " +
-				fmt.Sprintf("%d", len(txt)) +
-				" chars exceeded the per-message context budget]")
+				fmt.Sprintf("%d", total) +
+				" chars across all content parts exceeded the per-message context budget]")
 		}
 		out = append(out, m)
 	}
