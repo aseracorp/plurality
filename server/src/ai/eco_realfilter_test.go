@@ -45,6 +45,9 @@ func TestFilterRealConversation(t *testing.T) {
 		msgs = append(msgs, m)
 	}
 	t.Logf("loaded %d real messages", len(msgs))
+	if len(msgs) == 0 {
+		t.Skipf("fixture conversation dcd29e... not present in %s — integration-only", dbPath)
+	}
 	defer func() {
 		if r := recover(); r != nil { t.Fatalf("PANIC on real data: %v", r) }
 	}()
