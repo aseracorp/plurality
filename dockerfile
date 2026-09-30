@@ -118,43 +118,26 @@ COPY --from=flutter_builder /app/client/build/web /app/web
 RUN mkdir -p /app/users-data /app/data
 
 # Declare runtime data volumes. These are ALWAYS explicitly mounted by the
-# host/compose (see deployment.md) — do NOT add anonymous VOLUME entries here:
+# host/compose (see deployment.md) â do NOT add anonymous VOLUME entries here:
 # a VOLUME /root (or any dir that holds build tooling / binaries) makes Docker
 # create a persistent anonymous volume that SHADOWS that path on every
 # container start. A stale anonymous volume survives image rebuilds, so a
-# freshly layered /app/Plurality.bin can be masked by an old one from a
-# previous container, and /root tooling (go cache, npx, playwright) silently
-# drifts. Data dirs only, declared, not materialized.
+# freshly layered binary can be masked by an old one from a previous
+# container, and /root tooling (go cache, npx, playwright) silently drifts.
+# Data dirs only, declared, not materialized.
 VOLUME /app/users-data
 VOLUME /app/data
 
 # Expose the port the server listens on
 EXPOSE 8090
 
-# Run the server under the crash-capture supervisor (still under tini as PID 1,
-# so zombies are reaped and `docker stop` signals are forwarded). The
-# supervisor logs the exact exit code/signal of every server death to the
-# persistent /app/data/crash.log and auto-restarts the server, so a crash is
-# observable and self-healing instead of an invisible outage.
-#
-# The real binary is placed at /app/Plurality.bin and /app/Plurality is a shell
-# SHIM that execs the supervisor: some launchers OVERRIDE the ENTRYPOINT/CMD and
-# start /app/Plurality directly — in that case the ENTRYPOINT is bypassed and
-# the supervisor would never run. Making /app/Plurality the shim guarantees the
-# supervised entrypoint runs no matter how the container is started.
-COPY server/supervisor.sh /app/supervisor.sh
-RUN chmod +x /app/supervisor.sh
-ARG CACHEBUST_BIN=latest
-# the binary COPY happens in the build stage; here we wrap it. This must run
-# AFTER /app/Plurality (real binary) is copied from the builder stage.
-RUN sh -c 'mv /app/Plurality /app/Plurality.bin && printf "#!/bin/sh\nexec /app/supervisor.sh\n" > /app/Plurality && chmod +x /app/Plurality && chmod +x /app/Plurality.bin'
-ENTRYPOINT ["/usr/bin/tini", "--", "/app/supervisor.sh"]
+# Run the server under tini so PID 1 reaps zombies and forwards signals
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/app/Plurality"]
 
 # Healthcheck for orchestrators / autoheal watchers (e.g. willfarrell/autoheal),
 # which restart any container lacking a HEALTHCHECK every cycle. The server
-# exposes /health (returns 200 when the HTTP stack is up); the supervisor keeps
-# the server child alive and restarts it on real crashes, so a healthy HTTP
+# exposes /health (returns 200 when the HTTP stack is up), so a healthy HTTP
 # endpoint is the correct liveness signal. 20s interval, 3 retries, 5s timeout.
 HEALTHCHECK --interval=20s --timeout=5s --start-period=30s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8090/health >/dev/null 2>&1 || exit 1
-
