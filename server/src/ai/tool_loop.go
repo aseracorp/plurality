@@ -417,12 +417,132 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				ConversationID: ar.ConversationID,
 				ModelSelected:  &doneSnap,
 			})
-			return // Wait for client to POST tool results or approvals
+			// Wait for the client to POST tool results / approvals — but not
+			// forever. A disconnected or unresponsive client would otherwise
+			// strand this conversation in waiting_for_tool / waiting_for_approval
+			// indefinitely (observed: "Modbus Template Updates" sat parked for
+			// 9+ hours on 2026-09-29→30 because the shell_client__exec result
+			// from seq 4274 never arrived). Arm a stall watchdog that
+			// synthesizes a timeout result and resumes the loop, so the model
+			// can self-correct (e.g. fall back to a server-side tool).
+			go armClientToolWatchdog(userContextFor(ar.UserID), ar, &conversation, clientTools)
+			return
 		}
 
 		// All tools were server-side — loop back to LLM with results
 		utils.Log("[LLMLoop] All server tools executed, looping back to LLM")
 	}
+}
+
+// clientToolStallTimeout is how long the LLM loop waits for a client-side
+// tool result before the stall watchdog synthesizes a timeout and resumes.
+const clientToolStallTimeout = 90 * time.Second
+
+// armClientToolWatchdog runs in the background while the LLM loop is parked
+// waiting for the client to POST results for client-side tools. If the client
+// never delivers (disconnected tab, missed event, offline device), the
+// conversation would otherwise sit in waiting_for_tool / waiting_for_approval
+// indefinitely — the "Modbus Template Updates" stall on 2026-09-29→30 (a
+// shell_client__exec result from seq 4274 never arrived; the conversation
+// sat parked 21:42 → 06:55 until a fresh user message poked it back to life).
+//
+// On timeout it pushes a synthetic "Client did not respond within 90s" tool
+// result for every still-outstanding client tool call, then re-launches the
+// LLM loop exactly like a client tool_results POST would (HandleChat /
+// HandleApprove path). The model sees the timeout and can self-correct —
+// e.g. fall back to a server-side tool — instead of stalling forever.
+func armClientToolWatchdog(ctx context.Context, ar *ActiveRequest, conv *utils.Conversation, clientTools []utils.ToolCall) {
+	select {
+	case <-time.After(clientToolStallTimeout):
+	case <-ar.Ctx.Done():
+		return // cancelled or superseded
+	}
+
+	// Re-check: only synthesize results for tool calls that still have no
+	// matching tool row in the DB (the client may have delivered late).
+	outstanding := make([]utils.ToolCall, 0, len(clientTools))
+	for _, tc := range clientTools {
+		if !hasToolResult(ctx, conv.ID, tc.ID) {
+			outstanding = append(outstanding, tc)
+		}
+	}
+	if len(outstanding) == 0 {
+		return // everything arrived — nothing to do
+	}
+
+	utils.Log("[LLMLoop] client tool stall: %d tool call(s) unanswered for %v — synthesizing timeout result", len(outstanding), clientToolStallTimeout)
+
+	// Load the freshest conversation (may contain late client results or a
+	// new user message from another tab).
+	cur, err := db.GetConversationByIdInternal(ctx, conv.ID)
+	if err != nil {
+		utils.Error("[LLMLoop] client tool watchdog: could not reload conversation", err)
+		return
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	for _, tc := range outstanding {
+		// Skip if a tool row for this call appeared while we were waiting.
+		if hasToolResult(ctx, cur.ID, tc.ID) {
+			continue
+		}
+		toolMsg := utils.Message{
+			Role:       "tool",
+			Content:    utils.NewTextContent("Client did not respond within " + clientToolStallTimeout.String() + ". The client-side tool was not executed. If this task still needs doing, retry with a server-side tool (e.g. system_tools__shell_exec) or ask the user."),
+			ToolCallID: tc.ID,
+			Name:       tc.Function.Name,
+			Timestamp:  now,
+		}
+		updated, _, pushErr := db.PushMessage(ctx, *cur, toolMsg)
+		if pushErr != nil {
+			utils.Error("[LLMLoop] client tool watchdog: failed to push timeout result", pushErr)
+			continue
+		}
+		cur = &updated
+	}
+
+	// Re-launch the loop (mirrors HandleChat / HandleApprove). The old
+	// ActiveRequest was already cleaned up when its loop returned, so a new
+	// one is safe to register.
+	model := SelectModel(ar.ModelSelected, *cur)
+	persistCtx := userContextFor(ar.UserID)
+	newAR := NewActiveRequest(cur.ID, ar.UserID, model, ar.ModelSelected)
+	cancelCtx, cancelFunc := context.WithCancel(persistCtx)
+	newAR.Ctx = cancelCtx
+	newAR.Cancel = cancelFunc
+	// Atomically claim the resume slot: if the client (or a new /chat)
+	// already registered a fresh request while we were synthesizing results,
+	// that loop is authoritative and this watchdog must stand down.
+	if !RequestRegistry.SetIfAbsent(cur.ID, newAR) {
+		utils.Log("[LLMLoop] client tool watchdog: conversation %s already has an active request — standing down", cur.ID)
+		return
+	}
+	if err := db.UpdateConversationState(persistCtx, cur.ID, utils.StateProcessing); err != nil {
+		utils.Error("[LLMLoop] client tool watchdog: error setting state", err)
+	}
+
+	utils.Log("[LLMLoop] client tool watchdog: resuming conversation %s with %d timeout result(s)", cur.ID, len(outstanding))
+	newAR.RunLLMLoop(persistCtx, *cur, ChatPayload{
+		ConversationID:  cur.ID,
+		ModelSelected:   ar.ModelSelected,
+		ClientSideTools: nil,
+		AvailableSkills: nil,
+	})
+}
+
+// hasToolResult reports whether a tool row with the given tool_call_id exists
+// for the conversation (used to avoid double-synthesizing late-arriving results).
+func hasToolResult(ctx context.Context, conversationID string, toolCallID string) bool {
+	conv, err := db.GetConversationByIdInternal(ctx, conversationID)
+	if err != nil {
+		return false
+	}
+	for _, m := range conv.Messages {
+		if m.Role == "tool" && m.ToolCallID == toolCallID {
+			return true
+		}
+	}
+	return false
 }
 
 // enrichToolCallMetadata populates the Loading and IconURL fields from the tool registry.
