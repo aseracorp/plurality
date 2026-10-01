@@ -52,8 +52,13 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool) []utils.M
 			lastCheckpointIdx = i
 		}
 	}
+	// No checkpoint yet (eco never successfully compacted this conversation):
+	// a giant raw history must NOT be shipped whole — that is exactly how
+	// "WordPress Security Review" (1866 msgs, ~770k tokens) kept dying with
+	// context_length_exceeded. Fall through to the same budget-capped tail
+	// so even a never-compacted conversation is bounded on every request.
 	if lastCheckpointIdx < 0 {
-		return messages
+		return capTail(messages)
 	}
 	tail := messages[lastCheckpointIdx:]
 
@@ -65,7 +70,32 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool) []utils.M
 	// always starting on a user message so the model still has a complete turn
 	// boundary to respond to. The checkpoint summary before the cap keeps the
 	// dropped middle coherent.
-	const maxTailChars = 100_000 // ~25-30k tokens, safe for any 128k-context model
+	return capTail(tail)
+}
+
+// maxTailChars is the character budget for the live tail that is sent to
+// the provider (after any checkpoint summary). ~100k chars ≈ 25-30k tokens,
+// safe for any 128k-context model, leaving room for system + output.
+const maxTailChars = 100_000
+
+// capTail bounds a message slice to the live-tail budget so a conversation
+// can never ship a context-busting history to the provider. It walks
+// backwards from the end, accumulating the total content size, and keeps
+// the newest messages that fit the budget, always starting on a user
+// message (so the model still has a complete turn boundary to respond to
+// and tool results whose parent call is dropped are never orphaned).
+// Individual oversized messages are then truncated/dropped by
+// truncateOversizedTail.
+//
+// This is applied BOTH when a checkpoint exists (live tail after it) and
+// when there is NO checkpoint yet — a never-compacted conversation with a
+// huge raw history must still be bounded on every request, or every turn
+// dies with context_length_exceeded (observed: "WordPress Security
+// Review", 1866 msgs / ~770k tokens / no checkpoint, eco on).
+func capTail(tail []utils.Message) []utils.Message {
+	if len(tail) == 0 {
+		return tail
+	}
 	count := 0
 	chars := 0
 	var start int
@@ -92,7 +122,7 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool) []utils.M
 	// so the boundary back-up loop below can never index out of range.
 	// (Observed panic: "index out of range [N] with length N" on this
 	// conversation's ~3500-message tail.)
-	if start > len(tail) - 1 {
+	if start > len(tail)-1 {
 		start = len(tail) - 1
 	}
 	// Always back up to a user boundary so we never start mid-turn (which
@@ -317,29 +347,69 @@ func findCutoffIndex(messages []utils.Message, lastPromptTokens, targetTokens in
 	return cutoff
 }
 
+// maxSummaryInputChars bounds the plain-text input fed to the
+// summarisation model. The fast model (used for checkpoints) has a
+// 131k-token window; feeding it a huge raw history (observed: ~770k tokens
+// on "WordPress Security Review") made every eco compaction fail with
+// context_length_exceeded and NO checkpoint was ever written. 80k chars ≈
+// 20k tokens leaves ample room for system prompt + output.
+const maxSummaryInputChars = 80_000
+
 // renderMessagesForSummary produces a plain-text dump of the given message
-// slice suitable for feeding to the summarisation model. Walks every
-// content part of every message and includes inline text — pasted
-// snippets, attached file contents that travelled inline, and tool
-// results. Skips image_url parts and parts whose Text is a storage path
-// rather than real content (post-ExtractBlobsFromMessage, document parts
-// like pdf/docx/xlsx/pptx have part.Text rewritten to a URL path, so we
-// surface only the filename in that case).
+// slice suitable for feeding to the summarisation model, bounded to
+// maxSummaryInputChars characters. Walks every content part of every
+// message and includes inline text — pasted snippets, attached file
+// contents that travelled inline, and tool results. Skips image_url parts
+// and parts whose Text is a storage path rather than real content
+// (post-ExtractBlobsFromMessage, document parts like pdf/docx/xlsx/pptx
+// have part.Text rewritten to a URL path, so we surface only the filename
+// in that case).
+//
+// The budget keeps the NEWEST messages (the most recent context the live
+// model will lose) up to the cap, so the summary preserves the most
+// actionable recent history when the compacted range is enormous; a banner
+// notes that older messages were omitted. Never returns a context-busting
+// blob to the summary model.
 func renderMessagesForSummary(messages []utils.Message) string {
 	var b strings.Builder
-	for _, m := range messages {
+	budget := maxSummaryInputChars
+	// Walk backwards so a huge range keeps its most recent turns; then
+	// reverse the kept slice so the output stays chronological.
+	var kept []utils.Message
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
 		if db.IsCheckpointMessage(m) {
-			// Prior checkpoint summary is prepended separately by the caller.
 			continue
 		}
+		if int64(budget) <= 0 {
+			break
+		}
+		// Estimate this message's rendered size and stop before exceeding
+		// the budget (per-message cap keeps one giant message from blowing
+		// the whole budget).
+		mBytes := m.Content.TotalContentChars()
+		if mBytes > perMsgBudget {
+			mBytes = perMsgBudget
+		}
+		if mBytes > budget {
+			continue
+		}
+		budget -= mBytes
+		kept = append(kept, m)
+	}
+	if len(kept) < len(messages) {
+		b.WriteString("[NOTE: older messages omitted to fit the summary input budget — the following is the most recent portion of the compacted range; earlier context was dropped by the context-safety cap]\n\n")
+	}
+	for i := len(kept) - 1; i >= 0; i-- {
+		m := kept[i]
 		switch m.Role {
 		case "user":
 			b.WriteString("USER:\n")
-			writeContentParts(&b, m.ContentParts())
+			writeContentPartsBudget(&b, m.ContentParts())
 			b.WriteString("\n")
 		case "assistant":
 			b.WriteString("ASSISTANT:\n")
-			writeContentParts(&b, m.ContentParts())
+			writeContentPartsBudget(&b, m.ContentParts())
 			for _, tc := range m.ToolCalls {
 				b.WriteString("[tool_call ")
 				b.WriteString(tc.Function.Name)
@@ -352,11 +422,60 @@ func renderMessagesForSummary(messages []utils.Message) string {
 			b.WriteString("TOOL_RESULT ")
 			b.WriteString(m.Name)
 			b.WriteString(":\n")
-			writeContentParts(&b, m.ContentParts())
+			writeContentPartsBudget(&b, m.ContentParts())
 			b.WriteString("\n")
 		}
 	}
 	return b.String()
+}
+
+// writeContentPartsBudget is writeContentParts with a per-message cap: any
+// single part is truncated to perMsgBudget chars so one giant tool dump
+// (observed: 58KB shell outputs) can never blow the summary input budget.
+// The budget is applied conservatively relative to maxSummaryInputChars.
+const perMsgBudget = 20_000
+
+func writeContentPartsBudget(b *strings.Builder, parts []utils.ContentPart) {
+	for _, p := range parts {
+		switch {
+		case p.Type == "text" || p.Type == "snippet":
+			if p.Text == "" {
+				continue
+			}
+			if p.Filename != "" {
+				b.WriteString("[attachment: ")
+				b.WriteString(p.Filename)
+				b.WriteString("]\n")
+			}
+			if len(p.Text) > perMsgBudget {
+				b.WriteString(p.Text[:perMsgBudget])
+				b.WriteString("\n[...truncated by Plurality context-safety: original length ")
+				b.WriteString(fmt.Sprintf("%d", len(p.Text)))
+				b.WriteString(" chars]\n")
+			} else {
+				b.WriteString(p.Text)
+				b.WriteString("\n")
+			}
+		case p.Type == "image_url":
+			b.WriteString("[image attachment omitted]\n")
+		case docsupport.IsDocumentType(p.Type):
+			label := p.Filename
+			if label == "" {
+				label = p.Type
+			}
+			b.WriteString("[document attachment: ")
+			b.WriteString(label)
+			b.WriteString("] (binary, content not inlined)\n")
+		default:
+			label := p.Filename
+			if label == "" {
+				label = p.Type
+			}
+			b.WriteString("[binary attachment: ")
+			b.WriteString(label)
+			b.WriteString("]\n")
+		}
+	}
 }
 
 // writeContentParts serialises a content-part slice for the summary
@@ -372,11 +491,11 @@ func renderMessagesForSummary(messages []utils.Message) string {
 // Marker only (no inline body):
 //   - "image_url"                  — image, omitted
 //   - docsupport.IsDocumentType(t) — pdf/docx/xlsx/pptx etc.; stored text
-//                                    is a storage path, not real content
+//     is a storage path, not real content
 //   - everything else              — generic "file" or unknown type; we
-//                                    can't tell if Text is inline content
-//                                    or a binary reference, so we only
-//                                    surface the filename
+//     can't tell if Text is inline content
+//     or a binary reference, so we only
+//     surface the filename
 func writeContentParts(b *strings.Builder, parts []utils.ContentPart) {
 	for _, p := range parts {
 		switch {
