@@ -66,8 +66,26 @@ WORKDIR /app/server
 
 # Build the Go application (build.sh sets its own CGO_CFLAGS).
 # GOOS/GOARCH come from buildx's per-target args.
+# CACHEBUST: pass --build-arg CACHEBUST=<git rev> so the Go binary is always
+# recompiled from the current source (prevents a stale cached 'go build' from
+# shipping an old server binary even when the checkout is up to date).
+ARG CACHEBUST=latest
 RUN chmod +x build.sh
-RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} ./build.sh
+
+# The RUN command below LITERALLY references ${CACHEBUST} so a changed
+# build-arg value changes the RUN instruction's command string and
+# therefore INVALIDATES the layer cache. A bare `ARG CACHEBUST` with no
+# reference does NOT bust anything (Docker only invalidates from the
+# first USE of the arg) -- that was the bug: CI passed CACHEBUST=<sha>
+# but the go build layer was served from cache, so the image shipped a
+# STALE binary built from an old checkout (observed: `latest` image
+# built from #49 still contained the Sep-30 19:28 binary with none of
+# the #37-#49 fixes).
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    echo "Building Plurality server @ CACHEBUST=${CACHEBUST}" && \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} ./build.sh
+
 
 # Copy litellm requirements for installation in final stage
 RUN mkdir -p build/litellm && cp litellm_requirements.txt build/litellm/
