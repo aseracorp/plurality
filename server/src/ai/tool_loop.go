@@ -89,6 +89,19 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				ar.flushPartialResponse(ctx, conversation)
 				return
 			}
+			// The stream ended in an error (e.g. SSE idle timeout after 90s
+			// without bytes — see idleTimeoutReader). Do NOT log "Stream
+			// complete" and do NOT loop back: mark the turn errored and go
+			// idle so the UI shows the failure instead of hanging forever
+			// with the conversation stuck in "processing".
+			ar.setState(ctx, utils.StateIdle)
+			ar.BroadcastStatus("", "")
+			ar.Broadcast(SSEEvent{
+				Type:           "error",
+				Content:        err.Error(),
+				ConversationID: ar.ConversationID,
+			})
+			return
 		}
 
 		utils.Log("[LLMLoop] Stream complete. Text length: %d, Tool calls: %d", len(ar.TextBuffer.String()), len(assistantMessage.ToolCalls))
