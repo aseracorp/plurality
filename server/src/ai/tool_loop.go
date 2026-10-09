@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -759,8 +760,13 @@ func injectLongTaskReminder(ctx context.Context, ar *ActiveRequest, conv *utils.
 		return false
 	}
 	if state.RemindersUsed >= ai_tools.LongTaskMaxReminders {
-		utils.Log("[LLMLoop] long_task reminder cap (%d) reached, going idle with %d open task(s)", ai_tools.LongTaskMaxReminders, openCount(state))
-		return false
+		// Reminder cap reached with outstanding tasks. Do NOT go silently
+		// idle: the LLM would keep answering with empty text (no tool calls,
+		// no reminder, no work) and the conversation looks dead to the user.
+		// Instead, auto-pause the list and surface an explanatory message so
+		// the user sees why work stopped and the LLM can resume/clear the
+		// list on the next turn.
+		return pauseBlockedLongTask(ctx, ar, conv, state)
 	}
 
 	state.RemindersUsed++
@@ -825,6 +831,76 @@ func injectLongTaskReminder(ctx context.Context, ar *ActiveRequest, conv *utils.
 
 	utils.Log("[LLMLoop] long_task reminder injected (%d/%d), %d open task(s)", state.RemindersUsed, ai_tools.LongTaskMaxReminders, len(open))
 	return true
+}
+
+// pauseBlockedLongTask resolves a long_task list whose reminder budget has
+// been exhausted while tasks are still open. Left as-is, every subsequent
+// turn ends with an empty completion ("Text length: 0, Tool calls: 0") and
+// the conversation silently goes idle — the user sees no work and no error.
+//
+// This auto-pauses the list with a reason and pushes a plain assistant
+// message explaining what happened, so:
+//   - the user sees a real (non-empty) final message instead of a dead turn
+//   - the persisted state flips to Paused, which stops the nudge loop
+//   - on the next user turn the LLM sees the paused list in context and can
+//     call long_task resume/clear (or the user can tell it to)
+//
+// Returns false: the caller should proceed to idle (the explanatory message
+// is already in the conversation).
+func pauseBlockedLongTask(ctx context.Context, ar *ActiveRequest, conv *utils.Conversation, state ai_tools.LongTaskState) bool {
+	open := openTitles(state)
+
+	state.Paused = true
+	state.PauseReason = "reminder cap reached; tasks left open across " + strconv.Itoa(state.RemindersUsed) + " reminders"
+	state.Nudge = ""
+	resultBody := ai_tools.FormatStateJSON(state)
+
+	assistantMsg := utils.Message{
+		Role: "assistant",
+		Content: utils.NewTextContent(fmt.Sprintf(
+			"The following open task(s) could not be completed after %d reminders: %s. The task list has been automatically paused. Say \"continue\" to resume, or give new instructions.",
+			state.RemindersUsed,
+			strings.Join(open, "; "),
+		)),
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+	// Persist the paused state as a synthetic long_task tool result so the
+	// LLM sees it on the next turn, plus the explanatory assistant message.
+	syntheticID := fmt.Sprintf("longtask_paused_%d", time.Now().UnixNano())
+	toolMsg := utils.Message{
+		Role:       "tool",
+		Content:    utils.NewTextContent(resultBody),
+		ToolCallID: syntheticID,
+		Name:       "long_task",
+		Timestamp:  time.Now().Format(time.RFC3339),
+	}
+
+	updated, _, err := db.PushMessage(ctx, *conv, assistantMsg)
+	if err == nil {
+		updated, _, err = db.PushMessage(ctx, updated, toolMsg)
+	}
+	if err != nil {
+		utils.Error("[LLMLoop] long_task auto-pause: failed to persist state", err)
+		return false
+	}
+	*conv = updated
+
+	ar.Broadcast(SSEEvent{
+		Type:           "text",
+		Content:        assistantMsg.TextContent(),
+		ConversationID: ar.ConversationID,
+	})
+	ar.Broadcast(SSEEvent{
+		Type:           "tool_result",
+		ToolCallID:     syntheticID,
+		ToolName:       "long_task",
+		ToolResult:     resultBody,
+		IsServer:       true,
+		ConversationID: ar.ConversationID,
+	})
+
+	utils.Log("[LLMLoop] long_task auto-paused after reminder cap (%d/%d), %d open task(s): %s", state.RemindersUsed, ai_tools.LongTaskMaxReminders, len(open), strings.Join(open, "; "))
+	return false
 }
 
 func openTitles(s ai_tools.LongTaskState) []string {
