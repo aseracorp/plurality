@@ -302,10 +302,17 @@ type ParameterToolsRequest struct {
 	Required   []string                                 `json:"required,omitempty"`
 }
 
+// PropertyParameterToolsRequest describes a single property inside a tool's
+// parameters schema. Items is required for array-typed properties — Google's
+// Gemini endpoint rejects function declarations whose array properties lack a
+// schema-level "items" (GenerateContentRequest proto validation), which broke
+// vision-model turns that sent array params. Array params default to
+// items:{"type":"string"} when no richer item schema is available.
 type PropertyParameterToolsRequest struct {
-	Type        string   `json:"type"`
-	Description string   `json:"description"`
-	Enum        []string `json:"enum,omitempty"`
+	Type        string                            `json:"type"`
+	Description string                            `json:"description"`
+	Enum        []string                          `json:"enum,omitempty"`
+	Items       *PropertyParameterToolsRequest    `json:"items,omitempty"`
 }
 
 // AITool is a server-side tool registered in the tool registry.
