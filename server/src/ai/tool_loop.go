@@ -29,12 +29,42 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 
 	utils.Log("[LLMLoop] Starting for conversation %s with %d connected clients", ar.ConversationID, ar.ClientCount())
 
+	// Runaway-loop guard: count LLM iterations in this request. A workflow
+	// can legitimately loop dozens of times (tool → LLM → tool …), but a
+	// stuck conversation must not spin forever generating unbounded DB
+	// churn (observed: "Cosmos Init Refactor" ran continuously for hours,
+	// pushing ~5,000 messages and a 550 MB WAL before the container was
+	// killed). After maxLoopIterations with no user input, we stop looping
+	// and leave the conversation idle — the user can resume with a fresh
+	// message. The long_task reminder cap (LongTaskMaxReminders) bounds the
+	// "keep going" nudge path; this bounds everything else.
+	const maxLoopIterations = 60
+	iterations := 0
+
 	for {
 		select {
 		case <-ar.Ctx.Done():
 			ar.flushPartialResponse(ctx, conversation)
 			return
 		default:
+		}
+
+		iterations++
+		if iterations > maxLoopIterations {
+			utils.Log("[LLMLoop] iteration budget (%d) exceeded for conversation %s — going idle to stop runaway loop", maxLoopIterations, ar.ConversationID)
+			ar.Broadcast(SSEEvent{
+				Type:           "text",
+				Content:        "(This conversation has been looping for a long time — pausing. Send a message to continue.)",
+				ConversationID: ar.ConversationID,
+			})
+			ar.setState(ctx, utils.StateIdle)
+			ar.BroadcastStatus("", "")
+			ar.Broadcast(SSEEvent{
+				Type:           "done",
+				ConversationID: ar.ConversationID,
+				Title:          conversation.Title,
+			})
+			return
 		}
 
 		model := SelectModel(payload.ModelSelected, conversation)
