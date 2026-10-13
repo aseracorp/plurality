@@ -745,7 +745,7 @@ func (ar *ActiveRequest) setState(ctx context.Context, state utils.ConversationS
 
 // flushPartialResponse saves whatever text was produced so far to the DB on cancellation.
 func (ar *ActiveRequest) flushPartialResponse(ctx context.Context, conversation utils.Conversation) {
-	text := ar.TextBuffer.String()
+	text := strings.TrimSpace(ar.TextBuffer.String())
 	if text == "" {
 		ar.setState(ctx, utils.StateIdle)
 		ar.BroadcastStatus("", "")

@@ -33,7 +33,12 @@ func NewStreamProcessor(request *ActiveRequest, model utils.Model, conversation 
 
 // broadcastText sends a text chunk to all SSE clients and accumulates it in the buffer.
 func (sp *StreamProcessor) broadcastText(content string) {
-	if content == "" {
+	if strings.TrimSpace(content) == "" {
+		// Whitespace-only chunk: skip the SSE broadcast AND the buffer. Without
+		// this check, a model that emits leading newline(s) before its first
+		// token (common with DeepSeek over OpenRouter) would render an empty
+		// "assistant" bubble on the client and persist whitespace-only text
+		// that then re-enters history on every turn.
 		return
 	}
 	sp.request.TextBuffer.WriteString(content)
@@ -98,7 +103,7 @@ func (sp *StreamProcessor) buildAssistantMessage() utils.Message {
 		Model:            sp.model,
 	}
 
-	text := sp.request.TextBuffer.String()
+	text := strings.TrimSpace(sp.request.TextBuffer.String())
 	if text != "" {
 		message.Content = utils.NewTextContent(text)
 	}
