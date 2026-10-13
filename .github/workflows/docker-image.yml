@@ -35,13 +35,6 @@ name: Docker Image
 on:
   push:
     branches: [ master ]
-  # Self-heal: re-point latest/version tags at the newest build every hour even
-  # if a push-triggered run was missed/failed, so `latest` can never stay pinned
-  # to an old binary for long. The refresh job just re-tags the most recent
-  # per-arch images already on GHCR (no rebuild) because GITHUB_TOKEN cannot
-  # reach Docker Hub's org-scoped image account (see merge job).
-  schedule:
-    - cron: '17 * * * *'
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
@@ -160,51 +153,3 @@ jobs:
           echo "  $IMAGE:${{ github.sha }}"
           echo "  $IMAGE:${{ steps.appversion.outputs.version }}"
           echo "  $IMAGE:latest"
-  # Self-heal job (schedule only): if a push-triggered run was missed/failed
-  # (e.g. a transient infra error on arm64 blocks the merge job), `latest` and
-  # the version tag can stay pinned to an old binary indefinitely. This job
-  # re-points them at the NEWEST per-arch image digests already published on
-  # GHCR, so pulling :latest always converges to the most recent successful
-  # build without requiring a rebuild.
-  refresh:
-    name: Re-point latest to newest build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Read app version
-        id: appversion
-        run: |
-          VERSION=$(grep '^version:' client/pubspec.yaml | sed -E 's/^version:[[:space:]]*//' | tr -d '[:space:]')
-          VERSION="${VERSION%%+*}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-        shell: bash
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Repoint latest + version tags at newest per-arch images
-        run: |
-          set -euxo pipefail
-          # GHCR does not expose an "update tags" API; re-tagging requires the
-          # exact digests. Pull the per-arch latest-* tags and fold them into a
-          # fresh multi-arch manifest under latest + the version tag. Because
-          # these are the SAME image objects, re-pushing is a cheap metadata
-          # write — no data is re-uploaded.
-          docker buildx imagetools create \
-            -t "$IMAGE:latest" \
-            -t "$IMAGE:${{ steps.appversion.outputs.version }}" \
-            "$IMAGE:latest-amd64" \
-            "$IMAGE:latest-arm64"
