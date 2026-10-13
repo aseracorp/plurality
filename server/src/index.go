@@ -7,11 +7,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/azukaar/plurality/src/ai"
@@ -273,8 +275,46 @@ func main() {
 
 	http.Handle("/", corsMiddleware(r))
 
+	srv := &http.Server{Addr: ":8090", Handler: nil}
+
+	// Graceful shutdown on SIGTERM/SIGINT. The container supervisor sends
+	// SIGTERM on `docker stop` / restart; without this hook the process dies
+	// immediately and CloseAllUserDBs (WAL checkpoint + stuck-state reset in
+	// db/sqlite.go) never runs — leaving a multi-hundred-MB WAL and
+	// "processing" conversations behind (observed: 550 MB WAL + a runaway
+	// workflow that auto-resumed on every restart). We wait briefly for
+	// in-flight LLM loops to notice the cancellation, then checkpoint and
+	// close the DBs.
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+		sig := <-sigCh
+		utils.Log("[main] received signal %v — shutting down gracefully", sig)
+
+		// Stop accepting new connections; in-flight LLM loops run on their
+		// own request-scoped contexts and are not tied to srv.Shutdown, so
+		// this only bounds the HTTP handler drain.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = srv.Shutdown(ctx)
+		cancel()
+
+		// NOTE: os.Exit does NOT run deferred functions, so every shutdown
+		// step below is called explicitly (not via defer). Order matters:
+		// DBs last, after the subsystems that still write to them.
+		webhook.Shutdown()
+		ai.ShutdownLiteLLM()
+		mcp.Shutdown()
+		cron.Shutdown()
+		// CloseAllUserDBs checkpoints every WAL (TRUNCATE) and resets stuck
+		// conversation states (processing/waiting_for_*) so the next boot
+		// starts clean instead of auto-resuming a killed loop.
+		db.CloseAllUserDBs()
+
+		os.Exit(0)
+	}()
+
 	log.Printf("Server starting on port 8090...")
-	log.Fatal(http.ListenAndServe(":8090", nil))
+	log.Fatal(srv.ListenAndServe())
 }
 
 func handleSearch(w http.ResponseWriter, r *http.Request) {
