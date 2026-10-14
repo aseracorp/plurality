@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -30,15 +31,23 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 	utils.Log("[LLMLoop] Starting for conversation %s with %d connected clients", ar.ConversationID, ar.ClientCount())
 
 	// Runaway-loop guard: count LLM iterations in this request. A workflow
-	// can legitimately loop dozens of times (tool → LLM → tool …), but a
-	// stuck conversation must not spin forever generating unbounded DB
-	// churn (observed: "Cosmos Init Refactor" ran continuously for hours,
-	// pushing ~5,000 messages and a 550 MB WAL before the container was
-	// killed). After maxLoopIterations with no user input, we stop looping
-	// and leave the conversation idle — the user can resume with a fresh
-	// message. The long_task reminder cap (LongTaskMaxReminders) bounds the
+	// can legitimately loop dozens to hundreds of times (tool → LLM → tool
+	// …) while making real progress — e.g. a 60-iteration continue-turn was
+	// observed on 2026-10-14 where the previous hard cap of 60 halted a
+	// conversation mid-task (screenshots, history rewrite, PR prep all
+	// done; the guard killed it before the final store PR update). A stuck
+	// conversation, by contrast, repeats the *same* tool call against a
+	// conversation that never changes. We can't cheaply detect "same" here,
+	// so the cap exists purely to bound the damage (observed pre-#56:
+	// "Cosmos Init Refactor" ran for hours, pushing ~5,000 messages and a
+	// 550 MB WAL before the container was killed).
+	//
+	// Budget is configurable via MAX_LOOP_ITERATIONS and defaults well above
+	// any observed healthy turn, so legitimate long runs are not interrupted.
+	// WAL checkpointing (#56) keeps disk churn bounded while a run is in
+	// progress. The long_task reminder cap (LongTaskMaxReminders) bounds the
 	// "keep going" nudge path; this bounds everything else.
-	const maxLoopIterations = 60
+	maxLoopIterations := maxLoopIterationsFromEnv()
 	iterations := 0
 
 	for {
@@ -51,10 +60,10 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 
 		iterations++
 		if iterations > maxLoopIterations {
-			utils.Log("[LLMLoop] iteration budget (%d) exceeded for conversation %s — going idle to stop runaway loop", maxLoopIterations, ar.ConversationID)
+			utils.Log("[LLMLoop] iteration budget (%d) exceeded for conversation %s after %d productive iterations — going idle (runaway loop guard)", maxLoopIterations, ar.ConversationID, iterations-1)
 			ar.Broadcast(SSEEvent{
 				Type:           "text",
-				Content:        "(This conversation has been looping for a long time — pausing. Send a message to continue.)",
+				Content:        fmt.Sprintf("(This turn exceeded the %d-step loop budget and was paused to guard against a runaway loop. If work was still in progress, send a message to continue — the state is preserved.)", maxLoopIterations),
 				ConversationID: ar.ConversationID,
 			})
 			ar.setState(ctx, utils.StateIdle)
@@ -1031,4 +1040,23 @@ func pauseForWait(ctx context.Context, ar *ActiveRequest, conv *utils.Conversati
 	})
 
 	return true
+}
+
+// defaultMaxLoopIterations is the per-request LLM iteration budget for
+// RunLLMLoop. It is read once per loop start (so the env var can be tuned
+// without a rebuild) and can be overridden with MAX_LOOP_ITERATIONS — the
+// runaway-loop guard's safety valve must stay human-controllable.
+const defaultMaxLoopIterations = 150
+
+func maxLoopIterationsFromEnv() int {
+	v := os.Getenv("MAX_LOOP_ITERATIONS")
+	if v == "" {
+		return defaultMaxLoopIterations
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		utils.Log("[LLMLoop] ignoring invalid MAX_LOOP_ITERATIONS=%q, using default %d", v, defaultMaxLoopIterations)
+		return defaultMaxLoopIterations
+	}
+	return n
 }
