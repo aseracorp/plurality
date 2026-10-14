@@ -55,6 +55,11 @@ func main() {
 	search.InitEmbedWorker()
 	storage.Init()
 
+	// Repair conversations left in a non-idle state by a previous server
+	// lifetime (crashed mid-turn, wait timer that died with the process).
+	// Must run after the per-user SQLite DBs are available.
+	db.RecoverStuckConversations(context.Background())
+
 	// Load global server-side skills from data/skills/ and per-user skills from
 	// users-data/{userID}/skills/. The retrieve_server_skill tool is registered
 	// unconditionally — GetRequests only surfaces it to users that actually have
