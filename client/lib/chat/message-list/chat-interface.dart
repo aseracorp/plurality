@@ -87,6 +87,11 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
   bool _closeMessageWarning = false;
   bool _didInitialScroll = false;
 
+  // Last ConversationState seen by _onSessionChanged. Used to rebuild the
+  // chat only on state transitions (stream start/end, tool-wait, error)
+  // instead of on every streaming token.
+  ConversationState _lastSessionState = ConversationState.idle;
+
   // Mirrors the main list's itemCount from the most recent buildMessageList.
   // jumpToItem callers must use this — recomputing a filter here drifts and
   // throws an out-of-bounds assertion in super_sliver_list.
@@ -192,6 +197,9 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
         _needsBottomMargin = false;
         _closeMessageWarning = false;
         _didInitialScroll = false;
+        // Reset the transition tracker to the newly-bound session's current
+        // state so the next real transition still triggers a rebuild.
+        _lastSessionState = _session.value.state;
       });
     }
   }
@@ -223,7 +231,18 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
       }
     }
 
-    setState(() {});
+    // The session notifier fires on EVERY SSE token while text streams. A
+    // full setState here would rebuild the entire chat — every rendered DB
+    // message (each an AnimatedMessageBox with a markdown subtree), the
+    // minimap, the composer — per token: O(history) markdown re-renders that
+    // showed up as GPU stalls and Firefox crashes. The streaming slot is
+    // wrapped in its own ValueListenableBuilder below and re-renders itself
+    // per token; this whole-chat rebuild only needs to happen on state
+    // transitions (stream start/end, tool-wait, error).
+    if (state.state != _lastSessionState || state.error != null) {
+      _lastSessionState = state.state;
+      setState(() {});
+    }
   }
 
   // Extract the model selection logic to a separate method
@@ -1037,12 +1056,20 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
       itemCount: itemCount,
       itemBuilder: (context, index) {
         // --- Streaming content ---
+        // Rebuild ONLY this item per SSE token. Previously the whole list
+        // (and the whole chat) rebuilt on every token via _onSessionChanged's
+        // unconditional setState — every DB message's markdown re-rendered
+        // per token (GPU stalls, jank). The slot below listens to _session
+        // itself and re-renders just this item when the streamed text grows.
         if (hasStreamingContent && index == visibleMessages.length) {
           return Align(
             alignment: Alignment.centerLeft,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: _buildStreamingWidgets(sessionState, messages, mini),
+            child: ValueListenableBuilder<ChatSessionState>(
+              valueListenable: _session,
+              builder: (context, s, _) => Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: _buildStreamingWidgets(s, messages, mini),
+              ),
             ),
           );
         }
