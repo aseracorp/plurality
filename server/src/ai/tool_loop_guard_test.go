@@ -38,3 +38,38 @@ func TestMaxLoopIterationsFromEnv(t *testing.T) {
 		})
 	}
 }
+
+// The zero-progress stall guard's limit must be configurable per-deployment
+// (mirrors MAX_LOOP_ITERATIONS), and must always fall back to a sane default
+// on malformed input so a bad env var can never disable the guard entirely
+// (a value of 0 or negative would make the loop halt instantly — the guard
+// must stay protective AND conservative).
+func TestProgressStallLimitFromEnv(t *testing.T) {
+	old := os.Getenv("LOOP_PROGRESS_STALL_LIMIT")
+	defer os.Setenv("LOOP_PROGRESS_STALL_LIMIT", old)
+
+	cases := []struct {
+		name string
+		env  string
+		want int
+	}{
+		{"unset uses default", "", defaultProgressStallLimit},
+		{"explicit override", "10", 10},
+		{"non-numeric falls back", "abc", defaultProgressStallLimit},
+		{"zero falls back", "0", defaultProgressStallLimit},
+		{"negative falls back", "-5", defaultProgressStallLimit},
+		{"whitespace-ish malformed falls back", " 10", defaultProgressStallLimit},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.env == "" {
+				os.Unsetenv("LOOP_PROGRESS_STALL_LIMIT")
+			} else {
+				os.Setenv("LOOP_PROGRESS_STALL_LIMIT", tc.env)
+			}
+			if got := progressStallLimitFromEnv(); got != tc.want {
+				t.Fatalf("progressStallLimitFromEnv() = %d, want %d (env=%q)", got, tc.want, tc.env)
+			}
+		})
+	}
+}
