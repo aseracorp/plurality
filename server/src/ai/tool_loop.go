@@ -50,6 +50,24 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 	maxLoopIterations := maxLoopIterationsFromEnv()
 	iterations := 0
 
+	// Zero-progress stall guard: a healthy loop persists at least one
+	// message per iteration (the streamed assistant message plus any tool
+	// results). A stuck conversation — the model re-emitting the same tool
+	// calls that were already dropped as duplicates, tools failing before
+	// anything reaches the DB, or a provider returning empty completions
+	// with tool calls — can spin the LLM loop back-to-back with no
+	// persisted growth. MAX_LOOP_ITERATIONS bounds it eventually, but each
+	// iteration is a full provider round-trip plus JSON/DB work, so 150 hot
+	// iterations still burn several minutes of whole cores (observed: a
+	// production instance pinned at ~415% CPU for 24h+). Halt a few
+	// consecutive zero-progress iterations in instead and let the user
+	// resume.
+	//
+	// Configurable per-deployment via LOOP_PROGRESS_STALL_LIMIT, mirroring
+	// MAX_LOOP_ITERATIONS.
+	progressStallLimit := progressStallLimitFromEnv()
+	zeroProgressStreak := 0
+
 	for {
 		select {
 		case <-ar.Ctx.Done():
@@ -75,6 +93,11 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			})
 			return
 		}
+
+		// Snapshot the persisted-message count at the start of this
+		// iteration. After the stream + tool execution, growth means real
+		// forward progress; no growth means the loop is spinning.
+		iterStartMsgCount := len(conversation.Messages)
 
 		model := SelectModel(payload.ModelSelected, conversation)
 		ar.Model = model
@@ -479,6 +502,34 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			// synthesizes a timeout result and resumes the loop, so the model
 			// can self-correct (e.g. fall back to a server-side tool).
 			go armClientToolWatchdog(userContextFor(ar.UserID), ar, &conversation, clientTools)
+			return
+		}
+
+		// Zero-progress stall detection. If this iteration persisted nothing
+		// (conversation.Messages did not grow), and we are about to loop
+		// back to the LLM anyway, treat consecutive repeats as a stuck spin.
+		// Legitimate progress always persists at least the assistant message
+		// (finalizeStream) and every executed tool result, so any healthy
+		// workflow resets the streak every iteration.
+		if len(conversation.Messages) == iterStartMsgCount {
+			zeroProgressStreak++
+		} else {
+			zeroProgressStreak = 0
+		}
+		if zeroProgressStreak >= progressStallLimit {
+			utils.Log("[LLMLoop] zero-progress stall: %d consecutive iteration(s) persisted no messages for conversation %s — going idle (stall guard)", zeroProgressStreak, ar.ConversationID)
+			ar.Broadcast(SSEEvent{
+				Type:           "text",
+				Content:        fmt.Sprintf("(This conversation stopped making progress after %d step(s) — the loop was paused to stop burning resources. If work was still in progress, send a message to continue — the state is preserved.)", progressStallLimit),
+				ConversationID: ar.ConversationID,
+			})
+			ar.setState(ctx, utils.StateIdle)
+			ar.BroadcastStatus("", "")
+			ar.Broadcast(SSEEvent{
+				Type:           "done",
+				ConversationID: ar.ConversationID,
+				Title:          conversation.Title,
+			})
 			return
 		}
 
@@ -1057,6 +1108,26 @@ func maxLoopIterationsFromEnv() int {
 	if err != nil || n <= 0 {
 		utils.Log("[LLMLoop] ignoring invalid MAX_LOOP_ITERATIONS=%q, using default %d", v, defaultMaxLoopIterations)
 		return defaultMaxLoopIterations
+	}
+	return n
+}
+
+// defaultProgressStallLimit is how many consecutive LLM iterations may
+// persist zero messages before RunLLMLoop halts itself (see the zero-progress
+// stall guard in RunLLMLoop). Three is chosen to absorb transient single
+// no-op iterations (e.g. one duplicated tool call dropped) without letting a
+// real spin run on. Overridable with LOOP_PROGRESS_STALL_LIMIT.
+const defaultProgressStallLimit = 3
+
+func progressStallLimitFromEnv() int {
+	v := os.Getenv("LOOP_PROGRESS_STALL_LIMIT")
+	if v == "" {
+		return defaultProgressStallLimit
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		utils.Log("[LLMLoop] ignoring invalid LOOP_PROGRESS_STALL_LIMIT=%q, using default %d", v, defaultProgressStallLimit)
+		return defaultProgressStallLimit
 	}
 	return n
 }
