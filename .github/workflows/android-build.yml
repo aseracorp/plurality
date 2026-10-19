@@ -13,6 +13,9 @@ jobs:
     permissions:
       contents: write
 
+    outputs:
+      signing: ${{ steps.signing-check.outputs.signing }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -28,7 +31,23 @@ jobs:
           flutter-version: '3.41.8'
           channel: 'stable'
 
+      - name: Check signing secrets
+        id: signing-check
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          SIGNING=1
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ] || [ -z "$KEY_ALIAS" ]; then
+            echo "::warning::Android release signing secrets are not configured. Building with debug signing keys (suitable for sideloading; not for Play Store distribution)."
+            SIGNING=0
+          fi
+          echo "signing=$SIGNING" >> "$GITHUB_OUTPUT"
+
       - name: Verify signing secrets are set
+        if: steps.signing-check.outputs.signing == '1'
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -47,6 +66,7 @@ jobs:
           echo "All Android signing secrets are present."
 
       - name: Decode keystore
+        if: steps.signing-check.outputs.signing == '1'
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -67,6 +87,7 @@ jobs:
           fi
 
       - name: Create key.properties
+        if: steps.signing-check.outputs.signing == '1'
         env:
           STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
