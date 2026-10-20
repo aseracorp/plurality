@@ -19,6 +19,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   flutter::DartProject project(L"data");
 
+  // Use the Skia rendering backend instead of Impeller. Impeller's
+  // GL/ANGLE setup crashes hard (0xC0000409) on some GPU/driver configs
+  // (reproduced on AMD 5700G iGPU and NVIDIA Quadro RTX 4000), independent
+  // of vendor. There is no runtime env switch for the Windows embedder, so
+  // this is the supported deployment-time opt-out.
+  project.set_impeller_switch(flutter::ImpellerSwitch::Disabled);
+
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();
 
