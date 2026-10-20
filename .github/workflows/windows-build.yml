@@ -43,10 +43,7 @@ jobs:
         run: |
           cd client
           flutter pub get
-          # Disable the Impeller (OpenGL/ANGLE) renderer so the Windows build uses
-          # the Skia backend. Impeller's GL setup crashes hard on some GPU/driver
-          # configs (0xC0000409); Skia avoids that class of failure entirely.
-          flutter build windows --release --no-enable-impeller
+          flutter build windows --release
           
       - name: Create Windows installer
         run: |
