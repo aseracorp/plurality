@@ -107,6 +107,15 @@ class ConversationStatus {
   bool get isIdle => state == 'idle';
   bool get isTyping => activity == 'typing';
   bool get isUsingTool => activity == 'tool_use';
+
+  /// Whether two statuses are equivalent for UI purposes. The server often
+  /// re-broadcasts the same state (e.g. a ModelSelected-only refresh while
+  /// the conversation is still "typing"); treating those as equal lets
+  /// callers skip redundant notifier updates / rebuilds.
+  bool sameAs(ConversationStatus other) =>
+      state == other.state &&
+      activity == other.activity &&
+      toolName == other.toolName;
 }
 
 /// ChatService is a singleton background service that manages all chat
@@ -492,6 +501,28 @@ class ChatService {
     if (!current.containsKey(conversationId)) return;
     final updated = Map<String, ConversationStatus>.from(current);
     updated.remove(conversationId);
+    _setStatuses(updated);
+  }
+
+  /// Assign [conversationStatuses] only when the content actually changed.
+  /// The global status stream re-broadcasts identical states constantly
+  /// (per LLM-loop iteration, per tool, plus ModelSelected-only refreshes);
+  /// every assignment wakes every listener — including the open chat's
+  /// _onStatusChanged AND every ref.watch(conversationsProvider) consumer.
+  /// Comparing before assignment collapses that spam to real changes only.
+  void _setStatuses(Map<String, ConversationStatus> updated) {
+    final current = conversationStatuses.value;
+    if (current.length == updated.length) {
+      var same = true;
+      for (final entry in updated.entries) {
+        final existing = current[entry.key];
+        if (existing == null || !existing.sameAs(entry.value)) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return;
+    }
     conversationStatuses.value = updated;
   }
 
@@ -614,7 +645,7 @@ class ChatService {
           } else {
             updated[conversationId] = status;
           }
-          conversationStatuses.value = updated;
+          _setStatuses(updated);
 
           // If the server says this conversation is processing but our SSE
           // socket for it is gone (e.g. it died while we were backgrounded),
