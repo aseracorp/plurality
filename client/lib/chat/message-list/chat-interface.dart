@@ -92,6 +92,13 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
   // instead of on every streaming token.
   ConversationState _lastSessionState = ConversationState.idle;
 
+  // Last (state|activity|toolName) key and processing flag for THIS
+  // conversation from the global status stream. The status notifier fires on
+  // every status event for ANY conversation of the user; these track whether
+  // the open chat's own status actually changed before triggering a rebuild.
+  String _lastStatusKey = '';
+  bool _lastStatusProcessing = false;
+
   // Mirrors the main list's itemCount from the most recent buildMessageList.
   // jumpToItem callers must use this — recomputing a filter here drifts and
   // throws an out-of-bounds assertion in super_sliver_list.
@@ -200,12 +207,42 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
         // Reset the transition tracker to the newly-bound session's current
         // state so the next real transition still triggers a rebuild.
         _lastSessionState = _session.value.state;
+        // Reset status-trackers so the newly-selected conversation's current
+        // status (if any) triggers a rebuild on the next status event.
+        _lastStatusKey = '';
+        _lastStatusProcessing = false;
       });
     }
   }
 
+  /// Called when the global status stream changes. The stream fires for EVERY
+  /// conversation of this user (sub-agents, background tasks, other tabs) and
+  /// each event installs a NEW map on the shared ValueNotifier — so this
+  /// listener runs for all of them, not just this chat's. A full setState()
+  /// per event rebuilt the entire conversation (every DB message's markdown
+  /// + the minimap + composer) mid-typing whenever ANY other conversation
+  /// transitioned, which showed up as input lag and jank.
+  ///
+  /// Rebuild only when THIS conversation's status actually changed: the
+  /// (state|activity|toolName) key or the processing flag. Duplicate events
+  /// for this conversation (server re-broadcasts an unchanged typing status,
+  /// or a ModelSelected-only refresh with no status change) are filtered, and
+  /// events for other conversations no longer touch this widget. Real SSE
+  /// state flips are still handled by _onSessionChanged's transition guard.
   void _onStatusChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    final status =
+        _chatService.conversationStatuses.value[widget.conversationId];
+    final isProcessing = status?.isProcessing ?? false;
+    final statusKey = status == null
+        ? ''
+        : '${status.state}|${status.activity}|${status.toolName}';
+    final keyChanged = statusKey != _lastStatusKey;
+    final processingChanged = isProcessing != _lastStatusProcessing;
+    if (!keyChanged && !processingChanged) return;
+    _lastStatusKey = statusKey;
+    _lastStatusProcessing = isProcessing;
+    setState(() {});
   }
 
   /// Called whenever ChatService session state changes.
