@@ -18,10 +18,12 @@ import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:flutter/rendering.dart';
 
-// Imported only on web — the visibility reattach listener is guarded by
-// kIsWeb so desktop/mobile builds never touch the DOM.
-import 'package:web/web.dart' as web
-    if (dart.library.io) 'package:plurality/api/stub_reload_helper.dart';
+// Conditional import: the web build registers a document-level
+// visibilitychange listener (to recover SSE sockets that Firefox dropped
+// while the tab was backgrounded); desktop/mobile get a no-op stub and
+// rely on the WidgetsBindingObserver lifecycle instead.
+import 'package:plurality/api/web_visibility.dart'
+    if (dart.library.io) 'package:plurality/api/web_visibility_stub.dart';
 
 final authStateProvider = StreamProvider<User?>((ref) {
   return AuthService().authStateChanges;
@@ -79,13 +81,11 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
   /// global status stream. Without this the chat can sit frozen on
   /// "processing" until a manual tab reload.
   void _initVisibilityListener() {
-    if (!kIsWeb) return;
-    // `web` is available on web; on non-web builds the conditional import
-    // maps to the stub which exposes platformSpecificReload only, but the
-    // visibility listener is web-only so we guard before touching it.
-    // (On non-web, kIsWeb is false and we never reach the DOM access.)
-    web.document.addEventListener('visibilitychange', (web.Event event) {
-      if (web.document.visibilityState == 'visible') {
+    registerVisibilityListener(() {
+      // Only reconnect when authenticated — the ChatService itself also
+      // guards on _connected, but avoid the churn of a reconnectVisible()
+      // against a logged-out / signed-out session.
+      if (ref.read(authStateProvider).valueOrNull != null) {
         ChatService().reconnectVisible();
       }
     });
