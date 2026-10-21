@@ -11,5 +11,5 @@ void registerVisibilityListener(void Function() onVisible) {
     if (web.document.visibilityState == 'visible') {
       onVisible();
     }
-  });
+  }.toJS);
 }
