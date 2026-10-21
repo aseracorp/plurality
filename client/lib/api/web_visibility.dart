@@ -1,5 +1,7 @@
 // Web implementation of the visibility-change hook.
 // Imported on web builds only (see the conditional import in main.dart).
+import 'dart:js_interop';
+
 import 'package:web/web.dart' as web;
 
 /// Registers a document-level visibilitychange listener. When the browser
