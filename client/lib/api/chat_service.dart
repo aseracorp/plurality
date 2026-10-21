@@ -174,6 +174,17 @@ class ChatService {
   /// Reference to the conversations notifier (set during app init).
   ConversationsNotifier? _conversationsNotifier;
 
+  /// When the last status event arrived. Used by the idle watchdog: if the
+  /// tab was backgrounded and Firefox parked the SSE socket, no events will
+  /// arrive here even though the server is broadcasting. A silent status
+  /// stream for longer than [statusStreamIdleTimeout] while we believe a
+  /// conversation is active means the socket died without firing onError —
+  /// tear it down and reconnect, which re-broadcasts current state and lets
+  /// the status handler reattach the per-conversation SSE below.
+  DateTime _lastStatusEventAt = DateTime.now();
+  Timer? _statusWatchdogTimer;
+  static const _statusStreamIdleTimeout = Duration(seconds: 45);
+
   void setConversationsNotifier(ConversationsNotifier notifier) {
     _conversationsNotifier = notifier;
   }
@@ -443,7 +454,15 @@ class ChatService {
   /// Safe to call on conversation open, on SSE error, and on app resume.
   /// If the server has no active stream, resolves the session to idle and
   /// clears any stale entry in [conversationStatuses].
-  Future<void> reconnect(String conversationId) async {
+  ///
+  /// [force] bypasses the "already processing" bail. That guard exists to
+  /// avoid racing a sendMessage/submitToolResults whose POST is in flight —
+  /// but a session can be stuck `processing` with a DEAD socket (Firefox
+  /// throttled and dropped the stream while the tab was backgrounded). In
+  /// that state the normal guard makes reconnect() a permanent no-op and
+  /// the chat appears frozen until a manual reload. force is the recovery
+  /// path used on tab visibility / app resume.
+  Future<void> reconnect(String conversationId, {bool force = false}) async {
     if (conversationId.isEmpty) return;
     // Not logged in (or torn down on sign-out) — never touch the network.
     // Otherwise a reconnect scheduled before logout would fire afterwards
@@ -456,9 +475,12 @@ class ChatService {
     // before awaiting their POST. While that POST is in flight we don't
     // have an entry in _activeStreams yet, but reconnecting would race the
     // POST's stream with our /chat/stream/<id> stream — and the server
-    // would fan every event to both sockets. Bail.
+    // would fan every event to both sockets. Bail unless force (the force
+    // path is only reached from tab-resume where no POST can be in flight
+    // on this client: sendMessage's stream either attached or failed).
     final existing = _sessions[conversationId];
-    if (existing != null &&
+    if (!force &&
+        existing != null &&
         existing.value.state == ConversationState.processing) {
       return;
     }
@@ -491,6 +513,38 @@ class ChatService {
       _clearStatus(conversationId);
     } finally {
       _connecting.remove(conversationId);
+    }
+  }
+
+  /// Reattach the currently-viewed conversation and refresh the global
+  /// status stream when the tab becomes visible again. Firefox throttles
+  /// background tabs and can drop long-lived SSE sockets without a clean
+  /// onError; the per-conversation stream is force-reconnected (healing the
+  /// stuck-processing state) and the status stream is re-established so its
+  /// next broadcasts drive further recovery.
+  Future<void> reconnectVisible([String? conversationId]) async {
+    if (!_connected) return;
+
+    // Flush + re-establish the global status stream. connectStatusStream
+    // cancels any existing subscription first, so this is safe to call
+    // repeatedly.
+    connectStatusStream();
+
+    if (conversationId != null && conversationId.isNotEmpty) {
+      await reconnect(conversationId, force: true);
+    } else {
+      // No explicit conversation: force-reconnect every session that is
+      // stuck processing without a live socket.
+      final stuck = <String>[];
+      for (final entry in _sessions.entries) {
+        if (entry.value.value.state == ConversationState.processing &&
+            !_activeStreams.containsKey(entry.key)) {
+          stuck.add(entry.key);
+        }
+      }
+      for (final id in stuck) {
+        await reconnect(id, force: true);
+      }
     }
   }
 
@@ -535,6 +589,8 @@ class ChatService {
     _statusStreamSubscription?.cancel();
     _statusStreamSubscription = null;
     connectStatusStream();
+    // Also heal any session stuck processing with a dead socket.
+    await reconnectVisible();
   }
 
   bool _connected = false;
@@ -554,6 +610,8 @@ class ChatService {
   /// login screen mid-session.
   void disconnect() {
     _connected = false;
+    _statusWatchdogTimer?.cancel();
+    _statusWatchdogTimer = null;
     _statusStreamSubscription?.cancel();
     _statusStreamSubscription = null;
     for (final sub in _activeStreams.values) {
@@ -588,10 +646,18 @@ class ChatService {
     // Cancel existing status stream if any
     _statusStreamSubscription?.cancel();
 
+    // Reset the idle-watchdog baseline: any bytes (events or heartbeats)
+    // count as liveness; the watchdog only fires when the socket has been
+    // completely silent for longer than the timeout while the user believes
+    // a conversation is running.
+    _lastStatusEventAt = DateTime.now();
+    _armStatusWatchdog();
+
     try {
       final stream = await _api.connectStatusStream();
       _statusStreamSubscription = stream.listen(
         (data) {
+          _lastStatusEventAt = DateTime.now();
           final conversationId = data['conversation_id'] as String? ?? '';
           if (conversationId.isEmpty) return;
 
@@ -691,6 +757,30 @@ class ChatService {
       debugPrint('[ChatService] Failed to connect status stream: $e — retrying in 5s');
       Future.delayed(const Duration(seconds: 5), connectStatusStream);
     }
+  }
+
+  /// Idle watchdog for the global status stream. If no status event (or
+  /// heartbeat byte) has arrived for [_statusStreamIdleTimeout] while we
+  /// believe at least one conversation is active, the socket is presumed
+  /// dead (Firefox background-throttling drops it without onError) — tear
+  /// it down and reconnect. The re-established stream immediately
+  /// re-broadcasts current state, which drives the per-conversation
+  /// reattach above.
+  void _armStatusWatchdog() {
+    _statusWatchdogTimer?.cancel();
+    _statusWatchdogTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (!_connected) return;
+      final hasActive = conversationStatuses.value.isNotEmpty ||
+          _activeStreams.isNotEmpty;
+      if (!hasActive) return;
+      final silentFor = DateTime.now().difference(_lastStatusEventAt);
+      if (silentFor < _statusStreamIdleTimeout) return;
+      debugPrint(
+          '[ChatService] Status stream silent for ${silentFor.inSeconds}s — reconnecting');
+      _statusStreamSubscription?.cancel();
+      _statusStreamSubscription = null;
+      connectStatusStream();
+    });
   }
 
   // --- Internal ---
