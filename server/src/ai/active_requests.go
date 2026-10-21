@@ -5,15 +5,33 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/azukaar/plurality/src/utils"
 )
+
+// sseHeartbeatInterval is how often idle SSE clients receive a keepalive
+// comment. Browsers (Firefox especially) throttle or drop long-lived fetch
+// streams in background tabs; without periodic bytes the connection looks
+// dead and the tab comes back to a frozen chat. A comment line is invisible
+// to SSE parsers (only "data:" lines are read) and keeps proxies from
+// buffering the stream away.
+const sseHeartbeatInterval = 25 * time.Second
 
 // SSEClient represents a single connected SSE listener.
 type SSEClient struct {
 	writer  http.ResponseWriter
 	flusher http.Flusher
 	Done    chan struct{}
+
+	// writeMu serializes concurrent writes to the underlying ResponseWriter.
+	// The heartbeat goroutine writes ": ping" comments on its own schedule
+	// while Broadcast() may be writing real events — net/http does not allow
+	// concurrent writes to the same ResponseWriter, so without this the two
+	// paths can interleave bytes and corrupt the SSE framing (or panic).
+	writeMu       sync.Mutex
+	heartbeatStop chan struct{}
+	heartbeatOnce sync.Once
 }
 
 // NewSSEClient creates an SSEClient from an HTTP response writer.
@@ -24,16 +42,58 @@ func NewSSEClient(w http.ResponseWriter) *SSEClient {
 		return nil
 	}
 	return &SSEClient{
-		writer:  w,
-		flusher: flusher,
-		Done:    make(chan struct{}),
+		writer:        w,
+		flusher:       flusher,
+		Done:          make(chan struct{}),
+		heartbeatStop: make(chan struct{}),
 	}
 }
 
 // Send writes an SSEEvent to this client. Returns false if the write fails.
 func (c *SSEClient) Send(event SSEEvent) bool {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	err := WriteSSEEvent(c.writer, event)
 	return err == nil
+}
+
+// writeHeartbeat writes a single keepalive comment under the write lock.
+func (c *SSEClient) writeHeartbeat() bool {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if _, err := c.writer.Write([]byte(": ping\n\n")); err != nil {
+		return false
+	}
+	c.flusher.Flush()
+	return true
+}
+
+// startHeartbeat launches the keepalive goroutine for this client. It writes
+// an SSE comment (": ping") every sseHeartbeatInterval until stopHeartbeat
+// is called. The first ping is scheduled after one interval so busy streams
+// (which broadcast real events) are not interleaved with pings.
+func (c *SSEClient) startHeartbeat() {
+	go func() {
+		ticker := time.NewTicker(sseHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-c.heartbeatStop:
+				return
+			case <-ticker.C:
+				if !c.writeHeartbeat() {
+					return
+				}
+			}
+		}
+	}()
+}
+
+// stopHeartbeat idempotently stops the keepalive goroutine.
+func (c *SSEClient) stopHeartbeat() {
+	c.heartbeatOnce.Do(func() {
+		close(c.heartbeatStop)
+	})
 }
 
 // ActiveRequest tracks an in-progress LLM request for a conversation.
@@ -79,6 +139,7 @@ func (ar *ActiveRequest) AddClient(client *SSEClient) {
 	ar.mu.Lock()
 	defer ar.mu.Unlock()
 	ar.clients[client] = true
+	client.startHeartbeat()
 }
 
 // RemoveClient unregisters an SSE client.
@@ -86,6 +147,7 @@ func (ar *ActiveRequest) RemoveClient(client *SSEClient) {
 	ar.mu.Lock()
 	defer ar.mu.Unlock()
 	delete(ar.clients, client)
+	client.stopHeartbeat()
 }
 
 // ClientCount returns the number of connected SSE clients.
@@ -106,6 +168,7 @@ func (ar *ActiveRequest) Broadcast(event SSEEvent) {
 	for client := range ar.clients {
 		if !client.Send(event) {
 			delete(ar.clients, client)
+			client.stopHeartbeat()
 			select {
 			case <-client.Done:
 			default:
@@ -120,6 +183,7 @@ func (ar *ActiveRequest) CloseAllClients() {
 	ar.mu.Lock()
 	defer ar.mu.Unlock()
 	for client := range ar.clients {
+		client.stopHeartbeat()
 		select {
 		case <-client.Done:
 			// already closed
@@ -223,11 +287,64 @@ type StatusClient struct {
 	flusher http.Flusher
 	UserID  string
 	Done    chan struct{}
+
+	writeMu       sync.Mutex
+	heartbeatStop chan struct{}
+	heartbeatOnce sync.Once
+}
+
+// NewStatusClient creates a StatusClient.
+func NewStatusClient(w http.ResponseWriter, flusher http.Flusher, userID string) *StatusClient {
+	return &StatusClient{
+		writer:        w,
+		flusher:       flusher,
+		UserID:        userID,
+		Done:          make(chan struct{}),
+		heartbeatStop: make(chan struct{}),
+	}
 }
 
 // Send writes a StatusEvent to this client. Returns false if the write fails.
 func (c *StatusClient) Send(event StatusEvent) bool {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	return WriteStatusEvent(c.writer, event) == nil
+}
+
+// writeHeartbeat writes a single keepalive comment under the write lock.
+func (c *StatusClient) writeHeartbeat() bool {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if _, err := c.writer.Write([]byte(": ping\n\n")); err != nil {
+		return false
+	}
+	c.flusher.Flush()
+	return true
+}
+
+// startHeartbeat launches the keepalive goroutine for this client.
+func (c *StatusClient) startHeartbeat() {
+	go func() {
+		ticker := time.NewTicker(sseHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-c.heartbeatStop:
+				return
+			case <-ticker.C:
+				if !c.writeHeartbeat() {
+					return
+				}
+			}
+		}
+	}()
+}
+
+// stopHeartbeat idempotently stops the keepalive goroutine.
+func (c *StatusClient) stopHeartbeat() {
+	c.heartbeatOnce.Do(func() {
+		close(c.heartbeatStop)
+	})
 }
 
 // StatusRegistry manages all connected status stream clients.
@@ -245,6 +362,7 @@ func (r *statusRegistry) Add(client *StatusClient) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.clients[client] = true
+	client.startHeartbeat()
 }
 
 // Remove unregisters a status stream client.
@@ -252,6 +370,7 @@ func (r *statusRegistry) Remove(client *StatusClient) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.clients, client)
+	client.stopHeartbeat()
 }
 
 // BroadcastToUser sends a StatusEvent to all status clients belonging to a specific user.
@@ -262,6 +381,7 @@ func (r *statusRegistry) BroadcastToUser(userID string, event StatusEvent) {
 		if client.UserID == userID {
 			if !client.Send(event) {
 				delete(r.clients, client)
+				client.stopHeartbeat()
 				select {
 				case <-client.Done:
 				default:
