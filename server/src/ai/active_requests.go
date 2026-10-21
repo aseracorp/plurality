@@ -24,6 +24,12 @@ type SSEClient struct {
 	flusher http.Flusher
 	Done    chan struct{}
 
+	// writeMu serializes concurrent writes to the underlying ResponseWriter.
+	// The heartbeat goroutine writes ": ping" comments on its own schedule
+	// while Broadcast() may be writing real events — net/http does not allow
+	// concurrent writes to the same ResponseWriter, so without this the two
+	// paths can interleave bytes and corrupt the SSE framing (or panic).
+	writeMu       sync.Mutex
 	heartbeatStop chan struct{}
 	heartbeatOnce sync.Once
 }
@@ -45,8 +51,21 @@ func NewSSEClient(w http.ResponseWriter) *SSEClient {
 
 // Send writes an SSEEvent to this client. Returns false if the write fails.
 func (c *SSEClient) Send(event SSEEvent) bool {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	err := WriteSSEEvent(c.writer, event)
 	return err == nil
+}
+
+// writeHeartbeat writes a single keepalive comment under the write lock.
+func (c *SSEClient) writeHeartbeat() bool {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if _, err := c.writer.Write([]byte(": ping\n\n")); err != nil {
+		return false
+	}
+	c.flusher.Flush()
+	return true
 }
 
 // startHeartbeat launches the keepalive goroutine for this client. It writes
@@ -62,10 +81,9 @@ func (c *SSEClient) startHeartbeat() {
 			case <-c.heartbeatStop:
 				return
 			case <-ticker.C:
-				if _, err := c.writer.Write([]byte(": ping\n\n")); err != nil {
+				if !c.writeHeartbeat() {
 					return
 				}
-				c.flusher.Flush()
 			}
 		}
 	}()
@@ -270,6 +288,7 @@ type StatusClient struct {
 	UserID  string
 	Done    chan struct{}
 
+	writeMu       sync.Mutex
 	heartbeatStop chan struct{}
 	heartbeatOnce sync.Once
 }
@@ -287,7 +306,20 @@ func NewStatusClient(w http.ResponseWriter, flusher http.Flusher, userID string)
 
 // Send writes a StatusEvent to this client. Returns false if the write fails.
 func (c *StatusClient) Send(event StatusEvent) bool {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	return WriteStatusEvent(c.writer, event) == nil
+}
+
+// writeHeartbeat writes a single keepalive comment under the write lock.
+func (c *StatusClient) writeHeartbeat() bool {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if _, err := c.writer.Write([]byte(": ping\n\n")); err != nil {
+		return false
+	}
+	c.flusher.Flush()
+	return true
 }
 
 // startHeartbeat launches the keepalive goroutine for this client.
@@ -300,10 +332,9 @@ func (c *StatusClient) startHeartbeat() {
 			case <-c.heartbeatStop:
 				return
 			case <-ticker.C:
-				if _, err := c.writer.Write([]byte(": ping\n\n")); err != nil {
+				if !c.writeHeartbeat() {
 					return
 				}
-				c.flusher.Flush()
 			}
 		}
 	}()
