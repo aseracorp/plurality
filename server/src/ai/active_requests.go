@@ -210,7 +210,6 @@ var RequestRegistry = &activeRequestRegistry{
 
 type activeRequestRegistry struct {
 	mu       sync.RWMutex
-	clients  map[*SSEClient]bool
 	requests map[string]*ActiveRequest
 }
 
