@@ -58,7 +58,14 @@ func (c *SSEClient) Send(event SSEEvent) bool {
 }
 
 // writeHeartbeat writes a single keepalive comment under the write lock.
+// It returns false if the write fails or if the client has already been
+// torn down (the heartbeat goroutine should then stop).
 func (c *SSEClient) writeHeartbeat() bool {
+	select {
+	case <-c.Done:
+		return false
+	default:
+	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if _, err := c.writer.Write([]byte(": ping\n\n")); err != nil {
@@ -72,13 +79,25 @@ func (c *SSEClient) writeHeartbeat() bool {
 // an SSE comment (": ping") every sseHeartbeatInterval until stopHeartbeat
 // is called. The first ping is scheduled after one interval so busy streams
 // (which broadcast real events) are not interleaved with pings.
+//
+// The goroutine is fully panic-safe: a late write or flush on a response
+// whose HTTP handler has already returned (which net/http finalizes by
+// nilling its internal buffer) must never take down the whole process, so
+// any panic is recovered and the loop exits.
 func (c *SSEClient) startHeartbeat() {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				utils.Log("[SSEClient] heartbeat goroutine recovered from panic: %v", r)
+			}
+		}()
 		ticker := time.NewTicker(sseHeartbeatInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-c.heartbeatStop:
+				return
+			case <-c.Done:
 				return
 			case <-ticker.C:
 				if !c.writeHeartbeat() {
@@ -171,6 +190,7 @@ func (ar *ActiveRequest) Broadcast(event SSEEvent) {
 			client.stopHeartbeat()
 			select {
 			case <-client.Done:
+				// already closed
 			default:
 				close(client.Done)
 			}
@@ -312,7 +332,13 @@ func (c *StatusClient) Send(event StatusEvent) bool {
 }
 
 // writeHeartbeat writes a single keepalive comment under the write lock.
+// It returns false if the write fails or if the client has been torn down.
 func (c *StatusClient) writeHeartbeat() bool {
+	select {
+	case <-c.Done:
+		return false
+	default:
+	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if _, err := c.writer.Write([]byte(": ping\n\n")); err != nil {
@@ -323,13 +349,21 @@ func (c *StatusClient) writeHeartbeat() bool {
 }
 
 // startHeartbeat launches the keepalive goroutine for this client.
+// Panic-safe: a flush on a finalized response must never crash the process.
 func (c *StatusClient) startHeartbeat() {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				utils.Log("[StatusClient] heartbeat goroutine recovered from panic: %v", r)
+			}
+		}()
 		ticker := time.NewTicker(sseHeartbeatInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-c.heartbeatStop:
+				return
+			case <-c.Done:
 				return
 			case <-ticker.C:
 				if !c.writeHeartbeat() {
@@ -384,6 +418,7 @@ func (r *statusRegistry) BroadcastToUser(userID string, event StatusEvent) {
 				client.stopHeartbeat()
 				select {
 				case <-client.Done:
+					// already closed
 				default:
 					close(client.Done)
 				}
