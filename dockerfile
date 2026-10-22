@@ -45,8 +45,8 @@ RUN flutter build web --release
 # Stage 2: Build the Go server
 # Runs on the *target* platform (no --platform override) so CGO links against
 # the matching libc/libsqlite3 for that arch. buildx auto-selects the right
-# golang:1.25 image variant per platform.
-FROM golang:1.25 AS go_builder
+# golang:1.27.3 image variant per platform.
+FROM golang:1.27.3 AS go_builder
 ARG TARGETOS
 ARG TARGETARCH
 
