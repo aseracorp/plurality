@@ -353,6 +353,9 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
     _inputFocusNode.dispose();
     // Guard: controller may already be disposed if widget was torn down during navigation
     try { _messageController.dispose(); } catch (_) {}
+    // Release the streaming session for this (now closed) conversation so its
+    // growing items list is freed. No-op for conversations with a live stream.
+    _chatService.disposeSession(widget.conversationId);
     super.dispose();
   }
 
@@ -391,8 +394,14 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
     if (!_listController.isAttached ||
         !_mainScrollController.hasClients ||
         _lastMainItemCount <= 0) return;
+    // Clamp to the item count of the most recent build. Streaming content can
+    // toggle itemCount between the build and this callback (e.g. a tool event
+    // landing while the one-shot initial-scroll frame is in flight): jumping
+    // to a stale index throws an out-of-bounds assertion in super_sliver_list
+    // and crashes the whole tab.
+    final targetIndex = (_lastMainItemCount - 1).clamp(0, _lastMainItemCount - 1);
     _listController.jumpToItem(
-      index: _lastMainItemCount - 1,
+      index: targetIndex,
       scrollController: _mainScrollController,
       alignment: 1.0,
     );
@@ -1210,7 +1219,14 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
       });
     }
 
-    // Build main content and minimap content using the shared function
+    // MiniMap is only shown on wide non-web desktop layouts. On web
+    // (kIsWeb) it is never rendered — computing it doubles the per-build
+    // message-list cost (every message's markdown parsed a second time per
+    // frame, GPU/CanvasKit stalls). Declared before the content build below
+    // so the minimap list is skipped entirely when hidden.
+    final bool showMiniMap = !widget.isMobile && !kIsWeb && MediaQuery.of(context).size.width >= 1800;
+
+    // Build main content and (only when visible) the minimap content
     final mainContent = buildMessageList(
       messages: messages,
       controller: _mainScrollController,
@@ -1222,21 +1238,21 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
       ),
     );
 
-    final miniMapContent = buildMessageList(
-      messages: messages,
-      controller: _miniMapScrollController,
-      mini: true,
-      padding: EdgeInsets.only(
-        left: 4.0,
-        right: 4.0,
-        top: 4.0,
-        bottom: 0.0,
-      ),
-    );
+    final Widget? miniMapContent = showMiniMap
+        ? buildMessageList(
+            messages: messages,
+            controller: _miniMapScrollController,
+            mini: true,
+            padding: EdgeInsets.only(
+              left: 4.0,
+              right: 4.0,
+              top: 4.0,
+              bottom: 0.0,
+            ),
+          )
+        : null;
 
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-
-    final bool showMiniMap = !widget.isMobile && !kIsWeb && MediaQuery.of(context).size.width >= 1800;
 
     // Combine both scrolling methods
     Widget chatContent = MiddleClickScroller(
@@ -1529,7 +1545,7 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
               enabled: true,
               mainScrollController: _mainScrollController,
               miniMapScrollController: _miniMapScrollController,
-              miniMapContent: miniMapContent,
+              miniMapContent: miniMapContent ?? const SizedBox.shrink(),
               overlayColor:
                   Theme.of(context).brightness == Brightness.dark
                       ? Theme.of(context).textTheme.bodySmall?.color ?? Colors.red
