@@ -1879,7 +1879,8 @@ class _ToolApprovalBannerState extends State<ToolApprovalBanner> {
                               ),
                             ),
                           ),
-                          if (decision == null) ...[\n                            OutlinedButton(
+                          if (decision == null) ...[
+                            OutlinedButton(
                               onPressed: () => _decide(tc.id, false),
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: Theme.of(context).colorScheme.error,
@@ -1915,7 +1916,8 @@ class _ToolApprovalBannerState extends State<ToolApprovalBanner> {
                           maxHeight: 220,
                         );
                         return diff != null;
-                      }()) ...[\n                        const SizedBox(height: 6),
+                      }()) ...[
+                        const SizedBox(height: 6),
                         Builder(builder: (context) {
                           final diff = buildFsWriteDiff(
                             toolName: tc.function.name,
@@ -1925,7 +1927,8 @@ class _ToolApprovalBannerState extends State<ToolApprovalBanner> {
                           )!;
                           return diff;
                         }),
-                      ] else if (argsFormatted.isNotEmpty) ...[\n                        const SizedBox(height: 6),
+                      ] else if (argsFormatted.isNotEmpty) ...[
+                        const SizedBox(height: 6),
                         ConstrainedBox(
                           constraints: const BoxConstraints(maxHeight: 70),
                           child: Scrollbar(
