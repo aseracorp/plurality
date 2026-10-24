@@ -208,7 +208,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/orgs/${{ github.repository_owner }}/packages/container/${{ github.event.repository.name }}/versions?per_page=100")
           # Collect per-arch tags; track which 40-hex shas have both arches.
-          python3 - "$VERSIONS" <<'PY'
+          NEWEST_SHA=$(python3 - "$VERSIONS" <<'PY'
           import json, sys, re
           versions = json.loads(sys.argv[1])
           arch_of = {}   # sha -> set of arch
@@ -219,11 +219,12 @@ jobs:
                       arch_of.setdefault(m.group(1), set()).add(m.group(2))
           for sha in sorted(arch_of, key=lambda s: next((v['updated_at'] for v in versions if any(t.startswith(s) for t in v.get('metadata',{}).get('container',{}).get('tags',[]))), ''), reverse=True):
               if arch_of[sha] >= {'amd64','arm64'}:
-                  print(f"NEWEST_SHA={sha}")
+                  print(sha)
                   break
           else:
-              print("NEWEST_SHA=")
+              print("")
           PY
+          )
           echo "NEWEST_SHA=${NEWEST_SHA:-}"
           if [ -z "${NEWEST_SHA:-}" ]; then
             echo "No complete sha found on GHCR yet; nothing to heal."
