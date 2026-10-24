@@ -153,3 +153,95 @@ jobs:
           echo "  $IMAGE:${{ github.sha }}"
           echo "  $IMAGE:${{ steps.appversion.outputs.version }}"
           echo "  $IMAGE:latest"
+
+  # Self-heal: re-point latest + version at the newest COMPLETE sha (a sha
+  # that has BOTH amd64 + arm64 per-arch images on GHCR).
+  #
+  # The merge job above only runs when both arches succeed; arm64 is a cold
+  # QEMU build with weak caching, so a single arm64 failure/cache-miss
+  # leaves :latest pinned to an old binary while users who force-pull keep
+  # getting a stale server. This `if: always()` job runs even when merge
+  # fails and re-points the consumable tags to the newest build that has
+  # both arches — the same "no stale latest" guarantee #57 added, restored
+  # after #58 removed it. Runs on every push; the re-point is a no-op when
+  # merge already succeeded.
+  self-heal:
+    name: Self-heal latest/version tags
+    runs-on: ubuntu-latest
+    needs: build
+    if: always()
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read app version
+        id: appversion
+        run: |
+          VERSION=$(grep '^version:' client/pubspec.yaml | sed -E 's/^version:[[:space:]]*//' | tr -d '[:space:]')
+          VERSION="${VERSION%%+*}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.4.1
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Find newest sha with both arches
+        id: find-sha
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # List all package versions (each has its tag list), newest first.
+          VERSIONS=$(curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/orgs/${{ github.repository_owner }}/packages/container/${{ github.event.repository.name }}/versions?per_page=100")
+          # Collect per-arch tags; track which 40-hex shas have both arches.
+          NEWEST_SHA=$(python3 - "$VERSIONS" <<'PY'
+          import json, sys, re
+          versions = json.loads(sys.argv[1])
+          arch_of = {}   # sha -> set of arch
+          for v in versions:
+              for tag in v.get('metadata', {}).get('container', {}).get('tags', []):
+                  m = re.fullmatch(r'([0-9a-f]{40})-(amd64|arm64)', tag)
+                  if m:
+                      arch_of.setdefault(m.group(1), set()).add(m.group(2))
+          for sha in sorted(arch_of, key=lambda s: next((v['updated_at'] for v in versions if any(t.startswith(s) for t in v.get('metadata',{}).get('container',{}).get('tags',[]))), ''), reverse=True):
+              if arch_of[sha] >= {'amd64','arm64'}:
+                  print(sha)
+                  break
+          else:
+              print("")
+          PY
+          )
+          echo "NEWEST_SHA=${NEWEST_SHA:-}"
+          if [ -z "${NEWEST_SHA:-}" ]; then
+            echo "No complete sha found on GHCR yet; nothing to heal."
+            exit 0
+          fi
+          echo "sha=$NEWEST_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Re-point latest/version at newest complete sha
+        if: steps.find-sha.outputs.sha != ''
+        run: |
+          set -euxo pipefail
+          docker buildx imagetools create \
+            -t "$IMAGE:latest" \
+            -t "$IMAGE:${{ steps.appversion.outputs.version }}" \
+            -t "$IMAGE:${{ steps.find-sha.outputs.sha }}" \
+            "$IMAGE:${{ steps.find-sha.outputs.sha }}-amd64" \
+            "$IMAGE:${{ steps.find-sha.outputs.sha }}-arm64"
+          docker buildx imagetools inspect "$IMAGE:latest"
+
+

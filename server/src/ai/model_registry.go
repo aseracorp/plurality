@@ -65,7 +65,7 @@ type ModelEntry struct {
 	Mode                    string // chat | image_generation | image_edit | audio_speech | audio_transcription | embedding
 	SupportsVision          bool
 	SupportsFunctionCalling bool
-	// MaxContextTokens is the model's context window in tokens, as declared
+// MaxContextTokens is the model's context window in tokens, as declared
 	// in litellm_config.yaml model_info.context_window and surfaced by the
 	// proxy on /v1/models. Zero means "unknown" — callers should fall back
 	// to the configured eco trigger rather than assume a window.
@@ -89,7 +89,7 @@ type litellmModelEntry struct {
 	Mode                    string `json:"mode"`
 	SupportsVision          bool   `json:"supports_vision"`
 	SupportsFunctionCalling bool   `json:"supports_function_calling"`
-	MaxContextTokens        int    `json:"context_window"`
+MaxContextTokens        int    `json:"context_window"`
 }
 
 type litellmModelList struct {
@@ -135,7 +135,7 @@ func (r *ModelRegistry) Refresh(ctx context.Context) error {
 			Mode:                    m.Mode,
 			SupportsVision:          m.SupportsVision,
 			SupportsFunctionCalling: m.SupportsFunctionCalling,
-			MaxContextTokens:        m.MaxContextTokens,
+MaxContextTokens:        m.MaxContextTokens,
 		}
 		byName[m.ID] = entry
 		list = append(list, entry)
@@ -172,6 +172,27 @@ func (r *ModelRegistry) IsKnown(name string) bool {
 	_, ok := r.Get(name)
 	return ok
 }
+
+// defaultContextWindow is used when the registry has no entry for a model
+// (e.g. before Refresh, or a custom/unknown name). 128k is a safe middle
+// ground: it protects the small local models (65k) without starving the
+// large ones (1M) on the shared budget path.
+const defaultContextWindow = 131072
+
+// MaxContextTokensForPrefixed is a small helper used by the eco tail
+// capping: it returns the model's declared context window if known, or a
+// safe default (defaultContextWindow) otherwise. Unlike MaxContextTokensFor
+// (which returns 0 for unknown — right for the eco *trigger* fallback), the
+// tail budget must ALWAYS pick a concrete bound so a model with no declared
+// window still gets a bounded tail instead of the old unbounded 100k.
+func (r *ModelRegistry) MaxContextTokensForPrefixed(name string) int {
+	if w := r.MaxContextTokensFor(name); w > 0 {
+		return w
+	}
+	return defaultContextWindow
+}
+
+// IsImageGenModel reports whether the model produces images.
 
 // IsActionModel reports whether the model is a chat model that supports tool calls.
 // This is the gate for sending `tools` to the LLM and injecting skill prompts.

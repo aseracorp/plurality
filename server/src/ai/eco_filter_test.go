@@ -48,7 +48,7 @@ func TestFilterCheckpointsNoOOB(t *testing.T) {
 		}
 	}()
 	for i := 0; i < 100; i++ {
-		out := filterCheckpointsForRequest(msgs, true)
+		out := filterCheckpointsForRequest(msgs, true, 131072)
 		if len(out) == 0 {
 			t.Fatalf("empty tail returned")
 		}
@@ -60,7 +60,7 @@ func TestFilterCheckpointsNoOOB(t *testing.T) {
 			t.Fatalf("tail chars too big: %d", total)
 		}
 	}
-	out := filterCheckpointsForRequest(msgs, false)
+	out := filterCheckpointsForRequest(msgs, false, 131072)
 	if len(out) == 0 {
 		t.Fatalf("eco off returned empty")
 	}
@@ -71,7 +71,7 @@ func TestFilterCheckpointsTiny(t *testing.T) {
 		mkMsg("user", "hi", ""),
 		mkMsg("assistant", "hello", ""),
 	}
-	out := filterCheckpointsForRequest(msgs, true)
+	out := filterCheckpointsForRequest(msgs, true, 131072)
 	if len(out) != 2 {
 		t.Fatalf("expected 2, got %d", len(out))
 	}
@@ -101,7 +101,7 @@ func TestFilterNoCheckpointHugeHistory_WordPressRegression(t *testing.T) {
 		}
 		msgs = append(msgs, mkMsg(role, content, "system_tools__shell_exec"))
 	}
-	out := filterCheckpointsForRequest(msgs, true)
+	out := filterCheckpointsForRequest(msgs, true, 131072)
 	if len(out) == 0 {
 		t.Fatal("empty tail")
 	}
@@ -115,11 +115,44 @@ func TestFilterNoCheckpointHugeHistory_WordPressRegression(t *testing.T) {
 		}
 	}
 	t.Logf("filtered %d msgs -> %d msgs, %d chars, max msg %d", len(msgs), len(out), total, max)
-	// Budget + one truncated 100k bound (capTail's truncateOversizedTail).
-	if total > maxTailChars+100_000+200_000 {
+	// Budget + one truncated per-message bound (capTail's truncateOversizedTail).
+	if total > maxTailChars(131072)+maxKeepTailChars(131072)+200_000 {
 		t.Fatalf("tail chars too big for context: %d", total)
 	}
-	if max > 100_000 {
+	if max > maxKeepTailChars(131072)+200 {
 		t.Fatalf("oversized message not truncated: %d", max)
+	}
+}
+
+// TestFilterSmallWindow_StrataRegression pins the failure mode this PR
+// fixes: the local strata model has a 65k-token window, but the old
+// hardcoded ~100k-char tail budget (~25-30k tokens) shipped a prompt that
+// — plus system prompt and tool schemas — exceeded 65k tokens, so litellm
+// returned 500 "request exceeds the context window" and the conversation
+// died mid-turn (observed: prompt 73077 tokens vs 65536 window).
+//
+// With the window-aware budget (65536/2 = 32768 chars) a strata
+// conversation must be capped far below the old fixed budget.
+func TestFilterSmallWindow_StrataRegression(t *testing.T) {
+	var msgs []utils.Message
+	for i := 0; i < 40; i++ {
+		role := "tool"
+		if i%4 == 0 {
+			role = "user"
+		}
+		msgs = append(msgs, mkMsg(role, strings.Repeat("y", 10_000), "system_tools__shell_exec"))
+	}
+	out := filterCheckpointsForRequest(msgs, true, 65536)
+	total := 0
+	for _, m := range out {
+		total += len(m.TextContent())
+	}
+	t.Logf("filtered %d msgs -> %d msgs, %d chars (strata 65k window)", len(msgs), len(out), total)
+	if total > maxTailChars(65536)+maxKeepTailChars(65536) {
+		t.Fatalf("strata tail %d chars exceeds 65k-window budget", total)
+	}
+	// And it must be strictly smaller than what the old 128k budget allowed.
+	if total > 100_000 {
+		t.Fatalf("strata tail %d chars not shrunk below old 100k ceiling", total)
 	}
 }

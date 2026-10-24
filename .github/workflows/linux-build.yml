@@ -14,7 +14,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Install dependencies
         run: |
@@ -45,7 +45,7 @@ jobs:
           
           # Create the zip file containing everything in the source directory
           echo "Zipping contents of $SOURCE_DIR..."
-          zip -r "$ZIP_FILE_NAME" *
+          zip -r "$ZIP_FILE_NAME" -- *
           
           # Create the target directory at the workspace root if it doesn't exist
           echo "Creating target directory $TARGET_DIR..."
@@ -67,7 +67,7 @@ jobs:
         shell: bash
 
       - name: Publish to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.appversion.outputs.version }}
           name: v${{ steps.appversion.outputs.version }}

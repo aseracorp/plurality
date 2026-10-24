@@ -63,7 +63,7 @@ func TestFilterCheckpointsForRequest_BudgetCapLastElementIsPanicRegression(t *te
 	// single oversized user message: the walker breaks at start==1, then
 	// increments to start==2 == len(tail) (one-past-end), clamps down to
 	// the last element, stays on the user boundary, and keeps the message.
-	got := filterCheckpointsForRequest(msgs, true)
+	got := filterCheckpointsForRequest(msgs, true, 131072)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 kept message (the oversized user turn), got %d", len(got))
 	}
@@ -87,7 +87,7 @@ func TestFilterCheckpointsForRequest_BudgetCapLongTail(t *testing.T) {
 		)
 	}
 
-	got := filterCheckpointsForRequest(msgs, true)
+	got := filterCheckpointsForRequest(msgs, true, 131072)
 	if len(got) == 0 {
 		t.Fatal("expected a non-empty tail")
 	}
@@ -102,7 +102,7 @@ func TestFilterCheckpointsForRequest_BudgetCapLongTail(t *testing.T) {
 	for _, m := range got {
 		total += len(m.TextContent())
 	}
-	if total > 100_000+5_100 {
+	if total > maxTailChars(131072)+5_100 {
 		t.Fatalf("kept tail %d chars exceeds budget", total)
 	}
 }
@@ -115,7 +115,7 @@ func TestFilterCheckpointsForRequest_EcoOff(t *testing.T) {
 		toolMsg(),
 		{Role: "assistant", Content: utils.NewTextContent("hello")},
 	}
-	got := filterCheckpointsForRequest(msgs, false)
+	got := filterCheckpointsForRequest(msgs, false, 131072)
 	for _, m := range got {
 		if db.IsCheckpointMessage(m) {
 			t.Fatalf("checkpoint message leaked through with eco off: %+v", m)
@@ -140,7 +140,7 @@ func TestFilterCheckpointsForRequest_TruncatesOversizedSingleMessage(t *testing.
 		toolMsg(),
 		{Role: "user", Content: utils.NewTextContent(strings.Repeat("x", 150_000))},
 	}
-	got := filterCheckpointsForRequest(msgs, true)
+	got := filterCheckpointsForRequest(msgs, true, 131072)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 kept message, got %d", len(got))
 	}
@@ -148,7 +148,8 @@ func TestFilterCheckpointsForRequest_TruncatesOversizedSingleMessage(t *testing.
 		t.Fatalf("expected kept role user, got %q", got[0].Role)
 	}
 	text := got[0].TextContent()
-	if len(text) < 90_000 || len(text) >= 150_000 {
+	// Window-aware bound: 131072/2 = 65536 chars + banner overhead.
+	if len(text) < 60_000 || len(text) >= 70_000 {
 		t.Fatalf("expected oversized user message truncated (head kept), got %d chars", len(text))
 	}
 	if !strings.Contains(text, "truncated by Plurality") {
@@ -171,12 +172,12 @@ func TestFilterCheckpointsForRequest_TruncatesOversizedToolResult(t *testing.T) 
 		{Role: "tool", ToolCallID: "call_big", Name: "some_tool", Content: utils.NewTextContent(strings.Repeat("y", 120_000))},
 		{Role: "assistant", Content: utils.NewTextContent("done")},
 	}
-	got := filterCheckpointsForRequest(msgs, true)
+	got := filterCheckpointsForRequest(msgs, true, 131072)
 	if len(got) == 0 {
 		t.Fatalf("expected a non-empty tail")
 	}
 	for _, m := range got {
-		if m.Role == "tool" && (len(m.TextContent()) < 90_000 || len(m.TextContent()) >= 150_000) {
+		if m.Role == "tool" && (len(m.TextContent()) < 60_000 || len(m.TextContent()) >= 70_000) {
 			t.Fatalf("expected oversized tool result truncated (head kept), got %d chars", len(m.TextContent()))
 		}
 	}
@@ -213,7 +214,7 @@ func TestFilterCheckpointsForRequest_DropsDanglingOversizedToolResult(t *testing
 		{Role: "user", Content: utils.NewTextContent("hi")},
 		{Role: "tool", ToolCallID: "call_orphan", Name: "other_tool", Content: utils.NewTextContent(strings.Repeat("z", 120_000))},
 	}
-	got := filterCheckpointsForRequest(msgs, true)
+	got := filterCheckpointsForRequest(msgs, true, 131072)
 	for _, m := range got {
 		if m.Role == "tool" && m.ToolCallID == "call_orphan" {
 			t.Fatalf("expected dangling oversized tool result call_orphan to be dropped")
@@ -267,14 +268,14 @@ func TestFilterCheckpointsForRequest_TruncatesOversizedMultipartMessage(t *testi
 				{Type: "text", Text: blob},
 			})},
 	}
-	got := filterCheckpointsForRequest(msgs, true)
+	got := filterCheckpointsForRequest(msgs, true, 131072)
 	for _, m := range got {
 		if m.Role != "tool" || m.ToolCallID != "call_huge" {
 			continue
 		}
 		// The giant later part must be gone: total retained text stays <= bound+a little.
 		total := m.Content.TotalContentChars()
-		if total >= 100_000+200 {
+		if total >= maxKeepTailChars(131072)+200 {
 			t.Fatalf("expected multi-part oversized tool result truncated, got %d total chars", total)
 		}
 		if !strings.Contains(m.TextContent(), "truncated by Plurality") {

@@ -74,7 +74,7 @@ func userContextFor(userID string) context.Context {
 //
 // The system prompt is prepended elsewhere (in SendChatCompletion) and is
 // not part of `messages` here.
-func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool) []utils.Message {
+func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool, contextWindow int) []utils.Message {
 	if !ecoOn {
 		return db.FilterOutCheckpoints(messages)
 	}
@@ -93,7 +93,7 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool) []utils.M
 	// context_length_exceeded. Fall through to the same budget-capped tail
 	// so even a never-compacted conversation is bounded on every request.
 	if lastCheckpointIdx < 0 {
-		return capTail(messages)
+		return capTail(messages, contextWindow)
 	}
 	tail := messages[lastCheckpointIdx:]
 
@@ -105,13 +105,35 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool) []utils.M
 	// always starting on a user message so the model still has a complete turn
 	// boundary to respond to. The checkpoint summary before the cap keeps the
 	// dropped middle coherent.
-	return capTail(tail)
+	return capTail(tail, contextWindow)
 }
 
-// maxTailChars is the character budget for the live tail that is sent to
-// the provider (after any checkpoint summary). ~100k chars ≈ 25-30k tokens,
-// safe for any 128k-context model, leaving room for system + output.
-const maxTailChars = 100_000
+// maxTailChars returns the character budget for the live tail sent to the
+// provider for a given model context window. Budgeting ~1/4 of the window in
+// characters ≈ ~1/4 of the window in tokens leaves generous headroom for the
+// system prompt, the checkpoint summary, tool schemas and the model's reply.
+// This is per-model: the local strata model (65k window) must NOT ship the
+// same ~100k-char tail that the 128k+ models tolerate — that is exactly what
+// made long strata conversations die with context_length_exceeded (observed:
+// prompt 73077 tokens vs 65536 window → litellm 500 → dead conversation).
+func maxTailChars(contextWindow int) int {
+	if contextWindow <= 0 {
+		contextWindow = defaultContextWindow
+	}
+	// ~4 chars per token. Keep the live tail at roughly half the window —
+	// the other half is system prompt, tool schemas, checkpoint summary and
+	// the model's reply. Halving (instead of quartering) gives small local
+	// models (strata 65k → 32k chars ≈ 8k tokens) enough working tail while
+	// still leaving generous headroom under the window.
+	budget := contextWindow / 2
+	if budget < 16_384 {
+		budget = 16_384
+	}
+	if budget > 100_000 {
+		budget = 100_000
+	}
+	return budget
+}
 
 // capTail bounds a message slice to the live-tail budget so a conversation
 // can never ship a context-busting history to the provider. It walks
@@ -127,7 +149,7 @@ const maxTailChars = 100_000
 // huge raw history must still be bounded on every request, or every turn
 // dies with context_length_exceeded (observed: "WordPress Security
 // Review", 1866 msgs / ~770k tokens / no checkpoint, eco on).
-func capTail(tail []utils.Message) []utils.Message {
+func capTail(tail []utils.Message, contextWindow int) []utils.Message {
 	if len(tail) == 0 {
 		return tail
 	}
@@ -138,7 +160,7 @@ func capTail(tail []utils.Message) []utils.Message {
 	for start >= 0 {
 		chars += tail[start].Content.TotalContentChars()
 		count++
-		if chars > maxTailChars {
+		if chars > maxTailChars(contextWindow) {
 			start++
 			break
 		}
@@ -179,16 +201,31 @@ func capTail(tail []utils.Message) []utils.Message {
 		utils.Log("[Eco] capping tail by budget: kept %d msgs / %d chars (start idx %d) for context safety", len(tail)-start, chars, start)
 		tail = tail[start:]
 	}
-	return truncateOversizedTail(tail)
+	return truncateOversizedTail(tail, contextWindow)
 }
 
-// maxKeepTailChars bounds how many characters of a tail message are kept
-// when a single message is too large to fit the budget whole. It preserves
-// the head of the message so the model still sees what the text was about.
-// (The tail-cap walker above uses the same overall budget; this is the
-// per-message bound so one giant message can never blow the context window
-// on its own.)
-const maxKeepTailChars = 100_000
+// maxKeepTailChars returns the per-message character bound for the model's
+// context window. A single oversized message (multi-MB paste, giant tool
+// result) can never blow the window on its own; the bound is sized to the
+// model so small local models (strata 65k) don't get a whole 100k-char
+// message (~25k tokens) that leaves no room for the rest.
+func maxKeepTailChars(contextWindow int) int {
+	if contextWindow <= 0 {
+		contextWindow = defaultContextWindow
+	}
+	// A single oversized message gets the same half-window budget as the
+	// overall tail (a message bigger than the whole tail budget would
+	// bypass the walker), floored at 16k chars so normal reads of big
+	// pastes aren't chopped unnecessarily.
+	budget := contextWindow / 2
+	if budget < 16_384 {
+		budget = 16_384
+	}
+	if budget > 100_000 {
+		budget = 100_000
+	}
+	return budget
+}
 
 // truncateOversizedTail applies per-message bounds to the tail slice before
 // it is shipped to the provider:
@@ -203,7 +240,7 @@ const maxKeepTailChars = 100_000
 //     itself.
 //
 // Returning a NEW slice; the input is not mutated.
-func truncateOversizedTail(tail []utils.Message) []utils.Message {
+func truncateOversizedTail(tail []utils.Message, contextWindow int) []utils.Message {
 	if len(tail) == 0 {
 		return tail
 	}
@@ -224,7 +261,7 @@ func truncateOversizedTail(tail []utils.Message) []utils.Message {
 	for i := range tail {
 		m := tail[i]
 		total := m.Content.TotalContentChars()
-		if total <= maxKeepTailChars {
+		if total <= maxKeepTailChars(contextWindow) {
 			out = append(out, m)
 			continue
 		}
@@ -242,8 +279,8 @@ func truncateOversizedTail(tail []utils.Message) []utils.Message {
 			}
 		}
 		truncLen := len(txt)
-		if truncLen > maxKeepTailChars {
-			truncLen = maxKeepTailChars
+		if truncLen > maxKeepTailChars(contextWindow) {
+			truncLen = maxKeepTailChars(contextWindow)
 		}
 		trunc := txt[:truncLen]
 		m.Content = utils.NewTextContent(trunc +
