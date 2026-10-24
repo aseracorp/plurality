@@ -20,6 +20,41 @@ import (
 // conversations that miss their window pick up on the next user turn.
 var summaryInFlight atomic.Bool
 
+// effectiveEcoTrigger computes the compaction trigger for a conversation,
+// honouring the model's declared context window when available.
+//
+//   - If the model declares a context window (MaxContextTokensFor > 0) and
+//     Eco.ContextFraction > 0, the candidate trigger is
+//     round(ContextFraction * window) tokens. The effective trigger is then
+//     min(config trigger, candidate): the static trigger stays an absolute
+//     ceiling, but a small-window model now compacts much earlier instead of
+//     waiting forever for a 100k floor it can never reach.
+//   - If the window is unknown (0) or the fraction is disabled (<= 0), the
+//     configured static trigger is used unchanged.
+//
+// Returns the static trigger when nothing dynamic applies, so callers keep
+// their existing "cfg.TriggerTokens <= 0" gate working.
+func effectiveEcoTrigger(cfg auth.EcoConfig, modelName string) int {
+	static := cfg.TriggerTokens
+	if static <= 0 || cfg.ContextFraction <= 0 {
+		return static
+	}
+	window := Models.MaxContextTokensFor(modelName)
+	if window <= 0 {
+		return static
+	}
+	// round(ctxFraction * window) without float: frac*100 * window / 100
+	fractionBasis := int(cfg.ContextFraction * 100)
+	if fractionBasis <= 0 || fractionBasis >= 100 {
+		return static
+	}
+	dynamic := (fractionBasis * window) / 100
+	if dynamic < static {
+		return dynamic
+	}
+	return static
+}
+
 // userContextFor builds a background context carrying just the userID
 // claim that the db package looks for. Used by the eco summary goroutine
 // so a client disconnect or LLM-loop end doesn't cancel it mid-summary.
@@ -579,16 +614,29 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 		return
 	}
 
+	// Resolve the conversation's chat model so the trigger can be scaled to
+	// its context window (dynamic compaction).
+	modelName := ""
+	if conv.ModelSelected.Text != nil {
+		modelName = conv.ModelSelected.Text.Name
+	} else if conv.ModelSelected.Vision != nil {
+		modelName = conv.ModelSelected.Vision.Name
+	}
+	trigger := effectiveEcoTrigger(cfg, modelName)
+	if trigger <= 0 {
+		trigger = cfg.TriggerTokens
+	}
+
 	lastPT := lastAssistantPromptTokens(conv.Messages)
 	if lastPT == 0 {
 		utils.Log("[Eco] conv %s has no assistant prompt_tokens yet — skip", conversationID)
 		return
 	}
-	if lastPT <= cfg.TriggerTokens {
-		utils.Log("[Eco] conv %s lastPT=%d below trigger=%d — skip", conversationID, lastPT, cfg.TriggerTokens)
+	if lastPT <= trigger {
+		utils.Log("[Eco] conv %s lastPT=%d below trigger=%d (model context-aware) — skip", conversationID, lastPT, trigger)
 		return
 	}
-	utils.Log("[Eco] conv %s lastPT=%d > trigger=%d — compacting toward target=%d", conversationID, lastPT, cfg.TriggerTokens, cfg.TargetTokens)
+	utils.Log("[Eco] conv %s lastPT=%d > trigger=%d (model context-aware) — compacting toward target=%d", conversationID, lastPT, trigger, cfg.TargetTokens)
 
 	// Locate the existing checkpoint (if any) and compute where the new
 	// cutoff must land.
