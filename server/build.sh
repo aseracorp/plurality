@@ -25,7 +25,13 @@ SQLVEC_DIR=$(go list -m -f '{{.Dir}}' github.com/asg017/sqlite-vec-go-bindings)/
 # without these. Valid on glibc too (macro substitution yields self-typedefs).
 export CGO_CFLAGS="-DSQLITE_CORE -Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int64_t=uint64_t -I${MATTN_DIR} -I${SQLVEC_DIR}"
 
-if ! CGO_ENABLED=1 GOOS=$GOOS GOARCH=$GOARCH go build -tags "fts5" -o build/Plurality ./src; then
+# '-a' forces recompilation of every package so the BuildKit
+# --mount=type=cache,target=/root/.cache/go-build mount can never serve
+# stale compiled objects from a previous commit (the #36 rollback dropped
+# this, silently reintroducing the 'published image ships an old binary'
+# bug that #20 originally fixed). The dockerfile also passes CACHEBUST=<sha>
+# so the ./build.sh RUN layer itself is invalidated on every push.
+if ! CGO_ENABLED=1 GOOS=$GOOS GOARCH=$GOARCH go build -a -tags "fts5" -o build/Plurality ./src; then
   echo "Build for ${GOOS}/${GOARCH} failed. Exiting..."
   exit 1
 fi
