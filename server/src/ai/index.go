@@ -145,7 +145,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// When eco is on: keep the rolling checkpoint pair and drop everything
 	// older than it. When eco is off: drop the checkpoint pair entirely
 	// and send the raw history.
-	visibleMessages := filterCheckpointsForRequest(conv.Messages, conv.ModelSelected.EcoMode)
+	visibleMessages := filterCheckpointsForRequest(conv.Messages, conv.ModelSelected.EcoMode, Models.MaxContextTokensForPrefixed(model.Name))
 	allMessages := append([]utils.Message{systemMsg}, visibleMessages...)
 	optimizedMessages, hasAttachments, hasDocAttachments := PrepareMessagesForAI(allMessages, model)
 	msgReqList, _ := convertMessagesToOpenAI(optimizedMessages, model)

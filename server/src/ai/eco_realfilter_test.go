@@ -48,17 +48,17 @@ func TestFilterRealConversation(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil { t.Fatalf("PANIC on real data: %v", r) }
 	}()
-	out := filterCheckpointsForRequest(msgs, true)
+	out := filterCheckpointsForRequest(msgs, true, 131072)
 	chars := 0
 	for _, m := range out {
 		chars += len(m.TextContent())
 	}
 	t.Logf("filtered to %d msgs, %d chars", len(out), chars)
 	if len(out) == 0 { t.Fatal("empty") }
-	// No single message may exceed the per-message truncation cap: the
-	// upstream filter must not blow a 128k-context provider even when the
-	// raw tail is huge.
-	const maxKeep = 100_000
+	// No single message may exceed the per-message truncation cap for this
+	// model's window: the upstream filter must not blow the provider's
+	// context even when the raw tail is huge.
+	maxKeep := maxKeepTailChars(131072)
 	for _, m := range out {
 		if len(m.TextContent()) > maxKeep {
 			t.Fatalf("message not truncated: %d chars", len(m.TextContent()))
