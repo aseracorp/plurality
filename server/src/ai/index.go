@@ -145,24 +145,59 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// When eco is on: keep the rolling checkpoint pair and drop everything
 	// older than it. When eco is off: drop the checkpoint pair entirely
 	// and send the raw history.
-	visibleMessages := filterCheckpointsForRequest(conv.Messages, conv.ModelSelected.EcoMode, Models.MaxContextTokensForPrefixed(model.Name))
+	windowTokens := Models.MaxContextTokensForPrefixed(model.Name)
+	visibleMessages := filterCheckpointsForRequest(conv.Messages, conv.ModelSelected.EcoMode, windowTokens)
 	allMessages := append([]utils.Message{systemMsg}, visibleMessages...)
 	optimizedMessages, hasAttachments, hasDocAttachments := PrepareMessagesForAI(allMessages, model)
-	msgReqList, _ := convertMessagesToOpenAI(optimizedMessages, model)
 
 	requestData := StandardChatRequest{
 		Model:         model.Name,
-		Messages:      msgReqList,
+		Messages:      nil, // filled below
 		Stream:        true,
 		StreamOptions: &StreamOptions{IncludeUsage: true},
 	}
 
+	// Build the tool set BEFORE marshalling so we can measure its real
+	// schema tax against the model's context window. A wide MCP toolset
+	// (github-api + playwright + wordpress + searxng + bundled tools) costs
+	// ~25-30k tokens of schemas on every request; on a 65k-window local
+	// model (strata-swift) that crowds the tail out and produces the
+	// observed litellm 500 "request exceeds the context window" (prompt
+	// 65933 tokens vs 65536) which kills the conversation. The eco tail
+	// budget must therefore be computed from the ACTUAL remaining room.
+	var toolsTaxBytes int
 	if isActionModel {
 		ait := ai_tools.GetRequests(conv.UserID, model, payload.ClientSideTools, hasAttachments, hasDocAttachments, payload.ModelSelected.ClientFolderPath != "")
 		if len(ait) > 0 {
 			requestData.Tools = ait
+			if b, err := json.Marshal(ait); err == nil {
+				toolsTaxBytes = len(b)
+			}
 		}
 	}
+
+	if toolsTaxBytes > 0 || windowTokens <= 65_536 {
+		// Overhead measured from the ACTUAL request composition:
+		//   * tool schemas: ~3 chars/token for JSON schema text
+		//   * system prompt: measured as its own line item so the tail
+		//     budget only covers the tail, not the system preamble.
+		sysChars := systemMsg.TextContent()
+		overheadTokens := toolsTaxBytes/3 + len(sysChars)/4 + 512 // 512 for messaging/schema wrappers
+		tailBudget := maxTailCharsForOverhead(windowTokens, overheadTokens)
+		utils.Log("[Eco] window=%d toolsJson=%dB sys=%dB overhead≈%dtok → tail budget=%d chars",
+			windowTokens, toolsTaxBytes, len(sysChars), overheadTokens, tailBudget)
+		// Re-cap the visible messages with the overhead-aware budget. The
+		// system message is prepended separately so only the conversation
+		// tail is re-bounded.
+		if conv.ModelSelected.EcoMode {
+			convTail := filterCheckpointsForRequestBudget(conv.Messages, true, windowTokens, tailBudget)
+			allMessages = append([]utils.Message{systemMsg}, convTail...)
+			optimizedMessages, _, _ = PrepareMessagesForAI(allMessages, model)
+		}
+	}
+
+	msgReqList, _ := convertMessagesToOpenAI(optimizedMessages, model)
+	requestData.Messages = msgReqList
 
 	utils.Debug("A new chat request is being made with the following model: %s", model.Name)
 
