@@ -110,6 +110,13 @@ func (c *SSEClient) startHeartbeat() {
 
 // stopHeartbeat idempotently stops the keepalive goroutine.
 func (c *SSEClient) stopHeartbeat() {
+	// Guard against struct-literal clients that never initialized the
+	// channel (see NewSSEClient): closing a nil channel panics, and this
+	// can be called from the LLM loop goroutine where a panic would kill
+	// a live conversation.
+	if c.heartbeatStop == nil {
+		return
+	}
 	c.heartbeatOnce.Do(func() {
 		close(c.heartbeatStop)
 	})
@@ -376,6 +383,15 @@ func (c *StatusClient) startHeartbeat() {
 
 // stopHeartbeat idempotently stops the keepalive goroutine.
 func (c *StatusClient) stopHeartbeat() {
+	// Guard against struct-literal clients that never initialized the
+	// channel (handleStatusStream used to build one): closing a nil
+	// channel panics — and when this runs inside the LLM loop goroutine
+	// (StatusRegistry.BroadcastToUser → remove → stopHeartbeat) that panic
+	// kills the conversation's loop mid-turn, leaving it stuck in
+	// "processing" forever.
+	if c.heartbeatStop == nil {
+		return
+	}
 	c.heartbeatOnce.Do(func() {
 		close(c.heartbeatStop)
 	})
