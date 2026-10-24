@@ -75,6 +75,21 @@ func userContextFor(userID string) context.Context {
 // The system prompt is prepended elsewhere (in SendChatCompletion) and is
 // not part of `messages` here.
 func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool, contextWindow int) []utils.Message {
+	return filterCheckpointsForRequestBudget(messages, ecoOn, contextWindow, -1)
+}
+
+// filterCheckpointsForRequestBudget is filterCheckpointsForRequest with an
+// explicit per-request tail budget override. When `tailBudgetChars` is >= 0
+// it is used INSTEAD of the derived maxTailChars(contextWindow) — the caller
+// (SendChatCompletion) computes it from the ACTUAL tool schema + system
+// prompt overhead, so a small-window model (strata 65k) with a huge toolset
+// (github-api + playwright + wordpress + searxng + bundled ≈ 90 schemas)
+// never ships a tail that crowds the tools out of the window (observed:
+// prompt 65933 tokens vs 65536 → litellm 500 → dead conversation).
+func filterCheckpointsForRequestBudget(messages []utils.Message, ecoOn bool, contextWindow, tailBudgetChars int) []utils.Message {
+	if tailBudgetChars < 0 {
+		tailBudgetChars = maxTailChars(contextWindow)
+	}
 	if !ecoOn {
 		return db.FilterOutCheckpoints(messages)
 	}
@@ -120,15 +135,58 @@ func maxTailChars(contextWindow int) int {
 	if contextWindow <= 0 {
 		contextWindow = defaultContextWindow
 	}
-	// ~4 chars per token. Keep the live tail at roughly half the window —
-	// the other half is system prompt, tool schemas, checkpoint summary and
-	// the model's reply. Halving (instead of quartering) gives small local
-	// models (strata 65k → 32k chars ≈ 8k tokens) enough working tail while
-	// still leaving generous headroom under the window.
-	budget := contextWindow / 2
+	// ~4 chars per token. The old half-window heuristic assumed a bare
+	// conversation and ignored the tool-schema tax: a wide MCP toolset
+	// (github-api + playwright + wordpress + searxng + bundled ≈ 90 schemas)
+	// adds ~25-30k tokens to every request, and dense code/tool results run
+	// ~2.5-3.5 chars/token (not 4). On a 65k-window local model that blew the
+	// window (observed: prompt 65933 tokens vs 65536 → litellm 500 → dead
+	// conversation). Small windows now get a QUARTER of the window, leaving
+	// the other three quarters for tools, system prompt, summary, reply.
+	if contextWindow <= 65_536 {
+		budget := contextWindow / 4
+		if budget < 8_192 {
+			budget = 8_192
+		}
+		return budget
+	}
+	budget := contextWindow / 3
 	if budget < 16_384 {
 		budget = 16_384
 	}
+	if budget > 100_000 {
+		budget = 100_000
+	}
+	return budget
+}
+
+// maxTailCharsForOverhead returns the live-tail character budget given the
+// model window AND the measured token overhead of everything else in the
+// request (tool schemas + system prompt + checkpoint summary). This is the
+// caller-computed variant: SendChatCompletion marshals the actual tools
+// array and system message, estimates their token cost, and reserves them,
+// so the tail cannot crowd the tools out of a small window.
+//
+// Density: tool results and shell/file dumps are far denser than prose
+// (~2.5-3.5 chars/token vs ~4). Use 3.0 chars/token for the remaining budget
+// so the tail's true token cost stays inside what we reserved. A reply
+// reservation (max_tokens + safety margin) is also kept free.
+func maxTailCharsForOverhead(contextWindow, overheadTokens int) int {
+	if contextWindow <= 0 {
+		contextWindow = defaultContextWindow
+	}
+	if overheadTokens < 0 {
+		overheadTokens = 0
+	}
+	// Reserve room for the model's reply: the configured max_tokens (4096)
+	// plus a safety margin for reasoning/finish overhead.
+	const replyReserve = 4096 + 2048
+	available := contextWindow - overheadTokens - replyReserve
+	if available <= 0 {
+		available = 8_192 // tiny but non-zero floor so we never ship an empty tail
+	}
+	// 3 chars/token for dense tool/code content.
+	budget := available * 3
 	if budget > 100_000 {
 		budget = 100_000
 	}
@@ -150,8 +208,18 @@ func maxTailChars(contextWindow int) int {
 // dies with context_length_exceeded (observed: "WordPress Security
 // Review", 1866 msgs / ~770k tokens / no checkpoint, eco on).
 func capTail(tail []utils.Message, contextWindow int) []utils.Message {
+	return capTailBudget(tail, maxTailChars(contextWindow), contextWindow)
+}
+
+// capTailBudget bounds a message slice to an explicit character budget,
+// walking backwards from the end. It is the workhorse behind capTail and
+// the overhead-aware budget path.
+func capTailBudget(tail []utils.Message, tailBudgetChars, contextWindow int) []utils.Message {
 	if len(tail) == 0 {
 		return tail
+	}
+	if tailBudgetChars <= 0 {
+		tailBudgetChars = maxTailChars(contextWindow)
 	}
 	count := 0
 	chars := 0
@@ -160,7 +228,7 @@ func capTail(tail []utils.Message, contextWindow int) []utils.Message {
 	for start >= 0 {
 		chars += tail[start].Content.TotalContentChars()
 		count++
-		if chars > maxTailChars(contextWindow) {
+		if chars > tailBudgetChars {
 			start++
 			break
 		}
