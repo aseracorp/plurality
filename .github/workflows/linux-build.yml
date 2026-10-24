@@ -45,7 +45,7 @@ jobs:
           
           # Create the zip file containing everything in the source directory
           echo "Zipping contents of $SOURCE_DIR..."
-          zip -r "$ZIP_FILE_NAME" *
+          zip -r "$ZIP_FILE_NAME" -- *
           
           # Create the target directory at the workspace root if it doesn't exist
           echo "Creating target directory $TARGET_DIR..."
