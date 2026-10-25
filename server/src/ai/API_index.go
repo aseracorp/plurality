@@ -355,10 +355,10 @@ func HandleStatusStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build through the constructor: it initializes the heartbeatStop channel
-	// (and its sync.Once) that stopHeartbeat() closes. A raw struct literal
+	// (and its sync.Once) that stopWriter() closes. A raw struct literal
 	// here leaves heartbeatStop nil, so every disconnect panics with
 	// "close of nil channel" — and when that panic fires inside the LLM loop
-	// goroutine (via StatusRegistry.BroadcastToUser → stopHeartbeat) it kills
+	// goroutine (via StatusRegistry.BroadcastToUser → stopWriter) it kills
 	// the conversation's loop mid-turn, wedging it in "processing" forever.
 	client := NewStatusClient(w, flusher, userID)
 	StatusRegistry.Add(client)

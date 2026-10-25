@@ -19,23 +19,40 @@ import (
 const sseHeartbeatInterval = 25 * time.Second
 
 // SSEClient represents a single connected SSE listener.
+//
+// Writes to the underlying ResponseWriter only ever happen on the dedicated
+// writer goroutine (see startWriter). Send() merely enqueues into a bounded
+// channel and returns; it never touches the socket. This is the core of the
+// fix for "workflows stop and need a restart": a client that stopped reading
+// fills its TCP buffer, and a blocking Flush() inside the LLM loop goroutine
+// froze the whole conversation (observed with goroutine 17117 stuck in Flush
+// for 4+ minutes). With the writer goroutine, the LLM loop can never block on
+// a slow or dead client — at worst the writer goroutine stalls, the queue
+// fills, Send() returns false, and Broadcast() drops the client.
 type SSEClient struct {
 	writer  http.ResponseWriter
 	flusher http.Flusher
 	Done    chan struct{}
 
-	// writeMu serializes concurrent writes to the underlying ResponseWriter.
-	// The heartbeat goroutine writes ": ping" comments on its own schedule
-	// while Broadcast() may be writing real events — net/http does not allow
-	// concurrent writes to the same ResponseWriter, so without this the two
-	// paths can interleave bytes and corrupt the SSE framing (or panic).
-	writeMu       sync.Mutex
+	// outQ is a bounded queue of SSE events to write. Send() enqueues;
+	// the writer goroutine drains and flushes. Bounded so a stalled writer
+	// (blocked flush) back-pressures fast: once full, new events are
+	// rejected and the client is dropped instead of queueing unboundedly.
+	outQ chan SSEEvent
+
+	writeMu       sync.Mutex // serializes direct writer access (start/stop)
 	heartbeatStop chan struct{}
 	heartbeatOnce sync.Once
 }
 
 // NewSSEClient creates an SSEClient from an HTTP response writer.
 // Returns nil if the writer does not support flushing.
+// sseOutQueueDepth bounds the per-client pending write queue. Deep enough
+// that a healthy stream (LLM tokens arrive roughly as fast as they can be
+// flushed) never drops events; shallow enough that a stalled client is
+// detected and dropped within a few hundred KB of queued bytes.
+const sseOutQueueDepth = 512
+
 func NewSSEClient(w http.ResponseWriter) *SSEClient {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -45,62 +62,79 @@ func NewSSEClient(w http.ResponseWriter) *SSEClient {
 		writer:        w,
 		flusher:       flusher,
 		Done:          make(chan struct{}),
+		outQ:          make(chan SSEEvent, sseOutQueueDepth),
 		heartbeatStop: make(chan struct{}),
 	}
 }
 
-// Send writes an SSEEvent to this client. Returns false if the write fails.
+// Send enqueues an SSE event for this client and returns without touching
+// the socket. Returns false when the client is gone (Done closed) or the
+// bounded queue is full (the writer goroutine is stalled behind a blocked
+// flush — i.e. the client stopped reading), in which case the caller
+// (Broadcast) drops the client. Send is safe to call from the LLM loop
+// goroutine: it can never block on network I/O.
 func (c *SSEClient) Send(event SSEEvent) bool {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	err := WriteSSEEvent(c.writer, event)
-	return err == nil
-}
-
-// writeHeartbeat writes a single keepalive comment under the write lock.
-// It returns false if the write fails or if the client has already been
-// torn down (the heartbeat goroutine should then stop).
-func (c *SSEClient) writeHeartbeat() bool {
+	if c.outQ == nil {
+		return false // struct-literal client without a writer
+	}
 	select {
 	case <-c.Done:
 		return false
 	default:
 	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	if _, err := c.writer.Write([]byte(": ping\n\n")); err != nil {
+	select {
+	case c.outQ <- event:
+		return true
+	default:
+		// Queue full: writer is behind. Drop as stalled.
+		close(c.Done)
 		return false
 	}
-	c.flusher.Flush()
-	return true
 }
 
-// startHeartbeat launches the keepalive goroutine for this client. It writes
-// an SSE comment (": ping") every sseHeartbeatInterval until stopHeartbeat
-// is called. The first ping is scheduled after one interval so busy streams
-// (which broadcast real events) are not interleaved with pings.
+// startWriter launches the single goroutine that owns all writes to this
+// client's ResponseWriter. It drains outQ, writing each event and flushing,
+// and sends ": ping" keepalives whenever the queue idles for
+// sseHeartbeatInterval. All socket I/O for this client happens here and only
+// here — Send() never touches the socket, so a stalled client (blocked
+// flush) cannot stall the LLM loop that called Send. If the writer itself
+// blocks, the queue eventually fills and Send drops the client.
 //
 // The goroutine is fully panic-safe: a late write or flush on a response
 // whose HTTP handler has already returned (which net/http finalizes by
 // nilling its internal buffer) must never take down the whole process, so
 // any panic is recovered and the loop exits.
-func (c *SSEClient) startHeartbeat() {
+func (c *SSEClient) startWriter() {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				utils.Log("[SSEClient] heartbeat goroutine recovered from panic: %v", r)
+				utils.Log("[SSEClient] writer goroutine recovered from panic: %v", r)
 			}
 		}()
 		ticker := time.NewTicker(sseHeartbeatInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-c.heartbeatStop:
-				return
 			case <-c.Done:
 				return
+			case <-c.heartbeatStop:
+				return
+			case ev := <-c.outQ:
+				// A healthy client drains as fast as we enqueue, so the
+				// queue is almost always empty here and the next select
+				// immediately picks up the ping deadline.
+				c.writeMu.Lock()
+				setSSEWriteDeadline(c.writer)
+				err := WriteSSEEvent(c.writer, ev)
+				clearSSEWriteDeadline(c.writer)
+				c.writeMu.Unlock()
+				if err != nil {
+					close(c.Done)
+					return
+				}
 			case <-ticker.C:
 				if !c.writeHeartbeat() {
+					close(c.Done)
 					return
 				}
 			}
@@ -108,8 +142,27 @@ func (c *SSEClient) startHeartbeat() {
 	}()
 }
 
-// stopHeartbeat idempotently stops the keepalive goroutine.
-func (c *SSEClient) stopHeartbeat() {
+// writeHeartbeat writes a single keepalive comment. Only called from the
+// writer goroutine (which owns the socket writes), so no lock is needed.
+// Returns false if the write fails (client is gone).
+func (c *SSEClient) writeHeartbeat() bool {
+	select {
+	case <-c.Done:
+		return false
+	default:
+	}
+	setSSEWriteDeadline(c.writer)
+	_, err := c.writer.Write([]byte(": ping\n\n"))
+	clearSSEWriteDeadline(c.writer)
+	if err != nil {
+		return false
+	}
+	c.flusher.Flush()
+	return true
+}
+
+// stopWriter idempotently stops the writer goroutine.
+func (c *SSEClient) stopWriter() {
 	// Guard against struct-literal clients that never initialized the
 	// channel (see NewSSEClient): closing a nil channel panics, and this
 	// can be called from the LLM loop goroutine where a panic would kill
@@ -165,7 +218,7 @@ func (ar *ActiveRequest) AddClient(client *SSEClient) {
 	ar.mu.Lock()
 	defer ar.mu.Unlock()
 	ar.clients[client] = true
-	client.startHeartbeat()
+	client.startWriter()
 }
 
 // RemoveClient unregisters an SSE client.
@@ -173,7 +226,7 @@ func (ar *ActiveRequest) RemoveClient(client *SSEClient) {
 	ar.mu.Lock()
 	defer ar.mu.Unlock()
 	delete(ar.clients, client)
-	client.stopHeartbeat()
+	client.stopWriter()
 }
 
 // ClientCount returns the number of connected SSE clients.
@@ -194,7 +247,7 @@ func (ar *ActiveRequest) Broadcast(event SSEEvent) {
 	for client := range ar.clients {
 		if !client.Send(event) {
 			delete(ar.clients, client)
-			client.stopHeartbeat()
+			client.stopWriter()
 			select {
 			case <-client.Done:
 				// already closed
@@ -210,7 +263,7 @@ func (ar *ActiveRequest) CloseAllClients() {
 	ar.mu.Lock()
 	defer ar.mu.Unlock()
 	for client := range ar.clients {
-		client.stopHeartbeat()
+		client.stopWriter()
 		select {
 		case <-client.Done:
 			// already closed
@@ -309,12 +362,16 @@ func (r *activeRequestRegistry) GetForUser(userID string) []*ActiveRequest {
 // --- Global Status Stream ---
 
 // StatusClient is a connected listener on the global status stream.
+// Same writer-goroutine design as SSEClient: Send() enqueues into a bounded
+// channel; a dedicated writer goroutine owns all socket writes so a stalled
+// status client can never freeze BroadcastStatus inside the LLM loop.
 type StatusClient struct {
 	writer  http.ResponseWriter
 	flusher http.Flusher
 	UserID  string
 	Done    chan struct{}
 
+	outQ          chan StatusEvent
 	writeMu       sync.Mutex
 	heartbeatStop chan struct{}
 	heartbeatOnce sync.Once
@@ -327,15 +384,30 @@ func NewStatusClient(w http.ResponseWriter, flusher http.Flusher, userID string)
 		flusher:       flusher,
 		UserID:        userID,
 		Done:          make(chan struct{}),
+		outQ:          make(chan StatusEvent, sseOutQueueDepth),
 		heartbeatStop: make(chan struct{}),
 	}
 }
 
 // Send writes a StatusEvent to this client. Returns false if the write fails.
+// Bounded by sseWriteTimeout like SSEClient.Send — a status stream client
+// that stopped reading must not block BroadcastStatus inside the LLM loop.
 func (c *StatusClient) Send(event StatusEvent) bool {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	return WriteStatusEvent(c.writer, event) == nil
+	if c.outQ == nil {
+		return false
+	}
+	select {
+	case <-c.Done:
+		return false
+	default:
+	}
+	select {
+	case c.outQ <- event:
+		return true
+	default:
+		close(c.Done)
+		return false
+	}
 }
 
 // writeHeartbeat writes a single keepalive comment under the write lock.
@@ -348,32 +420,47 @@ func (c *StatusClient) writeHeartbeat() bool {
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	if _, err := c.writer.Write([]byte(": ping\n\n")); err != nil {
+	setSSEWriteDeadline(c.writer)
+	_, err := c.writer.Write([]byte(": ping\n\n"))
+	clearSSEWriteDeadline(c.writer)
+	if err != nil {
 		return false
 	}
 	c.flusher.Flush()
 	return true
 }
 
-// startHeartbeat launches the keepalive goroutine for this client.
-// Panic-safe: a flush on a finalized response must never crash the process.
-func (c *StatusClient) startHeartbeat() {
+// startWriter launches the writer goroutine for this client: drains outQ
+// and sends keepalives. Panic-safe: a flush on a finalized response must
+// never crash the process.
+func (c *StatusClient) startWriter() {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				utils.Log("[StatusClient] heartbeat goroutine recovered from panic: %v", r)
+				utils.Log("[StatusClient] writer goroutine recovered from panic: %v", r)
 			}
 		}()
 		ticker := time.NewTicker(sseHeartbeatInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-c.heartbeatStop:
-				return
 			case <-c.Done:
 				return
+			case <-c.heartbeatStop:
+				return
+			case ev := <-c.outQ:
+				c.writeMu.Lock()
+				setSSEWriteDeadline(c.writer)
+				err := WriteStatusEvent(c.writer, ev)
+				clearSSEWriteDeadline(c.writer)
+				c.writeMu.Unlock()
+				if err != nil {
+					close(c.Done)
+					return
+				}
 			case <-ticker.C:
 				if !c.writeHeartbeat() {
+					close(c.Done)
 					return
 				}
 			}
@@ -381,12 +468,12 @@ func (c *StatusClient) startHeartbeat() {
 	}()
 }
 
-// stopHeartbeat idempotently stops the keepalive goroutine.
-func (c *StatusClient) stopHeartbeat() {
+// stopWriter idempotently stops the writer goroutine.
+func (c *StatusClient) stopWriter() {
 	// Guard against struct-literal clients that never initialized the
 	// channel (handleStatusStream used to build one): closing a nil
 	// channel panics — and when this runs inside the LLM loop goroutine
-	// (StatusRegistry.BroadcastToUser → remove → stopHeartbeat) that panic
+	// (StatusRegistry.BroadcastToUser → remove → stopWriter) that panic
 	// kills the conversation's loop mid-turn, leaving it stuck in
 	// "processing" forever.
 	if c.heartbeatStop == nil {
@@ -412,7 +499,7 @@ func (r *statusRegistry) Add(client *StatusClient) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.clients[client] = true
-	client.startHeartbeat()
+	client.startWriter()
 }
 
 // Remove unregisters a status stream client.
@@ -420,7 +507,7 @@ func (r *statusRegistry) Remove(client *StatusClient) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.clients, client)
-	client.stopHeartbeat()
+	client.stopWriter()
 }
 
 // BroadcastToUser sends a StatusEvent to all status clients belonging to a specific user.
@@ -431,7 +518,7 @@ func (r *statusRegistry) BroadcastToUser(userID string, event StatusEvent) {
 		if client.UserID == userID {
 			if !client.Send(event) {
 				delete(r.clients, client)
-				client.stopHeartbeat()
+				client.stopWriter()
 				select {
 				case <-client.Done:
 					// already closed
@@ -449,4 +536,44 @@ func (r *statusRegistry) BroadcastToUser(userID string, event StatusEvent) {
 func CopyUserContext(r *http.Request) context.Context {
 	userID, _ := r.Context().Value("userID").(string)
 	return context.WithValue(context.Background(), "userID", userID)
+}
+
+// DefaultSSEWriteTimeout is the exported, documented default for the SSE
+// write bound (see sseWriteTimeout).
+const DefaultSSEWriteTimeout = 2 * time.Second
+
+// sseWriteTimeout bounds a single SSE write to a client. It is deliberately
+// short: a healthy client flushes in microseconds, and anything slower is a
+// dead or stalled pipe that must be dropped rather than allowed to freeze the
+// LLM loop. Keepalive pings and status events share the same bound. It is a
+// var (not a const) so tests can shrink it and prove the bound.
+var sseWriteTimeout = DefaultSSEWriteTimeout
+
+// setSSEWriteDeadline arms a write deadline on the ResponseWriter backing an
+// SSE client. The Go net/http server writer implements SetWriteDeadline
+// directly (it schedules a stream write timeout that closes the connection:
+// net/http server.go, responseWriter.SetWriteDeadline) — the *correct* way to
+// bound a blocking Flush. http.NewResponseController does NOT expose that
+// method (it only supports h2c-style Hijack conns), so we probe the writer's
+// interface first and fall back to the controller (a no-op there, but at
+// least harmless). For writers with neither, writes stay synchronous.
+func setSSEWriteDeadline(w http.ResponseWriter) {
+	if dw, ok := w.(interface{ SetWriteDeadline(t time.Time) error }); ok {
+		_ = dw.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
+		return
+	}
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
+}
+
+// clearSSEWriteDeadline removes the write deadline after a successful write
+// so the next write (possibly much later, e.g. the next heartbeat) is not
+// spuriously timed out. No-op for writers without deadline support.
+func clearSSEWriteDeadline(w http.ResponseWriter) {
+	if dw, ok := w.(interface{ SetWriteDeadline(t time.Time) error }); ok {
+		_ = dw.SetWriteDeadline(time.Time{})
+		return
+	}
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
 }
