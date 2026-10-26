@@ -122,24 +122,64 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	// Select model based on content (text vs vision)
 	model := SelectModel(payload.ModelSelected, conversation)
 
-	// Create the ActiveRequest with a cancelable context that carries the userID
 	persistCtx := CopyUserContext(r)
-	activeRequest := NewActiveRequest(conversation.ID, conversation.UserID, model, payload.ModelSelected)
-	cancelCtx, cancelFunc := context.WithCancel(persistCtx)
-	activeRequest.Ctx = cancelCtx
-	activeRequest.Cancel = cancelFunc
-	RequestRegistry.Set(conversation.ID, activeRequest)
-	if err := db.UpdateConversationState(persistCtx, conversation.ID, utils.StateProcessing); err != nil {
-		utils.Error("[HandleChat] Error setting conversation state", err)
-	}
 
-	// Connect this HTTP client as SSE listener
+	// Connect this HTTP client as SSE listener. Built before any registry
+	// decision so the adoption path can hand it straight to the live loop.
 	SetSSEHeaders(w)
 	sseClient := NewSSEClient(w)
 	if sseClient == nil {
 		utils.SendHTTPError(w, "Streaming not supported", http.StatusInternalServerError)
 		return
 	}
+
+	// A conversation can already have a live LLM loop: the user sent a message
+	// while the agent was still working (the client keeps its own "one send in
+	// flight" guard, but a message typed during a long tool chain is a normal,
+	// expected thing to do), or a second tab / a reconnecting device is
+	// posting. Blindly registering a second ActiveRequest and launching a
+	// second RunLLMLoop is what made the agent answer the same message twice
+	// at once: both loops broadcast to every attached client.
+	//
+	// Two kinds of POST behave differently:
+	//   - tool_results / approvals resume a loop that PARKED itself waiting for
+	//     them, so its registry entry is already gone. If one is still
+	//     registered, it is stale (e.g. a watchdog loop racing us) and must be
+	//     cancelled: two loops feeding on the same tool results would emit
+	//     duplicated turns.
+	//   - a new user message is data the live loop can consume — its next
+	//     iteration reloads the conversation from the DB, and the loop adopts a
+	//     tail user message before going idle. So we QUEUE on the live loop and
+	//     attach to its stream instead of starting a second one.
+	if live := RequestRegistry.Get(conversation.ID); live != nil {
+		isToolResultPOST := len(payload.ToolResults) > 0
+		if isToolResultPOST {
+			live.Cancel()
+		} else if attachToLiveLoop(live, sseClient, conversation.ID, persistCtx) {
+			select {
+			case <-sseClient.Done:
+			case <-r.Context().Done():
+				live.RemoveClient(sseClient)
+			}
+			return
+		}
+	}
+
+	// Create the ActiveRequest with a cancelable context that carries the userID
+	activeRequest := NewActiveRequest(conversation.ID, conversation.UserID, model, payload.ModelSelected)
+	cancelCtx, cancelFunc := context.WithCancel(persistCtx)
+	activeRequest.Ctx = cancelCtx
+	activeRequest.Cancel = cancelFunc
+	previous, replaced := RequestRegistry.Register(conversation.ID, activeRequest)
+	if replaced && previous != nil {
+		// We own the slot now; silence the loop we displaced so only one
+		// stream keeps writing to this conversation.
+		previous.Cancel()
+	}
+	if err := db.UpdateConversationState(persistCtx, conversation.ID, utils.StateProcessing); err != nil {
+		utils.Error("[HandleChat] Error setting conversation state", err)
+	}
+
 	activeRequest.AddClient(sseClient)
 
 	// Launch the LLM loop in a goroutine that outlives this HTTP connection.
@@ -156,6 +196,33 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		// HTTP connection closed by client
 		activeRequest.RemoveClient(sseClient)
 	}
+}
+
+// attachToLiveLoop queues a freshly pushed user message onto a loop that is
+// already running for the conversation, by attaching this request's SSE client
+// to it. The message is already in the DB (HandleChat pushed it before
+// calling), so the live loop's next iteration will pick it up; the loop's idle
+// path also adopts a tail user message, so it cannot finish and drop it.
+//
+// Returns false when the live loop lost the registry slot (superseded) or had
+// already closed its clients: the caller must then start its own loop. That
+// check is what keeps this race-free — AddClientIfOpen refuses a request whose
+// clients have been torn down, so we never park a client on a dead stream.
+func attachToLiveLoop(live *ActiveRequest, sseClient *SSEClient, conversationID string, persistCtx context.Context) bool {
+	if RequestRegistry.Get(conversationID) != live {
+		return false
+	}
+	if !live.AddClientIfOpen(sseClient) {
+		return false
+	}
+	// The queue is now the live loop's responsibility: it owes this client a
+	// reply (and the "processing" state the client is showing).
+	if err := db.UpdateConversationState(persistCtx, conversationID, utils.StateProcessing); err != nil {
+		utils.Error("[HandleChat] Error setting conversation state on adopted queue", err)
+	}
+	utils.Log("[HandleChat] queued message on live loop for %s (%d client(s) attached)", conversationID, live.ClientCount())
+	live.BroadcastStatus("typing", "")
+	return true
 }
 
 // HandleStreamReconnect allows a client to reconnect to an active conversation's SSE stream.
@@ -178,7 +245,13 @@ func HandleStreamReconnect(w http.ResponseWriter, r *http.Request) {
 		utils.SendHTTPError(w, "Streaming not supported", http.StatusInternalServerError)
 		return
 	}
-	activeRequest.AddClient(sseClient)
+	// Attach only while the loop is still live. A loop that has just finished
+	// closes its clients in cleanup; registering here would reset that and
+	// leave this reconnect probe hanging on a stream that never emits again.
+	if !activeRequest.AddClientIfOpen(sseClient) {
+		http.Error(w, "No active request for this conversation", http.StatusNotFound)
+		return
+	}
 
 	// Send current buffer as catch-up
 	currentText := activeRequest.TextBuffer.String()
@@ -310,7 +383,13 @@ func HandleApprove(w http.ResponseWriter, r *http.Request) {
 	cancelCtx, cancelFunc := context.WithCancel(persistCtx)
 	activeRequest.Ctx = cancelCtx
 	activeRequest.Cancel = cancelFunc
-	RequestRegistry.Set(conversation.ID, activeRequest)
+	previous, replaced := RequestRegistry.Register(conversation.ID, activeRequest)
+	if replaced && previous != nil {
+		// Approvals resume a loop that parked in waiting_for_approval (which
+		// unregisters itself). Anything still registered is a loop we are
+		// replacing — cancel it so a single stream answers.
+		previous.Cancel()
+	}
 	if err := db.UpdateConversationState(persistCtx, conversation.ID, utils.StateProcessing); err != nil {
 		utils.Error("[HandleApprove] Error setting conversation state", err)
 	}
