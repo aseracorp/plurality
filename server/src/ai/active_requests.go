@@ -188,6 +188,11 @@ type ActiveRequest struct {
 
 	mu      sync.RWMutex
 	clients map[*SSEClient]bool
+	// closed is set by CloseAllClients (loop exit). It makes AddClient
+	// race-free against cleanup: a client that arrives while the loop is
+	// finishing is refused instead of being registered on a dead request and
+	// hanging on a stream that will never emit again. Guarded by mu.
+	closed bool
 
 	// In-memory buffer for the current assistant turn
 	TextBuffer       strings.Builder
@@ -218,7 +223,24 @@ func (ar *ActiveRequest) AddClient(client *SSEClient) {
 	ar.mu.Lock()
 	defer ar.mu.Unlock()
 	ar.clients[client] = true
+	ar.closed = false
 	client.startWriter()
+}
+
+// AddClientIfOpen registers an SSE client only while the request is still
+// live. Used by the adoption path in HandleChat: the caller looked the request
+// up in the registry and may have raced its exit. Returns false when the loop
+// has already closed (its clients were torn down), in which case the caller
+// must start its own loop rather than attach to a dead stream.
+func (ar *ActiveRequest) AddClientIfOpen(client *SSEClient) bool {
+	ar.mu.Lock()
+	defer ar.mu.Unlock()
+	if ar.closed {
+		return false
+	}
+	ar.clients[client] = true
+	client.startWriter()
+	return true
 }
 
 // RemoveClient unregisters an SSE client.
@@ -262,6 +284,7 @@ func (ar *ActiveRequest) Broadcast(event SSEEvent) {
 func (ar *ActiveRequest) CloseAllClients() {
 	ar.mu.Lock()
 	defer ar.mu.Unlock()
+	ar.closed = true
 	for client := range ar.clients {
 		client.stopWriter()
 		select {
@@ -318,11 +341,43 @@ func (r *activeRequestRegistry) Get(conversationID string) *ActiveRequest {
 	return r.requests[conversationID]
 }
 
-// Set registers an ActiveRequest for a conversation.
+// Set registers an ActiveRequest for a conversation, forcibly replacing
+// whoever held the slot. Force is only correct for fire-and-forget callers
+// that intentionally take a conversation over (the cron/jobs runner, which has
+// no client stream to reconcile with). HTTP-facing paths must use Register so
+// they learn about the request they displace: a blind replace leaves two live
+// LLM loops streaming the same conversation, which is what made the agent
+// answer the same message twice at once.
 func (r *activeRequestRegistry) Set(conversationID string, ar *ActiveRequest) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.requests[conversationID] = ar
+}
+
+// Register atomically claims the slot for a conversation and reports the
+// request it displaced, if any. Callers that intend to take over must cancel
+// the previous owner; callers that intend to coexist (a user message arriving
+// while a loop is live) hand their SSE client to it and let it finish.
+func (r *activeRequestRegistry) Register(conversationID string, ar *ActiveRequest) (previous *ActiveRequest, replaced bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	previous = r.requests[conversationID]
+	r.requests[conversationID] = ar
+	return previous, previous != nil
+}
+
+// RemoveIfCurrent unregisters the conversation only when ar is still the
+// registered request. A loop's deferred cleanup must never unregister the
+// request that superseded it: doing so left the surviving loop invisible to
+// cancel/reconnect, so a later POST could start a third loop unopposed.
+func (r *activeRequestRegistry) RemoveIfCurrent(conversationID string, ar *ActiveRequest) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.requests[conversationID] != ar {
+		return false
+	}
+	delete(r.requests, conversationID)
+	return true
 }
 
 // SetIfAbsent registers an ActiveRequest only if none is currently registered

@@ -247,6 +247,24 @@ class ChatService {
     required ModelSelected modelSelected,
     MiniApp? miniApp,
   }) async {
+    // Double-submit guard. The composer disables its send button while a turn
+    // is loading, but two paths bypass that gate: the speech-to-text handler
+    // fires onSend the moment recording stops, and a fast Enter-mash reaches
+    // postChat before the first SSE event flips the session to processing.
+    // Each extra POST /chat used to start its own server-side LLM loop, which
+    // is what made the agent answer the same message twice at once. The server
+    // now adopts such a message onto the live loop, and we refuse the duplicate
+    // here too, so a double-tap never enqueues a prompt that was not intended.
+    if (!_inFlightSends.add(conversationId)) {
+      final pending = _pendingIdCompleters[conversationId];
+      if (pending != null && !pending.isCompleted) {
+        // Same conversation, send already under way: hand back that send's
+        // result so both callers resolve to the one conversation.
+        return pending.future;
+      }
+      return conversationId.isEmpty ? null : conversationId;
+    }
+
     final session = getSession(conversationId);
     session.value = const ChatSessionState(state: ConversationState.processing);
 
@@ -282,12 +300,18 @@ class ChatService {
       );
       idCompleter?.complete(null);
       _pendingIdCompleters.remove(conversationId);
+      _inFlightSends.remove(conversationId);
       return null;
     }
 
     if (isNew && idCompleter != null) {
-      return idCompleter.future;
+      // For a brand-new chat the id arrives with the first SSE event. Keep the
+      // slot claimed until then, so a second voice/Enter send during that
+      // window cannot spawn a second conversation.
+      return idCompleter.future
+          .whenComplete(() => _inFlightSends.remove(conversationId));
     }
+    _inFlightSends.remove(conversationId);
     return conversationId;
   }
 
@@ -356,6 +380,11 @@ class ChatService {
       resolvedConversationId: existing.value.resolvedConversationId,
     );
   }
+
+  /// Conversations with a sendMessage whose POST has not finished yet
+  /// ('' = the new-chat slot, whose id is not assigned). Guards against
+  /// double-submit: see sendMessage.
+  final Set<String> _inFlightSends = {};
 
   /// Tracks conversations for which a resume attempt is already in flight,
   /// so concurrent triggers (loadConversation + reconnect + status events)

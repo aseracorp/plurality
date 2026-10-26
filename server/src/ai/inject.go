@@ -48,7 +48,13 @@ func InjectAndReinvoke(parentID, userID, content string) error {
 	cancelCtx, cancelFunc := context.WithCancel(ctx)
 	ar.Ctx = cancelCtx
 	ar.Cancel = cancelFunc
-	RequestRegistry.Set(updated.ID, ar)
+	// Atomically take the slot. The state check above said idle, so anything
+	// registered here is a loop already on its way out; cancelling it keeps a
+	// single loop per conversation (the "one conversation, two answers" bug).
+	previous, replaced := RequestRegistry.Register(updated.ID, ar)
+	if replaced && previous != nil {
+		previous.Cancel()
+	}
 	if err := db.UpdateConversationState(ctx, updated.ID, utils.StateProcessing); err != nil {
 		return err
 	}

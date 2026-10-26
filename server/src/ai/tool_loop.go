@@ -77,21 +77,35 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		}
 
 		iterations++
+		// Tail state at the START of this iteration, before the LLM call below
+		// persists anything. Used by the zero-progress guard to tell "the user
+		// queued a new prompt mid-turn" (real work) from "the model re-emits the
+		// same call" (a spin).
+		tailAtIterStart := tailIsUserMessage(conversation.Messages)
+
 		if iterations > maxLoopIterations {
-			utils.Log("[LLMLoop] iteration budget (%d) exceeded for conversation %s after %d productive iterations — going idle (runaway loop guard)", maxLoopIterations, ar.ConversationID, iterations-1)
-			ar.Broadcast(SSEEvent{
-				Type:           "text",
-				Content:        fmt.Sprintf("(This turn exceeded the %d-step loop budget and was paused to guard against a runaway loop. If work was still in progress, send a message to continue — the state is preserved.)", maxLoopIterations),
-				ConversationID: ar.ConversationID,
-			})
-			ar.setState(ctx, utils.StateIdle)
-			ar.BroadcastStatus("", "")
-			ar.Broadcast(SSEEvent{
-				Type:           "done",
-				ConversationID: ar.ConversationID,
-				Title:          conversation.Title,
-			})
-			return
+			// A prompt queued during the last iteration is unanswered. Spending
+			// one more iteration on it beats telling the user the budget ran out
+			// while their message sits in the DB with no reply.
+			if tailIsUserMessage(conversation.Messages) {
+				utils.Log("[LLMLoop] iteration budget (%d) reached for %s with a queued prompt — spending one iteration on it", maxLoopIterations, ar.ConversationID)
+				maxLoopIterations++
+			} else {
+				utils.Log("[LLMLoop] iteration budget (%d) exceeded for conversation %s after %d productive iterations — going idle (runaway loop guard)", maxLoopIterations, ar.ConversationID, iterations-1)
+				ar.Broadcast(SSEEvent{
+					Type:           "text",
+					Content:        fmt.Sprintf("(This turn exceeded the %d-step loop budget and was paused to guard against a runaway loop. If work was still in progress, send a message to continue — the state is preserved.)", maxLoopIterations),
+					ConversationID: ar.ConversationID,
+				})
+				ar.setState(ctx, utils.StateIdle)
+				ar.BroadcastStatus("", "")
+				ar.Broadcast(SSEEvent{
+					Type:           "done",
+					ConversationID: ar.ConversationID,
+					Title:          conversation.Title,
+				})
+				return
+			}
 		}
 
 		// Snapshot the persisted-message count at the start of this
@@ -188,6 +202,22 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 
 		// If no tool calls, we're done
 		if len(assistantMessage.ToolCalls) == 0 {
+			// Adopt a user message that landed while this turn was streaming.
+			// The conversation was just refreshed from the DB, so if it now
+			// ends with a user message we have not answered, going idle would
+			// silently drop it (the client that queued it adopted this loop and
+			// is listening on it, expecting an answer). Looping back answers it
+			// in THIS loop, which is the whole point: a queued follow-up must
+			// never spawn a second concurrent loop.
+			//
+			// Self-limiting: continuing is only possible when the last message
+			// is from the user, and the iteration below always persists an
+			// assistant reply, so the tail can only be consumed once.
+			if tailIsUserMessage(conversation.Messages) {
+				utils.Log("[LLMLoop] tail user message queued during turn for %s — continuing to answer it", ar.ConversationID)
+				continue
+			}
+
 			// If a long_task list still has outstanding items, inject a
 			// synthetic tool result that reminds the LLM to keep going.
 			// Returns true when a reminder was injected — in that case we
@@ -516,6 +546,14 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		} else {
 			zeroProgressStreak = 0
 		}
+		// A prompt that arrived during this iteration is queued work, not a
+		// spin: the zero-LLM-progress path (all tools executed server-side, the
+		// results pushed as messages) legitimately persists 0 messages and a
+		// long tool chain can hit the limit, which would drop the queued prompt
+		// with a false "stopped making progress" notice.
+		if !tailAtIterStart && tailIsUserMessage(conversation.Messages) {
+			zeroProgressStreak = 0
+		}
 		if zeroProgressStreak >= progressStallLimit {
 			utils.Log("[LLMLoop] zero-progress stall: %d consecutive iteration(s) persisted no messages for conversation %s — going idle (stall guard)", zeroProgressStreak, ar.ConversationID)
 			ar.Broadcast(SSEEvent{
@@ -632,6 +670,15 @@ func armClientToolWatchdog(ctx context.Context, ar *ActiveRequest, conv *utils.C
 		ClientSideTools: nil,
 		AvailableSkills: nil,
 	})
+}
+
+// tailIsUserMessage reports whether the conversation ends with a user
+// message, i.e. there is a queued prompt nothing has answered yet.
+func tailIsUserMessage(messages []utils.Message) bool {
+	if len(messages) == 0 {
+		return false
+	}
+	return messages[len(messages)-1].Role == "user"
 }
 
 // hasToolResult reports whether a tool row with the given tool_call_id exists
@@ -825,7 +872,14 @@ func (ar *ActiveRequest) flushPartialResponse(ctx context.Context, conversation 
 
 // cleanup removes the ActiveRequest from the registry and closes all clients.
 func (ar *ActiveRequest) cleanup(ctx context.Context) {
-	RequestRegistry.Remove(ar.ConversationID)
+	// Identity-safe unregister. A loop that was superseded (its context
+	// cancelled by a takeover) must NOT drop the ActiveRequest that replaced
+	// it: a blind Remove left the surviving loop invisible to
+	// cancel/reconnect, so the next POST saw an empty registry and launched a
+	// second loop on the same conversation. Two live loops broadcasting to
+	// the same client is the "answered me multiple times at once" symptom
+	// (see Register/RemoveIfCurrent in active_requests.go).
+	RequestRegistry.RemoveIfCurrent(ar.ConversationID, ar)
 	ar.CloseAllClients()
 }
 
