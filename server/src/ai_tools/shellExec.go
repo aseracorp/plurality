@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"syscall"
 	"strings"
 	"time"
 
@@ -102,6 +103,25 @@ func execShellExec(ctx context.Context, input string, _ utils.Conversation) util
 	}
 }
 
+// killProcessTree terminates the command and its whole process group.
+// runShellForeground spawns sh -c, which may fork grandchildren; killing
+// only the shell leaves them holding the stdout/stderr pipes, so cmd.Wait()
+// can block for minutes (capped by WaitDelay) and wedge the whole LLM loop
+// mid-turn. On Unix we start the child in its own process group (Setpgid)
+// and signal the group with SIGKILL; Windows has no groups so we fall back
+// to killing the single process.
+func killProcessTree(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	if runtime.GOOS != "windows" {
+		// Negative pid = the whole process group (child is its leader).
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	} else {
+		cmd.Process.Kill()
+	}
+}
+
 func runShellForeground(ctx context.Context, params shellExecParams) utils.MessageContent {
 	if params.Command == "" {
 		return utils.NewTextContent("Error: 'command' parameter is required for operation 'exec'.")
@@ -125,7 +145,21 @@ func runShellForeground(ctx context.Context, params shellExecParams) utils.Messa
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	cmd.WaitDelay = 60 * 5 * time.Second
+
+	// Cap how long cmd.Wait() may take after the process is killed. Without
+	// this, a grandchild holding the pipe fds makes Wait() block (WaitDelay
+	// only guards the stdout/stderr copiers, and even that has a 5-minute
+	// ceiling), which wedges the conversation loop for minutes. With the
+	// process-group kill above the wait normally returns immediately; this
+	// bounds the pathological case to ~3s.
+	cmd.WaitDelay = 3 * time.Second
+
+	// Put the child (and everything it forks) in its own process group so
+	// killProcessTree can nuke the whole tree on timeout. Must be set BEFORE
+	// Start() or it has no effect.
+	if runtime.GOOS != "windows" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	}
 
 	startTime := time.Now()
 	err := cmd.Start()
@@ -142,8 +176,14 @@ func runShellForeground(ctx context.Context, params shellExecParams) utils.Messa
 	select {
 	case <-timeoutCtx.Done():
 		timedOut = true
-		cmd.Process.Kill()
-		<-done
+		killProcessTree(cmd)
+		select {
+		case err = <-done:
+		case <-time.After(5 * time.Second):
+			// Wait refused to return even after the group kill (e.g. a
+			// daemonized double-fork detached from the group). Never let the
+			// LLM loop hang on this: report the timeout and move on.
+		}
 	case err = <-done:
 	}
 
