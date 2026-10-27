@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -13,6 +14,15 @@ import (
 	"github.com/azukaar/plurality/src/utils"
 )
 
+// ErrStreamIdleTimeout is returned when a provider accepted a streaming
+// request (200 OK) but then sent no bytes within the idle window. The window
+// is model-aware (see StreamProcessor.streamIdleTimeout): local GPU models
+// (strata/swift) can legitimately take minutes to prefill a large cached
+// prompt before the first token, especially when the card is busy with other
+// concurrent requests, so they get a much longer budget than cloud models.
+// A zero-byte idle timeout must never be treated as a clean end-of-stream.
+var ErrStreamIdleTimeout = errors.New("SSE stream idle timeout (no bytes received)")
+
 // StreamProcessor reads an LLM streaming response and writes events to an ActiveRequest.
 // It accumulates text and tool calls, broadcasts SSE events, and returns the
 // assembled assistant Message when the stream ends.
@@ -20,6 +30,21 @@ type StreamProcessor struct {
 	request      *ActiveRequest
 	model        utils.Model
 	conversation utils.Conversation
+}
+
+// streamIdleTimeout returns how long ProcessStandardStream will wait for the
+// first/next byte from the provider before giving up. Local self-hosted GPU
+// models (strata/swift) get 6 minutes: a long prefill on a 47k-token prompt at
+// ~30-40 tok/s natively takes minutes, and the GPU can be occupied by another
+// conversation's generation at the same time. Cloud models get a tighter 2
+// minutes — a cloud endpoint silent for that long is virtually always broken,
+// and retrying earlier (see RunLLMLoop) hides the failure faster.
+func (sp *StreamProcessor) streamIdleTimeout() time.Duration {
+	name := strings.ToLower(sp.model.Name)
+	if strings.Contains(name, "strata") || strings.Contains(name, "swift") {
+		return 6 * time.Minute
+	}
+	return 2 * time.Minute
 }
 
 // NewStreamProcessor creates a StreamProcessor bound to an ActiveRequest.
@@ -199,7 +224,7 @@ func (sp *StreamProcessor) finalizeStream(ctx context.Context) utils.Message {
 func (sp *StreamProcessor) ProcessStandardStream(ctx context.Context, response io.ReadCloser) (utils.Message, error) {
 	defer response.Close()
 
-	scanner := bufio.NewScanner(&idleTimeoutReader{ctx: ctx, r: response, timeout: 90 * time.Second})
+	scanner := bufio.NewScanner(&idleTimeoutReader{ctx: ctx, r: response, timeout: sp.streamIdleTimeout()})
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -287,7 +312,7 @@ func (t *idleTimeoutReader) Read(p []byte) (int, error) {
 	case res := <-ch:
 		return res.n, res.err
 	case <-time.After(t.timeout):
-		err := fmt.Errorf("SSE stream idle timeout after %v (no bytes received)", t.timeout)
+		err := fmt.Errorf("%w after %v (no bytes received)", ErrStreamIdleTimeout, t.timeout)
 		utils.Error("[StreamProcessor] %v", err)
 		return 0, err
 	case <-t.ctx.Done():

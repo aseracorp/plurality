@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -67,6 +68,12 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 	// MAX_LOOP_ITERATIONS.
 	progressStallLimit := progressStallLimitFromEnv()
 	zeroProgressStreak := 0
+
+	// Retry guard for zero-byte idle timeouts (see ErrStreamIdleTimeout).
+	// Bounded so a genuinely dead provider cannot spin the loop forever;
+	// each retry re-issues the request against a fresh stream.
+	maxStreamRetries := 2
+	streamRetries := 0
 
 	for {
 		select {
@@ -166,11 +173,25 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				ar.flushPartialResponse(ctx, conversation)
 				return
 			}
-			// The stream ended in an error (e.g. SSE idle timeout after 90s
-			// without bytes — see idleTimeoutReader). Do NOT log "Stream
-			// complete" and do NOT loop back: mark the turn errored and go
-			// idle so the UI shows the failure instead of hanging forever
-			// with the conversation stuck in "processing".
+			// The stream ended in an error (e.g. SSE idle timeout holding no
+			// bytes — see idleTimeoutReader). A zero-byte stall does NOT mean
+			// the model is dead: since the provider accepted the request
+			// (200 OK) and no bytes ever arrived, nothing was emitted and the
+			// turn state is intact. Retry a bounded number of times instead of
+			// giving up — the workflow must not stop dead in the water because
+			// one slow local prefill exceeded the idle window. Only after the
+			// retries are exhausted do we mark the turn errored and go idle so
+			// the UI shows the failure instead of hanging forever.
+			if errors.Is(err, ErrStreamIdleTimeout) && streamRetries < maxStreamRetries {
+				streamRetries++
+				utils.Log("[LLMLoop] stream idle (no bytes) for %s — retry %d/%d", ar.ConversationID, streamRetries, maxStreamRetries)
+				ar.Broadcast(SSEEvent{
+					Type:           "text",
+					Content:        fmt.Sprintf("(The model went silent — retrying (%d/%d)…)", streamRetries, maxStreamRetries),
+					ConversationID: ar.ConversationID,
+				})
+				continue
+			}
 			ar.setState(ctx, utils.StateIdle)
 			ar.BroadcastStatus("", "")
 			ar.Broadcast(SSEEvent{
