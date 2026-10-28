@@ -10,21 +10,21 @@ import (
 
 // SSEEvent is the unified event type streamed to clients over SSE.
 type SSEEvent struct {
-	Type           string          `json:"type"`                   // "text", "tool_use", "tool_result", "state_change", "done", "error"
-	Content        string          `json:"content,omitempty"`      // text chunk for "text" events
-	ToolCall       *utils.ToolCall `json:"tool_call,omitempty"`    // for "tool_use" events
-	ToolCallID     string          `json:"tool_call_id,omitempty"` // for "tool_result" events
-	ToolName       string          `json:"tool_name,omitempty"`    // for "tool_result" events
-	ToolResult     string          `json:"tool_result,omitempty"`  // for "tool_result" events
-	IsServer       bool            `json:"is_server"`              // true = server-side tool, false = client must execute
-	ConversationID string          `json:"conversation_id"`
-	State          string          `json:"state,omitempty"` // for "state_change" events
-	Model            *utils.Model `json:"model,omitempty"`
-	TotalTokens      int          `json:"total_tokens,omitempty"`
-	PromptTokens     int          `json:"prompt_tokens,omitempty"`
-	CompletionTokens int          `json:"completion_tokens,omitempty"`
-	ResponseCost     float64      `json:"response_cost,omitempty"`
-	Title            string       `json:"title,omitempty"`
+	Type             string          `json:"type"`                   // "text", "tool_use", "tool_result", "state_change", "done", "error"
+	Content          string          `json:"content,omitempty"`      // text chunk for "text" events
+	ToolCall         *utils.ToolCall `json:"tool_call,omitempty"`    // for "tool_use" events
+	ToolCallID       string          `json:"tool_call_id,omitempty"` // for "tool_result" events
+	ToolName         string          `json:"tool_name,omitempty"`    // for "tool_result" events
+	ToolResult       string          `json:"tool_result,omitempty"`  // for "tool_result" events
+	IsServer         bool            `json:"is_server"`              // true = server-side tool, false = client must execute
+	ConversationID   string          `json:"conversation_id"`
+	State            string          `json:"state,omitempty"` // for "state_change" events
+	Model            *utils.Model    `json:"model,omitempty"`
+	TotalTokens      int             `json:"total_tokens,omitempty"`
+	PromptTokens     int             `json:"prompt_tokens,omitempty"`
+	CompletionTokens int             `json:"completion_tokens,omitempty"`
+	ResponseCost     float64         `json:"response_cost,omitempty"`
+	Title            string          `json:"title,omitempty"`
 
 	// ModelSelected is the conversation's current per-conversation settings
 	// snapshot — tools, eco mode, attached folder, and client lock. Populated
@@ -32,6 +32,25 @@ type SSEEvent struct {
 	// before they'd race to execute the tool) and on "done" events (so
 	// folder / eco / tool / model swaps round-trip to every viewer).
 	ModelSelected *utils.ModelSelected `json:"model_selected,omitempty"`
+}
+
+// safeFlush calls Flush on an http.Flusher and converts any panic into an
+// error. A Flush on a ResponseWriter whose HTTP handler has already returned
+// (net/http finalizes the connection and can race the writer goroutine) or on
+// a response that was closed / hijacked underneath us can panic instead of
+// returning an error. If that panic propagates out of the SSE writer
+// goroutine the client is left registered forever — a zombie stream that
+// leaks memory and makes the conversation look stuck. Converting the panic
+// into an error lets the caller drop the client cleanly (close Done), exactly
+// as it would for a failed write.
+func safeFlush(flusher http.Flusher) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("flush panicked: %v", r)
+		}
+	}()
+	flusher.Flush()
+	return nil
 }
 
 // WriteSSEEvent serializes an SSEEvent and writes it to an HTTP response writer.
@@ -45,7 +64,9 @@ func WriteSSEEvent(w http.ResponseWriter, event SSEEvent) error {
 		return err
 	}
 	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
+		if err := safeFlush(flusher); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -79,7 +100,9 @@ func WriteStatusEvent(w http.ResponseWriter, event StatusEvent) error {
 		return err
 	}
 	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
+		if err := safeFlush(flusher); err != nil {
+			return err
+		}
 	}
 	return nil
 }

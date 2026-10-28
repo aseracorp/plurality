@@ -157,7 +157,10 @@ func (c *SSEClient) writeHeartbeat() bool {
 	if err != nil {
 		return false
 	}
-	c.flusher.Flush()
+	if err := safeFlush(c.flusher); err != nil {
+		utils.Log("[SSEClient] heartbeat flush failed for a client: %v", err)
+		return false
+	}
 	return true
 }
 
@@ -481,7 +484,10 @@ func (c *StatusClient) writeHeartbeat() bool {
 	if err != nil {
 		return false
 	}
-	c.flusher.Flush()
+	if err := safeFlush(c.flusher); err != nil {
+		utils.Log("[StatusClient] heartbeat flush failed for a client: %v", err)
+		return false
+	}
 	return true
 }
 

@@ -340,6 +340,12 @@ func (sp *StreamProcessor) buildAssistantMessage() utils.Message {
 // (typically because max_tokens cut the stream mid-call) get their args
 // sanitized to "{}" and an explicit failure tool result pushed, so the
 // outbound payload to the LLM never carries a malformed or dangling call.
+//
+// A completely empty completion (no text, no tool calls) is NOT persisted:
+// it carries no information, and letting it accumulate in history makes the
+// conversation look halted while the loop quietly retries. RunLLMLoop owns
+// the retry/surface decision; all we do here is keep the DB clean so a
+// retry has nothing to roll back.
 func (sp *StreamProcessor) finalizeStream(ctx context.Context) utils.Message {
 	sp.request.TokenUsage = sp.request.PromptTokens + sp.request.CompletionTokens
 
@@ -364,6 +370,14 @@ func (sp *StreamProcessor) finalizeStream(ctx context.Context) utils.Message {
 			tc.Function.Arguments = "{}"
 			failed = append(failed, failedCall{ID: tc.ID, Name: tc.Function.Name})
 		}
+	}
+
+	// Skip the DB push entirely for a truly empty completion: nothing to
+	// persist, and the loop treats "no persisted assistant message" as an
+	// incomplete turn it can retry without cleanup.
+	if isEmptyCompletion(message) {
+		utils.Log("[StreamProcessor] empty completion (no text, no tool calls) for conversation %s — not persisting", sp.request.ConversationID)
+		return message
 	}
 
 	if updated, _, err := db.PushMessage(ctx, sp.conversation, message); err != nil {
