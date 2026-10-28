@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
@@ -116,6 +117,163 @@ func (sp *StreamProcessor) mintProviderCallID(providerID string) string {
 	return fmt.Sprintf("call_%d_%s", ns, providerID)
 }
 
+// parseXMLToolCall converts a Claude/Anthropic-style XML tool call snippet
+// (emitted by some local models — notably strata/swift — in the plain-text
+// stream instead of the native OpenAI tool_calls delta channel) into a
+// structured ToolCall.
+//
+// Accepted shapes (whitespace-tolerant):
+//
+//	<tool_call>
+//	<function=filesystem_server__fs_write>
+//	<parameter=path>
+//	/usr/simplify/foo.py
+//	</parameter>
+//	<parameter=content>
+//	...
+//	</parameter>
+//	</function>
+//	</tool_call>
+//
+// and the Claude shorthand with named open/close:
+//
+//	<function_calls>
+//	<invoke name="tool_name">
+//	<parameter name="arg">value</parameter>
+//	</invoke>
+//	</function_calls>
+//
+// The function/parameter delimiters are parsed as raw string ranges (NOT
+// re-escaped as HTML entities), so the values are byte-identical to what the
+// model wrote — matching how the native tool_calls channel would carry them.
+func parseXMLToolCall(snippet string) (utils.ToolCall, bool) {
+	// Extract the tool name from either <function=NAME> or <invoke name="NAME">.
+	var fnName string
+	lower := strings.ToLower(snippet)
+	if i := strings.Index(lower, "<function="); i >= 0 {
+		start := i + len("<function=")
+		if end := strings.Index(snippet[start:], ">"); end >= 0 {
+			fnName = strings.TrimSpace(snippet[start : start+end])
+		}
+	} else if i := strings.Index(lower, "<invoke"); i >= 0 {
+		// name="NAME" or name='NAME'
+		if j := strings.Index(lower[i:], "name="); j >= 0 {
+			ns := i + j + len("name=")
+			quote := snippet[ns]
+			if quote == '"' || quote == '\'' {
+				rest := snippet[ns+1:]
+				if e := strings.Index(rest, string(quote)); e >= 0 {
+					fnName = strings.TrimSpace(rest[:e])
+				}
+			}
+		}
+	}
+	if fnName == "" {
+		return utils.ToolCall{}, false
+	}
+
+	// Extract all <parameter=KEY>VALUE</parameter> pairs (or <parameter name="KEY">VALUE</parameter>).
+	args := map[string]string{}
+	paramRe := regexp.MustCompile(`(?is)<parameter(?:\s+name)?\s*=\s*["']?([A-Za-z0-9_]+)["']?\s*>(.*?)</parameter>`)
+	for _, m := range paramRe.FindAllStringSubmatch(snippet, -1) {
+		key := m[1]
+		val := strings.TrimSpace(m[2])
+		args[key] = val
+	}
+
+	// Marshal args to JSON in insertion order.
+	var buf strings.Builder
+	buf.WriteByte('{')
+	first := true
+	for k, v := range args {
+		if !first {
+			buf.WriteByte(',')
+		}
+		kb, _ := json.Marshal(k)
+		vb, _ := json.Marshal(v)
+		buf.Write(kb)
+		buf.WriteByte(':')
+		buf.Write(vb)
+		first = false
+	}
+	buf.WriteByte('}')
+
+	return utils.ToolCall{
+		ID:   "xml_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+		Type: "function",
+		Function: utils.FunctionCall{
+			Name:      fnName,
+			Arguments: buf.String(),
+		},
+	}, true
+}
+
+// extractXMLToolCalls scans the raw accumulated text for XML-format tool call
+// snippets and returns (call, rest) where rest is the text with those snippets
+// removed. It converts the Claude-style multi-call wrapper as well:
+//
+//	<function_calls>
+//	<invoke name="a"><parameter name="x">1</parameter></invoke>
+//	<invoke name="b"><parameter name="y">2</parameter></invoke>
+//	</function_calls>
+//
+// Returns nil calls if no XML tool-call block is found.
+func extractXMLToolCalls(text string) ([]utils.ToolCall, string) {
+	lower := strings.ToLower(text)
+	if !strings.Contains(lower, "<tool_call") && !strings.Contains(lower, "<function_calls") && !strings.Contains(lower, "<invoke") {
+		return nil, text
+	}
+	var calls []utils.ToolCall
+	rest := text
+
+	// 1) <tool_call>...</tool_call> blocks.
+	blockRe := regexp.MustCompile(`(?is)<tool_call\s*>.*?</tool_call\s*>`)
+	rest = blockRe.ReplaceAllStringFunc(rest, func(m string) string {
+		if tc, ok := parseXMLToolCall(m); ok {
+			calls = append(calls, tc)
+			return "\x00" // marker removed below
+		}
+		return m
+	})
+
+	// 2) <function_calls>...</function_calls> wrappers containing <invoke>.
+	wrapperRe := regexp.MustCompile(`(?is)<function_calls\s*>.*?</function_calls\s*>`)
+	rest = wrapperRe.ReplaceAllStringFunc(rest, func(m string) string {
+		inner := m
+		invokeRe := regexp.MustCompile(`(?is)<invoke\b[^>]*>.*?</invoke\s*>`)
+		found := false
+		inner = invokeRe.ReplaceAllStringFunc(inner, func(inv string) string {
+			if tc, ok := parseXMLToolCall(inv); ok {
+				calls = append(calls, tc)
+				found = true
+				return "\x00"
+			}
+			return inv
+		})
+		if found {
+			return inner
+		}
+		return m
+	})
+
+	// Lone <invoke> without wrapper.
+	if len(calls) == 0 {
+		invokeRe := regexp.MustCompile(`(?is)<invoke\b[^>]*>.*?</invoke\s*>`)
+		rest = invokeRe.ReplaceAllStringFunc(rest, func(inv string) string {
+			if tc, ok := parseXMLToolCall(inv); ok {
+				calls = append(calls, tc)
+				return "\x00"
+			}
+			return inv
+		})
+	}
+
+	// Remove \x00 markers and tidy.
+	rest = strings.ReplaceAll(rest, "\x00", "")
+	rest = strings.TrimSpace(rest)
+	return calls, rest
+}
+
 // buildAssistantMessage creates the final assistant Message from accumulated buffers.
 func (sp *StreamProcessor) buildAssistantMessage() utils.Message {
 	message := utils.Message{
@@ -129,6 +287,28 @@ func (sp *StreamProcessor) buildAssistantMessage() utils.Message {
 	}
 
 	text := strings.TrimSpace(sp.request.TextBuffer.String())
+
+	// Self-heal Claude/Anthropic-style XML tool calls that some local models
+	// (strata/swift) emit in the plain-text stream instead of the native
+	// tool_calls delta channel. Left alone, the XML renders as raw chat text
+	// and the tool never executes — the conversation stalls with the model
+	// "spilling" the call into the chat and going idle (observed: WordPress
+	// Hover Image Fix, seq 2967/2975). Parse them into real ToolCalls and
+	// strip them from the visible text.
+	var xmlCalls []utils.ToolCall
+	if text != "" {
+		var rest string
+		xmlCalls, rest = extractXMLToolCalls(text)
+		if len(xmlCalls) > 0 {
+			for i := range xmlCalls {
+				utils.Log("[StreamProcessor] recovered %d XML-format tool call(s) from text stream (first: %s)", len(xmlCalls), xmlCalls[0].Function.Name)
+				xmlCalls[i].ID = sp.mintProviderCallID("xml_" + xmlCalls[i].Function.Name)
+				enrichToolCallMetadata(&xmlCalls[i])
+			}
+			text = strings.TrimSpace(rest)
+		}
+	}
+
 	if text != "" {
 		message.Content = utils.NewTextContent(text)
 	}
@@ -143,6 +323,13 @@ func (sp *StreamProcessor) buildAssistantMessage() utils.Message {
 			enrichToolCallMetadata(&sp.request.ToolCallBuffer[i])
 		}
 		message.ToolCalls = sp.request.ToolCallBuffer
+	}
+
+	// Recovered XML calls ride on the same assistant message as any native
+	// calls (appended after). The tool loop executes each ToolCall and pushes
+	// a result for every one, so the persisted block stays consistent.
+	if len(xmlCalls) > 0 {
+		message.ToolCalls = append(message.ToolCalls, xmlCalls...)
 	}
 
 	return message
