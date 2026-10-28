@@ -82,7 +82,7 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool, contextWi
 // explicit per-request tail budget override. When `tailBudgetChars` is >= 0
 // it is used INSTEAD of the derived maxTailChars(contextWindow) — the caller
 // (SendChatCompletion) computes it from the ACTUAL tool schema + system
-// prompt overhead, so a small-window model (strata 65k) with a huge toolset
+// prompt overhead, so a small-window model (65k) with a huge toolset
 // (github-api + playwright + wordpress + searxng + bundled ≈ 90 schemas)
 // never ships a tail that crowds the tools out of the window (observed:
 // prompt 65933 tokens vs 65536 → litellm 500 → dead conversation).
@@ -127,10 +127,11 @@ func filterCheckpointsForRequestBudget(messages []utils.Message, ecoOn bool, con
 // provider for a given model context window. Budgeting ~1/4 of the window in
 // characters ≈ ~1/4 of the window in tokens leaves generous headroom for the
 // system prompt, the checkpoint summary, tool schemas and the model's reply.
-// This is per-model: the local strata model (65k window) must NOT ship the
+// This is per-model: a small-window model (65k) must NOT ship the
 // same ~100k-char tail that the 128k+ models tolerate — that is exactly what
-// made long strata conversations die with context_length_exceeded (observed:
-// prompt 73077 tokens vs 65536 window → litellm 500 → dead conversation).
+// made long small-window conversations die with context_length_exceeded
+// (observed: prompt 73077 tokens vs 65536 window → litellm 500 → dead
+// conversation).
 func maxTailChars(contextWindow int) int {
 	if contextWindow <= 0 {
 		contextWindow = defaultContextWindow
@@ -275,7 +276,7 @@ func capTailBudget(tail []utils.Message, tailBudgetChars, contextWindow int) []u
 // maxKeepTailChars returns the per-message character bound for the model's
 // context window. A single oversized message (multi-MB paste, giant tool
 // result) can never blow the window on its own; the bound is sized to the
-// model so small local models (strata 65k) don't get a whole 100k-char
+// model so small-window models (65k) don't get a whole 100k-char
 // message (~25k tokens) that leaves no room for the rest.
 func maxKeepTailChars(contextWindow int) int {
 	if contextWindow <= 0 {

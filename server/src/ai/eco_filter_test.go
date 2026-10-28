@@ -124,16 +124,16 @@ func TestFilterNoCheckpointHugeHistory_WordPressRegression(t *testing.T) {
 	}
 }
 
-// TestFilterSmallWindow_StrataRegression pins the failure mode this PR
-// fixes: the local strata model has a 65k-token window, but the old
-// hardcoded ~100k-char tail budget (~25-30k tokens) shipped a prompt that
-// — plus system prompt and tool schemas — exceeded 65k tokens, so litellm
-// returned 500 "request exceeds the context window" and the conversation
-// died mid-turn (observed: prompt 73077 tokens vs 65536 window).
+// TestFilterSmallWindowRegression pins the failure mode this PR fixes: a
+// model with a 65k-token window — but the old hardcoded ~100k-char tail
+// budget (~25-30k tokens) shipped a prompt that — plus system prompt and
+// tool schemas — exceeded 65k tokens, so litellm returned 500 "request
+// exceeds the context window" and the conversation died mid-turn (observed:
+// prompt 73077 tokens vs 65536 window).
 //
-// With the window-aware budget (65536/2 = 32768 chars) a strata
+// With the window-aware budget (65536/2 = 32768 chars) a small-window
 // conversation must be capped far below the old fixed budget.
-func TestFilterSmallWindow_StrataRegression(t *testing.T) {
+func TestFilterSmallWindowRegression(t *testing.T) {
 	var msgs []utils.Message
 	for i := 0; i < 40; i++ {
 		role := "tool"
@@ -147,12 +147,12 @@ func TestFilterSmallWindow_StrataRegression(t *testing.T) {
 	for _, m := range out {
 		total += len(m.TextContent())
 	}
-	t.Logf("filtered %d msgs -> %d msgs, %d chars (strata 65k window)", len(msgs), len(out), total)
+	t.Logf("filtered %d msgs -> %d msgs, %d chars (65k window)", len(msgs), len(out), total)
 	if total > maxTailChars(65536)+maxKeepTailChars(65536) {
-		t.Fatalf("strata tail %d chars exceeds 65k-window budget", total)
+		t.Fatalf("small-window tail %d chars exceeds 65k-window budget", total)
 	}
 	// And it must be strictly smaller than what the old 128k budget allowed.
 	if total > 100_000 {
-		t.Fatalf("strata tail %d chars not shrunk below old 100k ceiling", total)
+		t.Fatalf("small-window tail %d chars not shrunk below old 100k ceiling", total)
 	}
 }
