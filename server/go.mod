@@ -8,6 +8,7 @@ require (
 	github.com/coreos/go-oidc/v3 v3.11.0
 	github.com/go-audio/audio v1.0.0
 	github.com/go-audio/wav v1.1.0
+	github.com/go-co-op/gocron/v2 v2.21.1
 	github.com/golang-jwt/jwt/v4 v4.5.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
@@ -23,7 +24,6 @@ require (
 require (
 	github.com/andybalholm/cascadia v1.3.3 // indirect
 	github.com/go-audio/riff v1.0.0 // indirect
-	github.com/go-co-op/gocron/v2 v2.21.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.0.5 // indirect
 	github.com/jonboulle/clockwork v0.5.0 // indirect
 	github.com/richardlehane/mscfb v1.0.6 // indirect
