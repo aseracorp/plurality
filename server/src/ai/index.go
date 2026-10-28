@@ -150,6 +150,18 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	allMessages := append([]utils.Message{systemMsg}, visibleMessages...)
 	optimizedMessages, hasAttachments, hasDocAttachments := PrepareMessagesForAI(allMessages, model)
 
+	// A non-vision action model must NEVER receive base64 image payloads:
+	// SelectModel already had its chance to swap to a vision model (it does
+	// so when a vision model is configured and images are present), so
+	// reaching this point with a non-vision model means it genuinely cannot
+	// see images. Shipping the re-inflated base64 to it is pure context
+	// waste — a single screenshot is 10-50k tokens, and 15 recent
+	// attachments once carried ~96k tokens on top of a ~6k tail, blowing
+	// the 131k window (prompt 131478 vs 131072 → litellm 500 → dead turn).
+	if isActionModel && !Models.IsVisionModel(model.Name) {
+		optimizedMessages = stripImagesForNonVisionModel(optimizedMessages)
+	}
+
 	requestData := StandardChatRequest{
 		Model:         model.Name,
 		Messages:      nil, // filled below
@@ -181,11 +193,17 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		//   * tool schemas: ~3 chars/token for JSON schema text
 		//   * system prompt: measured as its own line item so the tail
 		//     budget only covers the tail, not the system preamble.
+		//   * images/attachments: re-inflated base64 payloads are the
+		//     silent context bomb — they are NOT part of the tail char
+		//     budget, so they must be reserved here or the request blows
+		//     the window even with a tiny tail (observed: a request at the
+		//     window edge → provider 500 → dead turn).
 		sysChars := systemMsg.TextContent()
-		overheadTokens := toolsTaxBytes/3 + len(sysChars)/4 + 512 // 512 for messaging/schema wrappers
+		attachTokens := estimateImageTokens(optimizedMessages)
+		overheadTokens := toolsTaxBytes/3 + len(sysChars)/4 + attachTokens + 512 // 512 for messaging/schema wrappers
 		tailBudget := maxTailCharsForOverhead(windowTokens, overheadTokens)
-		utils.Log("[Eco] window=%d toolsJson=%dB sys=%dB overhead≈%dtok → tail budget=%d chars",
-			windowTokens, toolsTaxBytes, len(sysChars), overheadTokens, tailBudget)
+		utils.Log("[Eco] window=%d toolsJson=%dB sys=%dB images≈%dtok overhead≈%dtok → tail budget=%d chars",
+			windowTokens, toolsTaxBytes, len(sysChars), attachTokens, overheadTokens, tailBudget)
 		// Re-cap the visible messages with the overhead-aware budget. The
 		// system message is prepended separately so only the conversation
 		// tail is re-bounded.
@@ -193,6 +211,9 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 			convTail := filterCheckpointsForRequestBudget(conv.Messages, true, windowTokens, tailBudget)
 			allMessages = append([]utils.Message{systemMsg}, convTail...)
 			optimizedMessages, _, _ = PrepareMessagesForAI(allMessages, model)
+			if isActionModel && !Models.IsVisionModel(model.Name) {
+				optimizedMessages = stripImagesForNonVisionModel(optimizedMessages)
+			}
 		}
 	}
 
@@ -204,6 +225,27 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	jsonData, err := json.Marshal(requestData)
 	if err != nil {
 		return nil, 0, err
+	}
+
+	// Preemptive context-window guard. The provider's 500 body is often a
+	// bare "Internal Server Error" with the real reason only in LiteLLM's
+	// own logs, so isContextLengthError in the LLM loop cannot see it and
+	// the compaction retry never fires (observed: a request at the window
+	// edge → provider 500 with an opaque body → dead turn). Estimate the
+	// token count client-side BEFORE sending; if it
+	// would exceed the model's window minus the reply reservation, return
+	// an error the loop's context-length path recognizes so it compacts
+	// the history and retries instead of shipping an oversized request.
+	if windowTokens > 0 {
+		// ~4 chars per token for JSON. The marshalled request includes the
+		// full message content, tool schemas and any re-inflated images.
+		estTokens := len(jsonData) / 4
+		// Keep room for the model's answer: max_tokens (4096) + safety.
+		const replyReserve = 4096 + 2048
+		if estTokens > windowTokens-replyReserve {
+			utils.Log("[Eco] preemptive context guard: estimated %d tokens vs window %d — returning context-length error so the loop compacts and retries", estTokens, windowTokens)
+			return nil, 0, fmt.Errorf("request estimated to exceed the context window: ~%d tokens vs %d (max %d) — compacting history and retrying", estTokens, windowTokens, windowTokens-replyReserve)
+		}
 	}
 
 	req, err := http.NewRequest("POST", LiteLLMBaseURL+"/v1/chat/completions", bytes.NewBuffer(jsonData))

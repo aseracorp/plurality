@@ -21,8 +21,8 @@ import (
 // litellm proxy does not declare a `context_window` in model_info for the
 // model. The proxy-declared value always wins over this table. Keys are
 // matched as prefixes (case-insensitive, ignoring ":suffix" variants), so
-// "strata-swift" also covers "strata-swift:foo" and "deepseek-v4-flash-0731"
-// covers "deepseek-v4-flash-0731:all".
+// "deepseek-v4" also covers "deepseek-v4-flash-0731" and "deepseek-v4:foo",
+// and "gpt-4o" covers "gpt-4o-mini:all".
 //
 // Values are the model's advertised maximum context window. These are static
 // best-effort numbers; operators can override per-model by adding
@@ -56,7 +56,6 @@ var knownModelContextWindows = map[string]int{
 	"mistral-large":      128000,
 	"qwen-2.5":           131072,
 	"qwen-3":             131072,
-	"strata-swift":       65536,
 	"ling-3.0-flash":     32768,
 }
 
@@ -242,7 +241,7 @@ func (r *ModelRegistry) IsAudioModel(name string) bool {
 
 // MaxContextTokensFor returns the declared context window (in tokens) for the
 // model with the given registry name. It checks the exact name first, then a
-// prefix match (e.g. "strata-swift" when the registry has "strata-swift").
+// prefix match (e.g. "deepseek-v4" when the registry has "deepseek-v4").
 // Returns 0 when the model is unknown or no window was declared — callers use
 // the configured eco fallback in that case.
 func (r *ModelRegistry) MaxContextTokensFor(name string) int {
@@ -277,8 +276,8 @@ func (r *ModelRegistry) MaxContextTokensFor(name string) int {
 }
 
 // builtinContextWindow looks up a model family in knownModelContextWindows by
-// exact key, then by longest-prefix match (so "strata-swift:foo" resolves to
-// "strata-swift"). Returns 0 when nothing matches.
+// exact key, then by longest-prefix match (so "deepseek-v4:foo" resolves to
+// "deepseek-v4"). Returns 0 when nothing matches.
 func builtinContextWindow(base string) int {
 	if base == "" {
 		return 0
@@ -289,7 +288,7 @@ func builtinContextWindow(base string) int {
 	}
 	// Longest-prefix match: trim the key from its most specific form down
 	// through '-' boundaries so "deepseek-v4-flash-0731" resolves to
-	// "deepseek-v4" and "strata-swift-1.5" resolves to "strata-swift". The
+	// "deepseek-v4" and "some-model-1.5" resolves to "some-model". The
 	// first (longest) match wins.
 	for {
 		if v, ok := knownModelContextWindows[b]; ok {
