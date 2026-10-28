@@ -3,6 +3,7 @@ package ai
 import (
 	"encoding/base64"
 	"fmt"
+	"strings"
 
 	"github.com/azukaar/plurality/src/docsupport"
 	"github.com/azukaar/plurality/src/storage"
@@ -237,6 +238,68 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 	finalResult = reInflateImageURLs(finalResult)
 
 	return finalResult, true, hasDocumentAttachments
+}
+
+// stripImagesForNonVisionModel replaces every image part in the outgoing
+// message slice with a lightweight placeholder. A non-vision model cannot
+// process images, and shipping base64 data URIs to it is pure context
+// waste (a single screenshot can be 10-50k tokens). The caller already
+// ran SelectModel, so a vision swap (if configured) already happened;
+// reaching this helper means the selected model truly cannot see images.
+func stripImagesForNonVisionModel(messages []utils.Message) []utils.Message {
+	out := make([]utils.Message, 0, len(messages))
+	for _, m := range messages {
+		parts := m.ContentParts()
+		changed := false
+		newParts := make([]utils.ContentPart, 0, len(parts))
+		for _, p := range parts {
+			if p.Type == "image_url" {
+				changed = true
+				// Keep the turn boundary coherent: placeholder text.
+				newParts = append(newParts, utils.ContentPart{
+					Type: "text",
+					Text: "[Image omitted: the selected model cannot see images]",
+				})
+				continue
+			}
+			newParts = append(newParts, p)
+		}
+		if changed {
+			m.Content = utils.NewPartsContent(newParts)
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// estimateImageTokens counts the token cost of every image part (base64
+// data URI payload) in the messages about to be shipped. Without this the
+// eco tail budget reserves room for tools + system + tail but NOT for the
+// images that are re-inflated to base64 on every request — observed: a
+// conversation with 15 recent attachments shipped base64 images worth
+// ~96k tokens on top of a ~6k tail, blowing the context window (prompt
+// 131478 tokens vs 131072 → provider 500 → dead turn).
+func estimateImageTokens(messages []utils.Message) int {
+	tokens := 0
+	for _, m := range messages {
+		parts := m.ContentParts()
+		if len(parts) == 0 {
+			continue
+		}
+		for _, p := range parts {
+			if p.Type != "image_url" || p.ImageURL == nil {
+				continue
+			}
+			u := p.ImageURL.URL
+			if i := strings.Index(u, ";base64,"); i >= 0 {
+				// base64 payload: ~4 chars per 3 bytes; ~1 token per 4 chars.
+				tokens += (len(u) - i - len(";base64,")) / 4
+			} else {
+				tokens += len(u) / 4
+			}
+		}
+	}
+	return tokens
 }
 
 // reInflateImageURLs reads image files from disk for any ContentPart that uses
