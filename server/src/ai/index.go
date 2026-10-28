@@ -255,8 +255,35 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 
 	req.Header.Set("Content-Type", "application/json")
 
-	client := utils.HTTPClient
-	resp, err := client.Do(req)
+	// Use the shared serialized+retrying LLM path.
+	// Serializing chat completions keeps a single-GPU self-hosted backend
+	// (llama.cpp/strata) from prefilling two big prompts concurrently — the
+	// queue then blows the SSE idle timeout and the turn hangs in
+	// idleTimeoutReader until the client cancels. The caller's context is
+	// honored while waiting for the slot, so a cancelled turn never stays
+	// parked behind a busy queue. 402/429/5xx get the bounded backoff retry.
+	//
+	// Self-hosted slow-prefill models additionally hold the slot for the
+	// WHOLE stream (DoLLMHTTPWithRetryHeld): the slot then covers prefill +
+	// generation, so a second workflow's giant prompt is only sent after this
+	// stream finishes decoding instead of two prompts queueing on the same
+	// GPU and both tripping the idle timeout. The body's Close() releases
+	// the held slot (ProcessStandardStream closes it via defer).
+	if isSlowPrefillModel(strings.ToLower(model.Name)) {
+		resp, err := utils.DoLLMHTTPWithRetryHeld(ctx, req)
+		if err != nil {
+			return nil, 0, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			strStatus := strconv.Itoa(resp.StatusCode)
+			utils.Error("LiteLLM API request failed with status", nil, strStatus, ":", string(respBody))
+			return nil, 0, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(respBody))
+		}
+		return resp.Body, 0, nil
+	}
+
+	resp, err := utils.DoLLMHTTPWithRetry(ctx, req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -530,8 +557,8 @@ func GenerateImage(request ImageGenerationRequest) ([]byte, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := utils.HTTPClient
-	resp, err := client.Do(req)
+	// Serialized + retried LLM path (see DoLLMHTTPWithRetry).
+	resp, err := utils.DoLLMHTTPWithRetry(context.Background(), req)
 	if err != nil {
 		return nil, err
 	}
@@ -591,8 +618,8 @@ func GenerateTitleForMessage(message, model string) (string, error) {
 
 	req.Header.Set("Content-Type", "application/json")
 
-	client := utils.HTTPClient
-	resp, err := client.Do(req)
+	// Serialized + retried LLM path (see DoLLMHTTPWithRetry).
+	resp, err := utils.DoLLMHTTPWithRetry(context.Background(), req)
 	if err != nil {
 		return "", err
 	}
@@ -663,10 +690,10 @@ func GenerateCheckpointSummary(text, model string) (string, error) {
 
 	maxTokens := 8192
 	requestData := StandardChatRequest{
-		Model:       model,
-		Messages:    msgReqList,
-		MaxTokens:   &maxTokens,
-		Stream:      false,
+		Model:     model,
+		Messages:  msgReqList,
+		MaxTokens: &maxTokens,
+		Stream:    false,
 	}
 
 	jsonData, err := json.Marshal(requestData)
@@ -680,8 +707,8 @@ func GenerateCheckpointSummary(text, model string) (string, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := utils.HTTPClient
-	resp, err := client.Do(req)
+	// Serialized + retried LLM path (see DoLLMHTTPWithRetry).
+	resp, err := utils.DoLLMHTTPWithRetry(context.Background(), req)
 	if err != nil {
 		return "", err
 	}

@@ -200,6 +200,33 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				})
 				continue
 			}
+			// Stream retries exhausted on a zero-byte idle stall. Persist an
+			// honest notice so the conversation shows what happened even
+			// after a client reload (a bare error Broadcast is not stored),
+			// then go idle — the turn state is intact and the user can send
+			// "continue" to resume. On a slow self-hosted model the retries
+			// already re-issued the prompt; serialization (LLMSem held for
+			// the whole stream) prevents the concurrent-prefill pile-up that
+			// used to cause these stalls in the first place.
+			if errors.Is(err, ErrStreamIdleTimeout) {
+				utils.Log("[LLMLoop] stream idle retries exhausted for %s — persisting notice and going idle", ar.ConversationID)
+				notice := utils.Message{
+					Role:      "assistant",
+					Content:   utils.NewTextContent(fmt.Sprintf("The model did not respond within %d attempt(s) (silent stream). Your work is preserved — send \"continue\" to resume.", streamRetries+1)),
+					Timestamp: time.Now().Format(time.RFC3339),
+					Model:     ar.Model,
+				}
+				if updated, _, pushErr := db.PushMessage(ctx, conversation, notice); pushErr == nil {
+					conversation = updated
+					ar.Broadcast(SSEEvent{
+						Type:           "text",
+						Content:        notice.Content.TextContent(),
+						ConversationID: ar.ConversationID,
+					})
+				} else {
+					utils.Error("[LLMLoop] failed to persist idle-timeout notice", pushErr)
+				}
+			}
 			ar.setState(ctx, utils.StateIdle)
 			ar.BroadcastStatus("", "")
 			ar.Broadcast(SSEEvent{
