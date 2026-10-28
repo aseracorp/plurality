@@ -17,9 +17,9 @@ import (
 
 // ErrStreamIdleTimeout is returned when a provider accepted a streaming
 // request (200 OK) but then sent no bytes within the idle window. The window
-// is model-aware (see StreamProcessor.streamIdleTimeout): local GPU models
-// (strata/swift) can legitimately take minutes to prefill a large cached
-// prompt before the first token, especially when the card is busy with other
+// is model-aware (see StreamProcessor.streamIdleTimeout): some self-hosted
+// model families can legitimately take minutes to prefill a large cached
+// prompt before the first token, especially when the GPU is busy with other
 // concurrent requests, so they get a much longer budget than cloud models.
 // A zero-byte idle timeout must never be treated as a clean end-of-stream.
 var ErrStreamIdleTimeout = errors.New("SSE stream idle timeout (no bytes received)")
@@ -34,18 +34,36 @@ type StreamProcessor struct {
 }
 
 // streamIdleTimeout returns how long ProcessStandardStream will wait for the
-// first/next byte from the provider before giving up. Local self-hosted GPU
-// models (strata/swift) get 6 minutes: a long prefill on a 47k-token prompt at
-// ~30-40 tok/s natively takes minutes, and the GPU can be occupied by another
-// conversation's generation at the same time. Cloud models get a tighter 2
-// minutes — a cloud endpoint silent for that long is virtually always broken,
-// and retrying earlier (see RunLLMLoop) hides the failure faster.
+// first/next byte from the provider before giving up. Self-hosted model
+// families with slow prefills (matched by isSlowPrefillModel) get 6 minutes:
+// a long prefill on a big prompt at native speed takes minutes, and the GPU
+// can be occupied by another conversation's generation at the same time.
+// Cloud models get a tighter 2 minutes — a cloud endpoint silent for that
+// long is virtually always broken, and retrying earlier (see RunLLMLoop)
+// hides the failure faster.
 func (sp *StreamProcessor) streamIdleTimeout() time.Duration {
 	name := strings.ToLower(sp.model.Name)
-	if strings.Contains(name, "strata") || strings.Contains(name, "swift") {
+	if isSlowPrefillModel(name) {
 		return 6 * time.Minute
 	}
 	return 2 * time.Minute
+}
+
+// slowPrefillModelMarkers are substrings matched (case-insensitively) against
+// model names to identify families that prefill large prompts slowly — the
+// "long idle" class of self-hosted/local deployments. Add your own local
+// model families here; cloud models must stay on the 2-minute timeout.
+var slowPrefillModelMarkers = []string{"strata", "swift"}
+
+// isSlowPrefillModel reports whether a (lowercased) model name belongs to a
+// slow-prefill family, e.g. "strata-swift:foo" or "swift-1.5".
+func isSlowPrefillModel(name string) bool {
+	for _, marker := range slowPrefillModelMarkers {
+		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // NewStreamProcessor creates a StreamProcessor bound to an ActiveRequest.
@@ -118,9 +136,8 @@ func (sp *StreamProcessor) mintProviderCallID(providerID string) string {
 }
 
 // parseXMLToolCall converts a Claude/Anthropic-style XML tool call snippet
-// (emitted by some local models — notably strata/swift — in the plain-text
-// stream instead of the native OpenAI tool_calls delta channel) into a
-// structured ToolCall.
+// (emitted by some self-hosted models in the plain-text stream instead of
+// the native OpenAI tool_calls delta channel) into a structured ToolCall.
 //
 // Accepted shapes (whitespace-tolerant):
 //
@@ -288,10 +305,10 @@ func (sp *StreamProcessor) buildAssistantMessage() utils.Message {
 
 	text := strings.TrimSpace(sp.request.TextBuffer.String())
 
-	// Self-heal Claude/Anthropic-style XML tool calls that some local models
-	// (strata/swift) emit in the plain-text stream instead of the native
-	// tool_calls delta channel. Left alone, the XML renders as raw chat text
-	// and the tool never executes — the conversation stalls with the model
+	// Self-heal Claude/Anthropic-style XML tool calls that some self-hosted
+	// models emit in the plain-text stream instead of the native tool_calls
+	// delta channel. Left alone, the XML renders as raw chat text and the
+	// tool never executes — the conversation stalls with the model
 	// "spilling" the call into the chat and going idle (observed: WordPress
 	// Hover Image Fix, seq 2967/2975). Parse them into real ToolCalls and
 	// strip them from the visible text.

@@ -172,11 +172,11 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// Build the tool set BEFORE marshalling so we can measure its real
 	// schema tax against the model's context window. A wide MCP toolset
 	// (github-api + playwright + wordpress + searxng + bundled tools) costs
-	// ~25-30k tokens of schemas on every request; on a 65k-window local
-	// model (strata-swift) that crowds the tail out and produces the
-	// observed litellm 500 "request exceeds the context window" (prompt
-	// 65933 tokens vs 65536) which kills the conversation. The eco tail
-	// budget must therefore be computed from the ACTUAL remaining room.
+	// ~25-30k tokens of schemas on every request; on a 65k-window model
+	// that crowds the tail out and produces the observed litellm 500
+	// "request exceeds the context window" (prompt 65933 tokens vs 65536)
+	// which kills the conversation. The eco tail budget must therefore be
+	// computed from the ACTUAL remaining room.
 	var toolsTaxBytes int
 	if isActionModel {
 		ait := ai_tools.GetRequests(conv.UserID, model, payload.ClientSideTools, hasAttachments, hasDocAttachments, payload.ModelSelected.ClientFolderPath != "")

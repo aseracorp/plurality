@@ -9,11 +9,11 @@ import (
 
 // The tool-schema tax regression: a wide MCP toolset (github-api + playwright
 // + wordpress + searxng + bundled) costs ~25-30k tokens of schemas per
-// request. On a 65k-window model (strata-swift) the old window/2 char budget
-// blew the window (observed: prompt 65933 tokens vs 65536 → litellm 500 →
-// dead conversation). The overhead-aware budget must shrink the tail so the
-// sum (tools + system + tail + reply) fits the window.
-func TestMaxTailCharsForOverheadStrataSmallWindow(t *testing.T) {
+// request. On a 65k-window model the old window/2 char budget blew the window
+// (observed: prompt 65933 tokens vs 65536 → litellm 500 → dead conversation).
+// The overhead-aware budget must shrink the tail so the sum (tools + system +
+// tail + reply) fits the window.
+func TestMaxTailCharsForOverheadSmallWindow(t *testing.T) {
 	window := 65536
 	// Realistic overhead: ~28k tokens of tool schemas + ~1.5k system prompt.
 	overhead := 28000 + 1500
@@ -51,7 +51,7 @@ func TestMaxTailCharsForOverheadClampsAt100k(t *testing.T) {
 
 // capTailBudget must honor an explicit budget (the overhead-aware one) even
 // when the plain maxTailChars(contextWindow) would allow more — this is the
-// exact mechanism that prevents the strata 65k blow-up.
+// exact mechanism that prevents the 65k-window blow-up.
 func TestCapTailBudgetHonorsExplicitBudget(t *testing.T) {
 	// 60 messages of 1000 chars = 60k chars. Budget 30k chars.
 	var msgs []utils.Message
