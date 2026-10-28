@@ -75,6 +75,14 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 	maxStreamRetries := 2
 	streamRetries := 0
 
+	// Retry guard for empty completions: the stream ended cleanly (provider
+	// sent [DONE]) but produced no text and no tool calls. finalizeStream
+	// skips persisting those, so a retry needs no cleanup. Bounded like
+	// maxStreamRetries; after the budget is exhausted we surface an honest
+	// assistant message instead of looping or going silently idle.
+	maxEmptyRetries := 2
+	emptyCompletionRetries := 0
+
 	for {
 		select {
 		case <-ar.Ctx.Done():
@@ -223,6 +231,49 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 
 		// If no tool calls, we're done
 		if len(assistantMessage.ToolCalls) == 0 {
+			// Empty completion: the stream ended cleanly ([DONE]) but the
+			// model emitted neither text nor tools. finalizeStream skipped
+			// persisting it, so nothing has been saved and retrying is free.
+			// This covers providers that "complete" with zero output (a
+			// degenerate [DONE], an empty choices array, a swallowed finish
+			// reason). Retry a bounded number of times with a visible notice,
+			// then surface an honest message instead of silently going idle.
+			if isEmptyCompletion(assistantMessage) && emptyCompletionRetries < maxEmptyRetries {
+				emptyCompletionRetries++
+				utils.Log("[LLMLoop] empty completion (no text, no tool calls) for %s — retry %d/%d", ar.ConversationID, emptyCompletionRetries, maxEmptyRetries)
+				ar.Broadcast(SSEEvent{
+					Type:           "text",
+					Content:        fmt.Sprintf("(The model returned an empty response — retrying (%d/%d)…)", emptyCompletionRetries, maxEmptyRetries),
+					ConversationID: ar.ConversationID,
+				})
+				continue
+			}
+
+			// Retries exhausted and the model still produced nothing. Surface
+			// it as a real, persisted assistant message so the conversation
+			// shows what happened instead of looking halted — then fall
+			// through to the normal idle+done path below.
+			if isEmptyCompletion(assistantMessage) {
+				utils.Log("[LLMLoop] empty completion persisted after %d attempt(s) for %s — surfacing notice", emptyCompletionRetries+1, ar.ConversationID)
+				notice := utils.Message{
+					Role:      "assistant",
+					Content:   utils.NewTextContent(fmt.Sprintf("The model returned an empty response after %d attempt(s). This can happen when the model stalls or the provider drops the completion. Please try again, or ask me to continue.", emptyCompletionRetries+1)),
+					Timestamp: time.Now().Format(time.RFC3339),
+					Model:     ar.Model,
+				}
+				updated, _, err := db.PushMessage(ctx, conversation, notice)
+				if err != nil {
+					utils.Error("[LLMLoop] failed to persist empty-completion notice", err)
+				} else {
+					conversation = updated
+					ar.Broadcast(SSEEvent{
+						Type:           "text",
+						Content:        notice.Content.TextContent(),
+						ConversationID: ar.ConversationID,
+					})
+				}
+			}
+
 			// Adopt a user message that landed while this turn was streaming.
 			// The conversation was just refreshed from the DB, so if it now
 			// ends with a user message we have not answered, going idle would
@@ -700,6 +751,15 @@ func tailIsUserMessage(messages []utils.Message) bool {
 		return false
 	}
 	return messages[len(messages)-1].Role == "user"
+}
+
+// isEmptyCompletion reports whether a streamed assistant message is
+// completely empty: no text, no tool calls. Such completions are retried
+// (bounded) by RunLLMLoop and then surfaced as an honest notice instead of
+// silently going idle; see the empty-completion block in the loop. Kept as a
+// predicate so both the loop and its tests share one definition.
+func isEmptyCompletion(msg utils.Message) bool {
+	return msg.TextContent() == "" && len(msg.ToolCalls) == 0
 }
 
 // hasToolResult reports whether a tool row with the given tool_call_id exists
