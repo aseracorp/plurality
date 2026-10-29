@@ -86,6 +86,17 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
   bool _needsBottomMargin = false;
   bool _closeMessageWarning = false;
   bool _didInitialScroll = false;
+  // Number of messages that arrived while the user was scrolled away from
+  // the bottom. Cleared when the user returns to the bottom or presses the
+  // jump-to-bottom button. Surfaced as the red badge on the FAB.
+  int _unreadCount = 0;
+  // Last count of visible (non-tool) messages. New items inserted at either
+  // end are detected here on every rebuild; a growth at the bottom while
+  // scrolled away counts as unread.
+  int _lastVisibleMessageCount = -1;
+  // Newest message timestamp seen by the unread tracker. Backlog items
+  // (older timestamps) are never counted as unread.
+  DateTime? _lastSeenNewestTimestamp;
 
   // Last ConversationState seen by _onSessionChanged. Used to rebuild the
   // chat only on state transitions (stream start/end, tool-wait, error)
@@ -204,6 +215,9 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
         _needsBottomMargin = false;
         _closeMessageWarning = false;
         _didInitialScroll = false;
+        _unreadCount = 0;
+        _lastVisibleMessageCount = -1;
+        _lastSeenNewestTimestamp = null;
         // Reset the transition tracker to the newly-bound session's current
         // state so the next real transition still triggers a rebuild.
         _lastSessionState = _session.value.state;
@@ -381,6 +395,15 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
     if (!_mainScrollController.hasClients) return;
     final isNearBottom =
         _mainScrollController.position.pixels >= _contentMaxExtent - 200;
+    // Manual scroll back to the bottom clears the unread counter — the
+    // user has seen the new messages by the time they arrive there.
+    if (isNearBottom && _unreadCount != 0) {
+      setState(() {
+        _isNearBottom = true;
+        _unreadCount = 0;
+      });
+      return;
+    }
     if (isNearBottom != _isNearBottom) {
       setState(() {
         _isNearBottom = isNearBottom;
@@ -388,8 +411,53 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
     }
   }
 
-  /// Anchor the main list to its last item. Uses the itemCount from the most
-  /// recent build so it matches whatever super_sliver_list is rendering.
+  /// Recompute [_isNearBottom] without waiting for a scroll event. Content
+  /// growth below the viewport (new messages, streaming text) does not fire
+  /// scroll notifications, so the FAB visibility would otherwise stay stale
+  /// until the user's first manual scroll.
+  void _updateNearBottom() {
+    if (!_mainScrollController.hasClients) return;
+    final isNearBottom =
+        _mainScrollController.position.pixels >= _contentMaxExtent - 200;
+    if (isNearBottom != _isNearBottom) {
+      setState(() {
+        _isNearBottom = isNearBottom;
+      });
+    }
+  }
+
+  /// When the user is currently at the bottom and the list just grew (a new
+  /// message arrived or the streaming slot gained height), re-anchor to the
+  /// newest item so the growing content stays in view. This is the
+  /// "stick to bottom while reading the latest" behavior: it only ever runs
+  /// when the user is at/near the bottom, so while scrolled up (history)
+  /// nothing is moved. Super_sliver_list re-renders the same item slots when
+  /// the itemCount changes, so an index-based jump here is the viewport-
+  /// preserving compensation for top-inserted backlog and bottom growth alike.
+  void _maybeKeepPinned() {
+    if (!_listController.isAttached ||
+        !_mainScrollController.hasClients ||
+        _lastMainItemCount <= 0 ||
+        !_isNearBottom) return;
+    // Already at the physical bottom edge: nothing to re-anchor. This check
+    // keeps the per-streaming-token follow call cheap (no layout work when
+    // the growing content has not yet pushed us off the edge).
+    if (_mainScrollController.position.pixels >=
+        _mainScrollController.position.maxScrollExtent - 200) {
+      return;
+    }
+    final targetIndex = (_lastMainItemCount - 1).clamp(0, _lastMainItemCount - 1);
+    _listController.jumpToItem(
+      index: targetIndex,
+      scrollController: _mainScrollController,
+      alignment: 1.0,
+    );
+  }
+
+  /// Jump to the newest message. This is the ONLY user-initiated action that
+  /// anchors the list to the bottom: it clears the unread badge, re-engages
+  /// follow-scroll, and uses the itemCount from the most recent build so it
+  /// matches whatever super_sliver_list is rendering.
   void _scrollToBottom() {
     if (!_listController.isAttached ||
         !_mainScrollController.hasClients ||
@@ -405,6 +473,12 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
       scrollController: _mainScrollController,
       alignment: 1.0,
     );
+    // Returning to the bottom clears the unread counter.
+    if (_unreadCount != 0) {
+      setState(() {
+        _unreadCount = 0;
+      });
+    }
   }
 
   void _handleStop() {
@@ -712,37 +786,11 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
         message: newMessage,
       );
 
-      // Scroll the user's message to the top of the viewport, once per submit.
-      // Done here (not on state transitions) so multi-turn tool/AI events
-      // don't yank the scroll position around between turns. The bottom margin
-      // added above gives the streaming response room to grow downward without
-      // pushing the user message off-screen.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted ||
-            !_listController.isAttached ||
-            !_mainScrollController.hasClients) return;
-
-        final conversationsState = ref.read(conversationsProvider);
-        final currentConversation = conversationsState.conversations.firstWhere(
-          (conv) => conv.id == widget.conversationId,
-          orElse: () => Conversation(
-            id: widget.conversationId, title: '', messages: [],
-            lastMessageAt: DateTime.now(), modelSelected: _modelSelected,
-          ),
-        );
-        final visibleMessages = currentConversation.messages
-            .where((m) => m.role != 'tool')
-            .toList();
-        final lastUserIndex =
-            visibleMessages.lastIndexWhere((m) => m.role == 'user');
-        if (lastUserIndex < 0) return;
-
-        _listController.jumpToItem(
-          index: lastUserIndex,
-          scrollController: _mainScrollController,
-          alignment: 0.0,
-        );
-      });
+      // No auto-scroll on submit: the viewport must never jump. If the user
+      // was near the bottom, the follow-scroll in _updateNearBottom (called
+      // after the next build) keeps newly added content anchored into view;
+      // if they were scrolled up, their position stays untouched and the new
+      // reply is counted as unread on the jump-to-bottom button.
     }
 
     try {
@@ -1112,10 +1160,24 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
             alignment: Alignment.centerLeft,
             child: ValueListenableBuilder<ChatSessionState>(
               valueListenable: _session,
-              builder: (context, s, _) => Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: _buildStreamingWidgets(s, messages, mini),
-              ),
+              // Keep the viewport pinned to the bottom while streaming, but
+              // only when the user is at/near the bottom. The streaming slot
+              // grows per SSE token WITHOUT firing a scroll event, so without
+              // this the growing text would push the viewport up visually
+              // (or leave it stale) whenever the user was following the chat.
+              // When scrolled up, the listener does nothing — the position
+              // stays exactly where the user left it.
+              builder: (context, s, _) {
+                if (!mini) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted && _isNearBottom) _maybeKeepPinned();
+                  });
+                }
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: _buildStreamingWidgets(s, messages, mini),
+                );
+              },
             ),
           );
         }
@@ -1210,6 +1272,9 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
     // One-shot: anchor to the newest item the first time an existing
     // conversation renders. Index-based jump is robust against unmeasured
     // items — the failure mode that broke the old animateTo(maxScrollExtent).
+    // Only fires once real messages are present, so an async conversation
+    // load that lands later does not scroll-jump after the user has already
+    // started reading.
     if (!_didInitialScroll &&
         widget.conversationId.isNotEmpty &&
         messages.isNotEmpty) {
@@ -1238,6 +1303,71 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
       ),
     );
 
+
+    // --- Viewport stability + unread tracking (post-build) ---
+    // Runs after every rebuild. Two goals:
+    //  1. NEVER jump: new items arriving at the top (backlog) or bottom (new
+    //     messages) must not change what the user is looking at. super_sliver_list
+    //     keeps already-built children mounted by index — items inserted at the
+    //     TOP shift every subsequent index, which is what made the viewport
+    //     jump around before. We detect bottom-anchored growth and compensate
+    //     ONLY when we were following the bottom; while scrolled away we leave
+    //     the viewport completely alone.
+    //  2. Unread badge: messages that arrived while scrolled away are counted
+    //     on the jump-to-bottom button.
+    if (widget.conversationId.isNotEmpty) {
+      final visibleCount = messages.where((m) => m.role != 'tool').length;
+      // First build for this conversation (or switched): prime the anchor
+      // count without counting the initial load as unread.
+      if (_lastVisibleMessageCount < 0) {
+        _lastVisibleMessageCount = visibleCount;
+        _lastSeenNewestTimestamp = messages.isEmpty
+            ? null
+            : messages.map((m) => m.timestamp).reduce((a, b) => a.isAfter(b) ? a : b);
+      } else if (visibleCount > _lastVisibleMessageCount) {
+        // New DB messages arrived between rebuilds. Distinguish real new
+        // messages (appended at the bottom, timestamp newer than anything we
+        // have seen) from backlog inserted at the top (older timestamps):
+        // only genuinely new messages count as unread when scrolled away.
+        DateTime? newestNow;
+        for (final m in messages) {
+          if (newestNow == null || m.timestamp.isAfter(newestNow)) {
+            newestNow = m.timestamp;
+          }
+        }
+        var newOnes = 0;
+        if (newestNow != null && _lastSeenNewestTimestamp != null &&
+            newestNow.isAfter(_lastSeenNewestTimestamp!)) {
+          // Count only INCOMING (assistant) messages as unread — the user
+          // obviously knows about their own reply, so it never increments
+          // the badge, even when they submitted from scrolled-up position.
+          newOnes = messages
+              .where((m) =>
+                  m.role == 'assistant' &&
+                  m.timestamp.isAfter(_lastSeenNewestTimestamp!))
+              .length;
+        }
+        if (newOnes > 0 && !_isNearBottom) {
+          // Scrolled away: never move the viewport, just count them.
+          _unreadCount += newOnes;
+        }
+        _lastVisibleMessageCount = visibleCount;
+        if (newestNow != null) _lastSeenNewestTimestamp = newestNow;
+      } else {
+        _lastVisibleMessageCount = visibleCount;
+      }
+
+      // After the frame settles, re-check bottom state (content may have
+      // grown below the viewport without a scroll event) and, if the user is
+      // following the bottom, keep them pinned to the newest item.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_mainScrollController.hasClients) return;
+        if (_isNearBottom) {
+          _maybeKeepPinned();
+        }
+        _updateNearBottom();
+      });
+    }
     final Widget? miniMapContent = showMiniMap
         ? buildMessageList(
             messages: messages,
@@ -1702,7 +1832,13 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
             child: FloatingActionButton(
               mini: true,
               onPressed: _scrollToBottom,
-              child: const Icon(Icons.arrow_downward),
+              child: Badge.count(
+                count: _unreadCount,
+                isLabelVisible: _unreadCount > 0,
+                backgroundColor: Colors.red,
+                textColor: Colors.white,
+                child: const Icon(Icons.arrow_downward),
+              ),
             ),
           ),
       ],
