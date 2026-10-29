@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -161,6 +162,31 @@ func RetryableStatus(code int) bool {
 	return code == 402 || code == 429 || (code >= 500 && code < 600)
 }
 
+// ensureRetryableBody makes a request retry-safe by installing a GetBody
+// closure that re-creates the request body from the marshalled payload on
+// every attempt. Without it a retry re-sends the SAME *http.Request whose
+// body was already consumed by the first attempt — the transport then sends
+// "ContentLength=N with Body length 0" (the exact error seen in production)
+// and every retry fails, burning the whole LLMRetryBudget in a ~40 minute
+// backoff storm that stalls the workflow for the duration.
+//
+// http.NewRequest with a *bytes.Reader sets ContentLength eagerly but leaves
+// GetBody nil; http.NewRequest with a *bytes.Buffer leaves BOTH nil (and the
+// transport then falls back to chunked encoding). Snapshotting the bytes once
+// and closing over them gives an exact, cheap replay for both shapes.
+func ensureRetryableBody(req *http.Request) {
+	if req != nil && req.Body != nil && req.GetBody == nil {
+		if bodyBytes, err := io.ReadAll(req.Body); err == nil {
+			req.Body.Close()
+			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			req.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+			}
+			req.ContentLength = int64(len(bodyBytes))
+		}
+	}
+}
+
 // DoLLMHTTPWithRetry issues an LLM/embedding HTTP request under the global
 // concurrency semaphore, retrying on 402/429/5xx with Retry-After backoff.
 // Returns the 2xx response (caller owns closing Body) or nil + error after
@@ -174,6 +200,7 @@ func RetryableStatus(code int) bool {
 // caller's context is done. A workflow the user cancelled therefore never
 // stays parked behind a busy GPU queue.
 func DoLLMHTTPWithRetry(ctx context.Context, req *http.Request) (*http.Response, error) {
+	ensureRetryableBody(req)
 	retries := 0
 	for {
 		if err := AcquireLLMSlot(ctx); err != nil {
@@ -251,6 +278,7 @@ func (r *releaseOnCloseReadCloser) Close() error {
 // re-queued). The slot is released on every error path, on retry exhaustion,
 // and via the wrapped body on success.
 func DoLLMHTTPWithRetryHeld(ctx context.Context, req *http.Request) (*http.Response, error) {
+	ensureRetryableBody(req)
 	if err := HoldLLMSlot(ctx); err != nil {
 		return nil, err
 	}
