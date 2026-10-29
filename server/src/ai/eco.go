@@ -108,7 +108,7 @@ func filterCheckpointsForRequestBudget(messages []utils.Message, ecoOn bool, con
 	// context_length_exceeded. Fall through to the same budget-capped tail
 	// so even a never-compacted conversation is bounded on every request.
 	if lastCheckpointIdx < 0 {
-		return capTail(messages, contextWindow)
+		return capTailWithBudget(messages, contextWindow, tailBudgetChars)
 	}
 	tail := messages[lastCheckpointIdx:]
 
@@ -120,7 +120,7 @@ func filterCheckpointsForRequestBudget(messages []utils.Message, ecoOn bool, con
 	// always starting on a user message so the model still has a complete turn
 	// boundary to respond to. The checkpoint summary before the cap keeps the
 	// dropped middle coherent.
-	return capTail(tail, contextWindow)
+	return capTailWithBudget(tail, contextWindow, tailBudgetChars)
 }
 
 // maxTailChars returns the character budget for the live tail sent to the
@@ -210,6 +210,20 @@ func maxTailCharsForOverhead(contextWindow, overheadTokens int) int {
 // Review", 1866 msgs / ~770k tokens / no checkpoint, eco on).
 func capTail(tail []utils.Message, contextWindow int) []utils.Message {
 	return capTailBudget(tail, maxTailChars(contextWindow), contextWindow)
+}
+
+// capTailWithBudget is capTail with an explicit caller-supplied tail budget
+// (CHARACTERS) instead of the static window-derived maxTailChars. This is
+// the overhead-aware path: SendChatCompletion measures the ACTUAL token cost
+// of the tool schemas + system prompt + checkpoint summary and computes the
+// remaining room for the tail. Routing that budget through here keeps the
+// whole eco pipeline honest — before this fix the caller-computed budget
+// was silently dropped and the STATIC (too generous) maxTailChars was used,
+// so a small-window model with a wide MCP toolset could still ship a tail
+// that overflowed the window and litellm rejected the request (observed:
+// prompt 65933 tokens vs 65536 window → 500 → dead conversation).
+func capTailWithBudget(tail []utils.Message, contextWindow, tailBudgetChars int) []utils.Message {
+	return capTailBudget(tail, tailBudgetChars, contextWindow)
 }
 
 // capTailBudget bounds a message slice to an explicit character budget,
