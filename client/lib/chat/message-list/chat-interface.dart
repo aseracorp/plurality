@@ -1316,6 +1316,20 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
     //  2. Unread badge: messages that arrived while scrolled away are counted
     //     on the jump-to-bottom button.
     if (widget.conversationId.isNotEmpty) {
+      // A loadConversation (snapshot merge) may have counted brand-new
+      // server messages while this conversation was scrolled away. Read the
+      // one-shot counter here — it is set only when the merge actually grew
+      // the conversation — BEFORE the generic growth tracker below, so those
+      // messages join the unread badge even though no rebuild noticed them
+      // arriving one-by-one. Running immediately after a navigation into the
+      // conversation is safe: _isNearBottom starts true, so the initial
+      // load's own count is never treated as unread.
+      final loadedNew = ref
+          .read(conversationsProvider.notifier)
+          .consumeLastLoadedNewMessageCount(widget.conversationId);
+      if (loadedNew > 0 && !_isNearBottom) {
+        _unreadCount += loadedNew;
+      }
       final visibleCount = messages.where((m) => m.role != 'tool').length;
       // First build for this conversation (or switched): prime the anchor
       // count without counting the initial load as unread.

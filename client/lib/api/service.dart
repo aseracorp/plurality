@@ -24,6 +24,26 @@ class FolderData {
 
 // In service.dart, modify the ConversationsNotifier class
 class ConversationsNotifier extends StateNotifier<ConversationsState> {
+
+  /// Number of messages the most recent loadConversation merge counted as
+  /// genuinely new (server snapshot grew). Read by the chat interface to
+  /// drive the unread badge when a snapshot arrives while scrolled away.
+  int _lastLoadedNewMessageCount = 0;
+  String _lastLoadedNewConversationId = '';
+  int get lastLoadedNewMessageCount => _lastLoadedNewMessageCount;
+  String get lastLoadedNewConversationId => _lastLoadedNewConversationId;
+
+  /// One-shot read of the new-message count for [conversationId]; returns
+  /// 0 (and resets) if the stored count belongs to another conversation or
+  /// was already consumed. Call from a post-frame callback so the value is
+  /// read once per rebuild at most.
+  int consumeLastLoadedNewMessageCount(String conversationId) {
+    if (conversationId != _lastLoadedNewConversationId) return 0;
+    final v = _lastLoadedNewMessageCount;
+    _lastLoadedNewMessageCount = 0;
+    return v;
+  }
+
   final AuthService _authService = AuthService();
   StreamSubscription? _authSubscription;
   final apiService = ApiService();
@@ -114,6 +134,18 @@ class ConversationsNotifier extends StateNotifier<ConversationsState> {
 
     var conv = await apiService.getConversation(id);
     if (conv != null) {
+      // Merge the server snapshot into the locally cached conversation
+      // instead of replacing it. The server sends stable per-message ids
+      // (messages.id); merging preserves local-only messages (e.g. an
+      // optimistic user message still in flight) and keeps the message list
+      // stable so the unread tracker sees genuinely new assistant messages.
+      final local = ConversationStorage.getConversation(id);
+      int newMessages = 0;
+      if (local != null && local.messages.isNotEmpty && conv.messages.isNotEmpty) {
+        newMessages =
+            ConversationStorage.mergeServerMessages(local, conv.messages);
+        conv.messages = local.messages;
+      }
       await ConversationStorage.saveConversation(conv);
       if (kIsWeb) {
         // Update the in-memory list with this conversation's fresh messages
@@ -129,6 +161,11 @@ class ConversationsNotifier extends StateNotifier<ConversationsState> {
       } else {
         _loadConversations();
       }
+      // Surface how many server messages were genuinely new so callers
+      // (chat interface unread badge) can count them even though they
+      // arrived via a snapshot replace.
+      _lastLoadedNewMessageCount = newMessages;
+      _lastLoadedNewConversationId = id;
       // The freshly-loaded messages might end on an unanswered client tool
       // call (previous client crashed / was closed mid-execution). Hand it
       // to ChatService which guards against double-dispatch via the lock,
