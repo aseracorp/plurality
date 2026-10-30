@@ -178,7 +178,7 @@ class MCPService {
     return mcpFile;
   }
 
-  void initMCP() async {
+  Future<void> initMCP() async {
     if (kIsWeb) {
       return;
     }
