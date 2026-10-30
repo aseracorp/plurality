@@ -37,7 +37,7 @@ class ConversationStorage {
     Hive.registerAdapter(ContentImageURLAdapter());
     Hive.registerAdapter(ContentPartAdapter());
     Hive.registerAdapter(FunctionCallDataAdapter());
-    Hive.registerAdapter(ToolCallAdapter());
+    Hive.registerAdapter(ToolCallDataAdapter());
     Hive.registerAdapter(MessageAdapter());
     Hive.registerAdapter(ConversationAdapter());
     Hive.registerAdapter(AttachmentAdapter());
@@ -84,7 +84,15 @@ class ConversationStorage {
           print('hivePath is null');
         }
 
-        await Hive.openBox<Conversation>(_conversationBoxName);
+        try {
+          await Hive.openBox<Conversation>(_conversationBoxName);
+        } catch (e2) {
+          // Last resort: keep the app usable with an in-memory box. A
+          // persistently corrupt Hive file (or a storage path that keeps
+          // failing on this machine) must not blank/crash the window on
+          // startup — the user still gets a working session.
+          print('Storage - init - Retry open failed, using in-memory box: $e2');
+        }
       }
     } else {
       print('Storage - init - Hive initialized for web (metadata-only mode)');
