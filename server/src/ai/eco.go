@@ -284,9 +284,110 @@ func capTailBudget(tail []utils.Message, tailBudgetChars, contextWindow int) []u
 		utils.Log("[Eco] capping tail by budget: kept %d msgs / %d chars (start idx %d) for context safety", len(tail)-start, chars, start)
 		tail = tail[start:]
 	}
+	// HARD budget cap. The user-boundary back-up above can overshoot the
+	// caller budget by an entire turn's worth of tool results — observed on
+	// a 131k-window model with a 100000-char budget: "kept 320 msgs /
+	// 215888 chars" on conversation 319ce9283cac61666757b88a, so the
+	// preemptive guard re-fired on every single turn. The back-up is
+	// REQUIRED (never start mid-turn / orphan tool results), but after it
+	// we keep dropping EARLIER turns (oldest-first, always at a user
+	// boundary) until the total content fits the budget. Never truncate a
+	// message body here — a single oversized turn (a giant tool result with
+	// its still-present parent call) must survive whole so
+	// truncateOversizedTail can apply its per-message bound; and tool-call
+	// pairing must never be broken by cutting mid-turn (the OpenAI API
+	// rejects dangling tool_calls/result pairs). Content-shrinking rows
+	// instead of dropping whole turns was the earlier attempt: it broke
+	// those contracts and is why per-message truncation exists below.
+	tail = trimTailToFitBudget(tail, tailBudgetChars)
 	return truncateOversizedTail(tail, contextWindow)
 }
 
+// trimTailToFitBudget hard-caps the total content length of a tail slice to
+// tailBudgetChars by dropping the OLDEST complete turns (at user message
+// boundaries) until the remainder fits. The newest user message and its
+// in-flight turn are always preserved — the natural floor — so the model
+// still has a complete, recent request to answer. Rows are dropped whole,
+// never partially: a partial turn would orphan tool results whose parent
+// assistant call was cut, which makes the OpenAI tool_calls/result pairing
+// invalid. Individual oversized messages that survive (e.g. a giant tool
+// result whose parent call is in the same turn, or a huge newest user
+// message) are handled later by truncateOversizedTail with its per-message
+// bound.
+func trimTailToFitBudget(tail []utils.Message, tailBudgetChars int) []utils.Message {
+	if len(tail) == 0 || tailBudgetChars <= 0 {
+		return tail
+	}
+	// One prefix-sum pass makes every "does the kept suffix fit / how much
+	// does the oldest turn cost" decision O(1) in the drop loop below.
+	prefix := make([]int, len(tail)+1)
+	for i := range tail {
+		prefix[i+1] = prefix[i] + tail[i].Content.TotalContentChars()
+	}
+	if prefix[len(tail)] <= tailBudgetChars {
+		return tail
+	}
+
+	// Floor: the last user message and everything after it (its in-flight
+	// turn) are always kept — never start the kept history mid-turn. If the
+	// newest turn alone exceeds the budget, that is the hard stop; nothing
+	// more can be dropped without splitting a turn, and per-message
+	// truncation below still bounds it.
+	floor := len(tail) - 1
+	for floor > 0 && tail[floor].Role != "user" {
+		floor--
+	}
+
+	// Drop the oldest complete turns one at a time until the kept suffix
+	// fits the budget or the floor is reached. This is the HARD cap the
+	// coarse backward walk in capTailBudget cannot provide: its user-boundary
+	// back-up re-includes an entire turn, which routinely overshoots the
+	// caller budget (observed: "kept 320 msgs / 215888 chars" against a
+	// 100000-char budget on conversation 319ce9283cac61666757b88a, so the
+	// preemptive guard re-fired on every single turn).
+	keptStart := 0
+	for {
+		keptChars := prefix[len(tail)] - prefix[keptStart]
+		if keptChars <= tailBudgetChars {
+			break
+		}
+		// Advance to the next user boundary — the start of the oldest kept
+		// turn. Dropping up to it removes a WHOLE turn, never a partial one.
+		next := keptStart + 1
+		for next < len(tail) && tail[next].Role != "user" {
+			next++
+		}
+		if next > floor {
+			// Only the newest user turn remains and it alone exceeds the
+			// budget: stop here (floor), keep it whole for the model to
+			// answer; truncateOversizedTail still bounds its individual
+			// messages.
+			keptStart = floor
+			break
+		}
+		keptStart = next
+	}
+	dropped := prefix[keptStart]
+	if keptStart > 0 {
+		utils.Log("[Eco] budget re-trim: dropping %d oldest msgs / %d chars (kept %d msgs / %d chars)", keptStart, dropped, len(tail)-keptStart, prefix[len(tail)]-dropped)
+		tail = tail[keptStart:]
+	}
+	return tail
+}
+
+// truncateOversizedTail applies per-message bounds to the tail slice before
+// it is shipped to the provider:
+//
+//   - a "tool" message whose body is oversized is DROPPED entirely (its
+//     parent assistant call was already dropped or is itself being
+//     truncated, so a dangling huge result is pure context waste);
+//   - any other oversized message (user/assistant) is truncated to
+//     maxKeepTailChars with a clear banner, so the model still sees the
+//     head of the message and the message role (the turn boundary) is
+//     preserved — a 4MB pasted blob can never exceed the context window by
+//     itself.
+//
+// Returning a NEW slice; the input is not mutated.
 // maxKeepTailChars returns the per-message character bound for the model's
 // context window. A single oversized message (multi-MB paste, giant tool
 // result) can never blow the window on its own; the bound is sized to the
@@ -310,19 +411,6 @@ func maxKeepTailChars(contextWindow int) int {
 	return budget
 }
 
-// truncateOversizedTail applies per-message bounds to the tail slice before
-// it is shipped to the provider:
-//
-//   - a "tool" message whose body is oversized is DROPPED entirely (its
-//     parent assistant call was already dropped or is itself being
-//     truncated, so a dangling huge result is pure context waste);
-//   - any other oversized message (user/assistant) is truncated to
-//     maxKeepTailChars with a clear banner, so the model still sees the
-//     head of the message and the message role (the turn boundary) is
-//     preserved — a 4MB pasted blob can never exceed the context window by
-//     itself.
-//
-// Returning a NEW slice; the input is not mutated.
 func truncateOversizedTail(tail []utils.Message, contextWindow int) []utils.Message {
 	if len(tail) == 0 {
 		return tail
@@ -753,10 +841,32 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 		return
 	}
 	if lastPT <= trigger {
-		utils.Log("[Eco] conv %s lastPT=%d below trigger=%d (model context-aware) — skip", conversationID, lastPT, trigger)
-		return
+		// The recorded lastPT is often LOWER than the trigger even when the
+		// true persisted history is gigantic: the LLM only ever saw a
+		// budget-capped tail, so its usage reflects the small tail, not the
+		// full DB history. On conversation 319ce9283cac61666757b88a this
+		// left one checkpoint stuck at seq 154 while 839 messages (≈700k
+		// tokens) piled up behind it — every turn then dead-ended in the
+		// preemptive context guard. Fall back to a raw-history-size gate: if
+		// the persisted message content (minus checkpoints) exceeds the
+		// trigger's worth of characters, durable-compact now instead of
+		// waiting forever for lastPT to catch up.
+		rawChars := 0
+		for _, m := range conv.Messages {
+			if db.IsCheckpointMessage(m) {
+				continue
+			}
+			rawChars += m.Content.TotalContentChars()
+		}
+		// ~4 chars/token — same density assumption the request guard uses.
+		if rawChars/4 <= trigger {
+			utils.Log("[Eco] conv %s lastPT=%d below trigger=%d (model context-aware) — skip", conversationID, lastPT, trigger)
+			return
+		}
+		utils.Log("[Eco] conv %s lastPT=%d below trigger=%d but raw history ≈%d chars → durable-compacting", conversationID, lastPT, trigger, rawChars)
+	} else {
+		utils.Log("[Eco] conv %s lastPT=%d > trigger=%d (model context-aware) — compacting toward target=%d", conversationID, lastPT, trigger, cfg.TargetTokens)
 	}
-	utils.Log("[Eco] conv %s lastPT=%d > trigger=%d (model context-aware) — compacting toward target=%d", conversationID, lastPT, trigger, cfg.TargetTokens)
 
 	// Locate the existing checkpoint (if any) and compute where the new
 	// cutoff must land.

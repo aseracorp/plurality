@@ -28,6 +28,14 @@ func openTestDB(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { db.Close() })
 	if _, err := db.Exec(schema); err != nil {
+		// The schema uses FTS5 + vec0 virtual tables; when the sqlite3 driver
+		// lacks those compiled-in extensions (e.g. a minimal build without
+		// libsqlite3's fts5/vec modules) the schema cannot be created. These
+		// are storage-integration tests — skip instead of failing on
+		// environments that can't exercise them.
+		if strings.Contains(err.Error(), "no such module") {
+			t.Skipf("sqlite lacks FTS5/vec0 modules: %v", err)
+		}
 		t.Fatalf("schema: %v", err)
 	}
 	return db
