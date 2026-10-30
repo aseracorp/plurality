@@ -6,12 +6,14 @@ import 'package:plurality/api/MCP.dart';
 import 'package:plurality/api/skills_service.dart';
 import 'package:plurality/api/chat_service.dart';
 import 'package:plurality/api/client_identity.dart';
+import 'package:path_provider/path_provider.dart';
 import './auth/auth-service.dart';
 import './auth/account.dart';
 import './auth/login.dart';
 import './api/storage.dart';
 import './utils/index.dart';
 import './utils/deep_link.dart';
+import './utils/startup_guard.dart';
 import './api/preferences_provider.dart';
 import 'chat/index.dart';
 import 'dart:async';
@@ -29,19 +31,41 @@ final authStateProvider = StreamProvider<User?>((ref) {
   return AuthService().authStateChanges;
 });
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await AuthService.loadServerUrl();
-  await ConversationStorage.init();
-  await ClientIdentity().init();
-  debugPaintSizeEnabled = false;
+/// Boots the app inside a guarded zone so no fire-and-forget startup task
+/// (version check, MCP discovery, skills scan, Hive open) can blank the
+/// window or kill the process with an unhandled async exception.
+///
+/// Every failure that used to crash the client on managed Windows endpoints
+/// (network-restricted update check, EDR-blocked MCP helper processes, a
+/// corrupt Hive box/stale lock) is now logged to
+/// `<ApplicationSupport>/plurality_crash.log` and swallowed; the UI still
+/// comes up.
+void main() {
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+    installStartupCrashGuards();
 
-  checkVersion();
+    // Put the crash log next to the app's Hive data (Application Support).
+    if (!kIsWeb) {
+      try {
+        final supportDir = await getApplicationSupportDirectory();
+        setCrashLogDirectory(supportDir.path);
+      } catch (_) {}
+    }
 
-  MCPService().initMCP();
-  SkillsService().initSkills();
+    await AuthService.loadServerUrl();
+    await ConversationStorage.init();
+    await ClientIdentity().init();
+    debugPaintSizeEnabled = false;
 
-  runApp(ProviderScope(child: MyApp()));
+    // Fire-and-forget startup work. All three are guarded internally; none
+    // of them may block or take down the first frame.
+    unawaited(checkVersion());
+    unawaited(MCPService().initMCP());
+    unawaited(SkillsService().initSkills());
+
+    runApp(ProviderScope(child: MyApp()));
+  }, onRootZoneError);
 }
 
 final c = Colors.red;
