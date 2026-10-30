@@ -283,3 +283,90 @@ func TestFilterCheckpointsForRequest_TruncatesOversizedMultipartMessage(t *testi
 		}
 	}
 }
+
+// buildTurn appends a complete user→assistant turn (user message, assistant
+// reply) to msgs, using a deterministic pattern that also yields a stable
+// per-message char count. size chars per message, incl. the 2-char separators.
+func buildTurn(msgs []utils.Message, i, size int) []utils.Message {
+	return append(msgs,
+		utils.Message{Role: "user", Content: utils.NewTextContent(fmt.Sprintf("user %d %s", i, strings.Repeat("a", size)))},
+		utils.Message{Role: "assistant", Content: utils.NewTextContent(fmt.Sprintf("assistant %d %s", i, strings.Repeat("b", size)))},
+	)
+}
+
+// TestTrimTailToFitBudget_HardCap regression test for the context-guard loop
+// "conversation 319ce9283cac61666757b88a" bug. filterCheckpointsForRequest
+// (and the durable LLM-loop compaction) kept 320 msgs / 215888 chars against
+// a 100000-char budget — the coarse backward walk in capTailBudget backs up
+// to a user boundary and its single re-derivation in trimTailToFitBudget
+// re-derived the SAME cut, so the overshoot was never corrected and the
+// preemptive context guard re-fired on every turn. trimTailToFitBudget must
+// now keep dropping the oldest complete turns until the kept suffix actually
+// fits the budget.
+func TestTrimTailToFitBudget_HardCap(t *testing.T) {
+	// 40 turns x 2 msgs x ~10k chars = ~800k chars total — far over any
+	// budget, so the cap MUST trigger and must stop only when fitting.
+	var msgs []utils.Message
+	for i := 0; i < 40; i++ {
+		msgs = buildTurn(msgs, i, 10_000)
+	}
+	budget := 100_000
+
+	got := trimTailToFitBudget(msgs, budget)
+	if len(got) == 0 {
+		t.Fatal("expected a non-empty tail (newest user turn is the floor)")
+	}
+	// The newest user message must always survive.
+	foundNewest := false
+	for _, m := range got {
+		if m.Role == "user" && strings.HasPrefix(m.TextContent(), "user 39 ") {
+			foundNewest = true
+		}
+	}
+	if !foundNewest {
+		t.Fatal("expected the newest user message to be preserved")
+	}
+	// Total kept size must respect the budget (no slack allowance: this is
+	// the hard-cap function itself).
+	total := 0
+	for _, m := range got {
+		total += m.Content.TotalContentChars()
+	}
+	if total > budget {
+		t.Fatalf("kept tail %d chars exceeds budget %d", total, budget)
+	}
+	// Kept tail must start on a user boundary (no orphaned tool results).
+	if got[0].Role != "user" {
+		t.Fatalf("expected kept tail to start with a user message, got %q", got[0].Role)
+	}
+}
+
+// TestTrimTailToFitBudget_SingleTurnOverflow pins the floor behaviour: when
+// the single newest turn already exceeds the whole budget, the function must
+// still keep it (it cannot be dropped without splitting a turn) and return
+// exactly the last complete turn, never nothing and never a partial turn.
+func TestTrimTailToFitBudget_SingleTurnOverflow(t *testing.T) {
+	// Newest turn alone: ~210k chars > 100k budget.
+	var msgs []utils.Message
+	for i := 0; i < 3; i++ {
+		msgs = buildTurn(msgs, i, 10_000) // ~60k
+	}
+	msgs = append(msgs,
+		utils.Message{Role: "user", Content: utils.NewTextContent(strings.Repeat("u", 100_000))},
+		utils.Message{Role: "assistant", Content: utils.NewTextContent(strings.Repeat("a", 110_000))},
+	)
+	got := trimTailToFitBudget(msgs, 100_000)
+	if len(got) < 2 {
+		t.Fatalf("expected at least the full newest turn, got %d msgs", len(got))
+	}
+	if got[0].Role != "user" {
+		t.Fatalf("expected kept tail to start on the newest user message, got %q", got[0].Role)
+	}
+	total := 0
+	for _, m := range got {
+		total += m.Content.TotalContentChars()
+	}
+	if total <= 100_000-10_000 {
+		t.Fatalf("expected the oversized newest turn to be preserved whole (got %d chars)", total)
+	}
+}

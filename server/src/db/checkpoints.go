@@ -3,9 +3,11 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/azukaar/plurality/src/utils"
 )
@@ -27,10 +29,10 @@ const EcoCheckpointToolName = "eco_checkpoint"
 // tool-role result. InsertSeq is the seq of the assistant row (the tool
 // row sits at InsertSeq+1).
 type CheckpointPair struct {
-	AssistantID int64
-	ToolID      int64
+	AssistantID  int64
+	ToolID       int64
 	AssistantSeq int64
-	Summary     string
+	Summary      string
 }
 
 // IsCheckpointMessage reports whether the given message represents one half
@@ -259,4 +261,319 @@ func ReplaceCheckpoint(
 	}
 
 	return tx.Commit()
+}
+
+// --- Durable context compaction ---------------------------------------------
+//
+// CompactConversationDurable physically shrinks a conversation's persisted
+// history when the LLM context window is exhausted, so the shrink survives
+// process restarts and later DB reloads. The previous behavior compacted
+// only the in-memory []utils.Message in the LLM loop; the very next
+// GetConversationByIdInternal reload pulled the full history back from the
+// DB, so every turn re-hit the context-length guard (observed:
+// conversation 319ce9283cac61666757b88a — 839 persisted messages, one
+// checkpoint stuck at seq 154, a fresh "estimated 134k tokens vs 131072"
+// error every turn).
+//
+// Strategy: fold the oldest (len(messages) − keep) messages into the
+// conversation's existing eco checkpoint summary (creating one if none
+// exists), then physically DELETE those rows inside one transaction. The
+// summary input is bounded (see maxDurableSummaryChars below) so a huge
+// history cannot blow the fast model's window; when the summary model call
+// fails we fall back to a bounded raw dump so durable progress is still
+// made. Deleting triggers the FTS and vector cleanup triggers already
+// defined in schema (messages_fts_delete / messages_vec_delete).
+
+const maxDurableSummaryChars = 80_000 // mirrors ai perMsgBudget family; summary input bound
+const durableKeepDefault = 30         // newest messages kept verbatim
+
+// CompactConversationDurable folds the oldest messages of a conversation
+// into its rolling checkpoint summary (creating one if absent) and deletes
+// them from the DB. `messages` must be the conversation's full message list
+// in seq order (as returned by GetConversationByIdInternal). `keep` is the
+// number of newest messages preserved verbatim. `summaryFn` summarises the
+// input text; when it returns an error or empty string a bounded raw dump
+// is stored instead. Returns the number of messages removed.
+func CompactConversationDurable(
+	ctx context.Context,
+	conversationID string,
+	messages []utils.Message,
+	keep int,
+	summaryFn func(text string) (string, error),
+) (int, error) {
+	if keep <= 0 {
+		keep = durableKeepDefault
+	}
+	userID, ok := ctx.Value("userID").(string)
+	if !ok {
+		return 0, errors.New("user ID not found in request context")
+	}
+	d, err := GetUserDB(userID)
+	if err != nil {
+		return 0, err
+	}
+	// Need at least keep+1 non-checkpoint messages to make progress.
+	if len(messages) <= keep+1 {
+		return 0, nil
+	}
+
+	// Locate the current checkpoint pair (assistant half carries the
+	// eco_checkpoint tool call; the tool half carries the summary).
+	var oldToolID int64
+	priorSummary := ""
+	rows, err := d.QueryContext(ctx,
+		`SELECT id, tool_calls FROM messages
+		 WHERE conversation_id = ? AND role = 'assistant' AND tool_calls LIKE ?
+		 ORDER BY seq ASC`, conversationID, "%"+EcoCheckpointToolName+"%")
+	if err != nil {
+		return 0, err
+	}
+	var foundAsstID int64
+	var foundToolCallID string
+	for rows.Next() {
+		var id int64
+		var tcJSON *string
+		if err := rows.Scan(&id, &tcJSON); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		calls := unmarshalToolCalls(tcJSON)
+		for _, tc := range calls {
+			if tc.Function.Name == EcoCheckpointToolName {
+				foundAsstID = id
+				foundToolCallID = tc.ID
+				break
+			}
+		}
+		if foundAsstID != 0 {
+			break
+		}
+	}
+	rows.Close()
+	var pairIDs []int64
+	if foundAsstID != 0 {
+		pairIDs = append(pairIDs, foundAsstID)
+		var tcContent *string
+		err := d.QueryRowContext(ctx,
+			`SELECT id, content FROM messages
+			 WHERE conversation_id = ? AND role = 'tool' AND tool_call_id = ? LIMIT 1`,
+			conversationID, foundToolCallID).Scan(&oldToolID, &tcContent)
+		if err == nil {
+			if oldToolID != 0 {
+				pairIDs = append(pairIDs, oldToolID)
+			}
+			if tcContent != nil {
+				priorSummary = unmarshalMessageContent(tcContent).TextContent()
+			}
+		}
+	}
+
+	// Render the oldest (len(messages)-keep) messages into the summary input.
+	// Walk newest-first with a budget, then reverse for chronological order.
+	var folded []utils.Message
+	budget := maxDurableSummaryChars
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		if IsCheckpointMessage(m) {
+			continue
+		}
+		if i >= len(messages)-keep {
+			continue // newest `keep` stay verbatim, not folded
+		}
+		if budget <= 0 {
+			break
+		}
+		mBytes := m.Content.TotalContentChars()
+		if mBytes > maxDurableSummaryChars {
+			mBytes = maxDurableSummaryChars
+		}
+		if mBytes > budget {
+			continue
+		}
+		budget -= mBytes
+		folded = append(folded, m)
+	}
+	for i, j := 0, len(folded)-1; i < j; i, j = i+1, j-1 {
+		folded[i], folded[j] = folded[j], folded[i]
+	}
+
+	var input strings.Builder
+	if priorSummary != "" {
+		input.WriteString("PRIOR CHECKPOINT:\n")
+		input.WriteString(priorSummary)
+		input.WriteString("\n\nNEW MESSAGES:\n")
+	}
+	writeDurableSummaryText(&input, folded)
+	text := strings.TrimSpace(input.String())
+	if text == "" {
+		return 0, nil
+	}
+
+	summary := ""
+	if summaryFn != nil {
+		summary, err = summaryFn(text)
+		if err != nil {
+			utils.Error("[DurableCompact] summary model call failed — falling back to raw text", err)
+			summary = ""
+		}
+	}
+	if summary == "" {
+		summary = "[compacted by Plurality — summary unavailable; raw excerpt follows]\n" + text
+		if len(summary) > maxDurableSummaryChars {
+			summary = summary[len(summary)-maxDurableSummaryChars:]
+		}
+	}
+	summary = strings.TrimSpace(summary)
+
+	// Resolve DB seq of the first kept (newest `keep` + optional pair) row so
+	// we can delete everything before it. The `messages` slice is seq-ordered;
+	// the first kept message is at index len(messages)-keep (after skipping
+	// checkpoint messages, which the slice includes). Walk the slice to find
+	// the first non-checkpoint message at or after that index, then look up
+	// its seq.
+	firstKeptIdx := len(messages) - keep
+	for firstKeptIdx < len(messages) && IsCheckpointMessage(messages[firstKeptIdx]) {
+		firstKeptIdx++
+	}
+	if firstKeptIdx >= len(messages) {
+		return 0, nil
+	}
+	boundarySeq, err := MessageSeqAt(ctx, conversationID, firstKeptIdx)
+	if err != nil {
+		return 0, err
+	}
+
+	tx, err := d.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	// Delete rows with seq < boundarySeq, preserving the checkpoint pair ids.
+	args := []interface{}{conversationID, boundarySeq}
+	excludeSQL := ""
+	if len(pairIDs) > 0 {
+		ph := strings.Repeat("?,", len(pairIDs))
+		ph = ph[:len(ph)-1]
+		excludeSQL = " AND id NOT IN (" + ph + ")"
+		for _, id := range pairIDs {
+			args = append(args, id)
+		}
+	}
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM messages WHERE conversation_id = ? AND seq < ?`+excludeSQL, args...)
+	if err != nil {
+		return 0, err
+	}
+	removed, _ := res.RowsAffected()
+
+	// Persist the new summary: update the existing tool row, or insert a
+	// fresh checkpoint pair if none existed.
+	if oldToolID != 0 {
+		newContent, _ := json.Marshal(summary)
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE messages SET content = ? WHERE id = ?`, string(newContent), oldToolID); err != nil {
+			return 0, err
+		}
+	} else {
+		// Shift rows >= boundarySeq by +2 and insert a fresh pair at the
+		// boundary, mirroring ReplaceCheckpoint.
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE messages SET seq = -(seq + 2) WHERE conversation_id = ? AND seq >= ?`,
+			conversationID, boundarySeq); err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE messages SET seq = -seq WHERE conversation_id = ? AND seq < 0`,
+			conversationID); err != nil {
+			return 0, err
+		}
+		toolCallID := "eco_" + GenerateID()
+		now := time.Now().Format(time.RFC3339)
+		assistantMsg := utils.Message{
+			Role:      "assistant",
+			Content:   utils.MessageContent{},
+			Timestamp: now,
+			ToolCalls: []utils.ToolCall{{
+				ID:   toolCallID,
+				Type: "function",
+				Function: utils.FunctionCall{
+					Name:      EcoCheckpointToolName,
+					Arguments: "{}",
+				},
+			}},
+		}
+		toolMsg := utils.Message{
+			Role:       "tool",
+			Content:    utils.NewTextContent(summary),
+			ToolCallID: toolCallID,
+			Name:       EcoCheckpointToolName,
+			Timestamp:  now,
+		}
+		if _, err := insertMessage(tx, conversationID, boundarySeq, assistantMsg); err != nil {
+			return 0, err
+		}
+		if _, err := insertMessage(tx, conversationID, boundarySeq+1, toolMsg); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(removed), nil
+}
+
+// writeDurableSummaryText renders a message slice for the durable-compaction
+// summary input (same shape as the eco renderMessagesForSummary output).
+func writeDurableSummaryText(b *strings.Builder, msgs []utils.Message) {
+	for _, m := range msgs {
+		switch m.Role {
+		case "user":
+			b.WriteString("USER:\n")
+			for _, p := range m.ContentParts() {
+				if (p.Type == "text" || p.Type == "snippet") && p.Text != "" {
+					if p.Filename != "" {
+						b.WriteString("[attachment: ")
+						b.WriteString(p.Filename)
+						b.WriteString("]\n")
+					}
+					b.WriteString(p.Text)
+					b.WriteString("\n")
+				}
+			}
+			b.WriteString("\n")
+		case "assistant":
+			b.WriteString("ASSISTANT:\n")
+			for _, p := range m.ContentParts() {
+				if p.Type == "text" && p.Text != "" {
+					b.WriteString(p.Text)
+					b.WriteString("\n")
+				}
+			}
+			for _, tc := range m.ToolCalls {
+				b.WriteString("[tool_call ")
+				b.WriteString(tc.Function.Name)
+				b.WriteString("] args=")
+				b.WriteString(tc.Function.Arguments)
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+		case "tool":
+			name := m.Name
+			if name == "" {
+				name = "tool"
+			}
+			b.WriteString("TOOL_RESULT ")
+			b.WriteString(name)
+			b.WriteString(":\n")
+			for _, p := range m.ContentParts() {
+				if p.Type == "text" && p.Text != "" {
+					b.WriteString(p.Text)
+					b.WriteString("\n")
+				}
+			}
+			b.WriteString("\n")
+		}
+	}
 }
