@@ -37,7 +37,7 @@ class ConversationStorage {
     Hive.registerAdapter(ContentImageURLAdapter());
     Hive.registerAdapter(ContentPartAdapter());
     Hive.registerAdapter(FunctionCallDataAdapter());
-    Hive.registerAdapter(ToolCallDataAdapter());
+    Hive.registerAdapter(ToolCallAdapter());
     Hive.registerAdapter(MessageAdapter());
     Hive.registerAdapter(ConversationAdapter());
     Hive.registerAdapter(AttachmentAdapter());
