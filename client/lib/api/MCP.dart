@@ -195,6 +195,7 @@ class MCPService {
         'MCPService: initMCP() called on ${Platform.operatingSystem} with file: ${mcpFile.path}',
       );
 
+      try {
       if (await mcpFile.exists()) {
         final mcpContent = await mcpFile.readAsString();
         final mcpData = jsonDecode(mcpContent);
@@ -303,6 +304,12 @@ class MCPService {
         await mcpFile.create(recursive: true);
         await mcpFile.writeAsString('{}');
         print('mcp.json file created at ${mcpFile.path}');
+      }
+      } catch (e) {
+        // Never let MCP startup take the app down: a corrupt file or a
+        // blocked helper binary (EDR, group policy, missing runtime) is a
+        // degrade-gracefully situation, not a crash.
+        print('MCPService: initMCP() failed (continuing without MCP): $e');
       }
     }
   }
