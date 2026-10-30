@@ -86,7 +86,6 @@ func dropDanglingToolResults(msgs []utils.Message) []utils.Message {
 	return out
 }
 
-
 // maxCompactMessageChars is the per-message hard bound applied when the
 // in-memory history is compacted for a context-overflow retry. The eco
 // tail-cap uses the same bound so the two paths agree.
@@ -126,4 +125,13 @@ func TruncateOversizedMessages(messages []utils.Message) []utils.Message {
 		out = append(out, m)
 	}
 	return out
+}
+
+// summarizeForCompact produces the checkpoint summary used by the durable
+// context-limit compaction (db.CompactConversationDurable). It runs on the
+// configured fast model (same one the eco checkpoint path uses) so the
+// summary call itself fits comfortably in the fast model's window.
+func summarizeForCompact(text string) (string, error) {
+	textModel, _ := fastShortcutModels()
+	return GenerateCheckpointSummary(text, textModel)
 }

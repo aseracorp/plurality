@@ -45,6 +45,14 @@ func TestFilterRealConversation(t *testing.T) {
 		msgs = append(msgs, m)
 	}
 	t.Logf("loaded %d real messages", len(msgs))
+	// The target conversation may no longer exist in the live DB (it was the
+	// historical "WordPress Security Review" one from the bug report). The
+	// filter logic is pinned by the synthetic regressions; with no data this
+	// test has nothing to verify, so skip instead of failing CI runs that
+	// don't have the old conversation.
+	if len(msgs) == 0 {
+		t.Skip("target conversation dcd29e939307fe63b9f073ef not present in " + dbPath)
+	}
 	defer func() {
 		if r := recover(); r != nil { t.Fatalf("PANIC on real data: %v", r) }
 	}()
