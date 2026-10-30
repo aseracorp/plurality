@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,6 +49,11 @@ func TestRecoverStuckConversationsWaitElapsed(t *testing.T) {
 	}
 	defer testDB.Close()
 	if _, err := testDB.Exec(schema); err != nil {
+		// Schema uses FTS5 + vec0 virtual tables; skip when the driver lacks
+		// those compiled-in modules (portable across minimal builds).
+		if strings.Contains(err.Error(), "no such module") {
+			t.Skipf("sqlite lacks FTS5/vec0 modules: %v", err)
+		}
 		t.Fatalf("schema: %v", err)
 	}
 
@@ -103,6 +109,11 @@ func TestRecoverStuckConversationsWaitPending(t *testing.T) {
 	}
 	defer testDB.Close()
 	if _, err := testDB.Exec(schema); err != nil {
+		// Schema uses FTS5 + vec0 virtual tables; skip when the driver lacks
+		// those compiled-in modules (portable across minimal builds).
+		if strings.Contains(err.Error(), "no such module") {
+			t.Skipf("sqlite lacks FTS5/vec0 modules: %v", err)
+		}
 		t.Fatalf("schema: %v", err)
 	}
 
@@ -154,6 +165,11 @@ func TestRecoverStuckConversationsPlainOrphan(t *testing.T) {
 	}
 	defer testDB.Close()
 	if _, err := testDB.Exec(schema); err != nil {
+		// Schema uses FTS5 + vec0 virtual tables; skip when the driver lacks
+		// those compiled-in modules (portable across minimal builds).
+		if strings.Contains(err.Error(), "no such module") {
+			t.Skipf("sqlite lacks FTS5/vec0 modules: %v", err)
+		}
 		t.Fatalf("schema: %v", err)
 	}
 
@@ -200,6 +216,11 @@ func TestMaybeResumeElapsedWaitNonWaitMessage(t *testing.T) {
 	}
 	defer testDB.Close()
 	if _, err := testDB.Exec(schema); err != nil {
+		// Schema uses FTS5 + vec0 virtual tables; skip when the driver lacks
+		// those compiled-in modules (portable across minimal builds).
+		if strings.Contains(err.Error(), "no such module") {
+			t.Skipf("sqlite lacks FTS5/vec0 modules: %v", err)
+		}
 		t.Fatalf("schema: %v", err)
 	}
 
