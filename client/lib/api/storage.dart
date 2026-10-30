@@ -162,6 +162,57 @@ class ConversationStorage {
     await box.put(conversation.id, conversation);
   }
 
+  /// Merge a server-side message snapshot into the locally cached
+  /// conversation, deduplicating by stable [Message.id].
+  ///
+  /// The server now sends a stable per-message id (messages.id). Legacy
+  /// messages (empty id) fall back to a content+role+timestamp fingerprint.
+  /// Returns the number of messages the server added that were NOT known
+  /// locally — the caller can use that to drive unread counting.
+  static int mergeServerMessages(Conversation local, List<Message> server) {
+    final byKey = <String, Message>{};
+    String keyOf(Message m) {
+      if (m.id != null && m.id!.isNotEmpty) return 'id:${m.id}';
+      // Fallback fingerprint: role + toolCallId (unique per turn) + text.
+      final text = m.textContent;
+      final tc = m.toolCallId ?? '';
+      return 'fp:$tc|${m.role}|${text.hashCode}';
+    }
+
+    for (final m in local.messages) {
+      byKey[keyOf(m)] = m;
+    }
+
+    var newCount = 0;
+    // Server list is authoritative for ordering (seq). Rebuild the merged
+    // list in server order, preferring the local copy of a message when it
+    // exists (it may carry newer local-only bits), otherwise the server's.
+    final merged = <Message>[];
+    for (final sm in server) {
+      final k = keyOf(sm);
+      final existing = byKey[k];
+      if (existing != null && !identical(existing, sm)) {
+        // Local copy wins for same id (keeps any local-only fields).
+        merged.add(existing);
+      } else {
+        merged.add(sm);
+        if (existing == null) newCount++;
+      }
+    }
+    // Append any local-only messages the server does not know yet (e.g. an
+    // optimistic user message still in flight), preserving their relative
+    // order at the tail.
+    final knownServerKeys = server.map(keyOf).toSet();
+    for (final m in local.messages) {
+      if (!knownServerKeys.contains(keyOf(m))) {
+        merged.add(m);
+      }
+    }
+
+    local.messages = merged;
+    return newCount;
+  }
+
   /// Merge server-provided conversation list into local storage.
   /// Web: merge only the lightweight metadata; message histories are fetched
   /// from the server per open and never persisted.
@@ -173,10 +224,14 @@ class ConversationStorage {
       if (_useMetaOnly) {
         conversation = _metaOnly(conversation);
       } else if (box.containsKey(conversation.id)) {
-        // Preserve local messages when the server response has none
-        // (the list endpoint strips messages for efficiency)
         final existing = box.get(conversation.id)!;
-        if (conversation.messages.isEmpty && existing.messages.isNotEmpty) {
+        if (conversation.messages.isEmpty) {
+          // The list endpoint strips messages for efficiency — keep local.
+          conversation.messages = existing.messages;
+        } else if (existing.messages.isNotEmpty) {
+          // Dedupe snapshot against local state; local-only messages are
+          // preserved, server ids stay stable for the unread tracker.
+          mergeServerMessages(existing, conversation.messages);
           conversation.messages = existing.messages;
         }
       }

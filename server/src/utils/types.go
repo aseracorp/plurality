@@ -150,7 +150,12 @@ type ToolCall struct {
 //
 // Content is a MessageContent that is internally always []ContentPart.
 // Use TextContent() and ContentParts() for access.
+// ID is the stable, DB-persisted message identifier (messages.id, exposed as
+// a string). It is NOT sent to LLMs — it exists so clients can dedupe/merge
+// snapshot loads against their local state (see client loadConversation).
+// Legacy rows (pre-ID) fall back to tool_call_id or an empty string on load.
 type Message struct {
+	ID         string         `json:"id,omitempty"`
 	Role       string         `json:"role"` // "system", "user", "assistant", "tool"
 	Content    MessageContent `json:"content,omitempty"`
 	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`   // assistant only

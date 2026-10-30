@@ -589,7 +589,7 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 
 	// Load messages
 	msgRows, err := db.Query(
-		`SELECT role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, prompt_tokens, completion_tokens, response_cost, model
+		`SELECT id, role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, prompt_tokens, completion_tokens, response_cost, model
 		 FROM messages WHERE conversation_id = ? ORDER BY seq`, id,
 	)
 	if err != nil {
@@ -599,6 +599,7 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 
 	for msgRows.Next() {
 		var msg utils.Message
+		var msgID int64
 		var contentJSON *string
 		var toolCallsJSON *string
 		var toolCallID *string
@@ -607,6 +608,7 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 		var modelJSON *string
 
 		err := msgRows.Scan(
+			&msgID,
 			&msg.Role,
 			&contentJSON,
 			&toolCallsJSON,
@@ -635,6 +637,15 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 			msg.Timestamp = *timestamp
 		}
 		msg.Model = unmarshalModel(modelJSON)
+
+		// Expose the stable DB id to clients for dedupe/merge. Fall back to the
+		// tool_call_id for tool messages (legacy rows) — those are still unique
+		// per assistant turn. Non-tool legacy rows keep an empty ID, which the
+		// client treats as "cannot dedupe, append if content differs".
+		msg.ID = fmt.Sprintf("%d", msgID)
+		if msg.ID == "0" || msg.ID == "" {
+			msg.ID = msg.ToolCallID
+		}
 
 		conv.Messages = append(conv.Messages, msg)
 	}

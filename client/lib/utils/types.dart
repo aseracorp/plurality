@@ -205,10 +205,17 @@ class Message {
   @HiveField(10)
   double? responseCost;
 
+  /// Stable server-side message identifier (messages.id as a string), used to
+  /// dedupe/merge snapshot loads against local state. Empty for local-only or
+  /// legacy messages.
+  @HiveField(11)
+  String? id;
+
   Message({
     required this.role,
     required this.content,
     DateTime? timestamp,
+    this.id,
     this.totalTokens,
     this.model,
     this.toolCalls,
@@ -308,6 +315,7 @@ class Message {
     if (completionTokens != null) data['completion_tokens'] = completionTokens;
     if (responseCost != null) data['response_cost'] = responseCost;
     if (model != null) data['model'] = model!.toJson();
+    if (id != null && id!.isNotEmpty) data['id'] = id;
     data['timestamp'] = timestamp.toIso8601String();
 
     return data;
@@ -345,6 +353,7 @@ class Message {
     return Message(
       role: json['role'] ?? 'user',
       content: parsedContent,
+      id: json['id'] as String?,
       toolCalls: toolCalls,
       toolCallId: json['tool_call_id'],
       name: json['name'],
