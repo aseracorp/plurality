@@ -174,9 +174,17 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				after := len(conversation.Messages)
 				utils.Log("[LLMLoop] compacted conversation %s: durable removed %d, in-memory %d -> %d messages", ar.ConversationID, removed, before, after)
 				if after < before || removed > 0 {
+					// Surface an honest notice so a restart/resume never looks
+					// like amnesia: the older messages were folded into the
+					// rolling checkpoint summary, and the live tail was kept
+					// anchored on the most recent user turn.
+					notice := "(The conversation was too long for the model's context window — older messages were folded into a summary and the live tail was kept. Retrying …)"
+					if removed > 0 {
+						notice = fmt.Sprintf("(The conversation was too long for the model's context window — %d older messages were folded into a summary. Retrying …)", removed)
+					}
 					ar.Broadcast(SSEEvent{
 						Type:           "text",
-						Content:        "(The conversation was too long for the model's context window — older messages were compacted. Retrying …)",
+						Content:        notice,
 						ConversationID: ar.ConversationID,
 					})
 					continue

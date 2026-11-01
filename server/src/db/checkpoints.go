@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -368,17 +367,25 @@ func CompactConversationDurable(
 		}
 	}
 
-	// Render the oldest (len(messages)-keep) messages into the summary input.
+	// Turn-anchored keep boundary. The kept window must ALWAYS start on a
+	// user message: the newest user turn is the floor (its in-flight tool
+	// chain stays verbatim), and the previous user turn is included when it
+	// fits within `keep`. Without this, a long tool chain can push the user's
+	// actual ask into the summary and leave a pure tool/assistant wall in
+	// the live tail — exactly the "context lost on restart" shape observed
+	// on conversation e1c3b48c63eb077f0985b83a (100+ assistant/tool pairs
+	// after the checkpoint, zero user messages, so every budgeting pass had
+	// no user anchor and the model lost the thread).
+	firstKeptIdx := turnAnchoredFirstKeptIdx(messages, keep)
+
+	// Render the oldest (firstKeptIdx) messages into the summary input.
 	// Walk newest-first with a budget, then reverse for chronological order.
 	var folded []utils.Message
 	budget := maxDurableSummaryChars
-	for i := len(messages) - 1; i >= 0; i-- {
+	for i := firstKeptIdx - 1; i >= 0; i-- {
 		m := messages[i]
 		if IsCheckpointMessage(m) {
 			continue
-		}
-		if i >= len(messages)-keep {
-			continue // newest `keep` stay verbatim, not folded
 		}
 		if budget <= 0 {
 			break
@@ -425,13 +432,10 @@ func CompactConversationDurable(
 	}
 	summary = strings.TrimSpace(summary)
 
-	// Resolve DB seq of the first kept (newest `keep` + optional pair) row so
-	// we can delete everything before it. The `messages` slice is seq-ordered;
-	// the first kept message is at index len(messages)-keep (after skipping
-	// checkpoint messages, which the slice includes). Walk the slice to find
-	// the first non-checkpoint message at or after that index, then look up
-	// its seq.
-	firstKeptIdx := len(messages) - keep
+	// Resolve DB seq of the first kept row so we can delete everything before
+	// it. The `messages` slice is seq-ordered; the first kept message is at
+	// the turn-anchored firstKeptIdx computed above. Skip any checkpoint
+	// messages (the slice includes the pair), then look up its seq.
 	for firstKeptIdx < len(messages) && IsCheckpointMessage(messages[firstKeptIdx]) {
 		firstKeptIdx++
 	}
@@ -467,61 +471,131 @@ func CompactConversationDurable(
 	}
 	removed, _ := res.RowsAffected()
 
-	// Persist the new summary: update the existing tool row, or insert a
-	// fresh checkpoint pair if none existed.
-	if oldToolID != 0 {
-		newContent, _ := json.Marshal(summary)
+	// Persist the new summary by MOVING the checkpoint forward: delete the
+	// old pair (if any) and insert a fresh pair at the boundary, mirroring
+	// ReplaceCheckpoint. The previous behaviour updated the existing tool row
+	// IN PLACE, which froze the checkpoint at its original seq while the live
+	// tail grew behind it — after a restart the tail had no user anchor and
+	// the rolling summary never advanced (observed: conversation
+	// e1c3b48c63eb077f0985b83a, checkpoint stuck at seq 119/120 while 100+
+	// pure tool/assistant messages piled up behind it, so every turn
+	// re-compacted the same stuck boundary and the model lost the thread).
+	if len(pairIDs) > 0 {
+		placeholders := strings.Repeat("?,", len(pairIDs))
+		placeholders = placeholders[:len(placeholders)-1]
+		args := make([]interface{}, 0, len(pairIDs)+1)
+		args = append(args, conversationID)
+		for _, id := range pairIDs {
+			args = append(args, id)
+		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE messages SET content = ? WHERE id = ?`, string(newContent), oldToolID); err != nil {
+			fmt.Sprintf(`DELETE FROM messages WHERE conversation_id = ? AND id IN (%s)`, placeholders),
+			args...); err != nil {
 			return 0, err
 		}
-	} else {
-		// Shift rows >= boundarySeq by +2 and insert a fresh pair at the
-		// boundary, mirroring ReplaceCheckpoint.
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE messages SET seq = -(seq + 2) WHERE conversation_id = ? AND seq >= ?`,
-			conversationID, boundarySeq); err != nil {
-			return 0, err
-		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE messages SET seq = -seq WHERE conversation_id = ? AND seq < 0`,
-			conversationID); err != nil {
-			return 0, err
-		}
-		toolCallID := "eco_" + GenerateID()
-		now := time.Now().Format(time.RFC3339)
-		assistantMsg := utils.Message{
-			Role:      "assistant",
-			Content:   utils.MessageContent{},
-			Timestamp: now,
-			ToolCalls: []utils.ToolCall{{
-				ID:   toolCallID,
-				Type: "function",
-				Function: utils.FunctionCall{
-					Name:      EcoCheckpointToolName,
-					Arguments: "{}",
-				},
-			}},
-		}
-		toolMsg := utils.Message{
-			Role:       "tool",
-			Content:    utils.NewTextContent(summary),
-			ToolCallID: toolCallID,
-			Name:       EcoCheckpointToolName,
-			Timestamp:  now,
-		}
-		if _, err := insertMessage(tx, conversationID, boundarySeq, assistantMsg); err != nil {
-			return 0, err
-		}
-		if _, err := insertMessage(tx, conversationID, boundarySeq+1, toolMsg); err != nil {
-			return 0, err
-		}
+	}
+	// Shift rows >= boundarySeq by +2 and insert a fresh pair at the
+	// boundary, mirroring ReplaceCheckpoint. Done in two passes via negation
+	// so the (conversation_id, seq) UNIQUE constraint is never transiently
+	// violated mid-update.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE messages SET seq = -(seq + 2) WHERE conversation_id = ? AND seq >= ?`,
+		conversationID, boundarySeq); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE messages SET seq = -seq WHERE conversation_id = ? AND seq < 0`,
+		conversationID); err != nil {
+		return 0, err
+	}
+	toolCallID := "eco_" + GenerateID()
+	now := time.Now().Format(time.RFC3339)
+	assistantMsg := utils.Message{
+		Role:      "assistant",
+		Content:   utils.MessageContent{},
+		Timestamp: now,
+		ToolCalls: []utils.ToolCall{{
+			ID:   toolCallID,
+			Type: "function",
+			Function: utils.FunctionCall{
+				Name:      EcoCheckpointToolName,
+				Arguments: "{}",
+			},
+		}},
+	}
+	toolMsg := utils.Message{
+		Role:       "tool",
+		Content:    utils.NewTextContent(summary),
+		ToolCallID: toolCallID,
+		Name:       EcoCheckpointToolName,
+		Timestamp:  now,
+	}
+	if _, err := insertMessage(tx, conversationID, boundarySeq, assistantMsg); err != nil {
+		return 0, err
+	}
+	if _, err := insertMessage(tx, conversationID, boundarySeq+1, toolMsg); err != nil {
+		return 0, err
 	}
 
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	return int(removed), nil
+}
+
+// turnAnchoredFirstKeptIdx computes the slice index where the kept window
+// starts so the live tail is always anchored on a complete user turn.
+//
+//   - The newest user message and everything after it (its in-flight turn)
+//     are ALWAYS kept — the floor. A tail that starts mid-turn orphans tool
+//     results whose parent assistant call was cut and gives the model no
+//     request to answer.
+//   - The previous user turn is included when it fits within `keep`
+//     messages, so the model also sees the turn that led into the current
+//     one. `keep` remains a soft upper bound on the window, not a hard
+//     message count: when the newest user turn alone is longer than `keep`
+//     messages (a long tool chain), the whole turn is kept anyway — a
+//     coherent tail beats a fixed count.
+//   - Conversations with NO user message at all (pure background-agent
+//     tool loops) fall back to the newest `keep` messages, but never
+//     starting on a "tool" row: the window is pushed forward to the first
+//     assistant boundary so the model still sees a complete turn head.
+func turnAnchoredFirstKeptIdx(messages []utils.Message, keep int) int {
+	n := len(messages)
+	if n == 0 {
+		return 0
+	}
+	// Floor: the newest user message and its in-flight turn.
+	floor := n - 1
+	for floor > 0 && messages[floor].Role != "user" {
+		floor--
+	}
+	if messages[floor].Role == "user" {
+		// Keep the previous user turn too when it fits within the window
+		// (the floor itself is at the very start of the slice, so there is
+		// no previous turn to include).
+		prev := floor - 1
+		for prev > 0 && messages[prev].Role != "user" {
+			prev--
+		}
+		if prev >= 0 && messages[prev].Role == "user" && floor-prev <= keep {
+			return prev
+		}
+		return floor
+	}
+	// No user message anywhere: fall back to the newest `keep` messages but
+	// never start on a tool row (that would orphan its parent call).
+	start := n - keep
+	if start < 0 {
+		start = 0
+	}
+	for start < n && messages[start].Role == "tool" {
+		start++
+	}
+	if start >= n {
+		start = n - 1
+	}
+	return start
 }
 
 // writeDurableSummaryText renders a message slice for the durable-compaction

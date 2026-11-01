@@ -370,3 +370,58 @@ func TestTrimTailToFitBudget_SingleTurnOverflow(t *testing.T) {
 		t.Fatalf("expected the oversized newest turn to be preserved whole (got %d chars)", total)
 	}
 }
+
+// TestTrimTailToFitBudget_NoUserTailAfterCheckpoint is the regression test
+// for the "context lost on restart" shape: a conversation tail that
+// contains ONLY assistant/tool messages after the last checkpoint (a
+// background-agent tool loop with the user ask already folded away). The
+// budget walker must NEVER hand the model a window that starts mid-turn on
+// a tool row — otherwise the tool_calls/result pairing is broken and the
+// model has no request to answer. When there is no user message at all the
+// floor is index 0, so the function must keep the whole tail (nothing can
+// be dropped without orphaning the first turn) rather than emit a dangling
+// tool result.
+func TestTrimTailToFitBudget_NoUserTailAfterCheckpoint(t *testing.T) {
+	// 10 assistant/tool pairs, no user anywhere.
+	var msgs []utils.Message
+	for i := 0; i < 10; i++ {
+		msgs = append(msgs, mkMsg("assistant", fmt.Sprintf("call %d", i), ""))
+		msgs = append(msgs, mkMsg("tool", strings.Repeat("t", 500), "system_tools__shell_exec"))
+	}
+	// Tiny budget: nothing can be dropped without orphaning the head turn.
+	out := trimTailToFitBudget(msgs, 1_000)
+	if len(out) == 0 {
+		t.Fatal("expected a non-empty tail")
+	}
+	if out[0].Role == "tool" {
+		t.Fatalf("kept tail starts on a tool row (orphaned parent assistant call): %q", out[0].Role)
+	}
+	// With no user message the floor is the very start: the whole tail must
+	// survive (dropping would break the first assistant/tool pair).
+	if len(out) != len(msgs) {
+		t.Fatalf("expected the whole no-user tail to be kept (floor=0), got %d of %d", len(out), len(msgs))
+	}
+}
+
+// TestFilterCheckpointsForRequest_NoUserTailAfterCheckpoint pins that the
+// eco in-memory filter also survives a checkpoint followed only by
+// assistant/tool messages (no user turn): it must return a non-empty,
+// non-tool-headed window and never panic (this is the shape that used to
+// feed the durable-compaction loop on conversation e1c3b48c63eb077f0985b83a).
+func TestFilterCheckpointsForRequest_NoUserTailAfterCheckpoint(t *testing.T) {
+	msgs := []utils.Message{
+		checkpointMsg(),
+		toolMsg(),
+	}
+	for i := 0; i < 12; i++ {
+		msgs = append(msgs, mkMsg("assistant", fmt.Sprintf("call %d", i), ""))
+		msgs = append(msgs, mkMsg("tool", strings.Repeat("y", 2_000), "system_tools__shell_exec"))
+	}
+	out := filterCheckpointsForRequest(msgs, true, 65_536)
+	if len(out) == 0 {
+		t.Fatal("expected a non-empty window")
+	}
+	if out[0].Role == "tool" {
+		t.Fatalf("window starts on a tool row (orphaned parent call): %q", out[0].Role)
+	}
+}
