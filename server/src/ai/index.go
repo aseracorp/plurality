@@ -222,10 +222,22 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 
 	utils.Debug("A new chat request is being made with the following model: %s", model.Name)
 
-	jsonData, err := json.Marshal(requestData)
-	if err != nil {
+	// Marshal WITHOUT HTML escaping. The default json.Marshal escapes &, <,
+	// > and all non-ASCII to \uXXXX, which inflates code-heavy tool results
+	// (shell commands full of &&, unicode, quotes) 3-6x between the
+	// budgeted character count and the actual wire bytes — that inflation
+	// made the preemptive guard false-positive on every turn and drove the
+	// destructive durable-compaction loop (observed: conversation
+	// e1c3b48c63eb077f0985b83a, a ~100k-char capped tail marshalling to
+	// ~500KB / ~126k tokens against a 131072 window). The wire bytes are
+	// what the provider counts, so measure them faithfully.
+	var jsonBuf bytes.Buffer
+	enc := json.NewEncoder(&jsonBuf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(requestData); err != nil {
 		return nil, 0, err
 	}
+	jsonData := jsonBuf.Bytes()
 
 	// Preemptive context-window guard. The provider's 500 body is often a
 	// bare "Internal Server Error" with the real reason only in LiteLLM's
@@ -237,9 +249,14 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// an error the loop's context-length path recognizes so it compacts
 	// the history and retries instead of shipping an oversized request.
 	if windowTokens > 0 {
-		// ~4 chars per token for JSON. The marshalled request includes the
-		// full message content, tool schemas and any re-inflated images.
-		estTokens := len(jsonData) / 4
+		// ~3 chars per token for JSON: tool results and shell/file dumps are
+		// far denser than prose (~2.5-3.5 chars/token), and the marshalled
+		// request now carries the true unescaped wire bytes (message content,
+		// tool schemas, re-inflated images). 4 chars/token under-estimated
+		// dense code and over-estimated escaped text; 3.0 sits in the middle
+		// of the observed density band so the guard fires only when the
+		// request genuinely risks the window.
+		estTokens := len(jsonData) / 3
 		// Keep room for the model's answer: max_tokens (4096) + safety.
 		const replyReserve = 4096 + 2048
 		if estTokens > windowTokens-replyReserve {
