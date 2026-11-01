@@ -127,16 +127,19 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		systemPrompt += "\n\nThis is your important_memory snippet, you can edit it further but keep it compact:\n```\n" + memory.Get(username) + "\n```"
 	}
 
+	// The system prompt ends with a coarse, minute-resolution timestamp
+	// (not time.Now().String(), which carries nanoseconds and a monotonic
+	// clock component and therefore differs on EVERY request). The token
+	// prefix of the system prompt is what llama.cpp/strata use to match the
+	// KV prompt cache across turns of a conversation: any change in the
+	// first tokens forces a full re-prefill. A minute-resolution timestamp
+	// keeps the prefix byte-stable within a minute, so consecutive turns of
+	// the same conversation hit the cache (+~99% prefill savings) instead of
+	// recomputing the whole context on every request.
 	systemMsg := utils.Message{
 		Role: "system",
 		Content: utils.NewTextContent(systemPrompt +
-			time.Now().String() +
-			" on " +
-			strconv.Itoa(time.Now().Day()) +
-			"/" +
-			strconv.Itoa(int(time.Now().Month())) +
-			"/" +
-			strconv.Itoa(time.Now().Year()) +
+			time.Now().Format("2006-01-02 15:04") +
 			webhookExtSuffix() +
 			portExtSuffix()),
 	}
