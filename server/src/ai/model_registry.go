@@ -408,6 +408,16 @@ func parseCavemanSettings(raw json.RawMessage) CavemanSettings {
 	if f.Enabled != nil {
 		out.Enabled = *f.Enabled
 	}
+	if f.Stones == nil && out.Enabled {
+		// Backwards compatible: a bare `caveman: true` (or any enabled dict
+		// without a stones block) means "enabled with DEFAULT settings", i.e.
+		// all stones that are safe-by-default on. Without this the enabled
+		// flag alone yields an all-false stone set, so optimizationOwners
+		// never hands caveman content ownership and the proxy is bypassed
+		// even though the operator enabled it (the live bug this fixes).
+		out.Stones = CavemanStones{SayLess: true, ReadLess: true, Auto: true, Blocks: true, WasteFixes: true, Browse: true}
+		return out
+	}
 	if f.Stones != nil {
 		st := CavemanStones{}
 		if f.Stones.SayLess != nil {
