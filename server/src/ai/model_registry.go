@@ -64,7 +64,14 @@ type ModelEntry struct {
 	Mode                    string // chat | image_generation | image_edit | audio_speech | audio_transcription | embedding
 	SupportsVision          bool
 	SupportsFunctionCalling bool
-// MaxContextTokens is the model's context window in tokens, as declared
+	// Headroom routes this model's chat completions through the in-container
+	// Headroom optimization proxy. Set per model via model_info.headroom:
+	// true in litellm_config.yaml (surfaced here through /v1/models).
+	// Defaults to false — every other model talks to LiteLLM directly,
+	// byte-for-byte untouched.
+	Headroom bool
+
+	// MaxContextTokens is the model's context window in tokens, as declared
 	// in litellm_config.yaml model_info.context_window and surfaced by the
 	// proxy on /v1/models. Zero means "unknown" — callers should fall back
 	// to the configured eco trigger rather than assume a window.
@@ -88,7 +95,8 @@ type litellmModelEntry struct {
 	Mode                    string `json:"mode"`
 	SupportsVision          bool   `json:"supports_vision"`
 	SupportsFunctionCalling bool   `json:"supports_function_calling"`
-MaxContextTokens        int    `json:"context_window"`
+	Headroom                bool   `json:"headroom"`
+	MaxContextTokens        int    `json:"context_window"`
 }
 
 type litellmModelList struct {
@@ -134,7 +142,8 @@ func (r *ModelRegistry) Refresh(ctx context.Context) error {
 			Mode:                    m.Mode,
 			SupportsVision:          m.SupportsVision,
 			SupportsFunctionCalling: m.SupportsFunctionCalling,
-MaxContextTokens:        m.MaxContextTokens,
+			Headroom:                m.Headroom,
+			MaxContextTokens:        m.MaxContextTokens,
 		}
 		byName[m.ID] = entry
 		list = append(list, entry)
