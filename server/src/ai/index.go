@@ -130,19 +130,22 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		systemPrompt += "\n\nThis is your important_memory snippet, you can edit it further but keep it compact:\n```\n" + memory.Get(username) + "\n```"
 	}
 
-	// The system prompt ends with a coarse, minute-resolution timestamp
-	// (not time.Now().String(), which carries nanoseconds and a monotonic
-	// clock component and therefore differs on EVERY request). The token
-	// prefix of the system prompt is what llama.cpp/strata use to match the
-	// KV prompt cache across turns of a conversation: any change in the
-	// first tokens forces a full re-prefill. A minute-resolution timestamp
-	// keeps the prefix byte-stable within a minute, so consecutive turns of
-	// the same conversation hit the cache (+~99% prefill savings) instead of
-	// recomputing the whole context on every request.
+	// The system prompt is kept BYTE-STABLE across turns: no timestamp is
+	// appended here. KV prompt caching (llama.cpp/avalon/strata) matches the
+	// longest common PREFIX of the previous request's token stream — any
+	// change in the first tokens (even a single byte) forces a full
+	// re-prefill of the whole conversation on every turn. A dynamic
+	// timestamp (especially upstream's time.Now().String(), which carries
+	// nanoseconds + a monotonic clock component) is the #1 cache killer: it
+	// lives near the top of the system prompt, so NO two consecutive turns
+	// ever share a byte-identical prefix. The current time is instead
+	// appended as a SEPARATE tiny message at the very END of the request
+	// (see below), so the stable prefix (system prompt + full conversation
+	// history) is reused across turns and only a handful of tail tokens are
+	// (re-)processed.
 	systemMsg := utils.Message{
 		Role: "system",
 		Content: utils.NewTextContent(systemPrompt +
-			time.Now().Format("2006-01-02 15:04") +
 			webhookExtSuffix() +
 			portExtSuffix()),
 	}
@@ -224,7 +227,53 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	}
 
 	msgReqList, _ := convertMessagesToOpenAI(optimizedMessages, model)
+
+	// Append the current time as a tiny FINAL message at the END of the
+	// request. The system prompt (above) stays byte-stable across turns, so
+	// llama.cpp/avalon reuse the KV cache for the system prompt + the whole
+	// conversation history and only (re-)process the few tokens of this
+	// trailing message + the model's reply. This is what makes prompt
+	// caching actually work for a long-lived agent loop: consecutive turns
+	// share a byte-identical prefix.
 	requestData.Messages = msgReqList
+	// The current time as a trailing user-role message. It sits at the very
+	// END of the request, so the shared prefix (system prompt + full
+	// history) is byte-identical across turns and fully cacheable. Only a
+	// handful of tail tokens change per turn. A dedicated message (rather
+	// than text appended to the last user message) keeps the prefix stable
+	// even when the last user message is unchanged.
+	requestData.Messages = append(requestData.Messages, StandardMessageReq{
+		Role:    "user",
+		Content: "The current time is " + time.Now().Format("2006-01-02 15:04"),
+	})
+
+	// Prompt caching for self-hosted (llama.cpp/avalon/strata) backends.
+	// Prompt caching for ALL models (local AND cloud). Sending
+	// cache_prompt=true asks the backend (llama.cpp/avalon, or a cloud
+	// provider that supports KV caching) to reuse the longest common prefix
+	// of the previous request's KV cache — which covers the byte-stable
+	// system prompt (sorted MCP descriptions, stable important_memory) AND
+	// the chat history that is unchanged since the previous turn. Cloud
+	// providers ignore or honor cache_prompt as they see fit; the
+	// header/body passthrough is harmless when unsupported.
+	cp := true
+	requestData.CachePrompt = &cp
+	// Keep the ENTIRE prefix (all tokens) so the cache grows dynamically
+	// with our conversations — NOT a static budget. We send n_keep=-1,
+	// which llama.cpp documents as "retain ALL tokens from the prompt".
+	// Combined with cache_prompt=true this makes llama.cpp reuse the longest
+	// common prefix with the previous request's KV cache regardless of
+	// whether the conversation is 30k or 200k tokens: only the newly-added
+	// tail is (re-)processed. A static n_keep (e.g. 4096 or 32768) would
+	// cap how much of the prefix is preserved — useless for long sessions —
+	// and the old avalon default --keep 4096 silently dropped all but the
+	// first 4k tokens of the stable system prefix, forcing a full re-prefill
+	// every turn. n_keep=-1 is the "grow with the conversation" mode.
+	requestData.NKeep = nil
+	if modelRequiresSerialization(model) {
+		nk := -1 // keep all prefix tokens (dynamic, grows with context)
+		requestData.NKeep = &nk
+	}
 
 	// Prompt caching for self-hosted (llama.cpp/avalon/strata) backends.
 	// Prompt caching for ALL models (local AND cloud). Sending
