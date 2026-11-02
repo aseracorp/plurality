@@ -40,12 +40,12 @@ func clientToolIsAdvertised(name string, clientSideTools []utils.FunctionToolsRe
 // regardless of the per-model tool picker (or that are gated by separate
 // context flags), so their execution is never blocked by the enablement check.
 var alwaysEnabledServerTools = map[string]bool{
-	ai_tools.WaitToolID:             true,
-	ai_tools.NotifyToolID:           true,
-	"conversation_attachments":      true,
-	"read_document":                 true,
-	"search_document":               true,
-	"retrieve_server_skill":         true,
+	ai_tools.WaitToolID:        true,
+	ai_tools.NotifyToolID:      true,
+	"conversation_attachments": true,
+	"read_document":            true,
+	"search_document":          true,
+	"retrieve_server_skill":    true,
 }
 
 // isToolEnabled reports whether the conversation's model selection enables the
@@ -186,7 +186,10 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		ar.ResetBuffer()
 		ar.BroadcastStatus("typing", "")
 		utils.Log("[LLMLoop] Calling LLM with model %s", model.Name)
-		response, _, err := SendChatCompletion(ar.Ctx, model, conversation, payload)
+		response, estTokens, err := SendChatCompletion(ar.Ctx, model, conversation, payload)
+		if estTokens > 0 {
+			ar.CompressEstimate = estTokens
+		}
 		if err != nil {
 			if ar.Ctx.Err() != nil {
 				ar.flushPartialResponse(ctx, conversation)

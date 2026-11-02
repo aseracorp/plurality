@@ -211,6 +211,12 @@ class Message {
   @HiveField(11)
   String? id;
 
+  /// Est. pre-compression prompt tokens / provider prompt tokens for this
+  /// message. >1 means a Headroom/Caveman proxy reduced the prompt (e.g. 3.2 =
+  /// the model read ~3.2x fewer tokens). 0/absent = no compression observed.
+  @HiveField(12)
+  double? compressionRatio;
+
   Message({
     required this.role,
     required this.content,
@@ -224,6 +230,7 @@ class Message {
     this.promptTokens,
     this.completionTokens,
     this.responseCost,
+    this.compressionRatio,
   }) : timestamp = timestamp ?? DateTime.now();
 
   bool get isBot => role == 'assistant';
@@ -314,6 +321,9 @@ class Message {
     if (promptTokens != null) data['prompt_tokens'] = promptTokens;
     if (completionTokens != null) data['completion_tokens'] = completionTokens;
     if (responseCost != null) data['response_cost'] = responseCost;
+    if (compressionRatio != null && compressionRatio! > 0) {
+      data['compression_ratio'] = compressionRatio;
+    }
     if (model != null) data['model'] = model!.toJson();
     if (id != null && id!.isNotEmpty) data['id'] = id;
     data['timestamp'] = timestamp.toIso8601String();
@@ -361,6 +371,7 @@ class Message {
       promptTokens: json['prompt_tokens'],
       completionTokens: json['completion_tokens'],
       responseCost: (json['response_cost'] as num?)?.toDouble(),
+      compressionRatio: (json['compression_ratio'] as num?)?.toDouble(),
       model: json['model'] != null ? Model.fromJson(json['model']) : null,
       timestamp:
           json['timestamp'] != null

@@ -126,6 +126,7 @@ func (sp *StreamProcessor) broadcastText(content string) {
 		PromptTokens:     sp.request.PromptTokens,
 		CompletionTokens: sp.request.CompletionTokens,
 		ResponseCost:     sp.request.ResponseCost,
+		CompressionRatio: sp.request.CompressionRatio,
 		Title:            sp.conversation.Title,
 	})
 }
@@ -331,6 +332,7 @@ func (sp *StreamProcessor) buildAssistantMessage() utils.Message {
 		PromptTokens:     sp.request.PromptTokens,
 		CompletionTokens: sp.request.CompletionTokens,
 		ResponseCost:     sp.request.ResponseCost,
+		CompressionRatio: sp.request.CompressionRatio,
 		Model:            sp.model,
 	}
 
@@ -396,6 +398,19 @@ func (sp *StreamProcessor) buildAssistantMessage() utils.Message {
 // retry has nothing to roll back.
 func (sp *StreamProcessor) finalizeStream(ctx context.Context) utils.Message {
 	sp.request.TokenUsage = sp.request.PromptTokens + sp.request.CompletionTokens
+
+	// Compute this turn's real compression ratio: pre-proxy estimated prompt
+	// tokens (SendChatCompletion) vs the provider's post-compression
+	// prompt_tokens. This is what Headroom/Caveman actually saved over the
+	// wire for this request. Feed it into the rolling per-model factor used
+	// by the eco guard, and persist it on the message for the UI.
+	if est := sp.request.CompressEstimate; est > 0 && sp.request.PromptTokens > 0 {
+		ratio := float64(est) / float64(sp.request.PromptTokens)
+		if ratio > 1.0 {
+			sp.request.CompressionRatio = ratio
+			RecordCompression(sp.model.Name, est, sp.request.PromptTokens)
+		}
+	}
 
 	message := sp.buildAssistantMessage()
 

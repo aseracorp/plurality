@@ -36,6 +36,70 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool hasUpdate = false;
   SecurityStatus? _securityStatus;
 
+  /// Sums this conversation's totals from its persisted messages and shows
+  /// them in a dialog: input/output/total tokens, cost, and how much
+  /// Headroom/Caveman compression reduced the prompts.
+  void _showConversationInfo(BuildContext context) {
+    final conv = selectedConv;
+    if (conv == null) return;
+
+    int inTok = 0, outTok = 0, totTok = 0, compressedMsgs = 0;
+    double cost = 0;
+    for (final m in conv.messages) {
+      inTok += m.promptTokens ?? 0;
+      outTok += m.completionTokens ?? 0;
+      totTok += m.totalTokens ?? 0;
+      cost += m.responseCost ?? 0;
+      final cr = m.compressionRatio;
+      if (cr != null && cr > 1.01) compressedMsgs++;
+    }
+    if (totTok == 0) totTok = inTok + outTok;
+
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Conversation Information'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Messages: ${conv.messages.length}',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Text('Input tokens: $inTok'),
+              Text('Output tokens: $outTok'),
+              Text('Total tokens: $totTok'),
+              if (cost > 0) ...[
+                const SizedBox(height: 8),
+                Text('Cost: \$${cost.toStringAsFixed(4)}'),
+              ],
+              if (compressedMsgs > 0) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Compression:',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                Text(
+                  '$compressedMsgs of ${conv.messages.length} messages '
+                  'compressed by Headroom/Caveman',
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   // Extract the model selection logic to a separate method
   void _updateTitle() {
     final conversationsState = ref.read(conversationsProvider);
@@ -322,6 +386,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       },
                     ),
                     actions: [
+                      if (selectedConv != null)
+                        IconButton(
+                          tooltip: 'conversation info',
+                          icon: const Icon(Icons.info_outline),
+                          onPressed: () => _showConversationInfo(context),
+                        ),
                       if (selectedConv != null)
                         ConversationItem(
                           conversation: selectedConv!,

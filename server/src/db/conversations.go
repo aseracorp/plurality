@@ -498,8 +498,8 @@ func DeleteAllConversations(ctx context.Context, userID string) (int64, error) {
 // Returns the auto-incremented message ID.
 func insertMessage(tx *sql.Tx, conversationID string, seq int64, msg utils.Message) (int64, error) {
 	res, err := tx.Exec(
-		`INSERT INTO messages (conversation_id, seq, role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, prompt_tokens, completion_tokens, response_cost, model)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages (conversation_id, seq, role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, prompt_tokens, completion_tokens, response_cost, compression_ratio, model)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		conversationID,
 		seq,
 		msg.Role,
@@ -512,6 +512,7 @@ func insertMessage(tx *sql.Tx, conversationID string, seq int64, msg utils.Messa
 		msg.PromptTokens,
 		msg.CompletionTokens,
 		msg.ResponseCost,
+		msg.CompressionRatio,
 		marshalModel(msg.Model),
 	)
 	if err != nil {
@@ -617,7 +618,7 @@ func getConversationFromDB(db *sql.DB, id string, includeCompacted bool) (*utils
 		compactedFilter = " AND compacted = 0"
 	}
 	msgRows, err := db.Query(
-		`SELECT id, role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, prompt_tokens, completion_tokens, response_cost, model
+		`SELECT id, role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, prompt_tokens, completion_tokens, response_cost, compression_ratio, model
 		 FROM messages WHERE conversation_id = ?`+compactedFilter+` ORDER BY seq`, id,
 	)
 	if err != nil {
@@ -647,6 +648,7 @@ func getConversationFromDB(db *sql.DB, id string, includeCompacted bool) (*utils
 			&msg.PromptTokens,
 			&msg.CompletionTokens,
 			&msg.ResponseCost,
+			&msg.CompressionRatio,
 			&modelJSON,
 		)
 		if err != nil {

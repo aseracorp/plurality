@@ -17,6 +17,7 @@ class SSEEvent {
   final int? promptTokens;
   final int? completionTokens;
   final double? responseCost;
+  final double? compressionRatio;
   final String? title;
   /// Conversation's current per-conversation settings snapshot, stamped by
   /// the server on `tool_use` events (so other connected clients see the
@@ -40,6 +41,7 @@ class SSEEvent {
     this.promptTokens,
     this.completionTokens,
     this.responseCost,
+    this.compressionRatio,
     this.title,
     this.modelSelected,
   });
@@ -63,6 +65,7 @@ class SSEEvent {
       promptTokens: json['prompt_tokens'],
       completionTokens: json['completion_tokens'],
       responseCost: (json['response_cost'] as num?)?.toDouble(),
+      compressionRatio: (json['compression_ratio'] as num?)?.toDouble(),
       title: json['title'],
       modelSelected: json['model_selected'] != null
           ? ModelSelected.fromJson(

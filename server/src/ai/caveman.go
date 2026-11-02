@@ -369,3 +369,54 @@ func cavemanDataDir() string {
 	}
 	return filepath.Join(filepath.Dir(os.Args[0]), "data", "caveman")
 }
+
+// ---- per-model compression factor (rolling) ----
+//
+// The preemptive eco guard in SendChatCompletion estimates tokens from the
+// pre-proxy marshalled request. For models routed through Headroom/Caveman
+// the provider actually sees fewer tokens, so the guard would fire too early
+// and force compaction it does not need. We keep a small rolling average of
+// each model's observed compression ratio (pre-proxy estimate / provider
+// prompt_tokens) and discount the guard estimate with it.
+
+var (
+	compressFactorMu    sync.Mutex
+	compressFactorByMod = map[string]float64{} // model name -> rolling ratio
+)
+
+// RecordCompression feeds one observed turn's ratio (estUncompressed /
+// providerPromptTokens) into the rolling per-model factor. Ignored unless
+// the ratio is meaningfully >1 (a proxy is actually compressing) and bounded
+// to a sane range (1.0..50.0) so a single bad sample can't skew the guard.
+func RecordCompression(modelName string, estUncompressed, providerPromptTokens int) {
+	if modelName == "" || estUncompressed <= 0 || providerPromptTokens <= 0 {
+		return
+	}
+	ratio := float64(estUncompressed) / float64(providerPromptTokens)
+	if ratio < 1.01 || ratio > 50 {
+		return
+	}
+	compressFactorMu.Lock()
+	defer compressFactorMu.Unlock()
+	if prev, ok := compressFactorByMod[modelName]; ok && prev > 0 {
+		// EMA with alpha=0.3: recent turns matter more, but a model that
+		// stops routing through a proxy recovers back toward 1.0 gradually.
+		compressFactorByMod[modelName] = 0.7*prev + 0.3*ratio
+	} else {
+		compressFactorByMod[modelName] = ratio
+	}
+}
+
+// CompressionFactor returns the rolling compression factor for a model
+// (>1 = a Headroom/Caveman proxy is actively reducing prompt tokens).
+// Returns 1.0 when nothing has been observed. The factor is only used to
+// relax the eco guard's pre-compression estimate, never to loosen other
+// window math, so a 1.0 fallback is the conservative default.
+func CompressionFactor(modelName string) float64 {
+	compressFactorMu.Lock()
+	defer compressFactorMu.Unlock()
+	if f, ok := compressFactorByMod[modelName]; ok && f > 1.0 {
+		return f
+	}
+	return 1.0
+}
