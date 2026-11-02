@@ -13,7 +13,7 @@ import (
 // synthetic assistant message whose only tool call is the checkpoint tool.
 func checkpointMsg() utils.Message {
 	return utils.Message{
-		Role: "assistant",
+		Role:    "assistant",
 		Content: utils.MessageContent{},
 		ToolCalls: []utils.ToolCall{{
 			ID:   "eco_regression",
@@ -248,7 +248,6 @@ func TestCompactConversationForContext_TruncatesOversizedMessage(t *testing.T) {
 	}
 }
 
-
 // TestFilterCheckpointsForRequest_TruncatesOversizedMultipartMessage guards
 // the case TextContent() misses: a multi-part tool result whose FIRST part
 // is a short preamble and whose LATER text part carries a multi-MB blob.
@@ -423,5 +422,53 @@ func TestFilterCheckpointsForRequest_NoUserTailAfterCheckpoint(t *testing.T) {
 	}
 	if out[0].Role == "tool" {
 		t.Fatalf("window starts on a tool row (orphaned parent call): %q", out[0].Role)
+	}
+}
+
+func TestFindCharCutoffIndex_AdvancesOnNeverCompacted(t *testing.T) {
+	// lastPT <= target previously made findCutoffIndex return -1 forever, so
+	// eco ticks logged "no satisfying cutoff ... skip" and never compacted a
+	// giant never-compacted conversation. The char fallback must return a
+	// real cutoff that advances past the existing checkpoint while always
+	// preserving the newest user turn.
+	mk := func(roles []string) []utils.Message {
+		var msgs []utils.Message
+		for _, r := range roles {
+			msgs = append(msgs, utils.Message{Role: r, Content: utils.NewTextContent("x")})
+		}
+		return msgs
+	}
+	// Shape: checkpoint pair at 0/1, then several OLD turns whose tool walls
+	// make the raw history dwarf the target budget, then a small newest user
+	// turn at the very end (the realistic "giant never-compacted" shape).
+	msgs := mk([]string{"assistant", "tool"}) // tidx 0,1 (existing checkpoint)
+	for turn := 0; turn < 8; turn++ {
+		msgs = append(msgs, utils.Message{Role: "user", Content: utils.NewTextContent(fmt.Sprintf("old ask %d", turn))})
+		for i := 0; i < 30; i++ {
+			msgs = append(msgs,
+				utils.Message{Role: "assistant", Content: utils.NewTextContent(strings.Repeat("A", 500))},
+				utils.Message{Role: "tool", Content: utils.NewTextContent(strings.Repeat("B", 500)), ToolCallID: fmt.Sprintf("t%d_%d", turn, i)},
+			)
+		}
+	}
+	newestUser := len(msgs)
+	msgs = append(msgs, utils.Message{Role: "user", Content: utils.NewTextContent("NEWEST ASK")})
+
+	// lastPT (100) <= target (5000 → 20k chars) while the raw history is
+	// ~240k chars — the exact "no satisfying cutoff ... skip" every-tick
+	// shape (observed live: raw history ≈1.75M chars vs a ~100k-token
+	// target). The char fallback must return a real cutoff.
+	cut := findCutoffIndex(msgs, 100, 5000, 1)
+	if cut <= 1 {
+		t.Fatalf("expected char-fallback cutoff to advance past checkpoint (idx 1), got %d (len=%d)", cut, len(msgs))
+	}
+	if cut <= 1 || cut >= len(msgs) {
+		t.Fatalf("cutoff must leave live messages, got %d (len=%d)", cut, len(msgs))
+	}
+	if cut > newestUser {
+		t.Fatalf("cutoff %d must never fold the newest user turn (idx %d)", cut, newestUser)
+	}
+	if msgs[cut].Role == "tool" {
+		t.Fatalf("kept tail must not start on a tool row, got index %d role %q", cut, msgs[cut].Role)
 	}
 }

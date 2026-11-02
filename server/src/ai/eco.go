@@ -500,7 +500,19 @@ func lastAssistantPromptTokens(messages []utils.Message) int {
 //     loop on the same range.
 func findCutoffIndex(messages []utils.Message, lastPromptTokens, targetTokens int, existingCheckpointEndIdx int) int {
 	if lastPromptTokens <= targetTokens {
-		return -1
+		// The recorded lastPT is often LOWER than the target even when the
+		// true persisted history is gigantic: the LLM only ever saw a
+		// budget-capped tail, so its usage reflects the small tail, not the
+		// full DB history (observed: conversation 319ce9283cac61666757b88a —
+		// lastPT ~30k vs trigger 104857 but ~700k tokens persisted, so every
+		// eco tick logged "no satisfying cutoff ... skip" and NO checkpoint
+		// was ever moved forward). Fall back to a CHAR-BASED cutoff: keep the
+		// newest messages that fit within the target token budget (~4
+		// chars/token, same density assumption the request guard uses) and
+		// fold everything older into the rolling summary. This guarantees
+		// eco compaction always advances on oversized never-compacted
+		// conversations instead of skipping forever.
+		return findCharCutoffIndex(messages, targetTokens, existingCheckpointEndIdx)
 	}
 	targetDrop := lastPromptTokens - targetTokens
 
@@ -588,6 +600,61 @@ func findCutoffIndex(messages []utils.Message, lastPromptTokens, targetTokens in
 		return -1
 	}
 	return cutoff
+}
+
+// findCharCutoffIndex is the char-budget fallback used when the recorded
+// lastPromptTokens is at/below the target (the LLM only ever saw a
+// budget-capped tail, so its usage understates the real DB history — observed
+// conversation 319ce9283cac61666757b88a: lastPT ~30k but >700k tokens
+// persisted, so every eco tick logged "no satisfying cutoff ... skip" and no
+// checkpoint ever moved). It drops the OLDEST whole turns (user-anchored)
+// until the kept suffix fits within ~4 chars/token of the target budget, and
+// always preserves the newest user turn — the same floor rule as the live
+// tail. Returns the index of the first kept message, or -1 when there is
+// nothing to fold.
+func findCharCutoffIndex(messages []utils.Message, targetTokens, existingCheckpointEndIdx int) int {
+	if len(messages) == 0 || targetTokens <= 0 {
+		return -1
+	}
+	targetChars := targetTokens * 4 // ~4 chars/token, same density as the request guard
+	prefix := make([]int, len(messages)+1)
+	for i := range messages {
+		prefix[i+1] = prefix[i] + messages[i].Content.TotalContentChars()
+	}
+	if prefix[len(messages)] <= targetChars {
+		// The whole history already fits within the target budget — nothing
+		// to fold without starving the live turn.
+		return -1
+	}
+	// Floor: the newest user message and its in-flight turn are ALWAYS kept.
+	floor := len(messages) - 1
+	for floor > 0 && messages[floor].Role != "user" {
+		floor--
+	}
+	keptStart := 0
+	for {
+		if prefix[len(messages)]-prefix[keptStart] <= targetChars {
+			break
+		}
+		// Advance to the next user boundary — the start of the oldest kept
+		// turn. Dropping up to it removes a WHOLE turn, never a partial one.
+		next := keptStart + 1
+		for next < len(messages) && messages[next].Role != "user" {
+			next++
+		}
+		if next > floor {
+			// Only the newest user turn remains and it alone exceeds the
+			// budget: keep it whole (the per-message tail cap still bounds
+			// it on the request path).
+			keptStart = floor
+			break
+		}
+		keptStart = next
+	}
+	if keptStart <= existingCheckpointEndIdx || keptStart >= len(messages) {
+		return -1
+	}
+	return keptStart
 }
 
 // maxSummaryInputChars bounds the plain-text input fed to the

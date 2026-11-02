@@ -135,7 +135,7 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 	}
 
 	// Reload the full conversation
-	updated, err := getConversationFromDB(db, conversation.ID)
+	updated, err := getConversationFromDB(db, conversation.ID, true)
 	if err != nil {
 		return utils.Conversation{}, false, err
 	}
@@ -181,21 +181,45 @@ func ListConversations(ctx context.Context) ([]utils.Conversation, error) {
 	return conversations, rows.Err()
 }
 
-// GetConversationById returns a full conversation including all messages,
-// with eco-mode checkpoint pairs stripped. Use GetConversationByIdInternal
-// when the caller needs the raw history (e.g. the LLM context assembler).
+// GetConversationById returns the full client-facing conversation.
+// COMPACTION IS NON-DESTRUCTIVE: rows that were folded into the rolling
+// checkpoint summary are marked compacted but NEVER deleted, and they are
+// included here together with the checkpoint pair (whose tool-role half
+// carries the human-readable summary). The client therefore never loses
+// history — it sees every message that was ever stored, plus a visible
+// summary marker where older turns were folded.
+//
+// Use GetConversationByIdInternal for the LLM-facing view, which skips
+// the compacted rows (the summary replaces them in the request).
 func GetConversationById(ctx context.Context, id string) (*utils.Conversation, error) {
-	conv, err := GetConversationByIdInternal(ctx, id)
+	// Include the compacted rows too — the client must see the full history.
+	return getConversationByIdIncludeCompacted(ctx, id)
+}
+
+// getConversationByIdIncludeCompacted loads a conversation including rows
+// marked compacted (the full non-destructive history) plus any checkpoint
+// pair. This is the client-facing view.
+func getConversationByIdIncludeCompacted(ctx context.Context, id string) (*utils.Conversation, error) {
+	userID, ok := ctx.Value("userID").(string)
+	if !ok {
+		return nil, errors.New("user ID not found in request context")
+	}
+	db, err := GetUserDB(userID)
 	if err != nil {
 		return nil, err
 	}
-	conv.Messages = FilterOutCheckpoints(conv.Messages)
+	conv, err := getConversationFromDB(db, id, true)
+	if err != nil {
+		return nil, err
+	}
+	conv.UserID = userID
 	return conv, nil
 }
 
 // GetConversationByIdInternal returns the raw conversation including any
 // eco checkpoint pair. For server-internal use only — never hand the result
-// to a client.
+// to a client. Rows marked compacted are EXCLUDED: the LLM sees the summary
+// checkpoint pair standing in for them (non-destructive compaction).
 func GetConversationByIdInternal(ctx context.Context, id string) (*utils.Conversation, error) {
 	userID, ok := ctx.Value("userID").(string)
 	if !ok {
@@ -207,7 +231,7 @@ func GetConversationByIdInternal(ctx context.Context, id string) (*utils.Convers
 		return nil, err
 	}
 
-	conv, err := getConversationFromDB(db, id)
+	conv, err := getConversationFromDB(db, id, false)
 	if err != nil {
 		return nil, err
 	}
@@ -547,7 +571,7 @@ func scanConversation(rows *sql.Rows) (utils.Conversation, error) {
 }
 
 // getConversationFromDB loads a full conversation with messages from SQLite.
-func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
+func getConversationFromDB(db *sql.DB, id string, includeCompacted bool) (*utils.Conversation, error) {
 	// Load conversation row
 	var conv utils.Conversation
 	var lastMessageAt string
@@ -588,9 +612,13 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 	}
 
 	// Load messages
+	compactedFilter := ""
+	if !includeCompacted {
+		compactedFilter = " AND compacted = 0"
+	}
 	msgRows, err := db.Query(
 		`SELECT id, role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, prompt_tokens, completion_tokens, response_cost, model
-		 FROM messages WHERE conversation_id = ? ORDER BY seq`, id,
+		 FROM messages WHERE conversation_id = ?`+compactedFilter+` ORDER BY seq`, id,
 	)
 	if err != nil {
 		return nil, err

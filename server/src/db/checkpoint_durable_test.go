@@ -2,21 +2,58 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/azukaar/plurality/src/utils"
 )
 
-// TestCompactConversationDurable verifies the durable context-compaction
-// path: old messages are folded into the rolling checkpoint summary, the
-// rows are physically deleted, and the summary survives a fresh load —
-// so a context-overflow retry cannot be undone by the next DB reload
-// (the bug that kept conversation 319ce9283cac61666757b88a re-hitting
-// context_length_exceeded on every turn).
+// TestCompactConversationDurable verifies the NON-DESTRUCTIVE durable
+// context-compaction path: old messages are folded into the rolling
+// checkpoint summary and marked compacted (NOT deleted), the summary
+// survives a fresh load, and the full history remains available to the
+// client — so a context-overflow retry cannot be undone by the next DB
+// reload, while no conversation data is ever destroyed (the old behaviour
+// physically deleted rows, which is the "conversations lose messages" bug).
+// openTestUserDB creates a temp user database and wires it into the package
+// cache (userDataPath + userDBs) so GetUserDB / GetConversationByIdInternal
+// resolve to the SAME sql.DB the test writes to. The checkpoint tests load
+// through GetConversationByIdInternal (the real app path), so the temp db
+// from openTestDB alone would never be found and the conversation lookups
+// would hit the default users-data dir instead.
+func openTestUserDB(t *testing.T, userID string) *sql.DB {
+	t.Helper()
+	dir := t.TempDir()
+	oldPath := userDataPath
+	userDataPath = dir
+	t.Cleanup(func() { userDataPath = oldPath })
+
+	if err := os.MkdirAll(filepath.Join(dir, userID), 0755); err != nil {
+		t.Fatalf("user dir: %v", err)
+	}
+	testDB, err := sql.Open("sqlite3", filepath.Join(dir, userID, "conversations.db")+"?_journal_mode=wal&_foreign_keys=1")
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+	t.Cleanup(func() { testDB.Close() })
+	if _, err := testDB.Exec(schema); err != nil {
+		if strings.Contains(err.Error(), "no such module") {
+			t.Skipf("sqlite lacks FTS5/vec0 modules: %v", err)
+		}
+		t.Fatalf("schema: %v", err)
+	}
+	// Transactions: ensureColumn etc. run DDL; keep it simple, no tx here.
+	userDBs.Store(userID, testDB)
+	t.Cleanup(func() { userDBs.Delete(userID) })
+	return testDB
+}
+
 func TestCompactConversationDurable(t *testing.T) {
-	db := openTestDB(t)
+	db := openTestUserDB(t, "sam")
 
 	ctx := context.WithValue(context.Background(), "userID", "sam")
 	if _, err := db.Exec(`INSERT INTO conversations (id, title, last_message_at) VALUES ('c_durable','t','2026-01-01T00:00:00Z')`); err != nil {
@@ -68,7 +105,8 @@ func TestCompactConversationDurable(t *testing.T) {
 		t.Fatalf("expected 0 removed with keep=24 (all fit), got %d", removed)
 	}
 
-	// Now keep only 5: 21-5 = 16 rows should be folded+deleted.
+	// Now keep only 5: the older rows should be folded and MARKED compacted
+	// (never deleted).
 	removed, err = CompactConversationDurable(ctx, "c_durable", full, 5, func(text string) (string, error) {
 		return "SUMMARY: " + text[:min(len(text), 50)], nil
 	})
@@ -76,20 +114,19 @@ func TestCompactConversationDurable(t *testing.T) {
 		t.Fatalf("compact keep=5: %v", err)
 	}
 	if removed < 5 {
-		t.Fatalf("expected >=5 removed with keep=5, got %d", removed)
+		t.Fatalf("expected >=5 rows marked compacted with keep=5, got %d", removed)
 	}
 
-	// Reload: the summary should now appear as a checkpoint pair, and the
-	// newest user message must still be present.
+	// The LLM-facing view must show the checkpoint pair (summary), the
+	// newest user message, and only the live tail — the compacted rows are
+	// hidden from the model (the summary stands in for them).
 	after, err := loadRawConversationMessagesForTest(ctx, "c_durable")
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
 	var hasCheckpoint bool
 	var hasNewest bool
-	total := 0
 	for _, m := range after {
-		total += m.Content.TotalContentChars()
 		if IsCheckpointMessage(m) {
 			hasCheckpoint = true
 		}
@@ -103,8 +140,29 @@ func TestCompactConversationDurable(t *testing.T) {
 	if !hasNewest {
 		t.Fatal("expected the newest user message to survive")
 	}
-	if len(after) > 7 { // pair + ~5 kept + floor
-		t.Fatalf("expected a small remaining history, got %d messages", len(after))
+	if len(after) > 9 { // pair + ~5 kept + floor + slack
+		t.Fatalf("expected a small LLM-side history, got %d messages", len(after))
+	}
+
+	// THE NON-DESTRUCTIVE GUARANTEE: the client-facing view must still
+	// contain EVERY message that existed before compaction — nothing was
+	// deleted, only marked.
+	clientView, err := GetConversationById(ctx, "c_durable")
+	if err != nil {
+		t.Fatalf("client view: %v", err)
+	}
+	if len(clientView.Messages) != len(full)+2 {
+		t.Fatalf("non-destructive guarantee violated: client view has %d messages, expected %d (original %d + checkpoint pair 2)", len(clientView.Messages), len(full)+2, len(full))
+	}
+	// Every original message must still be present in the client view.
+	clientSet := map[string]bool{}
+	for _, m := range clientView.Messages {
+		clientSet[m.Role+"|"+m.TextContent()] = true
+	}
+	for _, m := range full {
+		if !clientSet[m.Role+"|"+m.TextContent()] {
+			t.Fatalf("message lost from client view: role=%s content=%q", m.Role, m.TextContent())
+		}
 	}
 }
 
@@ -194,7 +252,7 @@ func TestTurnAnchoredFirstKeptIdx(t *testing.T) {
 // (observed: conversation e1c3b48c63eb077f0985b83a, checkpoint stuck at seq
 // 119/120 with 100+ pure tool/assistant messages behind it).
 func TestCompactConversationDurable_MovesCheckpointForward(t *testing.T) {
-	db := openTestDB(t)
+	db := openTestUserDB(t, "sam")
 	ctx := context.WithValue(context.Background(), "userID", "sam")
 	if _, err := db.Exec(`INSERT INTO conversations (id, title, last_message_at) VALUES ('c_move','t','2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatalf("conv: %v", err)

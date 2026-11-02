@@ -233,5 +233,5 @@ func getConversationFromDBFromCtx(ctx context.Context, id string) (*utils.Conver
 	if err != nil {
 		return nil, err
 	}
-	return getConversationFromDB(db, id)
+	return getConversationFromDB(db, id, false)
 }

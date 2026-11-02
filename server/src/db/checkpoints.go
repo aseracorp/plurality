@@ -86,7 +86,7 @@ func GetCheckpoint(ctx context.Context, conversationID string) (*CheckpointPair,
 	rows, err := db.QueryContext(ctx,
 		`SELECT id, seq, tool_calls
 		 FROM messages
-		 WHERE conversation_id = ? AND role = 'assistant' AND tool_calls LIKE ?
+		 WHERE conversation_id = ? AND role = 'assistant' AND compacted = 0 AND tool_calls LIKE ?
 		 ORDER BY seq ASC`,
 		conversationID, "%"+EcoCheckpointToolName+"%",
 	)
@@ -174,7 +174,7 @@ func MessageSeqAt(ctx context.Context, conversationID string, sliceOffset int) (
 	}
 	var seq int64
 	err = d.QueryRowContext(ctx,
-		`SELECT seq FROM messages WHERE conversation_id = ?
+		`SELECT seq FROM messages WHERE conversation_id = ? AND compacted = 0
 		 ORDER BY seq ASC LIMIT 1 OFFSET ?`,
 		conversationID, sliceOffset,
 	).Scan(&seq)
@@ -215,6 +215,9 @@ func ReplaceCheckpoint(
 	defer tx.Rollback()
 
 	if len(oldPairIDs) > 0 {
+		// NON-DESTRUCTIVE: mark the superseded checkpoint pair as compacted
+		// instead of deleting it. The rows stay in the DB (client view keeps
+		// them); GetCheckpoint and the LLM view skip compacted rows.
 		placeholders := strings.Repeat("?,", len(oldPairIDs))
 		placeholders = placeholders[:len(placeholders)-1]
 		args := make([]interface{}, 0, len(oldPairIDs)+1)
@@ -223,7 +226,7 @@ func ReplaceCheckpoint(
 			args = append(args, id)
 		}
 		_, err = tx.ExecContext(ctx,
-			fmt.Sprintf(`DELETE FROM messages WHERE conversation_id = ? AND id IN (%s)`, placeholders),
+			fmt.Sprintf(`UPDATE messages SET compacted = 1 WHERE conversation_id = ? AND id IN (%s)`, placeholders),
 			args...,
 		)
 		if err != nil {
@@ -322,7 +325,7 @@ func CompactConversationDurable(
 	priorSummary := ""
 	rows, err := d.QueryContext(ctx,
 		`SELECT id, tool_calls FROM messages
-		 WHERE conversation_id = ? AND role = 'assistant' AND tool_calls LIKE ?
+		 WHERE conversation_id = ? AND role = 'assistant' AND compacted = 0 AND tool_calls LIKE ?
 		 ORDER BY seq ASC`, conversationID, "%"+EcoCheckpointToolName+"%")
 	if err != nil {
 		return 0, err
@@ -377,6 +380,21 @@ func CompactConversationDurable(
 	// after the checkpoint, zero user messages, so every budgeting pass had
 	// no user anchor and the model lost the thread).
 	firstKeptIdx := turnAnchoredFirstKeptIdx(messages, keep)
+	// The turn-anchored floor keeps the WHOLE newest user turn even when that
+	// turn is a massive tool/assistant wall (hundreds of messages — observed
+	// conversation 4aa674fc88d9de92b6f8af15: only 2 user messages followed by
+	// ~200 tool/assistant rows). Keeping all of it means there is nothing to
+	// fold: "durable removed 0" every step, the in-memory trim is undone by
+	// the next DB reload, and the context guard re-fires on every turn. When
+	// the kept window alone exceeds a sane size (2x keep), apply a HARD cap:
+	// keep only the newest `keep` messages (aligned off a tool row so
+	// tool_calls/results pairing stays intact) and fold the rest of the
+	// oversized turn too, so durable compaction always makes real progress.
+	if len(messages)-firstKeptIdx > keep*2 {
+		if hard := hardFirstKeptIdx(messages, keep); hard > firstKeptIdx {
+			firstKeptIdx = hard
+		}
+	}
 
 	// Render the oldest (firstKeptIdx) messages into the summary input.
 	// Walk newest-first with a budget, then reverse for chronological order.
@@ -453,7 +471,13 @@ func CompactConversationDurable(
 	}
 	defer tx.Rollback()
 
-	// Delete rows with seq < boundarySeq, preserving the checkpoint pair ids.
+	// NON-DESTRUCTIVE compaction: mark folded rows with compacted=1 instead
+	// of deleting them. The full history stays in the DB and is served to
+	// the client (GetConversationById); only the LLM-facing view
+	// (GetConversationByIdInternal) skips these rows, with the checkpoint
+	// summary standing in for them. This is the fix for "conversations lose
+	// messages": compaction shapes requests to the LLM, it never destroys
+	// stored conversation data.
 	args := []interface{}{conversationID, boundarySeq}
 	excludeSQL := ""
 	if len(pairIDs) > 0 {
@@ -465,7 +489,7 @@ func CompactConversationDurable(
 		}
 	}
 	res, err := tx.ExecContext(ctx,
-		`DELETE FROM messages WHERE conversation_id = ? AND seq < ?`+excludeSQL, args...)
+		`UPDATE messages SET compacted = 1 WHERE conversation_id = ? AND seq < ? AND compacted = 0`+excludeSQL, args...)
 	if err != nil {
 		return 0, err
 	}
@@ -481,6 +505,8 @@ func CompactConversationDurable(
 	// pure tool/assistant messages piled up behind it, so every turn
 	// re-compacted the same stuck boundary and the model lost the thread).
 	if len(pairIDs) > 0 {
+		// Mark the old pair as compacted too (non-destructive) — it is
+		// superseded by the fresh pair inserted below.
 		placeholders := strings.Repeat("?,", len(pairIDs))
 		placeholders = placeholders[:len(placeholders)-1]
 		args := make([]interface{}, 0, len(pairIDs)+1)
@@ -489,7 +515,7 @@ func CompactConversationDurable(
 			args = append(args, id)
 		}
 		if _, err := tx.ExecContext(ctx,
-			fmt.Sprintf(`DELETE FROM messages WHERE conversation_id = ? AND id IN (%s)`, placeholders),
+			fmt.Sprintf(`UPDATE messages SET compacted = 1 WHERE conversation_id = ? AND id IN (%s)`, placeholders),
 			args...); err != nil {
 			return 0, err
 		}
@@ -585,6 +611,32 @@ func turnAnchoredFirstKeptIdx(messages []utils.Message, keep int) int {
 	}
 	// No user message anywhere: fall back to the newest `keep` messages but
 	// never start on a tool row (that would orphan its parent call).
+	start := n - keep
+	if start < 0 {
+		start = 0
+	}
+	for start < n && messages[start].Role == "tool" {
+		start++
+	}
+	if start >= n {
+		start = n - 1
+	}
+	return start
+}
+
+// hardFirstKeptIdx returns the slice index that keeps ONLY the newest `keep`
+// messages of a conversation, aligned so the kept window never starts on a
+// "tool" row (which would orphan its parent assistant tool_call). Used as the
+// hard cap when the turn-anchored window is itself an oversized tool wall, so
+// durable compaction can always fold a meaningful chunk and make progress.
+func hardFirstKeptIdx(messages []utils.Message, keep int) int {
+	n := len(messages)
+	if n == 0 {
+		return 0
+	}
+	if keep <= 0 {
+		keep = durableKeepDefault
+	}
 	start := n - keep
 	if start < 0 {
 		start = 0
