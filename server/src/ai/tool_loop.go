@@ -18,6 +18,24 @@ import (
 	"github.com/azukaar/plurality/src/utils"
 )
 
+// clientToolIsAdvertised reports whether the client executing tools for this
+// conversation advertised a handler for the given tool name in this request.
+// A client tool that was NOT advertised is unanswerable: the model
+// hallucinated the name (production case: strata-swift emitted `write_file`
+// and `filesystem_server__fs_edit` — neither exists; the real tools are
+// fs_read / fs_write — and the loop parked for the full 90s stall watchdog
+// before synthesizing a generic timeout). Failing such calls fast with a
+// precise error lets the LLM self-correct on the very next iteration
+// instead of stalling the turn.
+func clientToolIsAdvertised(name string, clientSideTools []utils.FunctionToolsRequest) bool {
+	for _, tool := range clientSideTools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // RunLLMLoop is the autonomous server-side LLM loop. It runs as a goroutine
 // that outlives the HTTP connection. It calls the LLM, processes tool calls,
 // and broadcasts all events to connected SSE clients.
@@ -431,6 +449,62 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		// Categorize tool calls: server-side vs client-side
 		serverTools, clientTools := categorizeToolCalls(ar.UserID, assistantMessage.ToolCalls)
 
+		// Fast-fail client tools that can never be answered. Two cases:
+		//   1) The client did NOT advertise the tool in this request — the
+		//      model hallucinated the name (production: `write_file` and
+		//      `filesystem_server__fs_edit` from strata-swift; the real
+		//      tools are fs_read / fs_write). The stall watchdog would
+		//      eventually synthesize a generic "Client did not respond
+		//      within 90s" result, but that parks the whole loop for 90s+
+		//      and makes the conversation look dead.
+		//   2) Zero clients are attached to this loop — a watchdog-resumed
+		//      run (or a cron/background run) has no device to execute ANY
+		//      client tool, advertised or not (observed: "resuming
+		//      conversation ... with 0 connected clients" in the pve02b
+		//      cutover conversation, followed by another 90s park).
+		// Both get a precise synthetic error result immediately so the LLM
+		// self-corrects on the next iteration instead of stalling.
+		if len(clientTools) > 0 {
+			var executable []utils.ToolCall
+			for _, tc := range clientTools {
+				noClients := ar.ClientCount() == 0
+				unadvertised := !clientToolIsAdvertised(tc.Function.Name, payload.ClientSideTools)
+				if !noClients && !unadvertised {
+					executable = append(executable, tc)
+					continue
+				}
+				msg := "Error: tool '" + tc.Function.Name + "' cannot be executed by this client"
+				if unadvertised {
+					msg += ": it was not advertised in this request (the model may have invented the name)."
+				} else {
+					msg += ": no client is currently connected to this conversation."
+				}
+				msg += " If you need filesystem access, retry with a server-side tool (e.g. filesystem_server__fs_read / filesystem_server__fs_write) or one of the tools advertised in this conversation."
+				toolMessage := utils.Message{
+					Role:       "tool",
+					Content:    utils.NewTextContent(msg),
+					ToolCallID: tc.ID,
+					Name:       tc.Function.Name,
+					Timestamp:  time.Now().Format(time.RFC3339),
+				}
+				ar.Broadcast(SSEEvent{
+					Type:           "tool_result",
+					ToolCallID:     tc.ID,
+					ToolName:       tc.Function.Name,
+					ToolResult:     msg,
+					IsServer:       false,
+					ConversationID: ar.ConversationID,
+				})
+				updatedConv, _, pushErr := db.PushMessage(ctx, conversation, toolMessage)
+				if pushErr != nil {
+					utils.Error("[LLMLoop] Error saving fast-fail client-tool error to DB", pushErr)
+				} else {
+					conversation = updatedConv
+				}
+			}
+			clientTools = executable
+		}
+
 		// Strict-validate client tool args against the schemas the client
 		// advertised in this request. Invalid calls are short-circuited with
 		// a synthetic tool-result so the LLM can self-correct on the next
@@ -661,7 +735,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			// from seq 4274 never arrived). Arm a stall watchdog that
 			// synthesizes a timeout result and resumes the loop, so the model
 			// can self-correct (e.g. fall back to a server-side tool).
-			go armClientToolWatchdog(userContextFor(ar.UserID), ar, &conversation, clientTools)
+			go armClientToolWatchdog(userContextFor(ar.UserID), ar, &conversation, clientTools, payload.ClientSideTools)
 			return
 		}
 
@@ -723,7 +797,7 @@ const clientToolStallTimeout = 90 * time.Second
 // LLM loop exactly like a client tool_results POST would (HandleChat /
 // HandleApprove path). The model sees the timeout and can self-correct —
 // e.g. fall back to a server-side tool — instead of stalling forever.
-func armClientToolWatchdog(ctx context.Context, ar *ActiveRequest, conv *utils.Conversation, clientTools []utils.ToolCall) {
+func armClientToolWatchdog(ctx context.Context, ar *ActiveRequest, conv *utils.Conversation, clientTools []utils.ToolCall, clientSideTools []utils.FunctionToolsRequest) {
 	select {
 	case <-time.After(clientToolStallTimeout):
 	case <-ar.Ctx.Done():
@@ -797,7 +871,7 @@ func armClientToolWatchdog(ctx context.Context, ar *ActiveRequest, conv *utils.C
 	newAR.RunLLMLoop(persistCtx, *cur, ChatPayload{
 		ConversationID:  cur.ID,
 		ModelSelected:   ar.ModelSelected,
-		ClientSideTools: nil,
+		ClientSideTools: clientSideTools,
 		AvailableSkills: nil,
 	})
 }
