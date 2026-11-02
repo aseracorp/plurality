@@ -138,6 +138,20 @@ RUN python3 -m venv /app/headroom/headroom_venv && \
     /app/headroom/headroom_venv/bin/pip install --no-cache-dir "headroom-ai[proxy]==0.42.0" && \
     rm -rf /root/.cache/pip
 
+# Install the Caveman compression proxy (Apache-2.0, pinned release binary).
+# Caveman is a base-URL-swap reverse proxy that makes chat models "say less
+# and read less"; the Go server targets its OpenAI-compatible mounts at
+# /compat/<name>/v1/chat/completions (see server/src/ai/caveman.go). It
+# composes with Headroom on the same model: Caveman compresses the turn,
+# then Headroom (cache mode) freezes the compressed prefix byte-identically
+# so llama.cpp/strata/avalon KV prompt-cache reuse is preserved on top of a
+# smaller prompt. Enabled per model via model_info.caveman: true.
+RUN mkdir -p /app/caveman && \
+    curl -fsSL https://github.com/JuliusBrussee/caveman/releases/download/bin-v4.0.2/caveman-proxy_linux_amd64 -o /app/caveman/caveman-proxy && \
+    chmod +x /app/caveman/caveman-proxy && \
+    /app/caveman/caveman-proxy version
+
+
 # Copy the Flutter web build to the static directory
 RUN mkdir -p /app/web
 COPY --from=flutter_builder /app/client/build/web /app/web

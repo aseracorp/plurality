@@ -320,7 +320,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		}
 	}
 
-	req, err := http.NewRequest("POST", ChatBaseURL(model)+"/v1/chat/completions", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", ChatCompletionURL(model)+"/v1/chat/completions", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -687,7 +687,7 @@ func GenerateTitleForMessage(message, model string) (string, error) {
 		return "", err
 	}
 
-	req, err := http.NewRequest("POST", ChatBaseURLForName(model)+"/v1/chat/completions", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", ChatCompletionURLForName(model)+"/v1/chat/completions", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return "", err
 	}
@@ -777,7 +777,7 @@ func GenerateCheckpointSummary(text, model string) (string, error) {
 		return "", err
 	}
 
-	req, err := http.NewRequest("POST", ChatBaseURLForName(model)+"/v1/chat/completions", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", ChatCompletionURLForName(model)+"/v1/chat/completions", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return "", err
 	}

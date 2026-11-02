@@ -109,28 +109,6 @@ func HeadroomReady() bool {
 	return headroomReady.Load()
 }
 
-// ChatBaseURL returns the base URL chat-completion requests for the given
-// model should be sent to. Models opted into Headroom
-// (model_info.headroom: true in litellm_config.yaml, surfaced through
-// /v1/models) are routed through the Headroom proxy when it is healthy;
-// every other model — and every fallback — goes straight to LiteLLM, so
-// non-opted models keep their byte-for-byte passthrough and zero added
-// latency. Image/audio/embedding endpoints always use LiteLLM directly.
-func ChatBaseURL(model utils.Model) string {
-	return ChatBaseURLForName(model.Name)
-}
-
-// ChatBaseURLForName is ChatBaseURL for call sites that only carry a model
-// name string (title generation, checkpoint summaries).
-func ChatBaseURLForName(name string) string {
-	if headroomReady.Load() {
-		if e, ok := Models.Get(name); ok && e.Headroom {
-			return HeadroomBaseURL
-		}
-	}
-	return LiteLLMBaseURL
-}
-
 func startHeadroomProcess() error {
 	headroomMu.Lock()
 	defer headroomMu.Unlock()
