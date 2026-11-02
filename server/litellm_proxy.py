@@ -79,27 +79,7 @@ def load_config(config_path):
         for opt_key in ("headroom", "caveman"):
             val = info.get(opt_key)
             if val is True:
-                # Backwards compatible: `caveman: true` means "enabled with
-                # default settings". We must spell the defaults out here
-                # because the Go side reads /v1/models and treats an enabled
-                # dict WITHOUT a stones block as "no stones" — which would
-                # silently disable caveman's compression (see model_registry.go
-                # parseCavemanSettings + optimizationOwners). Emitting the
-                # default stone set keeps a bare `true` behaving as documented.
-                if opt_key == "caveman":
-                    info[opt_key] = {
-                        "enabled": True,
-                        "stones": {
-                            "say_less": True,
-                            "read_less": True,
-                            "auto": False,
-                            "blocks": False,
-                            "waste_fixes": False,
-                            "browse": False,
-                        },
-                    }
-                else:
-                    info[opt_key] = {"enabled": True}
+                info[opt_key] = {"enabled": True}
             elif val is False or val is None:
                 info[opt_key] = {"enabled": False}
             elif isinstance(val, dict):
