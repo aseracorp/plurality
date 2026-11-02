@@ -193,7 +193,7 @@ func toUtilsModel(m *auth.ShortcutModel) *utils.Model {
 	if m == nil {
 		return nil
 	}
-	return &utils.Model{Name: m.Name, Tools: m.Tools}
+	return &utils.Model{Name: m.Name, Tools: m.Tools, Params: m.Params}
 }
 
 // ShortcutModelSelected returns the ModelSelected from a named shortcut in
