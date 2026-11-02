@@ -275,23 +275,6 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		requestData.NKeep = &nk
 	}
 
-	// Prompt caching for self-hosted (llama.cpp/avalon/strata) backends.
-	// Prompt caching for ALL models (local AND cloud). Sending
-	// cache_prompt=true asks the backend (llama.cpp/avalon, or a cloud
-	// provider that supports KV caching) to reuse the longest common prefix
-	// of the previous request's KV cache — which covers the byte-stable
-	// system prompt (sorted MCP descriptions, minute-resolution timestamp,
-	// stable important_memory) AND the chat history that is unchanged since
-	// the previous turn. We deliberately do NOT pin a small n_keep here:
-	// n_keep=0 makes llama.cpp keep and reuse the ENTIRE previously-sent
-	// context (system prompt + conversation history), which is what "cache
-	// all context that was already sent" means. Cloud providers ignore or
-	// honor cache_prompt as they see fit; the header/body passthrough is
-	// harmless when unsupported.
-	cp := true
-	requestData.CachePrompt = &cp
-	requestData.NKeep = nil
-
 	utils.Debug("A new chat request is being made with the following model: %s", model.Name)
 
 	// Marshal WITHOUT HTML escaping. The default json.Marshal escapes &, <,
