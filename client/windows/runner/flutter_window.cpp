@@ -21,8 +21,8 @@ void FlutterWindow::LogFz(const char* fmt, ...) {
   }
   std::snprintf(path + strlen(path), MAX_PATH - strlen(path),
                 "plurality_fancyzones.log");
-  FILE* f = fopen(path, "a");
-  if (!f) {
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "a") != 0 || f == nullptr) {
     return;
   }
   char line[1024];
