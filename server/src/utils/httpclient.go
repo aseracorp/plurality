@@ -89,6 +89,19 @@ var HTTPClient = &http.Client{
 // giant prompts hit the GPU back-to-back.
 var LLMSem = make(chan struct{}, 1)
 
+// CloudLLMSem is a permissive semaphore for CLOUD / auxiliary LLM calls
+// (OpenRouter and other hosted providers, title generation, checkpoint
+// summaries). It exists because LLMSem is capacity-1 and is held for the
+// whole stream by self-hosted slow-prefill models; if cloud calls shared it,
+// a single slow local prefill (60-120s+) would hold up every deepseek/etc.
+// request flowing through the same server, and cloud responses would in
+// turn delay the local model. Cloud providers have their own request
+// throttling and never contend for our local GPU, so they must not be
+// serialized behind it. Capacity 8 keeps unbounded concurrency in check
+// (many parallel agent workflows) without re-introducing the serialization
+// stall.
+var CloudLLMSem = make(chan struct{}, 8)
+
 // AcquireLLMSlot blocks until an outbound LLM slot is free, or the given
 // context is done (client cancelled, request superseded). Returns the
 // context's error when the wait is abandoned so callers never deadlock a
@@ -104,6 +117,19 @@ func AcquireLLMSlot(ctx context.Context) error {
 
 // ReleaseLLMSlot frees an outbound LLM slot.
 func ReleaseLLMSlot() { <-LLMSem }
+
+// AcquireCloudLLMSlot is AcquireLLMSlot but on the cloud/aux semaphore.
+func AcquireCloudLLMSlot(ctx context.Context) error {
+	select {
+	case CloudLLMSem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// ReleaseCloudLLMSlot frees a cloud/aux slot.
+func ReleaseCloudLLMSlot() { <-CloudLLMSem }
 
 // HoldLLMSlot acquires the LLM slot and keeps it held until the caller
 // explicitly releases it with ReleaseLLMSlotHeld. Used by chat completions
@@ -203,11 +229,17 @@ func DoLLMHTTPWithRetry(ctx context.Context, req *http.Request) (*http.Response,
 	ensureRetryableBody(req)
 	retries := 0
 	for {
-		if err := AcquireLLMSlot(ctx); err != nil {
+		// Cloud/auxiliary calls use the cloud semaphore, NOT the capacity-1
+		// local-GPU LLMSem. See CloudLLMSem: sharing the local slot with
+		// hosted providers made a single slow local prefill block every
+		// cloud (deepseek etc.) request through the same server, and cloud
+		// responses delayed the local model in turn — upstream Plurality,
+		// which has no such global serialization, felt noticeably faster.
+		if err := AcquireCloudLLMSlot(ctx); err != nil {
 			return nil, err
 		}
 		resp, err := HTTPClient.Do(req.WithContext(ctx))
-		ReleaseLLMSlot()
+		ReleaseCloudLLMSlot()
 
 		if err != nil {
 			if ctx.Err() != nil {

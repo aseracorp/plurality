@@ -101,9 +101,12 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 				"Call retrieve_server_skill with the skill_name parameter. You can optionally specify a file_name to retrieve a specific file from the skill folder (defaults to SKILL.md)."
 		}
 
-		// Append MCP server descriptions configured in mcp.json.
-		for serverName, desc := range mcp.ServerDescriptions(conv.UserID) {
-			systemPrompt += "\n\n[" + serverName + "] " + desc
+		// Append MCP server descriptions configured in mcp.json, in a
+		// deterministic (sorted) order. Ranging the map directly yields a
+		// different order on every request, which reshuffles the system
+		// prompt and busts the KV prompt-cache prefix every turn.
+		for _, sd := range mcp.ServerDescriptionsOrdered(conv.UserID) {
+			systemPrompt += "\n\n[" + sd.ServerName + "] " + sd.Description
 		}
 
 		if mode, ok := model.Tools["filesystem_server__fs_write"]; ok && mode != "" && mode != "off" && mode != "false" {
@@ -223,6 +226,25 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	msgReqList, _ := convertMessagesToOpenAI(optimizedMessages, model)
 	requestData.Messages = msgReqList
 
+	// Prompt caching for self-hosted (llama.cpp/avalon/strata) backends.
+	// The system prompt prefix is built to be byte-stable across turns
+	// (sorted MCP server descriptions, minute-resolution timestamp, stable
+	// important_memory), so pinging the first N tokens in the KV cache and
+	// asking for cache reuse turns consecutive agent turns from a full
+	// re-prefill into a ~0-cost prefix hit on the local GPU. Cloud models
+	// manage their own caching (and litellm may reject unknown params), so
+	// this only fires for the local slow-prefill families.
+	if isSlowPrefillModel(strings.ToLower(model.Name)) {
+		cp := true
+		requestData.CachePrompt = &cp
+		if kh := systemPrefixKeepTokens(systemMsg, requestData.Tools); kh > 0 {
+			requestData.NKeep = &kh
+			utils.Log("[PromptCache] %s: enabling cache_prompt with n_keep=%d (system prefix) for KV reuse", model.Name, kh)
+		} else {
+			requestData.NKeep = nil
+		}
+	}
+
 	utils.Debug("A new chat request is being made with the following model: %s", model.Name)
 
 	// Marshal WITHOUT HTML escaping. The default json.Marshal escapes &, <,
@@ -316,6 +338,41 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	}
 
 	return resp.Body, 0, nil
+}
+
+// systemPrefixKeepTokens estimates how many of the leading tokens make up the
+// stable, reusable prefix that llama.cpp/avalon should pin in the KV cache for
+// cross-turn reuse. It counts the system message (the big stable part) plus a
+// conservative allowance for the first user turn and the tool schemas that are
+// identical on every request. The estimate is deliberately a bit generous so
+// n_keep does not cut the prefix short (which would push part of the reusable
+// prefix into the re-prefilled tail); the local backend validates the actual
+// prefix-matching anyway. ~4 chars/token is a safe average for the dense JSON
+// tool schemas and the system preamble.
+func systemPrefixKeepTokens(systemMsg utils.Message, tools []utils.ToolsRequest) int {
+	// System message: the primary cacheable prefix.
+	sysText := systemMsg.TextContent()
+	keep := len(sysText) / 4
+	// Tool schemas are identical across turns within a conversation and are
+	// sent every request, so counting them toward the pinned prefix lets the
+	// backend reuse them too instead of re-tokenizing the schema wall.
+	for _, t := range tools {
+		if b, err := json.Marshal(t); err == nil {
+			keep += len(b) / 4
+		}
+	}
+	// Floor at a few hundred tokens so tiny system prompts still pin
+	// something, and cap so we never pin more than a reasonable share of a
+	// 65k window (the local action models run 65k).
+	const minKeep = 512
+	const maxKeep = 60_000
+	if keep < minKeep {
+		keep = minKeep
+	}
+	if keep > maxKeep {
+		keep = maxKeep
+	}
+	return keep
 }
 
 // convertMessagesToOpenAI converts internal utils.Message slices into
