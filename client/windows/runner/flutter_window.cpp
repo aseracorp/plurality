@@ -4,6 +4,10 @@
 #include <cstdio>
 #include <cstring>
 #include <optional>
+#include <windows.h>
+
+// Registry (advapi32) is used to persist the window size across launches.
+#pragma comment(lib, "advapi32.lib")
 
 #include "flutter/generated_plugin_registrant.h"
 
@@ -33,6 +37,62 @@ void FlutterWindow::LogFz(const char* fmt, ...) {
   fprintf(f, "[%llu] %s\n",
           static_cast<unsigned long long>(GetTickCount64()), line);
   fclose(f);
+}
+
+void FlutterWindow::SaveSizeToRegistry() {
+  HWND parent = GetHandle();
+  if (!parent) {
+    return;
+  }
+  RECT r{};
+  if (!GetWindowRect(parent, &r)) {
+    return;
+  }
+  HKEY key = nullptr;
+  if (RegCreateKeyExA(HKEY_CURRENT_USER, "Software\AseraCorp\Plurality",
+                      0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) ==
+      ERROR_SUCCESS) {
+    DWORD v;
+    v = (DWORD)r.left;  RegSetValueExA(key, "Left", 0, REG_DWORD, (BYTE*)&v, 4);
+    v = (DWORD)r.top;   RegSetValueExA(key, "Top", 0, REG_DWORD, (BYTE*)&v, 4);
+    v = (DWORD)(r.right - r.left);  RegSetValueExA(key, "W", 0, REG_DWORD, (BYTE*)&v, 4);
+    v = (DWORD)(r.bottom - r.top);  RegSetValueExA(key, "H", 0, REG_DWORD, (BYTE*)&v, 4);
+    LogFz("SaveSizeToRegistry: %d,%d %dx%d", r.left, r.top,
+          r.right - r.left, r.bottom - r.top);
+    RegCloseKey(key);
+  }
+}
+
+void FlutterWindow::LoadSavedSize() {
+  HKEY key = nullptr;
+  if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\AseraCorp\Plurality", 0,
+                    KEY_QUERY_VALUE, &key) != ERROR_SUCCESS) {
+    LogFz("LoadSavedSize: no registry entry");
+    return;
+  }
+  DWORD w = 0, h = 0, x = 0, y = 0;
+  DWORD type = REG_DWORD, size = 4;
+  BOOL ok = RegQueryValueExA(key, "W", nullptr, &type, (BYTE*)&w, &size) == ERROR_SUCCESS &&
+            RegQueryValueExA(key, "H", nullptr, &type, (BYTE*)&h, &size) == ERROR_SUCCESS &&
+            RegQueryValueExA(key, "Left", nullptr, &type, (BYTE*)&x, &size) == ERROR_SUCCESS &&
+            RegQueryValueExA(key, "Top", nullptr, &type, (BYTE*)&y, &size) == ERROR_SUCCESS;
+  RegCloseKey(key);
+  if (!ok || w < 200 || h < 200) {
+    LogFz("LoadSavedSize: invalid saved size (%lu x %lu)", w, h);
+    return;
+  }
+  // Sanity: keep the window on the virtual screen (visible). If the saved
+  // position is off-screen, let Windows place it.
+  RECT work{};
+  if (SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0)) {
+    if (x < work.left - 100 || y < work.top - 100) {
+      x = work.left + 40;
+      y = work.top + 40;
+    }
+  }
+  LogFz("LoadSavedSize: restoring %d,%d %lux%lu", x, y, w, h);
+  SetWindowPos(GetHandle(), nullptr, (int)x, (int)y, (int)w, (int)h,
+               SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 void FlutterWindow::KickRedraw() {
@@ -133,18 +193,32 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   LogFz("OnCreate");
+  // Always start at the size/position the app was closed with — ignore what
+  // FancyZones thinks the "last zone" was.
+  LoadSavedSize();
   Show();
   shown_at_ = GetTickCount64();
   SetTimer(GetHandle(), kCreateViewTimer, kSettleMs, nullptr);
+  // Safety net: guarantee the view is created even if moves never stop.
+  SetTimer(GetHandle(), kCreateViewTimer, static_cast<UINT>(kMaxStartupMs),
+           nullptr);
+  // Startup lockdown: reject external geometry changes (FancyZones "move new
+  // windows to last zone") until the view is rendered and the window has
+  // shown its own frames. Then unlock so the user can snap/drag normally.
+  startup_locked_ = true;
+  SetTimer(GetHandle(), kStartupUnlockTimer, (UINT)kStartupLockMs, nullptr);
+  LogFz("startup lockdown ON for %u ms", (UINT)kStartupLockMs);
   return true;
 }
 
 void FlutterWindow::OnDestroy() {
   KillTimer(GetHandle(), kCreateViewTimer);
   KillTimer(GetHandle(), kRepaintKickTimer);
+  KillTimer(GetHandle(), kStartupUnlockTimer);
   for (unsigned i = 0; i < kRepaintKickCount; ++i) {
     KillTimer(GetHandle(), kRepaintKickTimerBase + i);
   }
+  SaveSizeToRegistry();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
@@ -170,6 +244,25 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       flutter_controller_->engine()->ReloadSystemFonts();
       break;
 
+    case WM_WINDOWPOSCHANGING: {
+      // While in startup lockdown, neutralize geometry changes initiated by
+      // other processes (PowerToys FancyZones "move to last zone"). The
+      // correct way to cancel a move/resize here is NOT a return value but
+      // setting SWP_NOMOVE|SWP_NOSIZE in the WINDOWPOS the window manager is
+      // about to apply. We skip our own visible kicks (kicking_) and let the
+      // saved-size window render its first frames untouched; after the
+      // unlock timer the window is fully draggable/snappable again.
+      if (startup_locked_ && !kicking_) {
+        auto* pos = reinterpret_cast<WINDOWPOS*>(lparam);
+        if (pos) {
+          pos->flags |= SWP_NOMOVE | SWP_NOSIZE;
+          LogFz("WM_WINDOWPOSCHANGING LOCKED %dx%d (lockdown)",
+                pos->cx, pos->cy);
+        }
+      }
+      break;
+    }
+
     case WM_WINDOWPOSCHANGED: {
       if (kicking_) {
         break;
@@ -179,7 +272,10 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
             pos ? pos->x : 0, pos ? pos->y : 0,
             pos ? pos->cx : 0, pos ? pos->cy : 0,
             pos ? pos->flags : 0);
-      if (!flutter_started_ && GetTickCount64() - shown_at_ < kMaxSettleMs) {
+      if (!flutter_started_ && GetTickCount64() - shown_at_ < kMaxStartupMs) {
+        // Keep deferring the view creation while the window is still moving
+        // (FancyZones animates the restore over seconds). Once it holds still
+        // for kSettleMs, WM_TIMER creates the view at the final zone size.
         SetTimer(hwnd, kCreateViewTimer, kSettleMs, nullptr);
       }
       // Late zone move: re-arm one repaint kick so the engine re-presents at
@@ -204,12 +300,27 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     }
 
     case WM_TIMER:
+      if (wparam == kStartupUnlockTimer) {
+        KillTimer(hwnd, kStartupUnlockTimer);
+        startup_locked_ = false;
+        LogFz("startup lockdown OFF (window free to snap/drag)");
+        // One final clean present once the window is free and at its own size.
+        SetTimer(hwnd, kRepaintKickTimer, kRepaintKickMs, nullptr);
+        return 0;
+      }
       if (wparam == kCreateViewTimer) {
         KillTimer(hwnd, kCreateViewTimer);
         LogFz("WM_TIMER create-view");
-        if (!flutter_started_ && !CreateFlutterView()) {
-          LogFz("  CreateFlutterView FAILED");
-          DestroyWindow(hwnd);
+        if (!flutter_started_) {
+          // Safety net: if the window has been moving non-stop for longer than
+          // kMaxStartupMs, create the view anyway so startup can't hang.
+          if (GetTickCount64() - shown_at_ >= kMaxStartupMs) {
+            LogFz("  max-startup reached, creating anyway");
+          }
+          if (!CreateFlutterView()) {
+            LogFz("  CreateFlutterView FAILED");
+            DestroyWindow(hwnd);
+          }
         }
         return 0;
       }

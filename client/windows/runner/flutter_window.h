@@ -43,6 +43,18 @@ class FlutterWindow : public Win32Window {
   // can't trigger an endless kick loop.
   bool kicking_ = false;
 
+  // True while the window is in startup lockdown: external window managers
+  // (PowerToys FancyZones) have their WM_WINDOWPOSCHANGING rejected so the
+  // window starts at its own saved size, renders its first frames, and only
+  // then becomes freely draggable/snappable.
+  bool startup_locked_ = false;
+
+  // Persists the current window rect to HKCU\Software\AseraCorp\Plurality
+  // (called on destroy) and restores it in OnCreate so the app always starts
+  // at the size/position it was closed with, regardless of FancyZones.
+  void SaveSizeToRegistry();
+  void LoadSavedSize();
+
   // Creates the FlutterViewController and registers plugins. Must only be
   // called once. Returns true when the view is up (or a retry was re-armed);
   // returns false only on a permanent failure (caller destroys the window).
@@ -60,16 +72,23 @@ class FlutterWindow : public Win32Window {
   void LogFz(const char* fmt, ...);
 
   // Deferred-startup timer: create the Flutter view shortly after the window
-  // stops moving, so FancyZones' zone restore can't race the view creation.
+  // stops moving. PowerToys FancyZones animates the window into its zone over
+  // several seconds (the long 0x80A15 WM_WINDOWPOSCHANGED series), so a short
+  // cap races the animation. Instead: wait for quiescence (kSettleMs without
+  // any move), bounded only by kMaxStartupMs as a safety net so a window that
+  // keeps moving forever can't block startup forever.
   static constexpr UINT_PTR kCreateViewTimer = 1;
-  static constexpr UINT kSettleMs = 150;
-  static constexpr ULONGLONG kMaxSettleMs = 1000;
+  static constexpr UINT_PTR kMaxStartupTimer = 3;
+  static constexpr UINT kSettleMs = 250;
+  static constexpr ULONGLONG kMaxStartupMs = 10000;
 
   // Repaint-kick timers: after the first frame (and after late window-manager
   // moves), force one clean redraw so a silently-failed swapchain present is
   // recovered without requiring the user to resize the window. Several
   // staggered kicks (distinct timer ids!) cover moves that land mid-startup.
   static constexpr UINT_PTR kRepaintKickTimer = 2;
+  static constexpr UINT_PTR kStartupUnlockTimer = 4;
+  static constexpr ULONGLONG kStartupLockMs = 4000;  // hold external geometry off this long
   static constexpr UINT_PTR kRepaintKickTimerBase = 10;
   static constexpr UINT kRepaintKickCount = 6;
   static constexpr UINT kRepaintKickMs = 250;
