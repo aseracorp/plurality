@@ -70,7 +70,8 @@ void FlutterWindow::LoadSavedSize() {
     LogFz("LoadSavedSize: no registry entry");
     return;
   }
-  DWORD w = 0, h = 0, x = 0, y = 0;
+  DWORD w = 0, h = 0;
+  LONG x = 0, y = 0;
   DWORD type = REG_DWORD, size = 4;
   BOOL ok = RegQueryValueExA(key, "W", nullptr, &type, (BYTE*)&w, &size) == ERROR_SUCCESS &&
             RegQueryValueExA(key, "H", nullptr, &type, (BYTE*)&h, &size) == ERROR_SUCCESS &&
