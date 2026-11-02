@@ -258,19 +258,20 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// header/body passthrough is harmless when unsupported.
 	cp := true
 	requestData.CachePrompt = &cp
-	// Keep the entire stable prefix pinned. n_keep tells llama.cpp how many
-	// initial tokens MUST be kept in the KV cache even when the tail would
-	// otherwise evict/truncate them. We size it generously to cover the
-	// system prompt + tool schemas + stable conversation lead-in (the exact
-	// value is not critical — llama.cpp matches the LCP it actually has
-	// cached; n_keep just guarantees the floor survives). A nil/0 n_keep on
-	// the avalon side would fall back to --keep 4096, which is far below
-	// the byte-stable system prefix and therefore lets those leading tokens
-	// be dropped → full re-prefill. Only set when the serialized local
-	// cacheable path is used.
+	// Keep the ENTIRE prefix (all tokens) so the cache grows dynamically
+	// with our conversations — NOT a static budget. We send n_keep=-1,
+	// which llama.cpp documents as "retain ALL tokens from the prompt".
+	// Combined with cache_prompt=true this makes llama.cpp reuse the longest
+	// common prefix with the previous request's KV cache regardless of
+	// whether the conversation is 30k or 200k tokens: only the newly-added
+	// tail is (re-)processed. A static n_keep (e.g. 4096 or 32768) would
+	// cap how much of the prefix is preserved — useless for long sessions —
+	// and the old avalon default --keep 4096 silently dropped all but the
+	// first 4k tokens of the stable system prefix, forcing a full re-prefill
+	// every turn. n_keep=-1 is the "grow with the conversation" mode.
 	requestData.NKeep = nil
 	if modelRequiresSerialization(model) {
-		nk := 32768
+		nk := -1 // keep all prefix tokens (dynamic, grows with context)
 		requestData.NKeep = &nk
 	}
 
