@@ -49,7 +49,7 @@ void FlutterWindow::SaveSizeToRegistry() {
     return;
   }
   HKEY key = nullptr;
-  if (RegCreateKeyExA(HKEY_CURRENT_USER, "Software\AseraCorp\Plurality",
+  if (RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\AseraCorp\\Plurality",
                       0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) ==
       ERROR_SUCCESS) {
     DWORD v;
@@ -65,7 +65,7 @@ void FlutterWindow::SaveSizeToRegistry() {
 
 void FlutterWindow::LoadSavedSize() {
   HKEY key = nullptr;
-  if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\AseraCorp\Plurality", 0,
+  if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\AseraCorp\\Plurality", 0,
                     KEY_QUERY_VALUE, &key) != ERROR_SUCCESS) {
     LogFz("LoadSavedSize: no registry entry");
     return;
@@ -77,7 +77,7 @@ void FlutterWindow::LoadSavedSize() {
             RegQueryValueExA(key, "Left", nullptr, &type, (BYTE*)&x, &size) == ERROR_SUCCESS &&
             RegQueryValueExA(key, "Top", nullptr, &type, (BYTE*)&y, &size) == ERROR_SUCCESS;
   RegCloseKey(key);
-  if (!ok || w < 200 || h < 200) {
+  if (!ok || w < 200u || h < 200u) {
     LogFz("LoadSavedSize: invalid saved size (%lu x %lu)", w, h);
     return;
   }
