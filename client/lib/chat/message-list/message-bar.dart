@@ -201,6 +201,18 @@ class InfoButton extends StatelessWidget {
               Text('Input: ${message.promptTokens ?? "?"}'),
               Text('Output: ${message.completionTokens ?? "?"}'),
               Text('Total: ${message.totalTokens ?? "?"}'),
+              if (message.compressionRatio != null &&
+                  message.compressionRatio! > 1.01) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Compression:',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                Text(
+                  '${message.compressionRatio!.toStringAsFixed(2)}x fewer '
+                  'prompt tokens (Headroom/Caveman)',
+                ),
+              ],
               if (hasCost) ...[
                 const SizedBox(height: 8),
                 Text(

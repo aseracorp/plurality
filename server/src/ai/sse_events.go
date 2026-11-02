@@ -24,6 +24,7 @@ type SSEEvent struct {
 	PromptTokens     int             `json:"prompt_tokens,omitempty"`
 	CompletionTokens int             `json:"completion_tokens,omitempty"`
 	ResponseCost     float64         `json:"response_cost,omitempty"`
+	CompressionRatio float64         `json:"compression_ratio,omitempty"`
 	Title            string          `json:"title,omitempty"`
 
 	// ModelSelected is the conversation's current per-conversation settings

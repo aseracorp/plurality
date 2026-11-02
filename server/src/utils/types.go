@@ -168,6 +168,10 @@ type Message struct {
 	PromptTokens     int     `json:"prompt_tokens,omitempty"`
 	CompletionTokens int     `json:"completion_tokens,omitempty"`
 	ResponseCost     float64 `json:"response_cost,omitempty"`
+	// CompressionRatio is how many times the pre-proxy prompt estimate was
+	// reduced before the provider saw it (est. uncompressed tokens / provider
+	// prompt_tokens). 0 = no compression proxy active for the model / unknown.
+	CompressionRatio float64 `json:"compression_ratio,omitempty"`
 	Model            Model   `json:"model,omitempty"`
 }
 
@@ -314,10 +318,10 @@ type ParameterToolsRequest struct {
 // vision-model turns that sent array params. Array params default to
 // items:{"type":"string"} when no richer item schema is available.
 type PropertyParameterToolsRequest struct {
-	Type        string                            `json:"type"`
-	Description string                            `json:"description"`
-	Enum        []string                          `json:"enum,omitempty"`
-	Items       *PropertyParameterToolsRequest    `json:"items,omitempty"`
+	Type        string                         `json:"type"`
+	Description string                         `json:"description"`
+	Enum        []string                       `json:"enum,omitempty"`
+	Items       *PropertyParameterToolsRequest `json:"items,omitempty"`
 }
 
 // AITool is a server-side tool registered in the tool registry.

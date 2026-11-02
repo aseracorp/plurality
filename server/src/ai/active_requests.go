@@ -204,6 +204,14 @@ type ActiveRequest struct {
 	PromptTokens     int
 	CompletionTokens int
 	ResponseCost     float64
+	// CompressEstimate is the pre-proxy estimated prompt token count for the
+	// current turn (est. from the marshalled request before Headroom/Caveman
+	// compress it). Compared against the provider's post-compression
+	// prompt_tokens it yields the real compression ratio for this model.
+	CompressEstimate int
+	// CompressionRatio is this turn's prompt compression ratio
+	// (est. uncompressed / provider post-compression prompt tokens).
+	CompressionRatio float64
 }
 
 // NewActiveRequest creates a new ActiveRequest with a cancelable context.

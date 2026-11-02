@@ -186,13 +186,14 @@ class MessageAdapter extends TypeAdapter<Message> {
       promptTokens: (fields[8] as num?)?.toInt(),
       completionTokens: (fields[9] as num?)?.toInt(),
       responseCost: (fields[10] as num?)?.toDouble(),
+      compressionRatio: (fields[12] as num?)?.toDouble(),
     );
   }
 
   @override
   void write(BinaryWriter writer, Message obj) {
     writer
-      ..writeByte(11)
+      ..writeByte(13)
       ..writeByte(0)
       ..write(obj.role)
       ..writeByte(1)
@@ -214,7 +215,9 @@ class MessageAdapter extends TypeAdapter<Message> {
       ..writeByte(9)
       ..write(obj.completionTokens)
       ..writeByte(10)
-      ..write(obj.responseCost);
+      ..write(obj.responseCost)
+      ..writeByte(12)
+      ..write(obj.compressionRatio);
   }
 
   @override

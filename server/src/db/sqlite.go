@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS messages (
 	prompt_tokens     INTEGER DEFAULT 0,
 	completion_tokens INTEGER DEFAULT 0,
 	response_cost     REAL    DEFAULT 0,
+	compression_ratio REAL    DEFAULT 0,
 	model             TEXT,
 	compacted         INTEGER NOT NULL DEFAULT 0,
 	UNIQUE(conversation_id, seq)
@@ -154,6 +155,9 @@ func GetUserDB(userID string) (*sql.DB, error) {
 	}
 	if err := ensureColumn(db, "messages", "compacted", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		utils.Error("[SQLite] migration compacted failed", err)
+	}
+	if err := ensureColumn(db, "messages", "compression_ratio", "REAL DEFAULT 0"); err != nil {
+		utils.Error("[SQLite] migration compression_ratio failed", err)
 	}
 
 	// Best-effort storage maintenance: truncate oversized stored message

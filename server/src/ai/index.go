@@ -303,6 +303,9 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// would exceed the model's window minus the reply reservation, return
 	// an error the loop's context-length path recognizes so it compacts
 	// the history and retries instead of shipping an oversized request.
+	// estTokens is hoisted above the guard so it can be returned to the
+	// caller for compression-ratio accounting after a successful request.
+	estTokens := 0
 	if windowTokens > 0 {
 		// ~3 chars per token for JSON: tool results and shell/file dumps are
 		// far denser than prose (~2.5-3.5 chars/token), and the marshalled
@@ -311,10 +314,23 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		// dense code and over-estimated escaped text; 3.0 sits in the middle
 		// of the observed density band so the guard fires only when the
 		// request genuinely risks the window.
-		estTokens := len(jsonData) / 3
+		estTokens = len(jsonData) / 3
+		// Compression-aware guard: when the model routes through a Headroom /
+		// Caveman compression proxy, the provider actually sees a smaller
+		// prompt than the marshalled bytes above. Without this discount the
+		// guard fires far too early on compressed models and forces durable
+		// compaction it does not need. We keep the estimate conservative:
+		// apply the model's observed compression factor only when it is >1
+		// (i.e. a proxy is provably active) and bounds the discount so the
+		// guard can never under-count dangerously (see CompressionFactor).
+		postCompressionTokens := estTokens
+		if factor := CompressionFactor(model.Name); factor > 1 {
+			postCompressionTokens = int(float64(estTokens) / factor)
+			utils.Log("[Eco] compression-aware guard: est %d tokens / factor %.2f = %d post-compression vs window %d", estTokens, factor, postCompressionTokens, windowTokens)
+		}
 		// Keep room for the model's answer: max_tokens (4096) + safety.
 		const replyReserve = 4096 + 2048
-		if estTokens > windowTokens-replyReserve {
+		if postCompressionTokens > windowTokens-replyReserve {
 			utils.Log("[Eco] preemptive context guard: estimated %d tokens vs window %d — returning context-length error so the loop compacts and retries", estTokens, windowTokens)
 			return nil, 0, fmt.Errorf("request estimated to exceed the context window: ~%d tokens vs %d (max %d) — compacting history and retrying", estTokens, windowTokens, windowTokens-replyReserve)
 		}
@@ -357,7 +373,10 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 			utils.Error("LiteLLM API request failed with status", nil, strStatus, ":", string(respBody))
 			return nil, 0, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(respBody))
 		}
-		return resp.Body, 0, nil
+		// The integer return carries the pre-proxy estimated prompt tokens so
+		// the loop can compute this turn's real compression ratio against the
+		// provider's post-compression prompt_tokens (see RecordCompression).
+		return resp.Body, estTokens, nil
 	}
 
 	resp, err := utils.DoLLMHTTPWithRetry(ctx, req)
@@ -372,7 +391,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		return nil, 0, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	return resp.Body, 0, nil
+	return resp.Body, estTokens, nil
 }
 
 // convertMessagesToOpenAI converts internal utils.Message slices into
