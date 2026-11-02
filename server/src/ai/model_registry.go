@@ -71,6 +71,14 @@ type ModelEntry struct {
 	// byte-for-byte untouched.
 	Headroom bool
 
+	// Caveman routes this model's chat completions through the in-container
+	// Caveman compression proxy (model_info.caveman: true). When both
+	// Headroom and Caveman are set on the same model they chain
+	// plurality -> Caveman (compress) -> Headroom (cache) -> LiteLLM; the
+	// compressed prefix is frozen byte-identically so KV prompt-cache reuse
+	// is preserved on top of a smaller prompt.
+	Caveman bool
+
 	// MaxContextTokens is the model's context window in tokens, as declared
 	// in litellm_config.yaml model_info.context_window and surfaced by the
 	// proxy on /v1/models. Zero means "unknown" — callers should fall back
@@ -96,6 +104,7 @@ type litellmModelEntry struct {
 	SupportsVision          bool   `json:"supports_vision"`
 	SupportsFunctionCalling bool   `json:"supports_function_calling"`
 	Headroom                bool   `json:"headroom"`
+	Caveman                 bool   `json:"caveman"`
 	MaxContextTokens        int    `json:"context_window"`
 }
 
@@ -143,6 +152,7 @@ func (r *ModelRegistry) Refresh(ctx context.Context) error {
 			SupportsVision:          m.SupportsVision,
 			SupportsFunctionCalling: m.SupportsFunctionCalling,
 			Headroom:                m.Headroom,
+			Caveman:                 m.Caveman,
 			MaxContextTokens:        m.MaxContextTokens,
 		}
 		byName[m.ID] = entry

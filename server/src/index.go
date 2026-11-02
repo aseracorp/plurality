@@ -98,6 +98,16 @@ func main() {
 	}
 	defer ai.ShutdownHeadroom()
 
+	// Initialize the in-container Caveman compression proxy. Models that opt
+	// in (model_info.caveman: true) route their chat completions through it,
+	// and may chain Caveman -> Headroom -> LiteLLM when both are set (see
+	// ai.ChatCompletionURL). Non-fatal by design: a Caveman failure only
+	// falls back to the direct path.
+	if err := ai.InitCaveman(); err != nil {
+		log.Printf("[main] WARNING: Caveman proxy not available (opted-in models will use direct LiteLLM): %v", err)
+	}
+	defer ai.ShutdownCaveman()
+
 	// Pass LiteLLM URL to packages that talk to the proxy directly.
 	db.LiteLLMBaseURL = ai.LiteLLMBaseURL
 	ai_tools.LiteLLMBaseURL = ai.LiteLLMBaseURL
@@ -320,6 +330,7 @@ func main() {
 		webhook.Shutdown()
 		ai.ShutdownLiteLLM()
 		ai.ShutdownHeadroom()
+		ai.ShutdownCaveman()
 		mcp.Shutdown()
 		cron.Shutdown()
 		// CloseAllUserDBs checkpoints every WAL (TRUNCATE) and resets stuck

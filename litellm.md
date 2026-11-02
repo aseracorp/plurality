@@ -91,6 +91,46 @@ Operational notes:
                                                                     └──────────────────┘
 ```
 
+## Caveman (compression proxy)
+
+The Plurality container bundles [Caveman](https://github.com/JuliusBrussee/caveman) (Apache-2.0) as a pinned static binary at `/app/caveman/caveman-proxy` (release `bin-v4.0.2`). The Go server spawns it at boot on `127.0.0.1:8789` and routes a model's `/v1/chat/completions` through its OpenAI-compatible mounts only when that model opts in:
+
+```yaml
+model_info:
+  caveman: true
+```
+
+Caveman makes the model "say less and read less" (compressing tool output / logs / verbose turns) on top of Headroom's context optimization. Because it is a base-URL-swap reverse proxy, the Go server simply points its chat URL at `/compat/<name>/v1/chat/completions`; the compat mounts (`litellm` and `headroom`) are written at boot into `caveman.yaml`.
+
+**Composing Caveman and Headroom on the same model.** Set both flags to maximize token efficiency:
+
+```yaml
+model_info:
+  headroom: true
+  caveman: true
+```
+
+The request chain is `plurality -> Caveman (compress) -> Headroom (cache) -> LiteLLM`. Caveman compresses the turn first; Headroom then runs in **cache mode**, which freezes that compressed prefix byte-identically and forwards `cache_prompt`/`n_keep`/`extra_body` verbatim — so llama.cpp/strata/avalon KV prompt-cache reuse still hits on top of a smaller prompt. Neither proxy reorders, drops, or rewrites the prefix on its own.
+
+Routing precedence (all fail closed to the next hop): `caveman + headroom` → Caveman→Headroom chain; `caveman` only → Caveman→LiteLLM; `headroom` only → Headroom→LiteLLM; neither → direct LiteLLM. If a proxy is unhealthy, the model transparently uses the next hop, so prompt caching survives any proxy outage.
+
+Operational notes:
+
+- `CAVEMAN_URL` env var points the server at an externally managed Caveman instead of spawning one (analogous to `LITELLM_URL`/`HEADROOM_URL`); required when `LITELLM_URL` is set.
+- Caveman's SQLite spend store and generated `caveman.yaml` live under the data volume (`<DATA_DIR>/caveman`), so a recreate does not reset stats.
+- Cache-warming (`CAVEMAN_CACHE_WARM`) is off: Plurality already sends explicit `cache_prompt`/`n_keep` hints, so Caveman does not make extra `max_tokens=0` upstream calls.
+
+### Caveman wiring
+
+```
+┌──────────────┐  chat (caveman:true)    ┌────────────────┐      ┌───────────────┐      ┌──────────────────┐
+│  Go server   │ ──────────────────────▶ │ caveman-proxy  │ ───▶ │ headroom proxy│ ───▶ │ litellm_proxy.py │ ──▶ upstream
+│              │                         │ 127.0.0.1:8789 │      │ 127.0.0.1:8787│      │ 127.0.0.1:4000    │
+│  ModelReg.   │ ◀────────────────────── │ mode=compress  │ ◀─── │ mode=cache    │ ◀─── │ (direct for       │
+└──────────────┘  non-opted → direct     └────────────────┘      └───────────────┘      │  non-opted)       │
+                                                                                          └──────────────────┘
+```
+
 ## API keys
 
 Use the `os.environ/<NAME>` indirection so secrets never sit in the YAML:

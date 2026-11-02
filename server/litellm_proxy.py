@@ -123,7 +123,7 @@ async def list_models():
         # other proxy-internal config.
         for k in ("mode", "supports_vision", "supports_function_calling",
                   "supports_audio_input", "supports_audio_output",
-                  "context_window", "headroom"):
+                  "context_window", "headroom", "caveman"):
             if k in info:
                 entry[k] = info[k]
         models.append(entry)
