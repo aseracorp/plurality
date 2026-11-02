@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -469,6 +470,27 @@ func ServerDescription(userID, serverName string) string {
 		return d
 	}
 	return serverDescriptions[userID][serverName]
+}
+
+// ServerDescriptionKV is one entry of ServerDescriptionsOrdered.
+type ServerDescriptionKV struct {
+	ServerName  string
+	Description string
+}
+
+// ServerDescriptionsOrdered returns the configured MCP server descriptions
+// visible to a user, sorted by server name. Use this instead of ranging over
+// the ServerDescriptions map when building the system prompt: ranging a Go
+// map yields a different order per request, which reshuffles the system
+// prompt and busts the KV prompt-cache prefix on every turn.
+func ServerDescriptionsOrdered(userID string) []ServerDescriptionKV {
+	m := ServerDescriptions(userID)
+	out := make([]ServerDescriptionKV, 0, len(m))
+	for k, v := range m {
+		out = append(out, ServerDescriptionKV{ServerName: k, Description: v})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ServerName < out[j].ServerName })
+	return out
 }
 
 // ServerDescriptions returns all server descriptions visible to a user.
