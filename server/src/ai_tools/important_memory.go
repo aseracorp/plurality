@@ -15,30 +15,35 @@ func memoryToolError(msg string) utils.MessageContent {
 	return utils.NewTextContent(string(b))
 }
 
-// UpdateImportantMemoryTool lets the assistant overwrite its own "important
-// memory" snippet. The snippet is injected verbatim into the system prompt at
-// the start of every chat completion (see ai/index.go), so the tool is
-// effectively write-only — the LLM reads the current value from the prompt
-// and rewrites the whole thing when it wants to change it.
+// UpdateImportantMemoryTool lets the assistant overwrite the user's GLOBAL
+// durable memory snippet (name, contacts, preferences, standing rules).
+// It is injected into the system prompt of EVERY conversation, so it must
+// stay compact and durable — never per-conversation task state.
 var UpdateImportantMemoryTool = utils.AITool{
 	Name:              "Update Important Memory",
-	Description:       "Overwrite the important_memory snippet that is injected into every system prompt.",
+	Description:       "Overwrite the user's GLOBAL important_memory snippet - the only memory that is visible in EVERY conversation. It must contain only durable facts about the user that apply to ALL conversations (name, email, phone, preferences, standing constraints, high-level stable projects).",
 	ToolID:            UpdateImportantMemoryToolID,
 	PickerLabel:       "Important Memory",
-	PickerDescription: "Lets the assistant maintain a compact snippet (the user's name, contacts, key preferences…) that is shown at the top of every conversation. Use files and reference them here for longer memories.",
+	PickerDescription: "Maintain the user's GLOBAL memory: durable facts (name, contacts, preferences, standing rules) shown in every conversation. NOT for task progress - use the task list / long_task tool inside the conversation for that.",
 	PickerDefault:     "on",
 	PickerOrder:       45,
 	ToolRequest: utils.ToolsRequest{
 		Type: "function",
 		Function: utils.FunctionToolsRequest{
-			Name:        UpdateImportantMemoryToolID,
-			Description: "Overwrite the important_memory snippet that is shown to you at the start of every conversation in the system prompt. The tool is write-only: you cannot read the value back, but the current contents are always visible in the system prompt. Keep it compact — a few short lines. Use it to remember durable facts about the user (name, email, phone, preferences, ongoing projects) so future conversations have the context.",
+			Name: UpdateImportantMemoryToolID,
+			Description: `Overwrite the GLOBAL important_memory snippet that is injected verbatim into the system prompt of EVERY conversation. The tool is write-only: you cannot read the value back, but the current contents are always visible in the system prompt.
+
+Store ONLY durable facts about the user that apply to ALL conversations: name, email, phone, address, preferences, standing constraints/rules, stable high-level projects (e.g. 'homelab with pve01/pve02'). Keep it to a few short lines.
+
+NEVER store in here: task progress (DONE / NEXT / TODO / CUTOVER steps), current working state, timestamps or clocks ('current time...'), step-by-step commands, file/infra details of one specific job, or anything that only matters to the conversation you are in right now. That kind of state belongs in the conversation itself - use the long_task checklist for todo steps and leave the details in the chat history. If what you are about to write is mostly task state, DO NOT update important_memory; keep it in the conversation instead.
+
+Before overwriting, preserve anything still true from the previous content that you want to keep (durable facts only); drop task-specific and time-specific lines.`,
 			Parameters: &utils.ParameterToolsRequest{
 				Type: "object",
 				Properties: map[string]utils.PropertyParameterToolsRequest{
 					"content": {
 						Type:        "string",
-						Description: "The new full content of the snippet. This REPLACES the previous content entirely — include everything you want to keep.",
+						Description: "The new full content of the GLOBAL memory. This REPLACES the previous content entirely. Durable user facts only - no task progress, no timestamps, no per-conversation state.",
 					},
 				},
 				Required: []string{"content"},
