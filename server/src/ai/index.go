@@ -123,13 +123,6 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		return nil, 0, fmt.Errorf("AI proxy is not ready, please try again in a moment")
 	}
 
-	// Append the per-user important_memory snippet. It is always present so the
-	// LLM can read its current value, and is overwritten via the
-	// update_important_memory tool.
-	if username, ok := ctx.Value("userID").(string); ok && username != "" {
-		systemPrompt += "\n\nThis is your important_memory snippet, you can edit it further but keep it compact:\n```\n" + memory.Get(username) + "\n```"
-	}
-
 	// The system prompt is kept BYTE-STABLE across turns: no timestamp is
 	// appended here. KV prompt caching (llama.cpp/avalon/strata) matches the
 	// longest common PREFIX of the previous request's token stream — any
@@ -236,6 +229,26 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// caching actually work for a long-lived agent loop: consecutive turns
 	// share a byte-identical prefix.
 	requestData.Messages = msgReqList
+
+	// Append the per-user important_memory snippet as a SEPARATE trailing
+	// message, immediately before the time message — NOT inside the stable
+	// system prompt. The memory block is rewritten frequently (status lines,
+	// timestamps, project notes), so keeping it in the system-prompt prefix
+	// would invalidate the KV cache for the ENTIRE conversation history that
+	// follows it on every such edit (prompt-cache matches the longest common
+	// PREFIX — a single changed byte early on forces a full re-prefill). As a
+	// trailing message it sits AFTER the (large, stable) history: when the
+	// memory block is unchanged it is reused together with the history, and
+	// only the few tokens after it (the time message) are re-processed. When
+	// the memory DOES change, only the tail from its position onward is
+	// re-prefilled — the whole history stays cached.
+	if username, ok := ctx.Value("userID").(string); ok && username != "" {
+		requestData.Messages = append(requestData.Messages, StandardMessageReq{
+			Role:    "user",
+			Content: "Important memory (private to you, not shown to the user, keep compact):\n```\n" + memory.Get(username) + "\n```",
+		})
+	}
+
 	// The current time as a trailing user-role message. It sits at the very
 	// END of the request, so the shared prefix (system prompt + full
 	// history) is byte-identical across turns and fully cacheable. Only a
