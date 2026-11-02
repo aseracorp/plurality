@@ -100,19 +100,37 @@ model_info:
   caveman: true
 ```
 
-Caveman makes the model "say less and read less" (compressing tool output / logs / verbose turns) on top of Headroom's context optimization. Because it is a base-URL-swap reverse proxy, the Go server simply points its chat URL at `/compat/<name>/v1/chat/completions`; the compat mounts (`litellm` and `headroom`) are written at boot into `caveman.yaml`.
+Caveman makes the model "say less and read less" (compressing tool output / logs / verbose turns). Because it is a base-URL-swap reverse proxy, the Go server simply points its chat URL at `/compat/<name>/v1/chat/completions`; the compat mounts (`litellm` and `headroom`) are written at boot into `caveman.yaml`. When both Caveman and Headroom are enabled, the deduplicated ownership resolver wires exactly ONE content compressor per model (see below) — Caveman and Headroom never compress the same content category one after another.
 
-**Composing Caveman and Headroom on the same model.** Set both flags to maximize token efficiency:
+**Composing Caveman and Headroom on the same model.** Both may be enabled at once, and each takes sub-settings:
 
 ```yaml
 model_info:
-  headroom: true
-  caveman: true
+  headroom:
+    enabled: true
+    keep_last_turns: 0        # trim N last turns before optimizing (0 = keep all)
+  caveman:
+    enabled: true
+    stones:                    # caveman's six "rocks"
+      say_less: true           # agent answers short, code stays exact
+      read_less: true          # compress logs / JSON / CSV / YAML / test output before the model reads them
+      auto: false              # pick model + effort per ask (needs a Caveman account)
+      blocks: false            # keep scripts the agent wrote and re-run them
+      waste_fixes: false       # keep the prompt cache warm while you pause
+      browse: false            # compress web pages
 ```
 
-The request chain is `plurality -> Caveman (compress) -> Headroom (cache) -> LiteLLM`. Caveman compresses the turn first; Headroom then runs in **cache mode**, which freezes that compressed prefix byte-identically and forwards `cache_prompt`/`n_keep`/`extra_body` verbatim — so llama.cpp/strata/avalon KV prompt-cache reuse still hits on top of a smaller prompt. Neither proxy reorders, drops, or rewrites the prefix on its own.
+Bare `headroom: true` / `caveman: true` still work and mean "enabled with defaults" (for caveman, all six stones on — its default posture).
 
-Routing precedence (all fail closed to the next hop): `caveman + headroom` → Caveman→Headroom chain; `caveman` only → Caveman→LiteLLM; `headroom` only → Headroom→LiteLLM; neither → direct LiteLLM. If a proxy is unhealthy, the model transparently uses the next hop, so prompt caching survives any proxy outage.
+**Deduplication — no double optimization.** The two proxies never compress the same content category in sequence. For each model the routing resolver picks a SINGLE content owner:
+
+- **Caveman owns content compression** when it is enabled with the `read_less` stone on (caveman's structured-content compressor handles JSON/log/CSV/YAML/test output, which headroom would otherwise also compress). Requests route `plurality -> Caveman (compress) -> LiteLLM`.
+- **Headroom owns content** when enabled without caveman `read_less`. Requests route `plurality -> Headroom (cache) -> LiteLLM`.
+- Enabling "both" therefore does not chain two content compressors; it keeps the model on the more effective one (caveman `read_less` wins for structured content). Features that are not overlapping content compression stay composable per model (e.g. headroom `keep_last_turns` applies on headroom-owned models; caveman's other stones apply on caveman-owned models).
+
+The chosen owner is the only optimization hop, so a payload is never compressed twice, and **KV prompt-cache stability is preserved** by whichever owner runs: caveman's `PrefixStabilizer` keeps the compressed prefix byte-stable, and headroom's `cache` mode freezes prior turns — both forward `cache_prompt`/`n_keep` verbatim.
+
+Routing / fail-closed: if the content owner is unhealthy, the model falls back to the **next** enabled hop (headroom → direct LiteLLM; caveman → direct LiteLLM), never to a doubled optimization.
 
 Operational notes:
 

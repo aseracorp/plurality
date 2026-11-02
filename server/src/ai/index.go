@@ -326,6 +326,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	ApplyChatOptimizationHeaders(model.Name, req)
 
 	// Use the shared serialized+retrying LLM path.
 	// Serializing chat completions keeps a single-GPU self-hosted backend
@@ -693,6 +694,7 @@ func GenerateTitleForMessage(message, model string) (string, error) {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	ApplyChatOptimizationHeaders(model, req)
 
 	// Serialized + retried LLM path (see DoLLMHTTPWithRetry).
 	resp, err := utils.DoLLMHTTPWithRetry(context.Background(), req)
@@ -782,6 +784,7 @@ func GenerateCheckpointSummary(text, model string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	ApplyChatOptimizationHeaders(model, req)
 
 	// Serialized + retried LLM path (see DoLLMHTTPWithRetry).
 	resp, err := utils.DoLLMHTTPWithRetry(context.Background(), req)

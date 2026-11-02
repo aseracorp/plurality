@@ -101,14 +101,9 @@ model_list:
   #       headroom: true
 
   # Per-model Caveman opt-in (see litellm.md -> "Caveman"):
-  # add `caveman: true` to a model's model_info to route its chat
-  # completions through the in-container Caveman compression proxy, which
-  # makes the model "say less and read less". Caveman composes with Headroom
-  # on the same model: set BOTH headroom: true and caveman: true to chain
-  # plurality -> Caveman (compress) -> Headroom (cache) -> LiteLLM, so the
-  # compressed prefix is frozen byte-identically and KV prompt-cache reuse
-  # is preserved on top of a smaller prompt. Operators enable this in their
-  # runtime litellm_config.yaml, e.g.:
+  # add `caveman: true` (all six stones on) or a dict with sub-settings.
+  # Bare booleans and dict forms are both accepted for headroom and caveman.
+  # Operators enable this in their runtime litellm_config.yaml, e.g.:
   #
   #   - model_name: "my-local-model"
   #     litellm_params:
@@ -117,8 +112,22 @@ model_list:
   #     model_info:
   #       mode: "chat"
   #       supports_function_calling: true
-  #       headroom: true
-  #       caveman: true
+  #       headroom:
+  #         enabled: true
+  #         keep_last_turns: 0
+  #       caveman:
+  #         enabled: true
+  #         stones:
+  #           say_less: true
+  #           read_less: true     # wins content-ownership over headroom
+  #           auto: false
+  #           blocks: false
+  #           waste_fixes: false
+  #           browse: false
+  #
+  # Deduplication: only ONE proxy owns content compression per model —
+  # caveman read_less wins when on, else headroom — so a payload is never
+  # optimized twice (see litellm.md).
 
 general_settings:
   drop_params: true

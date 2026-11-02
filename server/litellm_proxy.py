@@ -72,6 +72,23 @@ def load_config(config_path):
         name = entry["model_name"]
         info = entry.get("model_info", {}) or {}
 
+        # Normalize the per-model optimization flags: each may be a bare bool
+        # (enabled with defaults) or a dict of sub-settings. Whatever the user
+        # wrote becomes a dict with an explicit "enabled" key, so /v1/models
+        # carries one consistent shape and the Go side never re-parses YAML.
+        for opt_key in ("headroom", "caveman"):
+            val = info.get(opt_key)
+            if val is True:
+                info[opt_key] = {"enabled": True}
+            elif val is False or val is None:
+                info[opt_key] = {"enabled": False}
+            elif isinstance(val, dict):
+                info[opt_key] = dict(val)
+                info[opt_key].setdefault("enabled", True)
+            else:
+                # Typo / unknown type -> fail closed to disabled.
+                info[opt_key] = {"enabled": False}
+
         model_to_litellm[name] = params.get("model", name)
         model_to_info[name] = info
         model_to_api_key[name] = params.get("api_key", "")

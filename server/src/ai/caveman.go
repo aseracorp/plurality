@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -121,25 +122,72 @@ func ChatCompletionURL(model utils.Model) string {
 
 // ChatCompletionURLForName is ChatCompletionURL for call sites that only
 // carry a model name string.
+//
+// Deduplication ("no double optimization"): a model may enable BOTH Headroom
+// and Caveman, but only ONE proxy owns input-content compression per model.
+// Caveman's read_less stone is the structured-content compressor (JSON, logs,
+// CSV, YAML, test output) and wins ownership when it is on; otherwise Headroom
+// owns content. The losing proxy is NOT chained for that model, so a payload
+// category is never optimized twice. (Headroom's cache mode freezes prior
+// turns; Caveman's PrefixStabilizer keeps the KV prefix stable in its place.)
 func ChatCompletionURLForName(name string) string {
-	cavemanOn := false
-	headroomOn := false
-	if e, ok := Models.Get(name); ok {
-		cavemanOn = e.Caveman
-		headroomOn = e.Headroom
-	}
-
-	switch {
-	case cavemanOn && cavemanReady.Load() && headroomOn && headroomReady.Load():
-		// Cave compresses, then Headroom caches the compressed prefix.
-		return CavemanBaseURL + "/compat/headroom"
-	case cavemanOn && cavemanReady.Load():
-		return CavemanBaseURL + "/compat/litellm"
-	case headroomOn && headroomReady.Load():
-		return HeadroomBaseURL
+	contentOwner, e := optimizationOwners(name)
+	switch contentOwner {
+	case ownerCaveman:
+		if e.Caveman.Enabled && cavemanReady.Load() {
+			return CavemanBaseURL + "/compat/litellm"
+		}
+	case ownerHeadroom:
+		if e.Headroom.Enabled && headroomReady.Load() {
+			return HeadroomBaseURL
+		}
 	default:
-		return LiteLLMBaseURL
+		// no content owner -> direct LiteLLM, byte-for-byte untouched
 	}
+	return LiteLLMBaseURL
+}
+
+// contentOwner names which proxy is the single content-compression owner for a
+// model. Zero value (ownerNone) means neither is enabled for content.
+type contentOwner int
+
+const (
+	ownerNone contentOwner = iota
+	ownerCaveman
+	ownerHeadroom
+)
+
+// optimizationOwners resolves the deduplicated per-model optimization plan.
+// Caveman wins content ownership whenever it is enabled with the read_less
+// stone on (caveman's structured-content compressor measurably beats headroom
+// on JSON/log/CSV/YAML/test output per its own benchmarks); Headroom owns
+// content for models that enable headroom without caveman read_less.
+func optimizationOwners(name string) (contentOwner, ModelEntry) {
+	entry, _ := Models.Get(name)
+
+	cavemanOwns := entry.Caveman.Enabled && entry.Caveman.Stones.ReadLess
+	if cavemanOwns {
+		return ownerCaveman, entry
+	}
+	if entry.Headroom.Enabled {
+		return ownerHeadroom, entry
+	}
+	return ownerNone, entry
+}
+
+// ApplyChatOptimizationHeaders sets any per-request optimization headers for
+// the given model on an outbound chat-completion request. Called right before
+// the POST to the base URL returned by ChatCompletionURLForName.
+//
+//   - Headroom: `x-headroom-keep-last-turns` (trims history before optimizing)
+//     when the model sets headroom.keep_last_turns; 0 = keep everything.
+func ApplyChatOptimizationHeaders(name string, req *http.Request) {
+	owner, e := optimizationOwners(name)
+	if owner == ownerHeadroom && e.Headroom.KeepLastTurns > 0 {
+		req.Header.Set("x-headroom-keep-last-turns", strconv.Itoa(e.Headroom.KeepLastTurns))
+	}
+	// Caveman's per-stone toggles are honored via its own caveman.yaml /
+	// engine (read_less = compress mode). Nothing to add per request today.
 }
 
 func startCavemanProcess() error {

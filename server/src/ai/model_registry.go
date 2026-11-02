@@ -28,35 +28,35 @@ import (
 // best-effort numbers; operators can override per-model by adding
 // `model_info.context_window` to litellm_config.yaml.
 var knownModelContextWindows = map[string]int{
-	"gpt-oss-20b":        32768,
-	"gpt-oss-120b":       65536,
-	"gpt-4o":             128000,
-	"gpt-4o-mini":        128000,
-	"gpt-4.1":            1047576,
-	"o1":                 200000,
-	"o3":                 200000,
-	"claude-3-5-sonnet":  200000,
-	"claude-3-7-sonnet":  200000,
-	"claude-sonnet-4":    200000,
-	"claude-opus-4":      200000,
-	"deepseek-v4":        131072,
-	"deepseek-v3":        65536,
-	"deepseek-chat":      65536,
-	"deepseek-reasoner":  65536,
-	"glm-5":              131072,
-	"glm-4":              128000,
-	"kimi-k2":            131072,
-	"kimi-k3":            262144,
-	"gemini-3":           1048576,
-	"gemini-2.5":         1048576,
-	"gemini-2.0":         1048576,
-	"gemini-1.5":         1048576,
-	"llama-3.3":          131072,
-	"llama-3.1":          131072,
-	"mistral-large":      128000,
-	"qwen-2.5":           131072,
-	"qwen-3":             131072,
-	"ling-3.0-flash":     32768,
+	"gpt-oss-20b":       32768,
+	"gpt-oss-120b":      65536,
+	"gpt-4o":            128000,
+	"gpt-4o-mini":       128000,
+	"gpt-4.1":           1047576,
+	"o1":                200000,
+	"o3":                200000,
+	"claude-3-5-sonnet": 200000,
+	"claude-3-7-sonnet": 200000,
+	"claude-sonnet-4":   200000,
+	"claude-opus-4":     200000,
+	"deepseek-v4":       131072,
+	"deepseek-v3":       65536,
+	"deepseek-chat":     65536,
+	"deepseek-reasoner": 65536,
+	"glm-5":             131072,
+	"glm-4":             128000,
+	"kimi-k2":           131072,
+	"kimi-k3":           262144,
+	"gemini-3":          1048576,
+	"gemini-2.5":        1048576,
+	"gemini-2.0":        1048576,
+	"gemini-1.5":        1048576,
+	"llama-3.3":         131072,
+	"llama-3.1":         131072,
+	"mistral-large":     128000,
+	"qwen-2.5":          131072,
+	"qwen-3":            131072,
+	"ling-3.0-flash":    32768,
 }
 
 type ModelEntry struct {
@@ -65,19 +65,19 @@ type ModelEntry struct {
 	SupportsVision          bool
 	SupportsFunctionCalling bool
 	// Headroom routes this model's chat completions through the in-container
-	// Headroom optimization proxy. Set per model via model_info.headroom:
-	// true in litellm_config.yaml (surfaced here through /v1/models).
-	// Defaults to false — every other model talks to LiteLLM directly,
-	// byte-for-byte untouched.
-	Headroom bool
+	// Headroom optimization proxy. Set per model via model_info.headroom in
+	// litellm_config.yaml — either `headroom: true` (enabled, defaults) or a
+	// dict of sub-settings. Defaults to disabled — every other model talks to
+	// LiteLLM directly, byte-for-byte untouched.
+	Headroom HeadroomSettings
 
 	// Caveman routes this model's chat completions through the in-container
-	// Caveman compression proxy (model_info.caveman: true). When both
-	// Headroom and Caveman are set on the same model they chain
-	// plurality -> Caveman (compress) -> Headroom (cache) -> LiteLLM; the
-	// compressed prefix is frozen byte-identically so KV prompt-cache reuse
-	// is preserved on top of a smaller prompt.
-	Caveman bool
+	// Caveman compression proxy. model_info.caveman may be `true` or a dict
+	// with the six "stones" (say_less, read_less, auto, blocks, waste_fixes,
+	// browse). When both Headroom and Caveman are enabled the optimization
+	// ownership resolver (OptimizationOwners) picks a SINGLE content
+	// compressor so no category is ever optimized twice (see caveman.go).
+	Caveman CavemanSettings
 
 	// MaxContextTokens is the model's context window in tokens, as declared
 	// in litellm_config.yaml model_info.context_window and surfaced by the
@@ -99,13 +99,38 @@ type ModelRegistry struct {
 var Models = &ModelRegistry{byName: map[string]ModelEntry{}}
 
 type litellmModelEntry struct {
-	ID                      string `json:"id"`
-	Mode                    string `json:"mode"`
-	SupportsVision          bool   `json:"supports_vision"`
-	SupportsFunctionCalling bool   `json:"supports_function_calling"`
-	Headroom                bool   `json:"headroom"`
-	Caveman                 bool   `json:"caveman"`
-	MaxContextTokens        int    `json:"context_window"`
+	ID                      string          `json:"id"`
+	Mode                    string          `json:"mode"`
+	SupportsVision          bool            `json:"supports_vision"`
+	SupportsFunctionCalling bool            `json:"supports_function_calling"`
+	Headroom                json.RawMessage `json:"headroom"`
+	Caveman                 json.RawMessage `json:"caveman"`
+	MaxContextTokens        int             `json:"context_window"`
+}
+
+// HeadroomSettings are the per-model sub-settings for the Headroom proxy.
+type HeadroomSettings struct {
+	Enabled bool
+	// keepLastTurns trims history before optimization (headroom's
+	// x-headroom-keep-last-turns). 0 = keep everything.
+	KeepLastTurns int
+}
+
+// CavemanStones mirror caveman's six "rocks" (the README's "six rocks, one
+// install"). Each is independently toggleable.
+type CavemanStones struct {
+	SayLess    bool
+	ReadLess   bool
+	Auto       bool
+	Blocks     bool
+	WasteFixes bool
+	Browse     bool
+}
+
+// CavemanSettings are the per-model sub-settings for the Caveman proxy.
+type CavemanSettings struct {
+	Enabled bool
+	Stones  CavemanStones
 }
 
 type litellmModelList struct {
@@ -151,8 +176,8 @@ func (r *ModelRegistry) Refresh(ctx context.Context) error {
 			Mode:                    m.Mode,
 			SupportsVision:          m.SupportsVision,
 			SupportsFunctionCalling: m.SupportsFunctionCalling,
-			Headroom:                m.Headroom,
-			Caveman:                 m.Caveman,
+			Headroom:                parseHeadroomSettings(m.Headroom),
+			Caveman:                 parseCavemanSettings(m.Caveman),
 			MaxContextTokens:        m.MaxContextTokens,
 		}
 		byName[m.ID] = entry
@@ -320,4 +345,90 @@ func builtinContextWindow(base string) int {
 		b = b[:i]
 	}
 	return 0
+}
+
+// headroomFlag is the on-disk shape of model_info.headroom after the litellm
+// proxy normalizes it: {"enabled": bool, ...sub-settings}.
+type headroomFlag struct {
+	Enabled       *bool `json:"enabled"`
+	KeepLastTurns *int  `json:"keep_last_turns"`
+}
+
+func parseHeadroomSettings(raw json.RawMessage) HeadroomSettings {
+	if len(raw) == 0 || string(raw) == "null" {
+		return HeadroomSettings{}
+	}
+	// Backward compatible with `headroom: true` (pre-normalization path).
+	if string(raw) == "true" {
+		return HeadroomSettings{Enabled: true}
+	}
+	var f headroomFlag
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return HeadroomSettings{}
+	}
+	out := HeadroomSettings{}
+	if f.Enabled != nil {
+		out.Enabled = *f.Enabled
+	}
+	if f.KeepLastTurns != nil && *f.KeepLastTurns > 0 {
+		out.KeepLastTurns = *f.KeepLastTurns
+	}
+	return out
+}
+
+// cavemanFlag is the on-disk shape of model_info.caveman after the litellm
+// proxy normalizes it: {"enabled": bool, "stones": {...}}.
+type cavemanFlag struct {
+	Enabled *bool          `json:"enabled"`
+	Stones  *cavemanStones `json:"stones"`
+}
+
+type cavemanStones struct {
+	SayLess    *bool `json:"say_less"`
+	ReadLess   *bool `json:"read_less"`
+	Auto       *bool `json:"auto"`
+	Blocks     *bool `json:"blocks"`
+	WasteFixes *bool `json:"waste_fixes"`
+	Browse     *bool `json:"browse"`
+}
+
+func parseCavemanSettings(raw json.RawMessage) CavemanSettings {
+	if len(raw) == 0 || string(raw) == "null" {
+		return CavemanSettings{}
+	}
+	if string(raw) == "true" {
+		// Bare `caveman: true` -> all stones on (caveman's default posture).
+		return CavemanSettings{Enabled: true, Stones: CavemanStones{SayLess: true, ReadLess: true, Auto: true, Blocks: true, WasteFixes: true, Browse: true}}
+	}
+	var f cavemanFlag
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return CavemanSettings{}
+	}
+	out := CavemanSettings{}
+	if f.Enabled != nil {
+		out.Enabled = *f.Enabled
+	}
+	if f.Stones != nil {
+		st := CavemanStones{}
+		if f.Stones.SayLess != nil {
+			st.SayLess = *f.Stones.SayLess
+		}
+		if f.Stones.ReadLess != nil {
+			st.ReadLess = *f.Stones.ReadLess
+		}
+		if f.Stones.Auto != nil {
+			st.Auto = *f.Stones.Auto
+		}
+		if f.Stones.Blocks != nil {
+			st.Blocks = *f.Stones.Blocks
+		}
+		if f.Stones.WasteFixes != nil {
+			st.WasteFixes = *f.Stones.WasteFixes
+		}
+		if f.Stones.Browse != nil {
+			st.Browse = *f.Stones.Browse
+		}
+		out.Stones = st
+	}
+	return out
 }
