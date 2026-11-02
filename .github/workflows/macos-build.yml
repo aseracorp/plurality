@@ -6,10 +6,16 @@ on:
     paths:
       - 'client/**'
       - '.github/workflows/macos-build.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: macos-build-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build-macos:
     runs-on: macos-latest
+    timeout-minutes: 60
     permissions:
       contents: write
 
