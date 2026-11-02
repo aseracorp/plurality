@@ -41,41 +41,46 @@ void FlutterWindow::KickRedraw() {
   }
 
   HWND parent = GetHandle();
-  HWND child = flutter_controller_->view()->GetNativeWindow();
   RECT rect = GetClientArea();
   int w = rect.right - rect.left;
   int h = rect.bottom - rect.top;
-  LogFz("KickRedraw: client %dx%d child=%p parent=%p",
-        w, h, static_cast<void*>(child), static_cast<void*>(parent));
+  LogFz("KickRedraw: client %dx%d", w, h);
 
-  if (w <= 0 || h <= 0) {
+  if (w <= 0 || h <= 0 || kicking_) {
     return;
   }
+  kicking_ = true;
 
-  // Mimic the manual resize that recovers the view: re-place the child
-  // view at the exact client rect, then invalidate both windows so the
-  // engine receives a real size-change + repaint cycle (not just a
-  // ForceRedraw, which alone does not always re-present a lost swapchain).
-  if (child && IsWindow(child)) {
-    // Guard against FancyZones having reparented the view elsewhere; keep it
-    // under our window. No-op (and side-effect-free) when already parented.
-    if (GetParent(child) != parent) {
-      SetParent(child, parent);
-    }
-    RECT child_rect;
-    GetClientRect(child, &child_rect);
-    if (child_rect.right != w || child_rect.bottom != h) {
-      LogFz("  child size differs (%dx%d) -> MoveWindow",
-            child_rect.right, child_rect.bottom);
-      MoveWindow(child, rect.left, rect.top, w, h, TRUE);
-    }
-    InvalidateRect(child, nullptr, FALSE);
-    UpdateWindow(child);
+  // The only action that reliably un-blanks the window on FancyZones setups
+  // is a real parent resize (what the user does by unsnapping). A ForceRedraw
+  // or a child-only resize does not repropagate the viewport metrics through
+  // the engine. Shrink the parent by 1px and restore it — this triggers real
+  // WM_SIZE / WM_WINDOWPOSCHANGED on the top-level window at the final size,
+  // exactly like a manual un-snap, and the engine re-presents for a fresh
+  // frame. The WM_SIZE handler ignores the resulting messages while
+  // kicking_ is set, so no kick loop.
+  RECT window_rect;
+  GetWindowRect(parent, &window_rect);
+  LogFz("  nudge: %d,%d %dx%d -> %dx%d", window_rect.left, window_rect.top,
+        window_rect.right - window_rect.left, window_rect.bottom - window_rect.top,
+        (window_rect.right - window_rect.left) - 1,
+        (window_rect.bottom - window_rect.top) - 1);
+  SetWindowPos(parent, nullptr, window_rect.left, window_rect.top,
+               (window_rect.right - window_rect.left) - 1,
+               (window_rect.bottom - window_rect.top) - 1,
+               SWP_NOZORDER | SWP_NOACTIVATE);
+  SetWindowPos(parent, nullptr, window_rect.left, window_rect.top,
+               window_rect.right - window_rect.left,
+               window_rect.bottom - window_rect.top,
+               SWP_NOZORDER | SWP_NOACTIVATE);
+
+  // Also force a redraw of the controller, matching the manual state after a
+  // successful unsnap.
+  if (flutter_controller_) {
+    flutter_controller_->ForceRedraw();
   }
-  InvalidateRect(parent, nullptr, FALSE);
-  UpdateWindow(parent);
 
-  flutter_controller_->ForceRedraw();
+  kicking_ = false;
   LogFz("  KickRedraw done");
 }
 
@@ -166,6 +171,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       break;
 
     case WM_WINDOWPOSCHANGED: {
+      if (kicking_) {
+        break;
+      }
       const auto* pos = reinterpret_cast<const WINDOWPOS*>(lparam);
       LogFz("WM_WINDOWPOSCHANGED %d,%d %dx%d flags=0x%X",
             pos ? pos->x : 0, pos ? pos->y : 0,
@@ -183,6 +191,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     }
 
     case WM_SIZE: {
+      if (kicking_) {
+        break;
+      }
       RECT rect = GetClientArea();
       LogFz("WM_SIZE %dx%d", rect.right - rect.left, rect.bottom - rect.top);
       if (flutter_started_) {

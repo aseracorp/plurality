@@ -38,6 +38,11 @@ class FlutterWindow : public Win32Window {
   // back by window-manager movement (PowerToys FancyZones).
   ULONGLONG shown_at_ = 0;
 
+  // True while KickRedraw() is applying its synthetic resize. The resulting
+  // WM_WINDOWPOSCHANGED / WM_SIZE are ignored for re-arming, so the nudge
+  // can't trigger an endless kick loop.
+  bool kicking_ = false;
+
   // Creates the FlutterViewController and registers plugins. Must only be
   // called once. Returns true when the view is up (or a retry was re-armed);
   // returns false only on a permanent failure (caller destroys the window).
