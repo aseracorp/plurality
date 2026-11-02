@@ -36,6 +36,40 @@ func clientToolIsAdvertised(name string, clientSideTools []utils.FunctionToolsRe
 	return false
 }
 
+// alwaysEnabledServerTools are server-side tools that GetRequests force-includes
+// regardless of the per-model tool picker (or that are gated by separate
+// context flags), so their execution is never blocked by the enablement check.
+var alwaysEnabledServerTools = map[string]bool{
+	ai_tools.WaitToolID:             true,
+	ai_tools.NotifyToolID:           true,
+	"conversation_attachments":      true,
+	"read_document":                 true,
+	"search_document":               true,
+	"retrieve_server_skill":         true,
+}
+
+// isToolEnabled reports whether the conversation's model selection enables the
+// named server-side tool in this request. GetRequests only ADVERTISES enabled
+// tools (plus the force-included set), but the model can still hallucinate a
+// call to a tool it was never shown. Historically any server-side tool was
+// executed unconditionally: the ask/auto split only distinguished "ask" from
+// everything-else, so a DISABLED tool whose name is absent from the Tools map
+// fell through as auto-run — e.g. update_important_memory kept writing global
+// memory even after the user disabled the tool in the picker. Mirror the
+// client-side "advertised" fast-fail and refuse to run disabled tools.
+func (ar *ActiveRequest) isToolEnabled(payload ChatPayload, name string) bool {
+	if alwaysEnabledServerTools[name] {
+		return true
+	}
+	ms := payload.ModelSelected.Text
+	if ms == nil || len(ms.Tools) == 0 {
+		// No enabled-tool set on this request: only force-included tools run.
+		return false
+	}
+	mode, ok := ms.Tools[name]
+	return ok && mode != "off"
+}
+
 // RunLLMLoop is the autonomous server-side LLM loop. It runs as a goroutine
 // that outlives the HTTP connection. It calls the LLM, processes tool calls,
 // and broadcasts all events to connected SSE clients.
@@ -981,6 +1015,9 @@ func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.To
 	// Check MCP first — namespaced names must match exactly before we
 	// try stripping the namespace for a builtin lookup.
 	if mcp.IsMCPTool(ar.UserID, toolCall.Function.Name) {
+		if !ar.isToolEnabled(payload, toolCall.Function.Name) {
+			return utils.NewTextContent("Error: tool '" + toolCall.Function.Name + "' is not enabled in this conversation (it was not in the advertised tool set). Ask the user to enable it in the tool picker if you need it.")
+		}
 		args := toolCall.Function.Arguments
 		if args == "" {
 			args = "{}"
@@ -996,6 +1033,9 @@ func executeServerTool(ctx context.Context, ar *ActiveRequest, toolCall utils.To
 	tool, ok := ai_tools.GetTool(toolCall.Function.Name)
 	if !ok {
 		return utils.NewTextContent("Tool not found: " + toolCall.Function.Name)
+	}
+	if !ar.isToolEnabled(payload, toolCall.Function.Name) {
+		return utils.NewTextContent("Error: tool '" + toolCall.Function.Name + "' is not enabled in this conversation (it was not in the advertised tool set). Ask the user to enable it in the tool picker if you need it.")
 	}
 
 	args := toolCall.Function.Arguments
