@@ -101,9 +101,12 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 				"Call retrieve_server_skill with the skill_name parameter. You can optionally specify a file_name to retrieve a specific file from the skill folder (defaults to SKILL.md)."
 		}
 
-		// Append MCP server descriptions configured in mcp.json.
-		for serverName, desc := range mcp.ServerDescriptions(conv.UserID) {
-			systemPrompt += "\n\n[" + serverName + "] " + desc
+		// Append MCP server descriptions configured in mcp.json, in a
+		// deterministic (sorted) order. Ranging the map directly yields a
+		// different order on every request, which reshuffles the system
+		// prompt and busts the KV prompt-cache prefix every turn.
+		for _, sd := range mcp.ServerDescriptionsOrdered(conv.UserID) {
+			systemPrompt += "\n\n[" + sd.ServerName + "] " + sd.Description
 		}
 
 		if mode, ok := model.Tools["filesystem_server__fs_write"]; ok && mode != "" && mode != "off" && mode != "false" {
@@ -223,6 +226,23 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	msgReqList, _ := convertMessagesToOpenAI(optimizedMessages, model)
 	requestData.Messages = msgReqList
 
+	// Prompt caching for self-hosted (llama.cpp/avalon/strata) backends.
+	// Prompt caching for ALL models (local AND cloud). Sending
+	// cache_prompt=true asks the backend (llama.cpp/avalon, or a cloud
+	// provider that supports KV caching) to reuse the longest common prefix
+	// of the previous request's KV cache — which covers the byte-stable
+	// system prompt (sorted MCP descriptions, minute-resolution timestamp,
+	// stable important_memory) AND the chat history that is unchanged since
+	// the previous turn. We deliberately do NOT pin a small n_keep here:
+	// n_keep=0 makes llama.cpp keep and reuse the ENTIRE previously-sent
+	// context (system prompt + conversation history), which is what "cache
+	// all context that was already sent" means. Cloud providers ignore or
+	// honor cache_prompt as they see fit; the header/body passthrough is
+	// harmless when unsupported.
+	cp := true
+	requestData.CachePrompt = &cp
+	requestData.NKeep = nil
+
 	utils.Debug("A new chat request is being made with the following model: %s", model.Name)
 
 	// Marshal WITHOUT HTML escaping. The default json.Marshal escapes &, <,
@@ -283,13 +303,17 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// honored while waiting for the slot, so a cancelled turn never stays
 	// parked behind a busy queue. 402/429/5xx get the bounded backoff retry.
 	//
-	// Self-hosted slow-prefill models additionally hold the slot for the
-	// WHOLE stream (DoLLMHTTPWithRetryHeld): the slot then covers prefill +
+	// Self-hosted local backends additionally hold the slot for the WHOLE
+	// stream (DoLLMHTTPWithRetryHeld): the slot then covers prefill +
 	// generation, so a second workflow's giant prompt is only sent after this
 	// stream finishes decoding instead of two prompts queueing on the same
 	// GPU and both tripping the idle timeout. The body's Close() releases
 	// the held slot (ProcessStandardStream closes it via defer).
-	if isSlowPrefillModel(strings.ToLower(model.Name)) {
+	//
+	// Whether a model gets this treatment is decided by the per-model
+	// `serialize` config flag (see modelRequiresSerialization), with a
+	// name-matching fallback for existing deployments.
+	if modelRequiresSerialization(model) {
 		resp, err := utils.DoLLMHTTPWithRetryHeld(ctx, req)
 		if err != nil {
 			return nil, 0, err

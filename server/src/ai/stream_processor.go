@@ -42,8 +42,7 @@ type StreamProcessor struct {
 // long is virtually always broken, and retrying earlier (see RunLLMLoop)
 // hides the failure faster.
 func (sp *StreamProcessor) streamIdleTimeout() time.Duration {
-	name := strings.ToLower(sp.model.Name)
-	if isSlowPrefillModel(name) {
+	if modelRequiresSerialization(sp.model) {
 		return 6 * time.Minute
 	}
 	return 2 * time.Minute
@@ -53,6 +52,9 @@ func (sp *StreamProcessor) streamIdleTimeout() time.Duration {
 // model names to identify families that prefill large prompts slowly — the
 // "long idle" class of self-hosted/local deployments. Add your own local
 // model families here; cloud models must stay on the 2-minute timeout.
+//
+// These are a FALLBACK only: the authoritative control is the per-model
+// config flag `serialize` in the model's params (see modelRequiresSerialization).
 var slowPrefillModelMarkers = []string{"strata", "swift"}
 
 // isSlowPrefillModel reports whether a (lowercased) model name belongs to a
@@ -64,6 +66,35 @@ func isSlowPrefillModel(name string) bool {
 		}
 	}
 	return false
+}
+
+// modelRequiresSerialization decides whether outgoing LLM calls for this
+// model must be serialized behind the single local-GPU slot (capacity-1
+// LLMSem, held for the whole stream) and get the extended idle timeout.
+//
+// The control is a per-model CONFIG FLAG — model.Params["serialize"] — not
+// name matching. A user may run any model on a local llama.cpp/avalon/strata
+// backend (name-agnostic), so matching on "strata"/"swift" substrings was
+// both too broad (any cloud model whose name happens to contain "swift"
+// got serialized) and too narrow (a local model named "my-model" did not).
+// Accepted truthy values: "true", "1", "on", "local", "self-hosted",
+// "selfhosted", "llama", "avalon", "strata". "false"/"0"/"off" explicitly
+// disables serialization for that model.
+//
+// When the flag is unset we fall back to the old name matching so existing
+// deployments keep their current behavior until they opt into the flag.
+func modelRequiresSerialization(model utils.Model) bool {
+	if v, ok := model.Params["serialize"]; ok {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "on", "local", "self-hosted", "selfhosted", "llama", "avalon", "strata":
+			return true
+		case "false", "0", "off", "no", "cloud", "remote":
+			return false
+		default:
+			// Unknown value: don't guess — fall through to name-matching fallback.
+		}
+	}
+	return isSlowPrefillModel(strings.ToLower(model.Name))
 }
 
 // NewStreamProcessor creates a StreamProcessor bound to an ActiveRequest.

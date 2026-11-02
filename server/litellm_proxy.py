@@ -140,6 +140,21 @@ async def embeddings(request: Request):
     return JSONResponse(content=response.model_dump())
 
 
+def existing_extra_body(body: dict) -> dict:
+    """Return any caller-supplied extra_body as a plain dict (non-destructive).
+
+    litellm accepts extra_body as a dict; some callers may already send one
+    (e.g. provider routing hints). We must merge rather than overwrite so our
+    cache-control keys don't clobber provider-specific extra_body keys.
+    """
+    eb = body.get("extra_body")
+    if eb is None:
+        return {}
+    if isinstance(eb, dict):
+        return eb
+    return {"extra_body": eb}
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     body = await request.json()
@@ -162,6 +177,25 @@ async def chat_completions(request: Request):
         kwargs["max_tokens"] = max_tokens
     if stream_options:
         kwargs["stream_options"] = stream_options
+    # Forward KV prompt-cache control to backends that support it
+    # (llama.cpp / avalon / strata). litellm's drop_params would otherwise
+    # silently strip these, which is why the Plurality server passes them
+    # on every request for cacheable models — without them the agent loop
+    # re-prefills the whole context on every turn. extra_body makes litellm
+    # pass the keys through verbatim to the upstream OpenAI-compatible
+    # endpoint (avalon) instead of dropping them.
+    cache_prompt = body.get("cache_prompt")
+    n_keep = body.get("n_keep")
+    keep = body.get("keep")
+    extra_body = {}
+    if cache_prompt is not None:
+        extra_body["cache_prompt"] = cache_prompt
+    if n_keep is not None:
+        extra_body["n_keep"] = n_keep
+    if keep is not None:
+        extra_body["keep"] = keep
+    if extra_body:
+        kwargs["extra_body"] = existing_extra_body(body) | extra_body
 
     if not stream:
         response = await router.acompletion(**kwargs)

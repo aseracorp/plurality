@@ -40,6 +40,16 @@ type OpenIDConfig struct {
 type ShortcutModel struct {
 	Name  string            `json:"name"`
 	Tools map[string]string `json:"tools,omitempty"`
+	// Params carries per-model runtime flags used by the AI loop.
+	// Recognized keys:
+	//   "serialize"  - "true"/"local"/"llama"/"avalon"/"strata" to make this
+	//                  model use the serialized local-GPU LLM path (single
+	//                  capacity-1 slot held across the whole stream) and the
+	//                  longer idle timeout; "false"/"cloud" to always use the
+	//                  concurrent cloud path. When unset, the historical
+	//                  name-matching heuristic decides. This replaces fragile
+	//                  model-name matching for self-hosted deployments.
+	Params map[string]string `json:"params,omitempty"`
 }
 
 // ShortcutModels groups the per-mode model selections for a shortcut.

@@ -158,7 +158,7 @@ func fromUtilsModel(m *utils.Model) *ShortcutModel {
 	if m == nil || m.Name == "" {
 		return nil
 	}
-	return &ShortcutModel{Name: m.Name, Tools: m.Tools}
+	return &ShortcutModel{Name: m.Name, Tools: m.Tools, Params: m.Params}
 }
 
 // DeleteUserData removes a user's data directory (used by the account-delete handler).

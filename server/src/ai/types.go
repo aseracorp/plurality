@@ -73,6 +73,18 @@ type StandardChatRequest struct {
 	StreamOptions     *StreamOptions       `json:"stream_options,omitempty"`
 	Tools             []utils.ToolsRequest `json:"tools,omitempty"`
 	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
+	// CachePrompt requests prompt caching from backends that support it
+	// (llama.cpp / avalon / strata). Without it, self-hosted KV-cache reuse
+	// is disabled by default in the upstream proxy, so every agent turn
+	// re-prefills the whole context. We only set it for local slow-prefill
+	// backends where the win is large and harmless for cloud providers.
+	CachePrompt *bool `json:"cache_prompt,omitempty"`
+	// NKeep is the number of initial tokens to keep pinned in the KV cache
+	// across turns (llama.cpp `--keep`). It must cover the stable system
+	// prompt prefix (system prompt + tool schemas + important_memory) so
+	// consecutive turns of the same conversation reuse it instead of
+	// re-prefilling. We size it from the measured system-message token count.
+	NKeep *int `json:"n_keep,omitempty"`
 }
 
 // --- Standard streaming chunk (OpenAI format, used for all providers via LiteLLM) ---
