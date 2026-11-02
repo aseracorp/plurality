@@ -1,5 +1,8 @@
 #include "flutter_window.h"
 
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
@@ -9,16 +12,71 @@ FlutterWindow::FlutterWindow(const flutter::DartProject& project)
 
 FlutterWindow::~FlutterWindow() {}
 
+// Writes one line to %TEMP%\plurality_fancyzones.log. Used to diagnose the
+// FancyZones blank-window bug on real machines; cheap enough to leave in.
+void FlutterWindow::LogFz(const char* fmt, ...) {
+  char path[MAX_PATH];
+  if (GetTempPathA(MAX_PATH, path) == 0) {
+    return;
+  }
+  std::snprintf(path + strlen(path), MAX_PATH - strlen(path),
+                "plurality_fancyzones.log");
+  FILE* f = fopen(path, "a");
+  if (!f) {
+    return;
+  }
+  char line[1024];
+  va_list args;
+  va_start(args, fmt);
+  std::vsnprintf(line, sizeof(line), fmt, args);
+  va_end(args);
+  fprintf(f, "[%llu] %s\n",
+          static_cast<unsigned long long>(GetTickCount64()), line);
+  fclose(f);
+}
+
 void FlutterWindow::KickRedraw() {
-  // A resize is what currently un-blanks the window on FancyZones setups:
-  // the engine's swapchain present silently failed during the start-up
-  // window-manager moves, and the engine only recovers on the next real
-  // WM_SIZE. Simulate that here, deterministically: request a fresh frame
-  // and repaint of the view (FlutterViewController::ForceRedraw).
   if (!flutter_controller_) {
     return;
   }
+
+  HWND parent = GetHandle();
+  HWND child = flutter_controller_->view()->GetNativeWindow();
+  RECT rect = GetClientArea();
+  int w = rect.right - rect.left;
+  int h = rect.bottom - rect.top;
+  LogFz("KickRedraw: client %dx%d child=%p parent=%p",
+        w, h, static_cast<void*>(child), static_cast<void*>(parent));
+
+  if (w <= 0 || h <= 0) {
+    return;
+  }
+
+  // Mimic the manual resize that recovers the view: re-place the child
+  // view at the exact client rect, then invalidate both windows so the
+  // engine receives a real size-change + repaint cycle (not just a
+  // ForceRedraw, which alone does not always re-present a lost swapchain).
+  if (child && IsWindow(child)) {
+    // Guard against FancyZones having reparented the view elsewhere; keep it
+    // under our window. No-op (and side-effect-free) when already parented.
+    if (GetParent(child) != parent) {
+      SetParent(child, parent);
+    }
+    RECT child_rect;
+    GetClientRect(child, &child_rect);
+    if (child_rect.right != w || child_rect.bottom != h) {
+      LogFz("  child size differs (%dx%d) -> MoveWindow",
+            child_rect.right, child_rect.bottom);
+      MoveWindow(child, rect.left, rect.top, w, h, TRUE);
+    }
+    InvalidateRect(child, nullptr, FALSE);
+    UpdateWindow(child);
+  }
+  InvalidateRect(parent, nullptr, FALSE);
+  UpdateWindow(parent);
+
   flutter_controller_->ForceRedraw();
+  LogFz("  KickRedraw done");
 }
 
 bool FlutterWindow::CreateFlutterView() {
@@ -27,12 +85,13 @@ bool FlutterWindow::CreateFlutterView() {
   }
 
   RECT frame = GetClientArea();
+  int w = frame.right - frame.left;
+  int h = frame.bottom - frame.top;
 
-  // The size here must match the window dimensions to avoid unnecessary
-  // surface creation / destruction in the startup path.
+  LogFz("CreateFlutterView at %dx%d", w, h);
+
   flutter_controller_ = std::make_unique<flutter::FlutterViewController>(
-      frame.right - frame.left, frame.bottom - frame.top, project_);
-  // Ensure that basic setup of the controller was successful.
+      w, h, project_);
   if (!flutter_controller_->engine() || !flutter_controller_->view()) {
     flutter_controller_ = nullptr;
     return false;
@@ -46,17 +105,20 @@ bool FlutterWindow::CreateFlutterView() {
     this->Show();
   });
 
-  // Flutter can complete the first frame before the "show window" callback is
-  // registered. The following call ensures a frame is pending to ensure the
-  // window is shown. It is a no-op if the first frame hasn't completed yet.
   flutter_controller_->ForceRedraw();
 
-  // Deterministic repaint kick: whether the FancyZones move happened before,
-  // during or after view creation, always force one clean redraw shortly
-  // after startup so a silently-failed swapchain present is recovered without
-  // the user having to resize the window. (WM_WINDOWPOSCHANGED also re-arms
-  // this timer for later moves.)
-  SetTimer(GetHandle(), kRepaintKickTimer, kRepaintKickMs, nullptr);
+  // Deterministic, staggered repaint kicks. FancyZones can move/resize the
+  // window at any point during startup; a single kick often misses the real
+  // final size, so fire several over the first ~1.5s. Each uses a DISTINCT
+  // timer id (kRepaintKickTimerBase + i) — SetTimer with the same id would
+  // just reset that one timer instead of creating a second.
+  for (unsigned i = 0; i < kRepaintKickCount; ++i) {
+    UINT delay = kRepaintKickMs * (i + 1);
+    UINT_PTR tid = kRepaintKickTimerBase + i;
+    LogFz("  arming kick %u (tid %llu) at +%ums", i + 1,
+          static_cast<unsigned long long>(tid), delay);
+    SetTimer(GetHandle(), tid, delay, nullptr);
+  }
 
   return true;
 }
@@ -65,36 +127,23 @@ bool FlutterWindow::OnCreate() {
   if (!Win32Window::OnCreate()) {
     return false;
   }
-
-  // PowerToys FancyZones (and other window managers) restore a window into
-  // its last zone as soon as it appears, resizing it while Flutter is still
-  // starting up. If that resize lands while the Flutter view is being created,
-  // the view can end up sized for the wrong client area — and the engine's
-  // swapchain present can silently fail, leaving a blank window that only
-  // recovers on the next real resize (the classic FancyZones symptom).
-  //
-  // Fix: show the window immediately (empty, background-coloured frame), then
-  // start Flutter only after the window stops moving. Each WM_WINDOWPOSCHANGED
-  // while the window is still settling re-arms the timer, so the view is
-  // created with the *final* zone size. Bounded by kMaxSettleMs so a window
-  // that keeps moving can't delay startup forever. After the view is up, a
-  // short repaint-kick timer (armed deterministically in CreateFlutterView and
-  // re-armed by late moves) forces a clean redraw so a silently-failed
-  // present is recovered without the user having to resize the window.
+  LogFz("OnCreate");
   Show();
   shown_at_ = GetTickCount64();
   SetTimer(GetHandle(), kCreateViewTimer, kSettleMs, nullptr);
-
   return true;
 }
 
 void FlutterWindow::OnDestroy() {
   KillTimer(GetHandle(), kCreateViewTimer);
   KillTimer(GetHandle(), kRepaintKickTimer);
+  for (unsigned i = 0; i < kRepaintKickCount; ++i) {
+    KillTimer(GetHandle(), kRepaintKickTimerBase + i);
+  }
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
-
+  LogFz("OnDestroy");
   Win32Window::OnDestroy();
 }
 
@@ -102,7 +151,6 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
-  // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =
         flutter_controller_->HandleTopLevelWindowProc(hwnd, message, wparam,
@@ -117,31 +165,49 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       flutter_controller_->engine()->ReloadSystemFonts();
       break;
 
-    case WM_WINDOWPOSCHANGED:
-      // Still waiting to start Flutter: keep deferring while the window is
-      // moving (zone restore / user drag). Create the view shortly after it
-      // stops, bounded by kMaxSettleMs from when the window was shown.
+    case WM_WINDOWPOSCHANGED: {
+      const auto* pos = reinterpret_cast<const WINDOWPOS*>(lparam);
+      LogFz("WM_WINDOWPOSCHANGED %d,%d %dx%d flags=0x%X",
+            pos ? pos->x : 0, pos ? pos->y : 0,
+            pos ? pos->cx : 0, pos ? pos->cy : 0,
+            pos ? pos->flags : 0);
       if (!flutter_started_ && GetTickCount64() - shown_at_ < kMaxSettleMs) {
         SetTimer(hwnd, kCreateViewTimer, kSettleMs, nullptr);
       }
-      // Even after the view is started, a late zone move may have been the
-      // resize that lost a swapchain. Re-arm the repaint kick so the engine
-      // gets one fresh present at the final size.
+      // Late zone move: re-arm one repaint kick so the engine re-presents at
+      // the final size. (WM_TIMER handles this id too.)
       if (flutter_started_ && lparam != 0) {
         SetTimer(hwnd, kRepaintKickTimer, kRepaintKickMs, nullptr);
       }
       break;
+    }
+
+    case WM_SIZE: {
+      RECT rect = GetClientArea();
+      LogFz("WM_SIZE %dx%d", rect.right - rect.left, rect.bottom - rect.top);
+      if (flutter_started_) {
+        // After any real size change, kick the view at the new size.
+        SetTimer(hwnd, kRepaintKickTimer, kRepaintKickMs, nullptr);
+      }
+      break;
+    }
 
     case WM_TIMER:
       if (wparam == kCreateViewTimer) {
         KillTimer(hwnd, kCreateViewTimer);
+        LogFz("WM_TIMER create-view");
         if (!flutter_started_ && !CreateFlutterView()) {
+          LogFz("  CreateFlutterView FAILED");
           DestroyWindow(hwnd);
         }
         return 0;
       }
-      if (wparam == kRepaintKickTimer) {
-        KillTimer(hwnd, kRepaintKickTimer);
+      if (wparam == kRepaintKickTimer ||
+          (wparam >= kRepaintKickTimerBase &&
+           wparam < kRepaintKickTimerBase + kRepaintKickCount)) {
+        KillTimer(hwnd, static_cast<UINT_PTR>(wparam));
+        LogFz("WM_TIMER repaint-kick (tid %llu)",
+              static_cast<unsigned long long>(wparam));
         KickRedraw();
         return 0;
       }

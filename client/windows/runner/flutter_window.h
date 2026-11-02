@@ -43,10 +43,16 @@ class FlutterWindow : public Win32Window {
   // returns false only on a permanent failure (caller destroys the window).
   bool CreateFlutterView();
 
-  // Forces the engine to present a fresh frame at the true client size.
-  // Duplicates the user action that currently un-blanks the window (a
-  // resize), but deterministically, shortly after startup.
+  // Forces a clean, deterministic redraw of the Flutter view at the current
+  // client size. On FancyZones setups the engine's swapchain present can
+  // silently fail during start-up moves; a plain ForceRedraw is sometimes not
+  // enough, so this also re-positions the child view to the exact client rect
+  // and invalidates the parent (mimicking the manual resize that recovers it).
   void KickRedraw();
+
+  // Appends a line to %TEMP%\plurality_fancyzones.log for diagnosing the
+  // FancyZones blank-window bug. No-op if logging is disabled at build.
+  void LogFz(const char* fmt, ...);
 
   // Deferred-startup timer: create the Flutter view shortly after the window
   // stops moving, so FancyZones' zone restore can't race the view creation.
@@ -54,11 +60,14 @@ class FlutterWindow : public Win32Window {
   static constexpr UINT kSettleMs = 150;
   static constexpr ULONGLONG kMaxSettleMs = 1000;
 
-  // Repaint-kick timer: after the first frame (and after late window-manager
+  // Repaint-kick timers: after the first frame (and after late window-manager
   // moves), force one clean redraw so a silently-failed swapchain present is
-  // recovered without requiring the user to resize the window.
+  // recovered without requiring the user to resize the window. Several
+  // staggered kicks (distinct timer ids!) cover moves that land mid-startup.
   static constexpr UINT_PTR kRepaintKickTimer = 2;
-  static constexpr UINT kRepaintKickMs = 200;
+  static constexpr UINT_PTR kRepaintKickTimerBase = 10;
+  static constexpr UINT kRepaintKickCount = 6;
+  static constexpr UINT kRepaintKickMs = 250;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_
