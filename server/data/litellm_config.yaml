@@ -83,6 +83,23 @@ model_list:
     model_info:
       mode: "audio_transcription"
 
+  # Per-model Headroom opt-in (see litellm.md -> "Headroom"):
+  # add `headroom: true` to a model's model_info to route its chat
+  # completions through the in-container Headroom optimization proxy.
+  # It runs in CACHE mode so llama.cpp/strata/avalon KV prompt-cache
+  # reuse is preserved (cache_prompt/n_keep are forwarded verbatim).
+  # Every model without the flag talks to LiteLLM directly. Operators
+  # enable this in their runtime litellm_config.yaml, e.g.:
+  #
+  #   - model_name: "my-local-model"
+  #     litellm_params:
+  #       model: "openai/my-model"
+  #       api_base: "http://my-backend/v1"
+  #     model_info:
+  #       mode: "chat"
+  #       supports_function_calling: true
+  #       headroom: true
+
 general_settings:
   drop_params: true
 

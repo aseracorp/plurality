@@ -126,6 +126,18 @@ RUN mkdir -p /tmp/dummy-pyroscope && \
     /app/litellm/litellm_venv/bin/pip install --no-cache-dir -r /app/litellm/litellm_requirements.txt && \
     rm -rf /tmp/dummy-pyroscope /tmp/pip-constraints.txt
 
+# Build the Headroom optimization proxy venv. Kept SEPARATE from the
+# LiteLLM venv on purpose: both pin fastapi/uvicorn/openai/mcp, and their
+# version ranges are not guaranteed to agree — one venv would force one
+# package set onto the other and break a proxy at startup. Headroom sits in
+# front of the local LiteLLM proxy (Go spawns it at boot), in CACHE mode so
+# llama.cpp/strata/avalon KV prompt-cache reuse is preserved, and only
+# chat-completions for models opted in via model_info.headroom: true in
+# litellm_config.yaml are routed through it.
+RUN python3 -m venv /app/headroom/headroom_venv && \
+    /app/headroom/headroom_venv/bin/pip install --no-cache-dir "headroom-ai[proxy]==0.42.0" && \
+    rm -rf /root/.cache/pip
+
 # Copy the Flutter web build to the static directory
 RUN mkdir -p /app/web
 COPY --from=flutter_builder /app/client/build/web /app/web

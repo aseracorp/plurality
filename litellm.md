@@ -57,8 +57,39 @@ Set these on `model_info`. They flow through `/v1/models` into the Go `ModelRegi
 | --------------------------- | ------- | --------------------------------------------------------------------------------------- |
 | `supports_vision`           | `false` | Allows the model to receive image attachments. Adds it to the picker's vision dropdown. |
 | `supports_function_calling` | `false` | Sends `tools` and skill prompts to this model. Without it, the model gets pure chat.    |
+| `headroom`                  | `false` | Route this model's chat completions through the in-container Headroom optimization proxy. See "Headroom" below. |
 
 Non-chat modes ignore both flags.
+
+## Headroom (context optimization proxy)
+
+The Plurality container bundles the [Headroom](https://docs.headroomlabs.ai) optimization proxy as its own venv at `/app/headroom/headroom_venv`. The Go server spawns it at boot on `127.0.0.1:8787` in front of the **local** LiteLLM proxy (`127.0.0.1:4000`), and routes a model's `/v1/chat/completions` through it **only** when that model opts in:
+
+```yaml
+model_info:
+  headroom: true
+```
+
+Every model without the flag (and every image/audio/embedding request) continues to talk to LiteLLM directly, byte-for-byte untouched — zero added latency, zero risk to non-opted models.
+
+**Prompt caching is preserved.** Headroom runs in `HEADROOM_MODE=cache`, which freezes prior turns byte-identically and forwards `cache_prompt`/`n_keep`/`extra_body` verbatim to the upstream. The llama.cpp/strata/avalon KV cache therefore keeps hitting the exact same prefix — the proxy never reorders, drops, or rewrites the input on its own. (Token mode, which rewrites history for token savings, would break prefix caching — that is why the deployment pins cache mode in `startHeadroomProcess`.)
+
+Operational notes:
+
+- `HEADROOM_URL` env var points the server at an externally managed Headroom instead of spawning one (analogous to `LITELLM_URL`); `HEADROOM_URL` is required when `LITELLM_URL` is set (no local upstream to front).
+- If Headroom is unhealthy, opted-in models transparently fall back to direct LiteLLM — `cache_prompt`/`n_keep` forwarding lives in the LiteLLM proxy, so caching survives even a Headroom outage.
+- Headroom artifacts (Kompress/ModernBERT) persist under the data volume (`<DATA_DIR>/headroom`) so a recreate does not re-download them.
+
+### Headroom wiring
+
+```
+┌──────────────┐  chat (headroom:true)   ┌───────────────┐        ┌──────────────────┐
+│  Go server   │ ──────────────────────▶ │ headroom proxy│ ─────▶ │ litellm_proxy.py │ ──▶ upstream
+│              │                         │ 127.0.0.1:8787│        │ 127.0.0.1:4000    │
+│  ModelReg.   │ ◀────────────────────── │ mode=cache    │ ◀───── │ (always direct    │
+└──────────────┘  non-opted → direct     └───────────────┘        │  for non-opted)   │
+                                                                    └──────────────────┘
+```
 
 ## API keys
 

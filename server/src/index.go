@@ -87,6 +87,17 @@ func main() {
 	}
 	defer ai.ShutdownLiteLLM()
 
+	// Initialize the in-container Headroom optimization proxy in front of
+	// the local LiteLLM proxy. Models that opt in (model_info.headroom:
+	// true in litellm_config.yaml) route their chat completions through it
+	// (see ai.ChatBaseURL); everything else keeps talking to LiteLLM
+	// directly. Non-fatal by design: a Headroom failure only falls back to
+	// the direct path.
+	if err := ai.InitHeadroom(); err != nil {
+		log.Printf("[main] WARNING: Headroom proxy not available (opted-in models will use direct LiteLLM): %v", err)
+	}
+	defer ai.ShutdownHeadroom()
+
 	// Pass LiteLLM URL to packages that talk to the proxy directly.
 	db.LiteLLMBaseURL = ai.LiteLLMBaseURL
 	ai_tools.LiteLLMBaseURL = ai.LiteLLMBaseURL
@@ -308,6 +319,7 @@ func main() {
 		// DBs last, after the subsystems that still write to them.
 		webhook.Shutdown()
 		ai.ShutdownLiteLLM()
+		ai.ShutdownHeadroom()
 		mcp.Shutdown()
 		cron.Shutdown()
 		// CloseAllUserDBs checkpoints every WAL (TRUNCATE) and resets stuck
