@@ -13,16 +13,18 @@ orbs:
 # tags remain on the registry as build artifacts but the consumable tags are
 # the multi-arch :$SHA and :latest produced by the merge job.
 #
-# STALE-BINARY PREVENTION (see dockerfile CACHEBUST):
+# STALE-BINARY PREVENTION (see dockerfile CACHEBUST / BUILD_REV):
 #   - Every build passes --build-arg CACHEBUST=$CIRCLE_SHA1 so the dockerfile's
 #     `go build` RUN layer instruction string changes on every push and can
 #     never be served from the layer cache against an old checkout.
+#   - Every build passes --build-arg BUILD_REV=$CIRCLE_SHA1 so the binary (and
+#     /health) reports the exact git rev it was compiled from — a stale
+#     deployed binary becomes immediately detectable.
 #   - docker_layer_caching is NOT enabled. With remote-docker layer caching on,
 #     the cached `go build` layer (which byte-identically embeds CACHEBUST) was
 #     reused across runs, shipping a binary compiled from an old checkout even
 #     when the checkout itself was fresh — exactly the "new image, old
 #     Plurality.bin" bug we are fixing.
-#   - After the image is built, we record the git rev the binary was built from.
 
 jobs:
   build-amd64:
@@ -45,11 +47,11 @@ jobs:
           no_output_timeout: 30m
           command: |
             TAG="$DOCKER_REPOSITORY:$CIRCLE_SHA1-amd64"
-            echo "Building native amd64 image: $TAG (CACHEBUST=$CIRCLE_SHA1)"
-            # CACHEBUST=<rev> is what guarantees the Go binary is recompiled
-            # from the current source instead of being served from a stale
-            # docker layer cache.
-            docker build --build-arg CACHEBUST="$CIRCLE_SHA1" -t "$TAG" .
+            echo "Building native amd64 image: $TAG (rev $CIRCLE_SHA1)"
+            docker build \
+              --build-arg CACHEBUST="$CIRCLE_SHA1" \
+              --build-arg BUILD_REV="$CIRCLE_SHA1" \
+              -t "$TAG" .
             docker push "$TAG"
             echo "amd64 built from rev: $CIRCLE_SHA1"
 
@@ -73,8 +75,11 @@ jobs:
           no_output_timeout: 30m
           command: |
             TAG="$DOCKER_REPOSITORY:$CIRCLE_SHA1-arm64"
-            echo "Building native arm64 image: $TAG (CACHEBUST=$CIRCLE_SHA1)"
-            docker build --build-arg CACHEBUST="$CIRCLE_SHA1" -t "$TAG" .
+            echo "Building native arm64 image: $TAG (rev $CIRCLE_SHA1)"
+            docker build \
+              --build-arg CACHEBUST="$CIRCLE_SHA1" \
+              --build-arg BUILD_REV="$CIRCLE_SHA1" \
+              -t "$TAG" .
             docker push "$TAG"
             echo "arm64 built from rev: $CIRCLE_SHA1"
 
