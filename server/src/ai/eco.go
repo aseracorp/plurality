@@ -1285,14 +1285,42 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	}
 
 	textModel, _ := fastShortcutModels()
-	summary, err := GenerateCheckpointSummary(input, textModel)
-	if err != nil {
-		utils.Error("[Eco] checkpoint summary generation failed", err)
-		return
+
+	// Two-stage eco compaction (megacave first, dumb eco second):
+	//
+	//   STAGE 1 — megacave (first context hit): no checkpoint exists yet
+	//   (existingCheckpointEndIdx < 0). Run the faithful megacave compress:
+	//   prose/framing compressed hard, but code blocks, file paths,
+	//   identifiers, IDs, URLs and exact quoted values kept VERBATIM (the
+	//   /caveman-compress contract). This yields a larger but far more
+	//   faithful checkpoint, so the conversation's original goal and concrete
+	//   facts survive compaction.
+	//
+	//   STAGE 2 — dumb eco (second context hit): a checkpoint already exists
+	//   (existingCheckpointEndIdx >= 0), meaning the context limit was hit a
+	//   SECOND time. Now fall back to the lossy-LLM summary
+	//   (GenerateCheckpointSummary): smaller and faster, acceptable because
+	//   it is folding NEW messages on top of an existing (megacave) summary.
+	var summary string
+	var summaryErr error
+	if existingCheckpointEndIdx < 0 {
+		utils.Log("[Eco] stage-1 megacave compress for conv %s (no prior checkpoint)", conversationID)
+		summary, summaryErr = GenerateMegacaveCheckpoint(input, textModel)
+		if summaryErr != nil {
+			utils.Error("[Eco] megacave checkpoint compression failed", summaryErr)
+			return
+		}
+	} else {
+		utils.Log("[Eco] stage-2 eco summary for conv %s (prior checkpoint exists — second context hit)", conversationID)
+		summary, summaryErr = GenerateCheckpointSummary(input, textModel)
+		if summaryErr != nil {
+			utils.Error("[Eco] checkpoint summary generation failed", summaryErr)
+			return
+		}
 	}
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
-		utils.Error("[Eco] checkpoint summary returned empty", nil)
+		utils.Error("[Eco] checkpoint returned empty", nil)
 		return
 	}
 
