@@ -215,24 +215,28 @@ async def chat_completions(request: Request):
     if stream_options:
         kwargs["stream_options"] = stream_options
     # Forward KV prompt-cache control to backends that support it
-    # (llama.cpp / avalon / strata). litellm's drop_params would otherwise
-    # silently strip these, which is why the Plurality server passes them
-    # on every request for cacheable models — without them the agent loop
-    # re-prefills the whole context on every turn. extra_body makes litellm
-    # pass the keys through verbatim to the upstream OpenAI-compatible
-    # endpoint (avalon) instead of dropping them.
-    cache_prompt = body.get("cache_prompt")
-    n_keep = body.get("n_keep")
-    keep = body.get("keep")
-    extra_body = {}
-    if cache_prompt is not None:
-        extra_body["cache_prompt"] = cache_prompt
-    if n_keep is not None:
-        extra_body["n_keep"] = n_keep
-    if keep is not None:
-        extra_body["keep"] = keep
-    if extra_body:
-        kwargs["extra_body"] = existing_extra_body(body) | extra_body
+    # (llama.cpp / avalon / strata). The Go server sends cache_prompt / n_keep
+    # / keep on every request for cacheable models; without them the agent loop
+    # re-prefills the whole context on every turn.
+    #
+    # WHY allowed_openai_params and not just extra_body:
+    #   - extra_body is the documented way to send provider-specific params,
+    #     and IS forwarded verbatim for most providers.
+    #   - BUT the global `litellm.drop_params = True` (below) makes litellm
+    #     strip params it doesn't recognise for the custom `openai/` provider —
+    #     and in deployed litellm versions this strips the top-level
+    #     cache_prompt/n_keep/keep even when re-passed. The live strata-swift
+    #     cache only worked once the deployment set `drop_params: false`.
+    #   - allowed_openai_params is the supported litellm mechanism that tells
+    #     the Router to PASS the listed params through "as is", exempting them
+    #     from drop_params. Sending it per-request (documented URL path) makes
+    #     ANY model the Go server marks cacheable keep n_keep/cache_prompt/keep
+    #     intact, automatically, with no per-deployment config — regardless of
+    #     the global drop_params default. This is the real fix.
+    cache_params = ["cache_prompt", "n_keep", "keep"]
+    present = [k for k in cache_params if body.get(k) is not None]
+    if present:
+        kwargs["allowed_openai_params"] = present
 
     if not stream:
         response = await router.acompletion(**kwargs)
@@ -484,7 +488,13 @@ def main():
     model_list = load_config(args.config)
     router = Router(model_list=model_list)
 
-    # Drop unsupported params silently
+    # Drop unsupported params silently for cloud providers (OpenRouter etc.) so
+    # a request with a param one provider doesn't support doesn't 400. This is
+    # fine for cloud: unsupported params there genuinely should be dropped.
+    # Self-hosted KV-cache models that need n_keep/cache_prompt/keep are
+    # protected by the allowed_openai_params in chat_completions above, which
+    # explicitly exempts them from drop_params, so the global default here
+    # cannot regress prompt caching.
     litellm.drop_params = True
 
     logging.basicConfig(level=logging.INFO)
