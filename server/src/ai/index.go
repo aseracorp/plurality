@@ -855,3 +855,95 @@ func GenerateCheckpointSummary(text, model string) (string, error) {
 	}
 	return strings.TrimSpace(result.Choices[0].Message.Content), nil
 }
+
+// GenerateMegacaveCheckpoint produces the STAGE-1 "megacave" checkpoint for a
+// compacted conversation range. It mirrors the /caveman-compress contract:
+// aggressive compression of prose/framing, but code blocks, file paths,
+// identifiers, IDs, URLs, exact values and quoted user requests are kept
+// VERBATIM. The result is a much larger, far more faithful checkpoint than the
+// lossy stage-2 "dumb eco" summary (GenerateCheckpointSummary), so it is saved
+// FIRST; only when a checkpoint already exists (the context hit the limit a
+// second time) does the dumb-eco summary run.
+//
+// Because this pass is intentionally more faithful, it is allowed to produce a
+// substantially longer output than the summary: max_tokens is raised to 16384
+// so a megacave checkpoint can carry the dense tool_call / code / path detail
+// without being cut off mid-fact.
+func GenerateMegacaveCheckpoint(text, model string) (string, error) {
+	if !LiteLLMReady() {
+		return "", fmt.Errorf("AI proxy is not ready")
+	}
+
+	msgReqList := []StandardMessageReq{
+		{
+			Role: "system",
+			Content: "You compress older conversation history that the live LLM will no longer see directly. " +
+				"Your compress output REPLACES those messages in the live context, so any detail you drop is lost to the model. " +
+				"This is the megacave / caveman-compress mode: prose and obvious framing are compressed HARD, but every fact stays exact.\n" +
+				"Rules:\n" +
+				"1. VERBATIM, never paraphrased: code blocks, file paths, identifiers, IDs, error messages, command outputs, URLs, numeric values, exact quoted user requests. Any collapsed code must keep a copy of the full block in a clearly-labeled '[verbatim]' section when it is used or referenced later.\n" +
+				"2. Preserve the FULL text content of any inline pasted snippet or text attachment under '[attachment: ...]' headers — copy them verbatim, do not summarise user-pasted code or text.\n" +
+				"3. Preserve every tool_call → TOOL_RESULT outcome: which tool, key arguments, and the substantive result (paths created, errors returned, data retrieved).\n" +
+				"4. For image/document attachments noted as '[image attachment omitted]' or '[document attachment: ...]', record that the attachment existed with filename and context.\n" +
+				"5. Preserve user goals, decisions, plans, and rejected options chronologically.\n" +
+				"6. The optional 'PRIOR CHECKPOINT' section at the start is a previous compress output — fold its facts into your new compress in-place, do not lose information from it.\n" +
+				"7. Be EXTREMELY dense: strip filler, repetition, and every non-factual word. Keep headings/structure so it stays navigable. Do NOT be brief at the cost of a single concrete fact.\n" +
+				"Respond with the compressed text only — no preamble, no closing remarks.",
+		},
+		{
+			Role:    "user",
+			Content: text,
+		},
+	}
+
+	maxTokens := 16384
+	requestData := StandardChatRequest{
+		Model:     model,
+		Messages:  msgReqList,
+		MaxTokens: &maxTokens,
+		Stream:    false,
+	}
+
+	jsonData, err := json.Marshal(requestData)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest("POST", ChatCompletionURLForName(model)+"/v1/chat/completions", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	ApplyChatOptimizationHeaders(model, req)
+
+	// Serialized + retried LLM path (see DoLLMHTTPWithRetry).
+	resp, err := utils.DoLLMHTTPWithRetry(context.Background(), req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		utils.Error("[EcoMegacave] API request failed", nil, strconv.Itoa(resp.StatusCode), string(body))
+		return "", fmt.Errorf("API request failed with status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("failed to parse megacave response: %w", err)
+	}
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("no choices in megacave response")
+	}
+	return strings.TrimSpace(result.Choices[0].Message.Content), nil
+}
