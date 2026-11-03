@@ -8,16 +8,20 @@
 # (b) keeps the UI available after a crash instead of waiting for an external
 # restart.
 #
-# Server output ("$BIN" 2>&1) is routed into a FIFO and a sidecar `tee` copies
-# it to BOTH the persistent /app/data/server.log file AND the container's
-# stdout (fd 1). This makes `docker logs` (and Cosmos' container-log viewer)
-# work: before, `"$BIN" >> "$OUT" 2>&1` redirected every byte into server.log
-# and nothing ever reached container stdout, so `docker logs` came back EMPTY
-# for a healthy, logging server.
+# Server output is mirrored to BOTH the persistent /app/data/server.log file
+# AND the container's stdout (fd 1). This makes `docker logs` (and Cosmos'
+# container-log viewer) work: before, `"$BIN" >> "$OUT" 2>&1` redirected every
+# byte into server.log and nothing ever reached container stdout, so `docker
+# logs` came back EMPTY for a healthy, logging server (observed live on
+# Simplify).
 #
-# The server remains the DIRECT child of this script ($SPID is the server, not
-# the tee), so `wait $SPID` and `forward()` on SIGTERM (`docker stop`) still
-# target the server itself and its graceful-shutdown DB checkpoint still runs.
+# Mechanical design: the server stays the DIRECT child of this script ($SPID
+# is the server, never a pipeline middleman), so `wait $SPID` and the SIGTERM
+# forward on `docker stop` still reach the server itself and its graceful
+# shutdown DB checkpoint still runs. Its stdout+stderr are pointed at a FIFO;
+# a sidecar `tee` reads the FIFO and appends to server.log while also echoing
+# to container stdout. The sidecar is recreated on every launch (it exits on
+# EOF when the server stops).
 #
 # PID 1 is still tini (see dockerfile ENTRYPOINT) so zombies are reaped and
 # signals (SIGTERM on `docker stop`) are forwarded to this script.
@@ -38,17 +42,6 @@ FIFO=/tmp/server-log.fifo
 mkdir -p /app/data
 echo "=== supervisor.sh $(date -u +%FT%T) pid $$ (trap TERM/INT) ===" >> "$LOG"
 
-# Log mirror: a sidecar tee reads the FIFO and appends to the persistent
-# server.log, while ALSO echoing to container stdout (fd 1). The server writes
-# into the FIFO below; the tee is not the tracked child ($SPID), so signal
-# forwarding to the server is unaffected.
-rm -f "$FIFO"
-mkfifo "$FIFO" 2>/dev/null
-(
-  # Re-open on every read loop so a crashed writer doesn't kill the pipe.
-  exec tee -a "$OUT"
-) < "$FIFO" &
-
 forward() {
   echo "=== supervisor: received signal $(date -u +%FT%T); stopping server ===" >> "$LOG"
   kill -TERM "$SPID" 2>/dev/null
@@ -64,15 +57,32 @@ BIN=/app/Plurality.bin
 restart_delay=0
 while true; do
   echo "=== $(date -u +%FT%T) starting $BIN (attempt after ${restart_delay}s) ===" >> "$LOG"
-  # Launch the server as the DIRECT child, with its output going into the
-  # FIFO. The sidecar tee above mirrors the FIFO to server.log AND the
-  # container's stdout, so `docker logs` sees live logs while the file stays
-  # populated. $SPID is the server itself.
-  "$BIN" 2>&1 > "$FIFO" &
-  # ^ fd1 replaced by the FIFO. The tee has been reading it.
+
+  # (Re)create the log-mirror FIFO + sidecar tee for this launch. tee reads the
+  # FIFO, appends to the persistent server.log AND writes to container stdout
+  # (this script's fd 1). It exits on EOF when the server stops, so we recreate
+  # it each iteration.
+  rm -f "$FIFO"
+  mkfifo "$FIFO" 2>/dev/null
+  (
+    exec tee -a "$OUT"
+  ) < "$FIFO" &
+  TEE_PID=$!
+
+  # Launch the server as the DIRECT child with both stdout and stderr into the
+  # FIFO. Redirection order matters: `> "$FIFO" 2>&1` (stdout first, then stderr
+  # follows it) — the reverse would leave stderr on the container's stdout.
+  "$BIN" > "$FIFO" 2>&1 &
   SPID=$!
+
   wait "$SPID"
   rc=$?
+
+  # Close the FIFO writer-side so the sidecar tee sees EOF and exits cleanly;
+  # kill it only if it lingers.
+  kill "$TEE_PID" 2>/dev/null
+  wait "$TEE_PID" 2>/dev/null
+
   {
     echo "== server exited rc=$rc at $(date -u +%FT%T) =="
     echo "--- uptime $(awk '{printf "%.1fs", $1}' /proc/uptime) ---"
