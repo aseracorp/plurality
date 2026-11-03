@@ -227,6 +227,15 @@ func startCavemanProcess() error {
 		// Plurality stack already sends explicit cache_prompt/n_keep hints, so
 		// keep Caveman from making extra max_tokens=0 upstream calls.
 		"CAVEMAN_CACHE_WARM=off",
+		// Caveman's standalone upstream client has an ALWAYS-ON SSRF dial
+		// guard that blocks loopback/private/link-local/metadata addresses
+		// unless allowlisted (CAVE_SSRF_ALLOWLIST). Our chain fronts the
+		// local litellm (127.0.0.1:4000) and headroom (127.0.0.1:8787), which
+		// are loopback by design — so without this allowlist caveman returns
+		// 502 cave_upstream_unavailable on every request and the model never
+		// sees traffic. Allowlist the loopback upstreams (comma-separated;
+		// bare host, IP, or host:port). Overridable via CAVEMAN_SSRF_ALLOWLIST.
+		"CAVE_SSRF_ALLOWLIST="+cavemanSSRFAllowlist(),
 	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
@@ -419,4 +428,51 @@ func CompressionFactor(modelName string) float64 {
 		return f
 	}
 	return 1.0
+}
+
+// cavemanSSRFAllowlist returns the CAVE_SSRF_ALLOWLIST value passed to the
+// in-container caveman proxy. The default allows the loopback upstreams that
+// Plurality fronts (litellm + headroom); operators can extend it with
+// CAVEMAN_SSRF_ALLOWLIST (comma-separated hosts / IPs / host:port).
+func cavemanSSRFAllowlist() string {
+	if v := os.Getenv("CAVEMAN_SSRF_ALLOWLIST"); v != "" {
+		return v
+	}
+	return "127.0.0.1,localhost"
+}
+
+// ---- fail-closed circuit breaker ----
+//
+// caveman is new; a regression on its forwarding path (e.g. the SSRF guard
+// that caused 502s) must not take a model down. We keep a per-process failure
+// counter: if caveman answers N consecutive chat requests with a 5xx upstream
+// error, we flip it unhealthy so routing bypasses it to the next hop (headroom
+// or direct litellm) until the proxy recovers.
+
+const cavemanMaxConsecutiveFailures = 3
+
+var (
+	cavemanFailMu sync.Mutex
+	cavemanFails  int
+)
+
+// NoteCavemanResult records the outcome of a request routed through caveman's
+// compat mount. Repeated failures trip the breaker (cavemanReady -> false).
+// Called by the chat call sites around the retried request.
+func NoteCavemanResult(routedThroughCaveman bool, statusCode int) {
+	if !routedThroughCaveman {
+		return
+	}
+	cavemanFailMu.Lock()
+	defer cavemanFailMu.Unlock()
+	ok := statusCode >= 200 && statusCode < 500
+	if ok {
+		cavemanFails = 0
+		return
+	}
+	cavemanFails++
+	if cavemanFails >= cavemanMaxConsecutiveFailures {
+		cavemanReady.Store(false)
+		utils.Log("[Caveman] %d consecutive upstream failures — marking proxy unhealthy; models will bypass it", cavemanFails)
+	}
 }

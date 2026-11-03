@@ -336,7 +336,12 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		}
 	}
 
-	req, err := http.NewRequest("POST", ChatCompletionURL(model)+"/v1/chat/completions", bytes.NewBuffer(jsonData))
+	// Resolve the target once so we know whether this request is routed
+	// through caveman (for fail-closed circuit-breaker accounting).
+	chatURL := ChatCompletionURL(model)
+	routedViaCaveman := strings.HasPrefix(chatURL, CavemanBaseURL)
+
+	req, err := http.NewRequest("POST", chatURL+"/v1/chat/completions", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -365,14 +370,17 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	if modelRequiresSerialization(model) {
 		resp, err := utils.DoLLMHTTPWithRetryHeld(ctx, req)
 		if err != nil {
+			NoteCavemanResult(routedViaCaveman, 0)
 			return nil, 0, err
 		}
 		if resp.StatusCode != http.StatusOK {
+			NoteCavemanResult(routedViaCaveman, resp.StatusCode)
 			respBody, _ := io.ReadAll(resp.Body)
 			strStatus := strconv.Itoa(resp.StatusCode)
 			utils.Error("LiteLLM API request failed with status", nil, strStatus, ":", string(respBody))
 			return nil, 0, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(respBody))
 		}
+		NoteCavemanResult(routedViaCaveman, resp.StatusCode)
 		// The integer return carries the pre-proxy estimated prompt tokens so
 		// the loop can compute this turn's real compression ratio against the
 		// provider's post-compression prompt_tokens (see RecordCompression).
@@ -381,15 +389,18 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 
 	resp, err := utils.DoLLMHTTPWithRetry(ctx, req)
 	if err != nil {
+		NoteCavemanResult(routedViaCaveman, 0)
 		return nil, 0, err
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		NoteCavemanResult(routedViaCaveman, resp.StatusCode)
 		respBody, _ := io.ReadAll(resp.Body)
 		strStatus := strconv.Itoa(resp.StatusCode)
 		utils.Error("LiteLLM API request failed with status", nil, strStatus, ":", string(respBody))
 		return nil, 0, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(respBody))
 	}
+	NoteCavemanResult(routedViaCaveman, resp.StatusCode)
 
 	return resp.Body, estTokens, nil
 }
