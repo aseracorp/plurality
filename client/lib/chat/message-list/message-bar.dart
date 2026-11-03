@@ -209,8 +209,9 @@ class InfoButton extends StatelessWidget {
                   style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
                 Text(
-                  '${message.compressionRatio!.toStringAsFixed(2)}x fewer '
-                  'prompt tokens (Headroom/Caveman)',
+                  // ratio = uncompressed/pre-compressed -> saved % = (1 - 1/ratio)
+                  '~${((1 - 1 / message.compressionRatio!) * 100).toStringAsFixed(0)}% '
+                  'fewer prompt tokens (Headroom/Caveman)',
                 ),
               ],
               if (hasCost) ...[
