@@ -269,11 +269,19 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// and the old avalon default --keep 4096 silently dropped all but the
 	// first 4k tokens of the stable system prefix, forcing a full re-prefill
 	// every turn. n_keep=-1 is the "grow with the conversation" mode.
-	requestData.NKeep = nil
-	if modelRequiresSerialization(model) {
-		nk := -1 // keep all prefix tokens (dynamic, grows with context)
-		requestData.NKeep = &nk
-	}
+	//
+	// n_keep=-1 is sent for EVERY model here, not just the ones that opt
+	// into modelRequiresSerialization (the per-model `serialize` flag / name
+	// match). When NKeep stays nil, NO n_keep reaches the backend and it
+	// falls back to its OWN static keep default — the swift/strata docker
+	// preset uses --keep 16384, which is exactly the "input caching stuck at
+	// 16K" symptom: the KV prefix is pinned to 16K tokens and everything past
+	// it is re-prefilled on every turn. Sending n_keep=-1 unconditionally
+	// restores grow-with-conversation caching for ALL backends; cloud
+	// providers ignore n_keep harmlessly (the litellm proxy only forwards it
+	// to llama.cpp-compatible backends via extra_body).
+	nk := -1 // keep all prefix tokens (dynamic, grows with context)
+	requestData.NKeep = &nk
 
 	utils.Debug("A new chat request is being made with the following model: %s", model.Name)
 
