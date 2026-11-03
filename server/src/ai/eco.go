@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -409,6 +410,16 @@ func trimTailToFitBudget(tail []utils.Message, tailBudgetChars int) []utils.Mess
 	// 100000-char budget on conversation 319ce9283cac61666757b88a, so the
 	// preemptive guard re-fired on every single turn).
 	keptStart := 0
+	// Continuity floor: never hand the model less than half the budget when
+	// whole-turn dropping is the only lever left. Turn boundaries in an agent
+	// conversation are COARSE — a single user turn spans hundreds of tool
+	// calls — so the loop below can overshoot catastrophically (observed on
+	// the "context lost" conversation 9aa5f25c582ecd78f7991138: "dropping 21
+	// oldest msgs / 103822 chars (kept 1 msgs / 1 chars)" — a 2.7% overshoot
+	// deleted 99.99% of the context and the model answered a bare "."). When
+	// the next whole-turn drop would starve the window, stop dropping turns
+	// and shrink the oversized ones inside the window instead (Phase B).
+	floorChars := tailBudgetChars / 2
 	for {
 		keptChars := prefix[len(tail)] - prefix[keptStart]
 		if keptChars <= tailBudgetChars {
@@ -423,9 +434,11 @@ func trimTailToFitBudget(tail []utils.Message, tailBudgetChars int) []utils.Mess
 		if next > floor {
 			// Only the newest user turn remains and it alone exceeds the
 			// budget: stop here (floor), keep it whole for the model to
-			// answer; truncateOversizedTail still bounds its individual
-			// messages.
+			// answer; the per-message shrink below still bounds it.
 			keptStart = floor
+			break
+		}
+		if projected := prefix[len(tail)] - prefix[next]; projected < floorChars {
 			break
 		}
 		keptStart = next
@@ -435,7 +448,173 @@ func trimTailToFitBudget(tail []utils.Message, tailBudgetChars int) []utils.Mess
 		utils.Log("[Eco] budget re-trim: dropping %d oldest msgs / %d chars (kept %d msgs / %d chars)", keptStart, dropped, len(tail)-keptStart, prefix[len(tail)]-dropped)
 		tail = tail[keptStart:]
 	}
+
+	// Phase B — shrink-to-fit. The kept window is turn-aligned, but coarse
+	// turns mean it can still overshoot the budget, and the ONLY remaining
+	// lever is a whole-turn drop that would gut the context. Shrink the
+	// largest messages (biggest first) until the window fits, so the model
+	// keeps the BREADTH of the history — every surviving turn stays visible
+	// with its head and tail — instead of a single recent turn.
+	//
+	// Messages are SHRUNK, never dropped: removing a row can orphan a tool
+	// result whose parent assistant tool_call survives, which makes the
+	// OpenAI tool_calls/result pairing invalid (that is why the row-drop path
+	// above stays turn-aligned). Shrinking bodies preserves every pairing.
+	//
+	// The newest user turn is off-limits: it is the request the model must
+	// answer, so shrink-to-fit stops there. If that turn alone exceeds the
+	// budget we accept the overshoot and let truncateOversizedTail bound its
+	// individual rows. A tail with NO user message at all (a pure
+	// assistant/tool wall behind a checkpoint) protects nothing — every row
+	// there is older tool output and all of it is eligible for shrinking.
+	protectedFrom := len(tail)
+	for i := len(tail) - 1; i >= 0; i-- {
+		if tail[i].Role == "user" {
+			protectedFrom = i
+			break
+		}
+	}
+	tail = shrinkTailToFitBudget(tail, tailBudgetChars, protectedFrom)
 	return tail
+}
+
+// shrinkTailToFitBudget trims a turn-aligned tail to tailBudgetChars by
+// cutting the LARGEST messages first (keeping each message's head and tail
+// around an elision banner) until the window fits. Rows are never removed,
+// so assistant tool_calls ↔ tool result pairing survives. Messages at or
+// after protectedFrom (the newest user turn — the live request the model
+// must answer) are left untouched.
+//
+// Greedy largest-first is deliberate: it spreads the elision across the
+// fewest messages, so the maximum number of turns stay visible, and it is
+// deterministic (no randomness, no ordering dependence on map iteration).
+func shrinkTailToFitBudget(tail []utils.Message, tailBudgetChars, protectedFrom int) []utils.Message {
+	if len(tail) == 0 || tailBudgetChars <= 0 {
+		return tail
+	}
+	sizes := make([]int, len(tail))
+	total := 0
+	for i := range tail {
+		sizes[i] = tail[i].Content.TotalContentChars()
+		total += sizes[i]
+	}
+	if total <= tailBudgetChars {
+		return tail
+	}
+	// Work on a COPY: `tail` reaches us as a sub-slice (tail[start:]) of the
+	// caller's message slice, so assigning tail[idx] in place would rewrite
+	// the elements of the caller's backing array — permanently shrinking the
+	// in-memory conversation after a single request. Every message in the
+	// package's compaction path is treated as immutable-by-contract.
+	out := make([]utils.Message, len(tail))
+	copy(out, tail)
+	tail = out
+
+	// Order indices by size, largest first (stable: ties keep chronological
+	// order so the OLDEST of equally-sized messages shrinks first, protecting
+	// the most recent turns).
+	order := make([]int, len(tail))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return sizes[order[a]] > sizes[order[b]] })
+
+	shrunk := 0
+	shrunkMsgs := 0
+	for _, idx := range order {
+		excess := total - tailBudgetChars
+		if excess <= 0 {
+			break
+		}
+		if idx >= protectedFrom {
+			continue // the live user turn is never shrunk
+		}
+		if sizes[idx] <= minShrinkableMsgChars {
+			continue // already at the floor; cutting more destroys meaning
+		}
+		// Never shrink a message below the floor: many small messages carry
+		// more context than one giant one.
+		cut := excess
+		if max := sizes[idx] - minShrinkableMsgChars; cut > max {
+			cut = max
+		}
+		if cut <= 0 {
+			continue
+		}
+		newMsg, removed := shrinkMessageContent(tail[idx], sizes[idx]-cut)
+		if removed <= 0 {
+			continue
+		}
+		tail[idx] = newMsg
+		sizes[idx] -= removed
+		total -= removed
+		shrunk += removed
+		shrunkMsgs++
+	}
+	if shrunkMsgs > 0 {
+		utils.Log("[Eco] shrink-to-fit: elided %d chars across %d oversized msgs (kept %d msgs / %d chars, budget %d)",
+			shrunk, shrunkMsgs, len(tail), total, tailBudgetChars)
+	}
+	return tail
+}
+
+// minShrinkableMsgChars is the per-message floor for shrink-to-fit: a message
+// is never squeezed below this many characters of text, so shrinking spreads
+// across the big dumps instead of annihilating small turns.
+const minShrinkableMsgChars = 2_000
+
+// shrinkMessageContent rebuilds a message so its total content fits
+// keepChars, preserving every non-text part (images, documents, snippets)
+// and keeping the HEAD and TAIL of the text around an elision banner — for
+// tool output, the head (command) and tail (result/errors) are the parts
+// that carry meaning. Returns the new message and how many characters were
+// elided. Text parts are merged into one (non-text parts keep their order),
+// which is safe for the provider request path.
+func shrinkMessageContent(m utils.Message, keepChars int) (utils.Message, int) {
+	parts := m.Content.ContentParts()
+	var text strings.Builder
+	textOnly := make([]utils.ContentPart, 0, len(parts))
+	nonText := make([]utils.ContentPart, 0, 4)
+	for _, p := range parts {
+		if (p.Type == "text" || p.Type == "snippet") && p.Filename == "" {
+			text.WriteString(p.Text)
+			continue
+		}
+		if p.Type == "text" || p.Type == "snippet" {
+			// Attachment-labelled text part: keep as-is, it is short.
+			textOnly = append(textOnly, p)
+			continue
+		}
+		nonText = append(nonText, p)
+	}
+	full := text.String()
+	if len(full) <= keepChars {
+		return m, 0
+	}
+	banner := fmt.Sprintf("\n\n[...middle elided by Plurality context-safety: original length %d chars exceeded the per-request context budget; the head and tail are kept, full content remains in the conversation history]\n\n", len(full))
+	budget := keepChars - len(banner)
+	if budget < 0 {
+		budget = 0
+	}
+	head := budget * 7 / 10
+	tailChars := budget - head
+	out := full
+	if tailChars > 0 && len(full) > head {
+		out = full[:head] + banner + full[len(full)-tailChars:]
+	} else {
+		out = full[:budget]
+	}
+	newParts := make([]utils.ContentPart, 0, len(nonText)+len(textOnly)+1)
+	newParts = append(newParts, nonText...)
+	newParts = append(newParts, textOnly...)
+	newParts = append(newParts, utils.ContentPart{Type: "text", Text: out})
+	// Copy the message BY VALUE and swap only Content: every metadata field
+	// (ID, ToolCalls, ToolCallID, Name, tokens, model) is preserved exactly,
+	// and a future field added to utils.Message cannot be silently dropped by
+	// a hand-written struct literal.
+	shrunkMsg := m
+	shrunkMsg.Content = utils.NewPartsContent(newParts)
+	return shrunkMsg, len(full) - len(out)
 }
 
 // truncateOversizedTail applies per-message bounds to the tail slice before

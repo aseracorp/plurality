@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -177,6 +178,54 @@ func loadRawConversationMessagesForTest(ctx context.Context, id string) ([]utils
 	return conv.Messages, nil
 }
 
+// liveCheckpointSeqs returns the persisted `seq` values of the live
+// (compacted = 0) checkpoint rows of a conversation, ascending. Durable
+// compaction marks folded rows compacted=1, so this is the only faithful way
+// to observe where the rolling checkpoint actually sits in the history.
+func liveCheckpointSeqs(ctx context.Context, conversationID string) ([]int64, error) {
+	userID, ok := ctx.Value("userID").(string)
+	if !ok {
+		return nil, errors.New("user ID not found in request context")
+	}
+	d, err := GetUserDB(userID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := d.QueryContext(ctx,
+		`SELECT seq FROM messages
+		 WHERE conversation_id = ? AND compacted = 0
+		   AND (name = ? OR tool_calls LIKE ?)
+		 ORDER BY seq ASC`,
+		conversationID, EcoCheckpointToolName, "%"+EcoCheckpointToolName+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var seqs []int64
+	for rows.Next() {
+		var seq int64
+		if err := rows.Scan(&seq); err != nil {
+			return nil, err
+		}
+		seqs = append(seqs, seq)
+	}
+	return seqs, rows.Err()
+}
+
+
+// itoa is a tiny strconv-free int formatter for test messages.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	return string(b)
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -299,8 +348,13 @@ func TestCompactConversationDurable_MovesCheckpointForward(t *testing.T) {
 		t.Fatalf("expected 22 messages before compaction, got %d", len(full))
 	}
 
+	// The stub summariser must NOT echo its input: the durable path prefixes
+	// the previous summary as "PRIOR CHECKPOINT:\n<old summary>", which a real
+	// model folds in, and the assertion below checks that the seed summary did
+	// not leak verbatim into the new pair. A stub that copies raw input bytes
+	// would echo "OLD SEED SUMMARY" and fail on its own echo, not on a bug.
 	removed, err := CompactConversationDurable(ctx, "c_move", full, 6, func(text string) (string, error) {
-		return "NEW SUMMARY " + text[:min(len(text), 30)], nil
+		return "NEW SUMMARY (folded " + itoa(len(text)) + " chars)", nil
 	})
 	if err != nil {
 		t.Fatalf("compact: %v", err)
@@ -316,27 +370,34 @@ func TestCompactConversationDurable_MovesCheckpointForward(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	var pairSeqs []int64
 	var summary string
-	for i, m := range after {
-		if IsCheckpointMessage(m) {
-			pairSeqs = append(pairSeqs, int64(i))
-			if m.Role == "tool" {
-				summary = m.TextContent()
-			}
+	for _, m := range after {
+		if IsCheckpointMessage(m) && m.Role == "tool" {
+			summary = m.TextContent()
 		}
 	}
-	if len(pairSeqs) != 2 {
-		t.Fatalf("expected exactly one checkpoint pair (2 messages), got %d", len(pairSeqs))
+	// The moved-forward proof has to come from the PERSISTED seq, not from
+	// the position inside `after`: GetConversationByIdInternal selects
+	// `compacted = 0` rows only, and durable compaction marks the folded
+	// rows (including the superseded pair) compacted=1. The live checkpoint
+	// pair is therefore ALWAYS the first two rows of that view, at any
+	// implementation, so an index-in-slice assertion here is unsatisfiable
+	// (it has failed ever since it was added in #103 — CI runs no `go test`
+	// step, so it was never observed). The real invariant: the pair's seqs
+	// moved past the seed pair's seqs (1/2) to the frontier, and exactly one
+	// pair remains live.
+	livePair, err := liveCheckpointSeqs(ctx, "c_move")
+	if err != nil {
+		t.Fatalf("query live pair: %v", err)
 	}
-	if pairSeqs[0]+1 != pairSeqs[1] {
-		t.Fatalf("expected checkpoint pair to be adjacent, got %v", pairSeqs)
+	if len(livePair) != 2 {
+		t.Fatalf("expected exactly one live checkpoint pair (2 rows), got %v", livePair)
 	}
-	// The pair must sit AFTER the oldest kept rows — i.e. not at position 0
-	// (the old seed pair was at the very start). The new pair is inserted at
-	// the boundary, so it must not be the first two messages.
-	if pairSeqs[0] == 0 {
-		t.Fatalf("checkpoint pair did not move forward: still at the start (old pair updated in place?)")
+	if livePair[0]+1 != livePair[1] {
+		t.Fatalf("expected the checkpoint pair to be adjacent in seq, got %v", livePair)
+	}
+	if livePair[0] <= 2 {
+		t.Fatalf("checkpoint pair did not move forward: still at the seed seqs (old pair updated in place?) %v", livePair)
 	}
 	if !strings.Contains(summary, "NEW SUMMARY") {
 		t.Fatalf("expected the NEW summary, got: %q", summary)
