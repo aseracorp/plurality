@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 )
 
 var (
@@ -48,6 +49,31 @@ var LoggingLevelLabels = map[LoggingLevel]LogLevel{
 	"ERROR":   ERROR,
 }
 
+// defaultLogLevel is the level used when LOG_LEVEL is unset or set to an
+// unrecognized value. Previously RawLogMessage did a raw map lookup on the
+// env var: when LOG_LEVEL was unset (the common case) the lookup returned 0
+// (DEBUG) so everything logged, but when it was set to anything not in the
+// map — e.g. "FATAL", or any case mismatch like "info" — the lookup also
+// yielded 0 and, worse, could silently suppress or over-suppress messages.
+// Normalize the env value to a stable default so logs are predictable.
+const defaultLogLevel = INFO
+
+// currentLogLevel resolves the effective log level from the LOG_LEVEL env
+// var, normalizing to a stable default when it is absent or unrecognized.
+func currentLogLevel() LogLevel {
+	raw := strings.TrimSpace(os.Getenv("LOG_LEVEL"))
+	if raw == "" {
+		return defaultLogLevel
+	}
+	// Case-insensitive so "DEBUG"/"debug"/"Debug" all behave identically.
+	upper := strings.ToUpper(raw)
+	if lvl, ok := LoggingLevelLabels[LoggingLevel(upper)]; ok {
+		return lvl
+	}
+	// Unknown value: fall back to the default rather than a silent/odd level.
+	return defaultLogLevel
+}
+
 var (
 	logger      *log.Logger
 	errorLogger *log.Logger
@@ -57,9 +83,7 @@ var (
 )
 
 func RawLogMessage(level LogLevel, prefix, prefixColor, color, message string) {
-	ll := LoggingLevelLabels[(LoggingLevel)(os.Getenv("LOG_LEVEL"))]
-
-	if ll <= level {
+	if currentLogLevel() <= level {
 		logString := prefixColor + Bold + prefix + Reset + " " + color + message + Reset
 
 		log.Println(logString)
