@@ -12,19 +12,6 @@ orbs:
 # Each per-arch job pushes :<sha>-amd64 / :<sha>-arm64 as intermediates; those
 # tags remain on the registry as build artifacts but the consumable tags are
 # the multi-arch :$SHA and :latest produced by the merge job.
-#
-# STALE-BINARY PREVENTION (see dockerfile CACHEBUST / BUILD_REV):
-#   - Every build passes --build-arg CACHEBUST=$CIRCLE_SHA1 so the dockerfile's
-#     `go build` RUN layer instruction string changes on every push and can
-#     never be served from the layer cache against an old checkout.
-#   - Every build passes --build-arg BUILD_REV=$CIRCLE_SHA1 so the binary (and
-#     /health) reports the exact git rev it was compiled from — a stale
-#     deployed binary becomes immediately detectable.
-#   - docker_layer_caching is NOT enabled. With remote-docker layer caching on,
-#     the cached `go build` layer (which byte-identically embeds CACHEBUST) was
-#     reused across runs, shipping a binary compiled from an old checkout even
-#     when the checkout itself was fresh — exactly the "new image, old
-#     Plurality.bin" bug we are fixing.
 
 jobs:
   build-amd64:
@@ -35,7 +22,8 @@ jobs:
       DOCKER_BUILDKIT: "1"
     steps:
       - checkout
-      - setup_remote_docker
+      - setup_remote_docker:
+          docker_layer_caching: true
 
       - run:
           name: Log in to Docker Hub
@@ -47,17 +35,14 @@ jobs:
           no_output_timeout: 30m
           command: |
             TAG="$DOCKER_REPOSITORY:$CIRCLE_SHA1-amd64"
-            echo "Building native amd64 image: $TAG (rev $CIRCLE_SHA1)"
-            docker build \
-              --build-arg CACHEBUST="$CIRCLE_SHA1" \
-              --build-arg BUILD_REV="$CIRCLE_SHA1" \
-              -t "$TAG" .
+            echo "Building native amd64 image: $TAG"
+            docker build -t "$TAG" .
             docker push "$TAG"
-            echo "amd64 built from rev: $CIRCLE_SHA1"
 
   build-arm64:
     machine:
       image: ubuntu-2204:current
+      docker_layer_caching: true
     resource_class: arm.medium
     environment:
       DOCKER_REPOSITORY: azukaar/plurality
@@ -75,13 +60,9 @@ jobs:
           no_output_timeout: 30m
           command: |
             TAG="$DOCKER_REPOSITORY:$CIRCLE_SHA1-arm64"
-            echo "Building native arm64 image: $TAG (rev $CIRCLE_SHA1)"
-            docker build \
-              --build-arg CACHEBUST="$CIRCLE_SHA1" \
-              --build-arg BUILD_REV="$CIRCLE_SHA1" \
-              -t "$TAG" .
+            echo "Building native arm64 image: $TAG"
+            docker build -t "$TAG" .
             docker push "$TAG"
-            echo "arm64 built from rev: $CIRCLE_SHA1"
 
   merge-manifest:
     docker:
@@ -90,7 +71,8 @@ jobs:
       DOCKER_REPOSITORY: azukaar/plurality
     steps:
       - checkout
-      - setup_remote_docker
+      - setup_remote_docker:
+          docker_layer_caching: true
 
       - run:
           name: Log in to Docker Hub
@@ -107,7 +89,7 @@ jobs:
               echo "Could not read version from client/pubspec.yaml" >&2
               exit 1
             fi
-            echo "Merging per-arch images into multi-arch manifest (version $VERSION, rev $CIRCLE_SHA1)..."
+            echo "Merging per-arch images into multi-arch manifest (version $VERSION)..."
             docker buildx imagetools create \
               -t "$DOCKER_REPOSITORY:$CIRCLE_SHA1" \
               -t "$DOCKER_REPOSITORY:$VERSION" \
