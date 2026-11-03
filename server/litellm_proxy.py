@@ -219,24 +219,37 @@ async def chat_completions(request: Request):
     # / keep on every request for cacheable models; without them the agent loop
     # re-prefills the whole context on every turn.
     #
-    # WHY allowed_openai_params and not just extra_body:
-    #   - extra_body is the documented way to send provider-specific params,
-    #     and IS forwarded verbatim for most providers.
-    #   - BUT the global `litellm.drop_params = True` (below) makes litellm
-    #     strip params it doesn't recognise for the custom `openai/` provider —
-    #     and in deployed litellm versions this strips the top-level
-    #     cache_prompt/n_keep/keep even when re-passed. The live strata-swift
-    #     cache only worked once the deployment set `drop_params: false`.
-    #   - allowed_openai_params is the supported litellm mechanism that tells
-    #     the Router to PASS the listed params through "as is", exempting them
-    #     from drop_params. Sending it per-request (documented URL path) makes
-    #     ANY model the Go server marks cacheable keep n_keep/cache_prompt/keep
-    #     intact, automatically, with no per-deployment config — regardless of
-    #     the global drop_params default. This is the real fix.
-    cache_params = ["cache_prompt", "n_keep", "keep"]
-    present = [k for k in cache_params if body.get(k) is not None]
-    if present:
-        kwargs["allowed_openai_params"] = present
+    # These MUST ride in extra_body, NOT as top-level litellm kwargs and NOT via
+    # allowed_openai_params. A top-level kwarg is passed straight into
+    # AsyncCompletions.create(...) and the OpenAI SDK rejects unknown keywords
+    # ("AsyncCompletions.create() got an unexpected keyword argument
+    # 'cache_prompt'"); allowed_openai_params produces exactly that. extra_body
+    # is the one channel the OpenAI SDK forwards into the request JSON verbatim
+    # without treating the keys as constructor kwargs, so cache_prompt/n_keep/
+    # keep actually reach the upstream OpenAI-compatible backend (strata).
+    #
+    # Independent guard: when a request carries cache-control params we also
+    # force drop_params=False for THIS call, so litellm doesn't drop the
+    # extra_body keys at the provider-forwarding layer (which broke caching
+    # until the live deployment set drop_params:false). Making it per-request
+    # means any KV-cacheable model is protected automatically, with no
+    # per-deployment config, and the global drop_params default (correct for
+    # cloud) is preserved.
+    cache_prompt = body.get("cache_prompt")
+    n_keep = body.get("n_keep")
+    keep = body.get("keep")
+    has_cache_control = cache_prompt is not None or n_keep is not None or keep is not None
+    extra = dict(existing_extra_body(body))
+    if cache_prompt is not None:
+        extra["cache_prompt"] = cache_prompt
+    if n_keep is not None:
+        extra["n_keep"] = n_keep
+    if keep is not None:
+        extra["keep"] = keep
+    if extra:
+        kwargs["extra_body"] = extra
+    if has_cache_control:
+        kwargs["drop_params"] = False
 
     if not stream:
         response = await router.acompletion(**kwargs)
