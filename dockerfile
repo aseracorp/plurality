@@ -175,13 +175,13 @@ VOLUME /app/data
 EXPOSE 8090
 
 # BUILD_REV records the exact git rev (or CACHEBUST value) this image's server
-# binary was compiled from. CI passes --build-arg BUILD_REV=$CIRCLE_SHA1; the
-# server surfaces it on /health so a stale deployed binary is immediately
-# visible (bite the "new image, old Plurality.bin" bug before it reaches a
-# user). Falls back to the CACHEBUST value, then "unknown".
+# binary was compiled from. CI passes --build-arg BUILD_REV=$CIRCLE_SHA1 (see
+# .circleci/config.yml); the server surfaces it on /health so a stale deployed
+# binary is immediately visible. Falls back to "unknown" — the CACHEBUST value
+# is deliberately NOT nested here because Dockerfile variable expansion does
+# not support ${A:-${B:-c}} nesting.
 ARG BUILD_REV=unknown
-ARG CACHEBUST=latest
-ENV BUILD_REV=${BUILD_REV:-${CACHEBUST:-unknown}}
+ENV BUILD_REV=${BUILD_REV}
 
 # Run the server under the crash-capture supervisor (still under tini as PID 1,
 # so zombies are reaped and `docker stop` signals are forwarded). The
