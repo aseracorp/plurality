@@ -472,3 +472,69 @@ func TestFindCharCutoffIndex_AdvancesOnNeverCompacted(t *testing.T) {
 		t.Fatalf("kept tail must not start on a tool row, got index %d role %q", cut, msgs[cut].Role)
 	}
 }
+
+// TestFilterCheckpointsForRequest_OversizedCheckpointSummary pins the
+// "eco compaction makes conversation lose ALL context" bug. When the
+// checkpoint summary (carried in the checkpoint pair's tool-role message)
+// is far larger than the model's context window — e.g. after durable
+// compaction folded a huge history whose summarisation output exceeded the
+// window — the very next request dies with context_length_exceeded, the
+// LLM loop then compact-durably folds the live tail into a NEW summary, and
+// a restarted session reloads only the checkpoint: the summary is the ONLY
+// surviving context. With a 150k-char summary on a 65k-token window (max
+// tail ≈16k chars), the filter must truncate the summary to the budget so
+// the (much smaller) live tail still fits the window.
+func TestFilterCheckpointsForRequest_OversizedCheckpointSummary(t *testing.T) {
+	hugeSummary := strings.Repeat("S", 150_000)
+	msgs := []utils.Message{
+		checkpointMsg(),
+		{Role: "tool", Content: utils.NewTextContent(hugeSummary), ToolCallID: "eco_regression", Name: db.EcoCheckpointToolName},
+		{Role: "user", Content: utils.NewTextContent("continue the work")},
+	}
+	got := filterCheckpointsForRequest(msgs, true, 65_536)
+	if len(got) == 0 {
+		t.Fatal("expected a non-empty request")
+	}
+	// The summary tool message must be truncated to the budget, not shipped
+	// whole (150k chars >> 16k budget for a 65k-token window).
+	for _, m := range got {
+		if m.Role == "tool" && m.Name == db.EcoCheckpointToolName {
+			if len(m.TextContent()) > maxTailChars(65_536)+200 {
+				t.Fatalf("checkpoint summary not truncated to budget: %d chars (budget %d)", len(m.TextContent()), maxTailChars(65_536))
+			}
+			if !strings.Contains(m.TextContent(), "truncated by Plurality") {
+				t.Fatal("expected truncation banner on oversized checkpoint summary")
+			}
+			found := false
+			for _, tailM := range got {
+				if tailM.Role == "user" && tailM.TextContent() == "continue the work" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("live tail (user message) must survive alongside the truncated summary")
+			}
+		}
+	}
+}
+
+// TestCapCheckpointSummaryForWindow_SmallWindow pins the helper directly on
+// a small-window model: the summary must be bounded to the model's tail
+// budget even when the caller passes no explicit budget.
+func TestCapCheckpointSummaryForWindow_SmallWindow(t *testing.T) {
+	msgs := []utils.Message{
+		checkpointMsg(),
+		{Role: "tool", Content: utils.NewTextContent(strings.Repeat("S", 200_000)), ToolCallID: "eco_regression", Name: db.EcoCheckpointToolName},
+	}
+	out := capCheckpointSummaryForWindow(msgs, 65_536, -1)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(out))
+	}
+	for _, m := range out {
+		if m.Role == "tool" && m.Name == db.EcoCheckpointToolName {
+			if len(m.TextContent()) > maxTailChars(65_536)+200 {
+				t.Fatalf("summary not bounded for 65k window: %d chars", len(m.TextContent()))
+			}
+		}
+	}
+}
