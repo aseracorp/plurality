@@ -227,6 +227,15 @@ func startCavemanProcess() error {
 		// Plurality stack already sends explicit cache_prompt/n_keep hints, so
 		// keep Caveman from making extra max_tokens=0 upstream calls.
 		"CAVEMAN_CACHE_WARM=off",
+		// Caveman's standalone upstream client has an ALWAYS-ON SSRF dial
+		// guard that blocks loopback/private/link-local/metadata addresses
+		// unless allowlisted (CAVE_SSRF_ALLOWLIST). Our chain fronts the
+		// local litellm (127.0.0.1:4000) and headroom (127.0.0.1:8787), which
+		// are loopback by design — so without this allowlist caveman returns
+		// 502 cave_upstream_unavailable on every request and the model never
+		// sees traffic. Allowlist the loopback upstreams (comma-separated;
+		// bare host, IP, or host:port). Overridable via CAVEMAN_SSRF_ALLOWLIST.
+		"CAVE_SSRF_ALLOWLIST="+cavemanSSRFAllowlist(),
 	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
@@ -419,4 +428,15 @@ func CompressionFactor(modelName string) float64 {
 		return f
 	}
 	return 1.0
+}
+
+// cavemanSSRFAllowlist returns the CAVE_SSRF_ALLOWLIST value passed to the
+// in-container caveman proxy. The default allows the loopback upstreams that
+// Plurality fronts (litellm + headroom); operators can extend it with
+// CAVEMAN_SSRF_ALLOWLIST (comma-separated hosts / IPs / host:port).
+func cavemanSSRFAllowlist() string {
+	if v := os.Getenv("CAVEMAN_SSRF_ALLOWLIST"); v != "" {
+		return v
+	}
+	return "127.0.0.1,localhost"
 }
