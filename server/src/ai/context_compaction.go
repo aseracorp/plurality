@@ -17,7 +17,7 @@ func isContextLengthError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	needles := []string{"context_length_exceeded", "maximum context length", "input too long", "max_prompt_tokens", "context window", "exceeded the context length", "context length is"}
+	needles := []string{"context_length_exceeded", "maximum context length", "input too long", "max_prompt_tokens", "context window", "exceeded the context length", "context length is", "request exceeds the context window"}
 	for _, needle := range needles {
 		if strings.Contains(msg, needle) {
 			return true
