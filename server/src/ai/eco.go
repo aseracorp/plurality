@@ -112,6 +112,21 @@ func filterCheckpointsForRequestBudget(messages []utils.Message, ecoOn bool, con
 	}
 	tail := messages[lastCheckpointIdx:]
 
+	// The checkpoint summary must ALWAYS fit inside the model's context
+	// window, no matter how huge the compacted history was. Every tool
+	// result is shipped to the LLM inside the summary's tool-role message,
+	// and an oversized summary is the "eco compaction makes conversation
+	// lose ALL context" bug: the request dies with context_length_exceeded,
+	// the LLM loop then compact-durably folds the newest turns into the
+	// summary, and a restarted session reloads only the checkpoint — the
+	// full pre-summary history is on the other side of the boundary and
+	// never re-enters the context. Cap the summary to a budget that always
+	// leaves room for the tail, the system prompt, the tool schemas and the
+	// model's reply (this pair's tool message is where an oversized summary
+	// used to evict the entire live tail, leaving a context that was nothing
+	// but summary bloat and a single in-flight user turn).
+	tail = capCheckpointSummaryForWindow(tail, contextWindow, tailBudgetChars)
+
 	// Safety net: even with eco on, the live tail after the last checkpoint
 	// can grow unbounded. Never ship a context-busting tail to the provider.
 	// Message-count caps are not enough: observed a 600-message tail that was
@@ -121,6 +136,54 @@ func filterCheckpointsForRequestBudget(messages []utils.Message, ecoOn bool, con
 	// boundary to respond to. The checkpoint summary before the cap keeps the
 	// dropped middle coherent.
 	return capTailWithBudget(tail, contextWindow, tailBudgetChars)
+}
+
+// capCheckpointSummaryForWindow bounds the checkpoint summary carried in
+// the tool-role message of an eco checkpoint pair so it can never blow the
+// model's context window BY ITSELF. The summary is the result of a
+// summarisation call that folded a huge raw history (potentially hundreds
+// of thousands of tokens) into one message; when it vastly exceeds the
+// window, the very next request dies with context_length_exceeded, the
+// LLM-loop durable compaction then folds the LIVE tail into a new summary,
+// and a restarted session reloads only the new checkpoint — the summary
+// is the ONLY surviving context. That is the "eco compaction makes
+// conversation lose ALL context" bug (observed: e1c3b48c63eb077f0985b83a
+// and a 100-assistant/tool-message wall after the checkpoint).
+//
+// The cap is deterministic and conservative: it keeps the number of SUMMARY
+// CHARACTERS ≤ the same budget the live tail gets (maxTailChars(window) or
+// the caller's overhead-aware tail budget), so the summary can never crowd
+// the tail out of the request. Anything beyond the cap is truncated with a
+// clear banner that tells the model to consult the compacted history (which
+// the non-destructive compaction keeps in the DB) before relying on omitted
+// details.
+func capCheckpointSummaryForWindow(tail []utils.Message, contextWindow, tailBudgetChars int) []utils.Message {
+	if len(tail) == 0 {
+		return tail
+	}
+	budget := tailBudgetChars
+	if budget < 0 {
+		budget = maxTailChars(contextWindow)
+	}
+	for i := range tail {
+		m := &tail[i]
+		if m.Role != "tool" || m.Name != db.EcoCheckpointToolName {
+			continue
+		}
+		total := m.Content.TotalContentChars()
+		if total <= budget {
+			continue
+		}
+		oldText := m.TextContent()
+		keep := budget
+		if keep > len(oldText) {
+			keep = len(oldText)
+		}
+		utils.Log("[Eco] checkpoint summary oversized (%d chars > budget %d) — truncating to keep the tail inside the context window", total, budget)
+		banner := fmt.Sprintf("\n\n[checkpoint summary truncated by Plurality: original length %d chars exceeded the per-request context budget; full history is preserved in the conversation for the client view]", total)
+		m.Content = utils.NewTextContent(oldText[:keep] + banner)
+	}
+	return tail
 }
 
 // maxTailChars returns the character budget for the live tail sent to the
