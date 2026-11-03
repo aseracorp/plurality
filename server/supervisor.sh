@@ -8,9 +8,23 @@
 # (b) keeps the UI available after a crash instead of waiting for an external
 # restart.
 #
+# Server output is mirrored to BOTH the persistent /app/data/server.log file
+# AND the container's stdout (fd 1). This makes `docker logs` (and Cosmos'
+# container-log viewer) work: before, `"$BIN" >> "$OUT" 2>&1` redirected every
+# byte into server.log and nothing ever reached container stdout, so `docker
+# logs` came back EMPTY for a healthy, logging server (observed live on
+# Simplify).
+#
+# Mechanical design: the server stays the DIRECT child of this script ($SPID
+# is the server, never a pipeline middleman), so `wait $SPID` and the SIGTERM
+# forward on `docker stop` still reach the server itself and its graceful
+# shutdown DB checkpoint still runs. Its stdout+stderr are pointed at a FIFO;
+# a sidecar `tee` reads the FIFO and appends to server.log while also echoing
+# to container stdout. The sidecar is recreated on every launch (it exits on
+# EOF when the server stops).
+#
 # PID 1 is still tini (see dockerfile ENTRYPOINT) so zombies are reaped and
-# signals (SIGTERM on `docker stop`) are forwarded to this script, which
-# forwards them to the server and exits cleanly.
+# signals (SIGTERM on `docker stop`) are forwarded to this script.
 set -u
 
 # Enable core dumps + full Go crash traces so a native crash (C segv in
@@ -24,6 +38,7 @@ export GOTRACEBACK=crash
 
 LOG=/app/data/crash.log
 OUT=/app/data/server.log
+FIFO=/tmp/server-log.fifo
 mkdir -p /app/data
 echo "=== supervisor.sh $(date -u +%FT%T) pid $$ (trap TERM/INT) ===" >> "$LOG"
 
@@ -64,7 +79,22 @@ BIN=/app/Plurality.bin
 restart_delay=0
 while true; do
   echo "=== $(date -u +%FT%T) starting $BIN (attempt after ${restart_delay}s) ===" >> "$LOG"
-  "$BIN" >> "$OUT" 2>&1 &
+
+  # (Re)create the log-mirror FIFO + sidecar tee for this launch. tee reads the
+  # FIFO, appends to the persistent server.log AND writes to container stdout
+  # (this script's fd 1). It exits on EOF when the server stops, so we recreate
+  # it each iteration.
+  rm -f "$FIFO"
+  mkfifo "$FIFO" 2>/dev/null
+  (
+    exec tee -a "$OUT"
+  ) < "$FIFO" &
+  TEE_PID=$!
+
+  # Launch the server as the DIRECT child with both stdout and stderr into the
+  # FIFO. Redirection order matters: `> "$FIFO" 2>&1` (stdout first, then stderr
+  # follows it) — the reverse would leave stderr on the container's stdout.
+  "$BIN" > "$FIFO" 2>&1 &
   SPID=$!
 
   # Arm the CPU watchdog for this server instance. The subshell exits on its
@@ -108,6 +138,12 @@ while true; do
 
   wait "$SPID"
   rc=$?
+
+  # Close the FIFO writer-side so the sidecar tee sees EOF and exits cleanly;
+  # kill it only if it lingers.
+  kill "$TEE_PID" 2>/dev/null
+  wait "$TEE_PID" 2>/dev/null
+
   {
     echo "== server exited rc=$rc at $(date -u +%FT%T) =="
     echo "--- uptime $(awk '{printf "%.1fs", $1}' /proc/uptime) ---"
