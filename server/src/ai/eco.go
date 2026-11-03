@@ -997,8 +997,16 @@ func renderMessagesForSummary(messages []utils.Message) string {
 // from the oldest end (identity match on role/tool_call_id/Content), so the
 // newest-end pass never double-counts it.
 func messageInSlice(m utils.Message, slice []utils.Message) bool {
+	// Messages are identified by (role, name, tool_call_id, serialized content
+	// text). We cannot compare utils.MessageContent by ==: it contains an
+	// unexported []ContentPart (a slice), which is not comparable in Go, so the
+	// previous `slice[i].Content == m.Content` failed to compile
+	// (invalid operation: slice-bearing struct cannot be compared). Identity is
+	// unique enough for the summary head/tail de-duplication this serves.
+	mt := m.TextContent()
 	for i := range slice {
-		if slice[i].Content == m.Content && slice[i].Role == m.Role && slice[i].ToolCallID == m.ToolCallID {
+		if slice[i].TextContent() == mt && slice[i].Role == m.Role &&
+			slice[i].Name == m.Name && slice[i].ToolCallID == m.ToolCallID {
 			return true
 		}
 	}
