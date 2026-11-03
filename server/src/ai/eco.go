@@ -1,31 +1,422 @@
+package ai
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/azukaar/plurality/src/auth"
+	"github.com/azukaar/plurality/src/db"
+	"github.com/azukaar/plurality/src/docsupport"
+	"github.com/azukaar/plurality/src/utils"
+)
+
+// summaryInFlight is the global single-flight gate for eco-mode summary
+// jobs. Only one summary runs across the whole server at any time;
+// conversations that miss their window pick up on the next user turn.
+var summaryInFlight atomic.Bool
+
+func effectiveEcoTrigger(cfg auth.EcoConfig, modelName string) int {
+	static := cfg.TriggerTokens
+	if static <= 0 || cfg.ContextFraction <= 0 {
+		return static
+	}
+	window := Models.MaxContextTokensFor(modelName)
+	if window <= 0 {
+		return static
+	}
+	fractionBasis := int(cfg.ContextFraction * 100)
+	if fractionBasis <= 0 || fractionBasis >= 100 {
+		return static
+	}
+	dynamic := (fractionBasis * window) / 100
+	if dynamic < static {
+		return dynamic
+	}
+	return static
+}
+
+func userContextFor(userID string) context.Context {
+	return context.WithValue(context.Background(), "userID", userID)
+}
+
+func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool, contextWindow int) []utils.Message {
+	return filterCheckpointsForRequestBudget(messages, ecoOn, contextWindow, -1)
+}
+
+func filterCheckpointsForRequestBudget(messages []utils.Message, ecoOn bool, contextWindow, tailBudgetChars int) []utils.Message {
+	if tailBudgetChars < 0 {
+		tailBudgetChars = maxTailChars(contextWindow)
+	}
+	if !ecoOn {
+		return db.FilterOutCheckpoints(messages)
+	}
+
+	lastCheckpointIdx := -1
+	for i, m := range messages {
+		if m.Role == "assistant" && db.IsCheckpointMessage(m) {
+			lastCheckpointIdx = i
+		}
+	}
+	if lastCheckpointIdx < 0 {
+		return capTailWithBudget(messages, contextWindow, tailBudgetChars)
+	}
+	tail := messages[lastCheckpointIdx:]
+
+	tail = capCheckpointSummaryForWindow(tail, contextWindow, tailBudgetChars)
+
+	return capTailWithBudget(tail, contextWindow, tailBudgetChars)
+}
+
+func capCheckpointSummaryForWindow(tail []utils.Message, contextWindow, tailBudgetChars int) []utils.Message {
+	if len(tail) == 0 {
+		return tail
+	}
+	budget := tailBudgetChars
+	if budget < 0 {
+		budget = maxTailChars(contextWindow)
+	}
+	for i := range tail {
+		m := &tail[i]
+		if m.Role != "tool" || m.Name != db.EcoCheckpointToolName {
+			continue
+		}
+		total := m.Content.TotalContentChars()
+		if total <= budget {
+			continue
+		}
+		oldText := m.TextContent()
+		keep := budget
+		if keep > len(oldText) {
+			keep = len(oldText)
+		}
+		utils.Log("[Eco] checkpoint summary oversized (%d chars > budget %d) — truncating to keep the tail inside the context window", total, budget)
+		banner := fmt.Sprintf("\n\n[checkpoint summary truncated by Plurality: original length %d chars exceeded the per-request context budget; full history is preserved in the conversation for the client view]", total)
+		m.Content = utils.NewTextContent(oldText[:keep] + banner)
+	}
+	return tail
+}
+
+func maxTailChars(contextWindow int) int {
+	if contextWindow <= 0 {
+		contextWindow = defaultContextWindow
+	}
+	if contextWindow <= 65_536 {
+		budget := contextWindow / 4
+		if budget < 8_192 {
+			budget = 8_192
+		}
+		return budget
+	}
+	budget := contextWindow / 3
+	if budget < 16_384 {
+		budget = 16_384
+	}
+	if budget > 100_000 {
+		budget = 100_000
+	}
+	return budget
+}
+
+func maxTailCharsForOverhead(contextWindow, overheadTokens int) int {
+	if contextWindow <= 0 {
+		contextWindow = defaultContextWindow
+	}
+	if overheadTokens < 0 {
+		overheadTokens = 0
+	}
+	const replyReserve = 4096 + 2048
+	available := contextWindow - overheadTokens - replyReserve
+	if available <= 0 {
+		available = 8_192
+	}
+	budget := available * 3
+	if budget > 100_000 {
+		budget = 100_000
+	}
+	return budget
+}
+
+func capTail(tail []utils.Message, contextWindow int) []utils.Message {
+	return capTailBudget(tail, maxTailChars(contextWindow), contextWindow)
+}
+
+func capTailWithBudget(tail []utils.Message, contextWindow, tailBudgetChars int) []utils.Message {
+	return capTailBudget(tail, tailBudgetChars, contextWindow)
+}
+
+func capTailBudget(tail []utils.Message, tailBudgetChars, contextWindow int) []utils.Message {
+	if len(tail) == 0 {
+		return tail
+	}
+	if tailBudgetChars <= 0 {
+		tailBudgetChars = maxTailChars(contextWindow)
+	}
+	count := 0
+	chars := 0
+	var start int
+	start = len(tail) - 1
+	for start >= 0 {
+		chars += tail[start].Content.TotalContentChars()
+		count++
+		if chars > tailBudgetChars {
+			start++
+			break
+		}
+		if start == 0 {
+			break
+		}
+		start--
+	}
+	if start < 0 {
+		start = 0
+	}
+	if start > len(tail)-1 {
+		start = len(tail) - 1
+	}
+	for start > 0 && tail[start].Role != "user" {
+		start--
+	}
+	if start > 0 {
+		utils.Log("[Eco] capping tail by budget: kept %d msgs / %d chars (start idx %d) for context safety", len(tail)-start, chars, start)
+		tail = tail[start:]
+	}
+	tail = trimTailToFitBudget(tail, tailBudgetChars)
+	return truncateOversizedTail(tail, contextWindow)
+}
+
+func trimTailToFitBudget(tail []utils.Message, tailBudgetChars int) []utils.Message {
+	if len(tail) == 0 || tailBudgetChars <= 0 {
+		return tail
+	}
+	prefix := make([]int, len(tail)+1)
+	for i := range tail {
+		prefix[i+1] = prefix[i] + tail[i].Content.TotalContentChars()
+	}
+	if prefix[len(tail)] <= tailBudgetChars {
+		return tail
+	}
+
+	floor := len(tail) - 1
+	for floor > 0 && tail[floor].Role != "user" {
+		floor--
+	}
+
+	keptStart := 0
+	for {
+		keptChars := prefix[len(tail)] - prefix[keptStart]
+		if keptChars <= tailBudgetChars {
+			break
+		}
+		next := keptStart + 1
+		for next < len(tail) && tail[next].Role != "user" {
+			next++
+		}
+		if next > floor {
+			keptStart = floor
+			break
+		}
+		keptStart = next
+	}
+	dropped := prefix[keptStart]
+	if keptStart > 0 {
+		utils.Log("[Eco] budget re-trim: dropping %d oldest msgs / %d chars (kept %d msgs / %d chars)", keptStart, dropped, len(tail)-keptStart, prefix[len(tail)]-dropped)
+		tail = tail[keptStart:]
+	}
+	return tail
+}
+
+func maxKeepTailChars(contextWindow int) int {
+	if contextWindow <= 0 {
+		contextWindow = defaultContextWindow
+	}
+	budget := contextWindow / 2
+	if budget < 16_384 {
+		budget = 16_384
+	}
+	if budget > 100_000 {
+		budget = 100_000
+	}
+	return budget
+}
+
+func truncateOversizedTail(tail []utils.Message, contextWindow int) []utils.Message {
+	if len(tail) == 0 {
+		return tail
+	}
+	keptCalls := make(map[string]bool)
+	for _, m := range tail {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				keptCalls[tc.ID] = true
+			}
+		}
+	}
+	out := make([]utils.Message, 0, len(tail))
+	for i := range tail {
+		m := tail[i]
+		total := m.Content.TotalContentChars()
+		if total <= maxKeepTailChars(contextWindow) {
+			out = append(out, m)
+			continue
+		}
+		if m.Role == "tool" && !keptCalls[m.ToolCallID] {
+			utils.Log("[Eco] dropping oversized tool result (%d chars) from tail", total)
+			continue
+		}
+		txt := ""
+		for _, p := range m.Content.ContentParts() {
+			if p.Type == "text" {
+				txt += p.Text
+			}
+		}
+		truncLen := len(txt)
+		if truncLen > maxKeepTailChars(contextWindow) {
+			truncLen = maxKeepTailChars(contextWindow)
+		}
+		trunc := txt[:truncLen]
+		m.Content = utils.NewTextContent(trunc +
+			"\n\n[message truncated by Plurality: original length " +
+			fmt.Sprintf("%d", total) +
+			" chars across all content parts exceeded the per-message context budget]")
+		out = append(out, m)
+	}
+	return out
+}
+
+func lastAssistantPromptTokens(messages []utils.Message) int {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "assistant" && messages[i].PromptTokens > 0 {
+			return messages[i].PromptTokens
+		}
+	}
+	return 0
+}
+
+func findCutoffIndex(messages []utils.Message, lastPromptTokens, targetTokens int, existingCheckpointEndIdx int) int {
+	if lastPromptTokens <= targetTokens {
+		return findCharCutoffIndex(messages, targetTokens, existingCheckpointEndIdx)
+	}
+	targetDrop := lastPromptTokens - targetTokens
+
+	lastAsstIdx := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "assistant" {
+			lastAsstIdx = i
+			break
+		}
+	}
+	if lastAsstIdx < 0 {
+		return -1
+	}
+
+	minCutoff := existingCheckpointEndIdx + 1
+	if minCutoff < 1 {
+		minCutoff = 1
+	}
+
+	crossingAsst := -1
+	lastCrossing := -1
+	for i, m := range messages {
+		if i >= lastAsstIdx {
+			break
+		}
+		if m.Role != "assistant" || m.PromptTokens <= 0 {
+			continue
+		}
+		if m.PromptTokens >= targetDrop {
+			if crossingAsst < 0 {
+				crossingAsst = i
+			}
+			lastCrossing = i
+		}
+	}
+	if lastCrossing >= 0 {
+		crossingAsst = lastCrossing
+	}
+
+	if crossingAsst < 0 {
+		for i := lastAsstIdx - 1; i >= 0; i-- {
+			if messages[i].Role == "assistant" && messages[i].PromptTokens > 0 {
+				crossingAsst = i
+				break
+			}
+		}
+	}
+	if crossingAsst < 0 {
+		return -1
+	}
+
+	cutoff := crossingAsst + 1
+	for cutoff < len(messages) && messages[cutoff].Role == "tool" {
+		cutoff++
+	}
+
+	if cutoff < minCutoff {
+		return -1
+	}
+	if cutoff >= len(messages) {
+		return -1
+	}
+	return cutoff
+}
+
+func findCharCutoffIndex(messages []utils.Message, targetTokens, existingCheckpointEndIdx int) int {
+	if len(messages) == 0 || targetTokens <= 0 {
+		return -1
+	}
+	targetChars := targetTokens * 4
+	prefix := make([]int, len(messages)+1)
+	for i := range messages {
+		prefix[i+1] = prefix[i] + messages[i].Content.TotalContentChars()
+	}
+	if prefix[len(messages)] <= targetChars {
+		return -1
+	}
+	floor := len(messages) - 1
+	for floor > 0 && messages[floor].Role != "user" {
+		floor--
+	}
+	keptStart := 0
+	for {
+		if prefix[len(messages)]-prefix[keptStart] <= targetChars {
+			break
+		}
+		next := keptStart + 1
+		for next < len(messages) && messages[next].Role != "user" {
+			next++
+		}
+		if next > floor {
+			keptStart = floor
+			break
+		}
+		keptStart = next
+	}
+	if keptStart <= existingCheckpointEndIdx || keptStart >= len(messages) {
+		return -1
+	}
+	return keptStart
+}
+
+const maxSummaryInputChars = 80_000
+
 // renderMessagesForSummary produces a plain-text dump of the given message
 // slice suitable for feeding to the summarisation model, bounded to
-// maxSummaryInputChars characters. Walks every content part of every
-// message and includes inline text — pasted snippets, attached file
-// contents that travelled inline, and tool results. Skips image_url parts
-// and parts whose Text is a storage path rather than real content
-// (post-ExtractBlobsFromMessage, document parts like pdf/docx/xlsx/pptx
-// have part.Text rewritten to a URL path, so we surface only the filename
-// in that case).
+// maxSummaryInputChars characters.
 //
-// The budget preserves BOTH ends of the compacted range: the OLDEST
-// messages (where the original task, goals and early decisions live) are
-// always included first, so a huge compaction can never silently erase the
-// very context the summary is meant to carry forward; the REMAINING budget
-// is then spent on the NEWEST messages (the recent state the live model
-// just lost). This is the fix for the "eco compaction wipes context"
-// symptom: the previous newest-only walk meant a large compacted range fed
-// the summariser ONLY its tail — the original task and early decisions were
-// dropped before the summary model ever saw them, so the resulting
-// checkpoint discarded the conversation's original goal. A banner notes
-// when the middle was omitted. Never returns a context-busting blob to the
-// summary model.
+// It preserves BOTH ends of the compacted range: the OLDEST messages first
+// (original task/goals/decisions — the part the live tail never re-shows),
+// then spends the remaining budget on the NEWEST messages (recent state).
+// This fixes "eco compaction wipes context": the old newest-only walk fed the
+// summariser ONLY the recent tail on a large compaction, dropping the
+// original goal before the summary model saw it, so the checkpoint discarded
+// the conversation's core intent.
 func renderMessagesForSummary(messages []utils.Message) string {
 	var b strings.Builder
-	// 1) Always keep the OLDEST messages first (the head of the compacted
-	//    range: the original task, goals, decisions). The earliest context is
-	//    the part the live tail will never re-show, so it is the most
-	//    important thing a checkpoint must preserve.
 	headBudget := maxSummaryInputChars
 	var head []utils.Message
 	for _, m := range messages {
@@ -46,9 +437,6 @@ func renderMessagesForSummary(messages []utils.Message) string {
 		head = append(head, m)
 	}
 
-	// 2) Spend whatever budget remains on the NEWEST messages (the recent
-	//    state the live model just lost), skipping anything already taken by
-	//    the head so no message is counted twice.
 	tailBudget := headBudget
 	var tail []utils.Message
 	for i := len(messages) - 1; i >= 0 && int64(tailBudget) > 0; i-- {
@@ -70,7 +458,6 @@ func renderMessagesForSummary(messages []utils.Message) string {
 		tail = append(tail, m)
 	}
 
-	// Combined output, chronological (head then reversed tail).
 	keptCount := len(head) + len(tail)
 	if keptCount < len(messages) {
 		b.WriteString("[NOTE: the middle of the compacted range was omitted to fit the summary input budget — the original task/goals (oldest) and the recent state (newest) are preserved.\n\n")
@@ -84,9 +471,6 @@ func renderMessagesForSummary(messages []utils.Message) string {
 	return b.String()
 }
 
-// messageInSlice reports whether m is already among the head messages kept
-// from the oldest end (identity match on role/tool_call_id/Content), so the
-// newest-end pass never double-counts it.
 func messageInSlice(m utils.Message, slice []utils.Message) bool {
 	for i := range slice {
 		if slice[i].Content == m.Content && slice[i].Role == m.Role && slice[i].ToolCallID == m.ToolCallID {
@@ -96,8 +480,6 @@ func messageInSlice(m utils.Message, slice []utils.Message) bool {
 	return false
 }
 
-// writeSummaryMessage renders a single message into the summary builder in
-// the canonical eco-summary shape (USER/ASSISTANT/TOOL_RESULT blocks).
 func writeSummaryMessage(b *strings.Builder, m utils.Message) {
 	switch m.Role {
 	case "user":
@@ -122,4 +504,248 @@ func writeSummaryMessage(b *strings.Builder, m utils.Message) {
 		writeContentPartsBudget(b, m.ContentParts())
 		b.WriteString("\n")
 	}
+}
+
+const perMsgBudget = 20_000
+
+func writeContentPartsBudget(b *strings.Builder, parts []utils.ContentPart) {
+	for _, p := range parts {
+		switch {
+		case p.Type == "text" || p.Type == "snippet":
+			if p.Text == "" {
+				continue
+			}
+			if p.Filename != "" {
+				b.WriteString("[attachment: ")
+				b.WriteString(p.Filename)
+				b.WriteString("]\n")
+			}
+			if len(p.Text) > perMsgBudget {
+				b.WriteString(p.Text[:perMsgBudget])
+				b.WriteString("\n[...truncated by Plurality context-safety: original length ")
+				b.WriteString(fmt.Sprintf("%d", len(p.Text)))
+				b.WriteString(" chars]\n")
+			} else {
+				b.WriteString(p.Text)
+				b.WriteString("\n")
+			}
+		case p.Type == "image_url":
+			b.WriteString("[image attachment omitted]\n")
+		case docsupport.IsDocumentType(p.Type):
+			label := p.Filename
+			if label == "" {
+				label = p.Type
+			}
+			b.WriteString("[document attachment: ")
+			b.WriteString(label)
+			b.WriteString("] (binary, content not inlined)\n")
+		default:
+			label := p.Filename
+			if label == "" {
+				label = p.Type
+			}
+			b.WriteString("[binary attachment: ")
+			b.WriteString(label)
+			b.WriteString("]\n")
+		}
+	}
+}
+
+func writeContentParts(b *strings.Builder, parts []utils.ContentPart) {
+	for _, p := range parts {
+		switch {
+		case p.Type == "text" || p.Type == "snippet":
+			if p.Text == "" {
+				continue
+			}
+			if p.Filename != "" {
+				b.WriteString("[attachment: ")
+				b.WriteString(p.Filename)
+				b.WriteString("]\n")
+			}
+			b.WriteString(p.Text)
+			b.WriteString("\n")
+		case p.Type == "image_url":
+			b.WriteString("[image attachment omitted]\n")
+		case docsupport.IsDocumentType(p.Type):
+			label := p.Filename
+			if label == "" {
+				label = p.Type
+			}
+			b.WriteString("[document attachment: ")
+			b.WriteString(label)
+			b.WriteString("] (binary, content not inlined)\n")
+		default:
+			label := p.Filename
+			if label == "" {
+				label = p.Type
+			}
+			b.WriteString("[binary attachment: ")
+			b.WriteString(label)
+			b.WriteString("]\n")
+		}
+	}
+}
+
+func runEcoSummary(ctx context.Context, conversationID string) {
+	utils.Log("[Eco] tick for conv %s", conversationID)
+	if !summaryInFlight.CompareAndSwap(false, true) {
+		utils.Log("[Eco] summary already in flight — skipping conv %s", conversationID)
+		return
+	}
+	defer summaryInFlight.Store(false)
+
+	dbCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+
+	conv, err := db.GetConversationByIdInternal(dbCtx, conversationID)
+	if err != nil {
+		utils.Error("[Eco] could not load conversation", err)
+		return
+	}
+	if !conv.ModelSelected.EcoMode {
+		utils.Log("[Eco] conv %s has eco mode off — skip", conversationID)
+		return
+	}
+
+	cfg := auth.GetConfig().Eco
+	if cfg.TriggerTokens <= 0 || cfg.TargetTokens <= 0 {
+		utils.Log("[Eco] eco config disabled (trigger=%d target=%d) — skip", cfg.TriggerTokens, cfg.TargetTokens)
+		return
+	}
+
+	modelName := ""
+	if conv.ModelSelected.Text != nil {
+		modelName = conv.ModelSelected.Text.Name
+	} else if conv.ModelSelected.Vision != nil {
+		modelName = conv.ModelSelected.Vision.Name
+	}
+	trigger := effectiveEcoTrigger(cfg, modelName)
+	if trigger <= 0 {
+		trigger = cfg.TriggerTokens
+	}
+
+	lastPT := lastAssistantPromptTokens(conv.Messages)
+	if lastPT == 0 {
+		utils.Log("[Eco] conv %s has no assistant prompt_tokens yet — skip", conversationID)
+		return
+	}
+	if lastPT <= trigger {
+		rawChars := 0
+		for _, m := range conv.Messages {
+			if db.IsCheckpointMessage(m) {
+				continue
+			}
+			rawChars += m.Content.TotalContentChars()
+		}
+		if rawChars/4 <= trigger {
+			utils.Log("[Eco] conv %s lastPT=%d below trigger=%d (model context-aware) — skip", conversationID, lastPT, trigger)
+			return
+		}
+		utils.Log("[Eco] conv %s lastPT=%d below trigger=%d but raw history ≈%d chars → durable-compacting", conversationID, lastPT, trigger, rawChars)
+	} else {
+		utils.Log("[Eco] conv %s lastPT=%d > trigger=%d (model context-aware) — compacting toward target=%d", conversationID, lastPT, trigger, cfg.TargetTokens)
+	}
+
+	existingCheckpointEndIdx := -1
+	var oldPairIDs []int64
+	var priorSummary string
+	if pair, err := db.GetCheckpoint(dbCtx, conversationID); err == nil && pair != nil {
+		priorSummary = pair.Summary
+		oldPairIDs = []int64{pair.AssistantID}
+		if pair.ToolID != 0 {
+			oldPairIDs = append(oldPairIDs, pair.ToolID)
+		}
+		for i, m := range conv.Messages {
+			if m.Role == "assistant" && db.IsCheckpointMessage(m) {
+				existingCheckpointEndIdx = i + 1
+				break
+			}
+		}
+	}
+
+	cutoff := findCutoffIndex(conv.Messages, lastPT, cfg.TargetTokens, existingCheckpointEndIdx)
+	if cutoff < 0 {
+		utils.Log("[Eco] no satisfying cutoff for conv %s (lastPT=%d target=%d, %d messages) — skip", conversationID, lastPT, cfg.TargetTokens, len(conv.Messages))
+		return
+	}
+	utils.Log("[Eco] conv %s cutoff=%d (of %d messages), prior checkpoint end=%d", conversationID, cutoff, len(conv.Messages), existingCheckpointEndIdx)
+
+	startIdx := 0
+	if existingCheckpointEndIdx >= 0 {
+		startIdx = existingCheckpointEndIdx + 1
+	}
+	if startIdx >= cutoff {
+		return
+	}
+
+	excerpt := renderMessagesForSummary(conv.Messages[startIdx:cutoff])
+	var input string
+	if priorSummary != "" {
+		input = "PRIOR CHECKPOINT:\n" + priorSummary + "\n\nNEW MESSAGES:\n" + excerpt
+	} else {
+		input = excerpt
+	}
+
+	textModel, _ := fastShortcutModels()
+	summary, err := GenerateCheckpointSummary(input, textModel)
+	if err != nil {
+		utils.Error("[Eco] checkpoint summary generation failed", err)
+		return
+	}
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		utils.Error("[Eco] checkpoint summary returned empty", nil)
+		return
+	}
+
+	insertSeq, err := db.MessageSeqAt(dbCtx, conversationID, cutoff)
+	if err != nil {
+		utils.Error("[Eco] could not resolve insert seq", err)
+		return
+	}
+	toolCallID := "eco_" + randomHex(8)
+	now := time.Now().Format(time.RFC3339)
+
+	assistantMsg := utils.Message{
+		Role:      "assistant",
+		Content:   utils.MessageContent{},
+		Timestamp: now,
+		ToolCalls: []utils.ToolCall{{
+			ID:   toolCallID,
+			Type: "function",
+			Function: utils.FunctionCall{
+				Name:      db.EcoCheckpointToolName,
+				Arguments: "{}",
+			},
+		}},
+	}
+	toolMsg := utils.Message{
+		Role:       "tool",
+		Content:    utils.NewTextContent(summary),
+		ToolCallID: toolCallID,
+		Name:       db.EcoCheckpointToolName,
+		Timestamp:  now,
+	}
+
+	if err := db.ReplaceCheckpoint(dbCtx, conversationID, oldPairIDs, assistantMsg, toolMsg, insertSeq); err != nil {
+		utils.Error("[Eco] persisting checkpoint failed", err)
+		return
+	}
+	utils.Log("[Eco] checkpoint written for conv %s (cutoff=%d, lastPT=%d → kept tail ≈%d tokens)", conversationID, cutoff, lastPT, lastPT-tokensBeforeCutoff(conv.Messages, cutoff))
+}
+
+func tokensBeforeCutoff(messages []utils.Message, cutoff int) int {
+	for i := cutoff; i < len(messages); i++ {
+		if messages[i].Role == "assistant" && messages[i].PromptTokens > 0 {
+			return messages[i].PromptTokens
+		}
+	}
+	return 0
+}
+
+func randomHex(nBytes int) string {
+	b := make([]byte, nBytes)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
