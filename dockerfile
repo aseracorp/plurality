@@ -68,7 +68,8 @@ WORKDIR /app/server
 # GOOS/GOARCH come from buildx's per-target args.
 # CACHEBUST: pass --build-arg CACHEBUST=<git rev> so the Go binary is always
 # recompiled from the current source (prevents a stale cached 'go build' from
-# shipping an old server binary even when the checkout is up to date).
+# shipping an old server binary even when the checkout is up to date). CI
+# passes this on every build.
 ARG CACHEBUST=latest
 RUN chmod +x build.sh
 # The RUN command below LITERALLY references ${CACHEBUST} so a changed
@@ -172,6 +173,15 @@ VOLUME /app/data
 
 # Expose the port the server listens on
 EXPOSE 8090
+
+# BUILD_REV records the exact git rev (or CACHEBUST value) this image's server
+# binary was compiled from. CI passes --build-arg BUILD_REV=$CIRCLE_SHA1 (see
+# .circleci/config.yml); the server surfaces it on /health so a stale deployed
+# binary is immediately visible. Falls back to "unknown" — the CACHEBUST value
+# is deliberately NOT nested here because Dockerfile variable expansion does
+# not support ${A:-${B:-c}} nesting.
+ARG BUILD_REV=unknown
+ENV BUILD_REV=${BUILD_REV}
 
 # Run the server under the crash-capture supervisor (still under tini as PID 1,
 # so zombies are reaped and `docker stop` signals are forwarded). The
