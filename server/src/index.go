@@ -202,6 +202,9 @@ func main() {
 	r.HandleFunc("/chat/cancel/{id}", auth.AuthMiddleware(ai.HandleCancel)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/chat/approve/{id}", auth.AuthMiddleware(ai.HandleApprove)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/status/stream", auth.AuthMiddleware(ai.HandleStatusStream)).Methods("GET", "OPTIONS")
+	// Authenticated system diagnostics: real memory semantics (MemAvailable,
+	// not MemFree) + host & process info. See ai/server_status.go.
+	r.HandleFunc("/server/status", auth.AuthMiddleware(ai.HandleServerStatus)).Methods("GET", "OPTIONS")
 
 	// Conversations
 	r.HandleFunc("/conversations", auth.AuthMiddleware(ai.API_ListConversation)).Methods("GET", "OPTIONS")
