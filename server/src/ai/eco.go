@@ -92,7 +92,33 @@ func filterCheckpointsForRequestBudget(messages []utils.Message, ecoOn bool, con
 		tailBudgetChars = maxTailChars(contextWindow)
 	}
 	if !ecoOn {
-		return db.FilterOutCheckpoints(messages)
+		// Even with eco's "live-summarise" preference OFF, we must still send a
+		// BOUNDED context: the compacted older history should be represented by
+		// its megacave machine excerpt + a recent tail — NOT the full raw
+		// history. Sending everything (previous behaviour: FilterOutCheckpoints
+		// stripped the checkpoint AND returned the whole history, and the old
+		// `if toolsTaxBytes > 0` gate then re-shipped it uncapped) is exactly
+		// what filled the window and produced the "context window is full"
+		// error with eco disabled.
+		//
+		// If a megacave checkpoint exists, collapse to (checkpoint summary +
+		// bounded live tail) so the request stays small. If none exists, fall
+		// through to the normal budget-capped tail (never ship a huge raw
+		// history).
+		lastCPIdx := -1
+		for i, m := range messages {
+			if m.Role == "assistant" && db.IsCheckpointMessage(m) {
+				lastCPIdx = i
+			}
+		}
+		if lastCPIdx >= 0 {
+			// Keep the checkpoint pair + a bounded tail after it. The
+			// checkpoint summary stands in for the folded older history; the
+			// budget caps the live tail.
+			return capTailWithBudget(messages[lastCPIdx:], contextWindow, tailBudgetChars)
+		}
+		// No checkpoint: bound the whole raw history.
+		return capTailWithBudget(messages, contextWindow, tailBudgetChars)
 	}
 
 	// Find the LAST checkpoint pair (assistant half) — the rolling design
