@@ -212,9 +212,17 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				// 2) In-memory: also trim the live slice so THIS iteration's
 				//    retry is unchanged.
 				utils.Error("[LLMLoop] context length exceeded — compacting history (durable) and retrying", err)
+				// Stage-1: deterministic megacave machine excerpt (Caveman
+				// /caveman-compress-style, no LLM call) runs FIRST so the retry
+				// is compacted immediately — the old path called the LLM
+				// summarizer synchronously here, which on a slow self-hosted
+				// model (swift-1.5-iq3_s) blocked for minutes and no compacted
+				// request ever reached the backend. The LLM summary is only
+				// used as a fallback if the machine excerpt is unavailable.
 				removed, cErr := db.CompactConversationDurable(
 					ar.Ctx, ar.ConversationID, conversation.Messages, 24,
 					func(text string) (string, error) { return summarizeForCompact(text) },
+					func(msgs []utils.Message) string { return MachineExcerptMegacave(msgs) },
 				)
 				if cErr != nil {
 					utils.Error("[LLMLoop] durable compaction failed (falling back to in-memory only)", cErr)

@@ -302,9 +302,14 @@ func CompactConversationDurable(
 	messages []utils.Message,
 	keep int,
 	summaryFn func(text string) (string, error),
+	machineSummaryFn ...func([]utils.Message) string,
 ) (int, error) {
 	if keep <= 0 {
 		keep = durableKeepDefault
+	}
+	var machineSummary func([]utils.Message) string
+	if len(machineSummaryFn) > 0 && machineSummaryFn[0] != nil {
+		machineSummary = machineSummaryFn[0]
 	}
 	userID, ok := ctx.Value("userID").(string)
 	if !ok {
@@ -434,12 +439,29 @@ func CompactConversationDurable(
 		return 0, nil
 	}
 
+	// STAGE-1 machine excerpt: when a deterministic (no-LLM) excerpt producer
+	// is supplied (Caveman /caveman-compress-style megacave), use it FIRST. It
+	// is fast (no model call) and preserves code/paths/IDs verbatim, so the
+	// durable compaction no longer stalls for minutes on a slow self-hosted
+	// summarizer (the bug behind "durable compaction never sent a compacted
+	// request to strata" — the summary call itself was blocking the retry).
 	summary := ""
-	if summaryFn != nil {
-		summary, err = summaryFn(text)
-		if err != nil {
-			utils.Error("[DurableCompact] summary model call failed — falling back to raw text", err)
-			summary = ""
+	if machineSummary != nil {
+		summary = strings.TrimSpace(machineSummary(folded))
+		if summary == "" {
+			utils.Log("[DurableCompact] machine excerpt empty — using raw text")
+		}
+	}
+	if summary == "" {
+		// STAGE-2 LLM summary: only when no machine producer was given, or it
+		// returned nothing. Best-effort; any failure falls back to the raw
+		// excerpt text so compaction ALWAYS makes progress.
+		if summaryFn != nil {
+			summary, err = summaryFn(text)
+			if err != nil {
+				utils.Error("[DurableCompact] summary model call failed — falling back to raw text", err)
+				summary = ""
+			}
 		}
 	}
 	if summary == "" {
