@@ -492,39 +492,6 @@ func maxTailChars(contextWindow int) int {
 	return budget
 }
 
-// maxTailCharsForOverhead returns the live-tail character budget given the
-// model window AND the measured token overhead of everything else in the
-// request (tool schemas + system prompt + checkpoint summary). This is the
-// caller-computed variant: SendChatCompletion marshals the actual tools
-// array and system message, estimates their token cost, and reserves them,
-// so the tail cannot crowd the tools out of a small window.
-//
-// Density: tool results and shell/file dumps are far denser than prose
-// (~2.5-3.5 chars/token vs ~4). Use 3.0 chars/token for the remaining budget
-// so the tail's true token cost stays inside what we reserved. A reply
-// reservation (max_tokens + safety margin) is also kept free.
-func maxTailCharsForOverhead(contextWindow, overheadTokens int) int {
-	if contextWindow <= 0 {
-		contextWindow = defaultContextWindow
-	}
-	if overheadTokens < 0 {
-		overheadTokens = 0
-	}
-	// Reserve room for the model's reply: the configured max_tokens (4096)
-	// plus a safety margin for reasoning/finish overhead.
-	const replyReserve = 4096 + 2048
-	available := contextWindow - overheadTokens - replyReserve
-	if available <= 0 {
-		available = 8_192 // tiny but non-zero floor so we never ship an empty tail
-	}
-	// 3 chars/token for dense tool/code content.
-	budget := available * 3
-	if budget > 100_000 {
-		budget = 100_000
-	}
-	return budget
-}
-
 // capTail bounds a message slice to the live-tail budget so a conversation
 // can never ship a context-busting history to the provider. It walks
 // backwards from the end, accumulating the total content size, and keeps
