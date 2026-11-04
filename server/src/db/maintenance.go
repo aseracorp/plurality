@@ -19,7 +19,7 @@ const (
 
 // RunStorageMaintenance heals a user database that accumulated oversized
 // message blobs. Before the eco context filter (eco.go
-// filterCheckpointsForRequest) and compaction path (context_compaction.go)
+// resolveEcoContextCompaction) and compaction path (context_compaction.go)
 // truncated oversized messages in memory, the server persisted multi-MB
 // tool results and pasted dumps verbatim. Those rows were never rewritten,
 // so even though the LLM never saw beyond the first 100k chars, the
