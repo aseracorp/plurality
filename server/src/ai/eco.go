@@ -21,6 +21,11 @@ import (
 // conversations that miss their window pick up on the next user turn.
 var summaryInFlight atomic.Bool
 
+// defaultEcoTriggerTokens is the default absolute eco-trigger threshold (tokens)
+// when config.eco.trigger_tokens is unset. The auth package keeps its own
+// private copy; we mirror it here because it is unexported there.
+const defaultEcoTriggerTokens = 100_000
+
 // effectiveEcoTrigger computes the compaction trigger for a conversation,
 // honouring the model's declared context window when available.
 //
@@ -35,23 +40,25 @@ var summaryInFlight atomic.Bool
 //
 // Returns the static trigger when nothing dynamic applies, so callers keep
 // their existing "cfg.TriggerTokens <= 0" gate working.
-func effectiveEcoTrigger(cfg auth.EcoConfig, modelName string) int {
+func effectiveEcoTrigger(modelName string) int {
+	cfg := auth.GetConfig().Eco
+	// Eco triggers when the conversation content exceeds the configured
+	// absolute threshold (default 100K, configurable via config.eco.trigger_tokens)
+	// OR exceeds the model's context window — whichever is SMALLER, so a
+	// small-window model compacts at its window and a large-window model at
+	// the configured threshold. (The old 0.8*context_fraction factor is gone:
+	// it caused premature compaction and, combined with per-turn re-trimming,
+	// broke prompt caching.)
 	static := cfg.TriggerTokens
-	if static <= 0 || cfg.ContextFraction <= 0 {
-		return static
+	if static <= 0 {
+		static = defaultEcoTriggerTokens
 	}
 	window := Models.MaxContextTokensFor(modelName)
 	if window <= 0 {
 		return static
 	}
-	// round(ctxFraction * window) without float: frac*100 * window / 100
-	fractionBasis := int(cfg.ContextFraction * 100)
-	if fractionBasis <= 0 || fractionBasis >= 100 {
-		return static
-	}
-	dynamic := (fractionBasis * window) / 100
-	if dynamic < static {
-		return dynamic
+	if window < static {
+		return window
 	}
 	return static
 }
@@ -222,6 +229,240 @@ func capCheckpointSummaryForWindow(tail []utils.Message, contextWindow, tailBudg
 // made long small-window conversations die with context_length_exceeded
 // (observed: prompt 73077 tokens vs 65536 window → litellm 500 → dead
 // conversation).
+
+// ---------------------------------------------------------------------------
+// Staged eco resolution (replaces the old per-turn trim/shrink machinery)
+// ---------------------------------------------------------------------------
+//
+// When the conversation exceeds the eco trigger (content > window OR content >
+// the configured 100K threshold), we resolve WHAT to send to the model through
+// deterministic, cache-stable, no-LLM stages. Unlike the removed
+// per-request re-trimming (which re-shaped the messages every tool-loop
+// iteration and broke prompt caching), each stage is a single, stable
+// historical collapse: the SAME conversation produces the SAME sent context
+// on every turn until it changes, so the backend KV cache keeps hitting.
+//
+// The result includes megacave machine excerpts (MachineExcerptMegacave) that
+// stand in for folded history plus a verbatim segment. Stages, in order of
+// preference (least to most destructive):
+//
+//   A  latest full turn verbatim + megacave(everything older). The most
+//      faithful: the model still sees its most recent complete turn, and the
+//      whole earlier history is preserved as a deterministic excerpt.
+//   B  if A still doesn't fit: megacave(everything older), keeping only the
+//      most recent USER message verbatim. No separate tail anymore.
+//   C  if B still doesn't fit: keep only USER messages + the LAST assistant
+//      message that sits before any user message; megacave that reduced set.
+//   D  if C still doesn't fit: drop megacaved turns one-by-one from the START
+//      until the remainder fits. Final fallback.
+
+// approxTokens estimates token count from total chars (~3 chars/token for the
+// dense tool/code content that dominates these conversations).
+func approxTokens(messages []utils.Message) int {
+	chars := 0
+	for i := range messages {
+		chars += messages[i].Content.TotalContentChars()
+	}
+	return chars / 3
+}
+
+// megacaveArtifact returns a [assistant, tool] checkpoint pair carrying the
+// megacave machine excerpt of the given messages, so the excerpt is rendered
+// as a normal message the model can read.
+func megacaveArtifact(folded []utils.Message, toolCallID string) []utils.Message {
+	excerpt := MachineExcerptMegacave(folded)
+	if excerpt == "" {
+		return nil
+	}
+	aiMsg := utils.Message{
+		Role: "assistant",
+		ToolCalls: []utils.ToolCall{{
+			ID:   toolCallID,
+			Type: "function",
+			Function: utils.FunctionCall{
+				Name:      "megacave_excerpt",
+				Arguments: "{}",
+			},
+		}},
+	}
+	toolMsg := utils.Message{
+		Role:       "tool",
+		Content:    utils.NewTextContent(excerpt),
+		ToolCallID: toolCallID,
+		Name:       "megacave_excerpt",
+	}
+	return []utils.Message{aiMsg, toolMsg}
+}
+
+// indexOfLastUser returns the index of the last message with Role=="user",
+// or -1.
+func indexOfLastUser(messages []utils.Message) int {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return i
+		}
+	}
+	return -1
+}
+
+// startOfLastTurn returns the index of the first message of the last complete
+// user turn (the last "user" message), or -1.
+func startOfLastTurn(messages []utils.Message) int {
+	return indexOfLastUser(messages)
+}
+
+// endOfLastTurn returns the index AFTER the last user turn's trailing tool
+// results (== len(messages) when the last turn extends to the end).
+func endOfLastTurn(messages []utils.Message, start int) int {
+	if start < 0 {
+		return len(messages)
+	}
+	return len(messages)
+}
+
+// userOnlyWithLastAssistant reduces to USER messages plus the final assistant
+// message that appears before any user message (stage C input).
+func userOnlyWithLastAssistant(messages []utils.Message) []utils.Message {
+	var out []utils.Message
+	lastAsstBeforeUser := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			break
+		}
+		if messages[i].Role == "assistant" {
+			lastAsstBeforeUser = i
+		}
+	}
+	for i := range messages {
+		if messages[i].Role == "user" {
+			out = append(out, messages[i])
+		}
+	}
+	if lastAsstBeforeUser >= 0 {
+		// Insert the last assistant message before any user (immediately after
+		// the latest user, so the model has recent model context too).
+		out = append(out, messages[lastAsstBeforeUser])
+	}
+	return out
+}
+
+// resolveEcoContextCompaction computes the message view to SEND when the
+// conversation exceeds the eco trigger, following stages A -> B -> C -> D.
+// `all` is the full conversation (system already prepended is NOT included).
+func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTokens int) []utils.Message {
+	const toolOverheadTokens = 40 // small noise margin for the injected excerpt pair
+
+	fits := func(msgs []utils.Message) bool {
+		return approxTokens(msgs)+toolOverheadTokens <= budgetTokens
+	}
+
+	// We build the candidate from user+assistant/tool messages (system is
+	// added by the caller after this).
+	turnStart := startOfLastTurn(all)
+	var candidate []utils.Message
+	id := 0
+
+	// STAGE A
+	{
+		var cand []utils.Message
+		if turnStart > 0 {
+			older := all[:turnStart]
+			if art := megacaveArtifact(older, "megacave_A"); art != nil {
+				cand = append(cand, art...)
+			}
+		}
+		if turnStart >= 0 {
+			cand = append(cand, all[turnStart:]...)
+		}
+		candidate = cand
+		id = 1
+	}
+	if !fits(candidate) {
+		// STAGE B — no tail; keep only the most recent user message.
+		lastUser := indexOfLastUser(all)
+		var cand []utils.Message
+		if lastUser > 0 {
+			older := all[:lastUser]
+			if art := megacaveArtifact(older, "megacave_B"); art != nil {
+				cand = append(cand, art...)
+			}
+		}
+		if lastUser >= 0 {
+			cand = append(cand, all[lastUser])
+		}
+		candidate = cand
+		id = 2
+	}
+	if !fits(candidate) {
+		// STAGE C — user messages + last assistant before a user, megacaved.
+		reduced := userOnlyWithLastAssistant(all)
+		var cand []utils.Message
+		if art := megacaveArtifact(reduced, "megacave_C"); art != nil {
+			cand = append(cand, art...)
+		}
+		candidate = cand
+		id = 3
+	}
+	if !fits(candidate) {
+		// STAGE D — drop megacaved excerpt turns one-by-one from the start
+		// until it fits. Iteratively re-megacave the remaining set.
+		candidate = nil
+		id = 4
+		// Greedy: repeatedly drop the oldest user turn (then assistant/tool)
+		// and re-megacave until it fits or only a few messages remain.
+		work := all
+		for len(work) > 0 && !fits(megacaveOnly(work)) {
+			// drop the oldest user turn
+			work = dropOldestTurn(work)
+		}
+		if art := megacaveArtifact(work, "megacave_D"); art != nil {
+			candidate = append(candidate, art...)
+		}
+	}
+
+	utils.Log("[Eco] resolved staged compaction (stage %d ids, %d messages, ≈%d tokens / budget %d)",
+		id, len(candidate), approxTokens(candidate), budgetTokens)
+	return candidate
+}
+
+// megacaveOnly returns megacaveArtifact(msgs) flattened, or nil.
+func megacaveOnly(msgs []utils.Message) []utils.Message {
+	art := megacaveArtifact(msgs, "megacave_only")
+	if art == nil {
+		return nil
+	}
+	return art
+}
+
+// dropOldestTurn removes the oldest user turn (user message plus any
+// assistant/tool messages belonging to it) and returns the remaining slice.
+func dropOldestTurn(msgs []utils.Message) []utils.Message {
+	firstUser := -1
+	for i := range msgs {
+		if msgs[i].Role == "user" {
+			firstUser = i
+			break
+		}
+	}
+	if firstUser < 0 {
+		return msgs[:0]
+	}
+	// drop from start through the assistant message that closes this turn (the
+	// next user message, or end). Keep only messages after that turn + any
+	// leading non-user (e.g. an initial system/assistant) is kept too.
+	nextUser := len(msgs)
+	for i := firstUser + 1; i < len(msgs); i++ {
+		if msgs[i].Role == "user" {
+			nextUser = i
+			break
+		}
+	}
+	out := make([]utils.Message, 0, len(msgs)-nextUser+firstUser)
+	out = append(out, msgs[:firstUser]...)
+	out = append(out, msgs[nextUser:]...)
+	return out
+}
+
 func maxTailChars(contextWindow int) int {
 	if contextWindow <= 0 {
 		contextWindow = defaultContextWindow
@@ -1225,7 +1466,7 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	} else if conv.ModelSelected.Vision != nil {
 		modelName = conv.ModelSelected.Vision.Name
 	}
-	trigger := effectiveEcoTrigger(cfg, modelName)
+	trigger := effectiveEcoTrigger(modelName)
 	if trigger <= 0 {
 		trigger = cfg.TriggerTokens
 	}

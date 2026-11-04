@@ -197,60 +197,53 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		}
 	}
 
-	// ONLY trim/shrink the sent context when the conversation is approaching
-	// the model's context window. CRITICAL for prompt caching (strata /
-	// llama.cpp KV reuse): if we re-cap / re-shrink on every tool-loop
-	// iteration (old: `if toolsTaxBytes > 0 || windowTokens <= 65_536`, which
-	// fired always because strata-swift has a toolset), the sent messages get
-	// re-trimmed every turn — dropping oldest turns and eliding body middles
-	// — so consecutive requests do NOT share a byte-identical prefix and the
-	// backend re-prefills the whole context on every turn ("caching not
-	// working anymore").
-	//
-	// Instead, estimate the FULL request size (history + system + tool
-	// schemas + image attachments) and only enter the budget-capping path
-	// when it approaches the window (leaving room for the model's reply).
-	// While the conversation fits comfortably, we send it UNCHANGED, so the
-	// prefix stays stable and the KV cache keeps hitting.
+	// Eco resolution: estimate the FULL request size (history + system + tool
+	// schemas + images) and compare against the eco trigger
+	// (effectiveEcoTrigger = min(configured 100K, window)). While the content
+	// is BELOW the trigger we send it UNCHANGED — a byte-stable prefix every
+	// turn is what keeps strata/llama.cpp KV prompt caching working. Only when
+	// content EXCEEDS the trigger do we collapse history through the staged
+	// deterministic megacave resolver (latest turn + megacave, then no-tail,
+	// then user-only, then drop-oldest) — a single, stable historical collapse
+	// per trigger-firing, NOT a per-turn re-shaping. This replaces the old
+	// per-request trim/shrink/overhead machinery (#84/#95/#101/#135) which
+	// re-shaped the messages every tool-loop iteration and broke caching.
 	sysChars := systemMsg.TextContent()
 	attachTokens := estimateImageTokens(optimizedMessages)
 	overheadTokens := toolsTaxBytes/3 + len(sysChars)/4 + attachTokens + 512 // 512 for messaging/schema wrappers
 
-	// Estimate the total request tokens (~3 chars/token for dense content).
 	convChars := 0
 	for i := range allMessages {
 		convChars += allMessages[i].Content.TotalContentChars()
 	}
 	estTotalTokens := convChars/3 + overheadTokens
 
-	// Never trim until the request genuinely risks the window: reserve headroom
-	// for the model's reply (max_tokens + safety) and only cap past that.
-	const estHeadroom = 4096 + 2048
-	nearWindow := windowTokens > 0 && estTotalTokens > windowTokens-estHeadroom
+	// Room we reserve for the system prompt, tool schemas, and the model's
+	// reply; the rest of the window is the content budget the staged resolver
+	// must fit within.
+	const replyReserve = 4096 + 2048
+	contentBudget := windowTokens - overheadTokens - replyReserve
+	if contentBudget <= 0 {
+		contentBudget = 8192
+	}
 
-	// For unknown/small windows we conservatively still cap (safety).
-	forceCap := windowTokens <= 0 || windowTokens <= 65_536
-	utils.Log("[Eco] window=%d toolsJson=%dB sys=%dB images≈%dtok overhead≈%dtok estTotal≈%dtok → nearWindow=%v, trimming %v",
-		windowTokens, toolsTaxBytes, len(sysChars), attachTokens, overheadTokens, estTotalTokens, nearWindow, nearWindow || forceCap)
-
-	if nearWindow || forceCap {
-		tailBudget := maxTailCharsForOverhead(windowTokens, overheadTokens)
-		utils.Log("[Eco] window=%d overhead≈%dtok → tail budget=%d chars (trimming because context is near-fill)",
-			windowTokens, overheadTokens, tailBudget)
-		// filterCheckpointsForRequestBudget handles both eco on (keep checkpoint
-		// + tail) and eco off (collapse to checkpoint + tail when a megacave
-		// checkpoint exists; cap raw history when none) — so a near-full
-		// window never ships the full unbounded context regardless of eco mode.
-		convTail := filterCheckpointsForRequestBudget(conv.Messages, conv.ModelSelected.EcoMode, windowTokens, tailBudget)
+	trigger := effectiveEcoTrigger(model.Name)
+	if estTotalTokens <= trigger || trigger <= 0 {
+		// Content is below the trigger (or trigger disabled) — send unchanged,
+		// stable prefix for KV caching.
+		utils.Log("[Eco] content ≈%d tokens ≤ trigger %d — sending unchanged (stable prefix for caching)", estTotalTokens, trigger)
+	} else {
+		// Content exceeded the trigger — staged deterministic megacave collapse.
+		utils.Log("[Eco] content ≈%d tokens > trigger %d — staged megacave compaction", estTotalTokens, trigger)
+		convTail := resolveEcoContextCompaction(conv.Messages, windowTokens, contentBudget)
+		if len(convTail) == 0 {
+			convTail = conv.Messages
+		}
 		allMessages = append([]utils.Message{systemMsg}, convTail...)
 		optimizedMessages, _, _ = PrepareMessagesForAI(allMessages, model)
 		if isActionModel && !Models.IsVisionModel(model.Name) {
 			optimizedMessages = stripImagesForNonVisionModel(optimizedMessages)
 		}
-	} else {
-		// Conversation fits comfortably — send it unchanged (stable prefix for
-		// KV caching). allMessages already holds the full visible history.
-		utils.Log("[Eco] context fits window (~%d / %d tokens) — no trimming, stable prefix for caching", estTotalTokens, windowTokens)
 	}
 
 	msgReqList, _ := convertMessagesToOpenAI(optimizedMessages, model)
