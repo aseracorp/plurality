@@ -223,18 +223,36 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		contentBudget = 8192
 	}
 
-	// Unified staged resolution: the resolver returns the history UNCHANGED
-	// when it fits the content budget (so below-trigger stays byte-stable for
-	// KV caching) and stages a deterministic megacave collapse (A / B / C / D)
-	// only when it does not. This is the SINGLE cap mechanism — it replaces
-	// the old filterCheckpointsForRequest + capTail*/trimTail*/shrinkTail*
-	// machinery entirely (#84/#95/#101/#135).
-	convTail := resolveEcoContextCompaction(conv.Messages, windowTokens, contentBudget)
-	if len(convTail) > 0 {
-		allMessages = append([]utils.Message{systemMsg}, convTail...)
-		optimizedMessages, _, _ = PrepareMessagesForAI(allMessages, model)
-		if isActionModel && !Models.IsVisionModel(model.Name) {
-			optimizedMessages = stripImagesForNonVisionModel(optimizedMessages)
+	// Estimate the ACTUAL total request size (text only — image base64 is
+	// counted separately in overheadTokens) so we can gate compaction on the
+	// eco trigger. CRITICAL: the resolver must ONLY run when content really
+	// exceeds the trigger. Without this gate (the regression in #149's final
+	// merge), the resolver was called on EVERY request and re-megacaved older
+	// turns every turn — producing a new megacave artifact each time, so the
+	// request prefix was never byte-stable (strata cached only ~8192 tokens)
+	// and the agent lost the older verbatim turns it shouldn't have.
+	convTextTokens := 0
+	for i := range conv.Messages {
+		convTextTokens += conv.Messages[i].Content.TotalContentChars() / 3
+	}
+	estTotalTokens := convTextTokens + overheadTokens
+
+	trigger := effectiveEcoTrigger(model.Name)
+	if estTotalTokens <= trigger {
+		// Content is within the trigger: send the (already-checkpoint-collapsed)
+		// conversation UNCHANGED. Byte-stable prefix across turns keeps the
+		// backend KV cache hot. No megacave re-collapse.
+		utils.Log("[Eco] content ≈%d tokens ≤ trigger %d — sending unchanged (stable prefix for caching)", estTotalTokens, trigger)
+	} else {
+		// Content exceeded the trigger: staged deterministic megacave collapse.
+		utils.Log("[Eco] content ≈%d tokens > trigger %d — staged megacave compaction", estTotalTokens, trigger)
+		convTail := resolveEcoContextCompaction(conv.Messages, windowTokens, contentBudget)
+		if len(convTail) > 0 {
+			allMessages = append([]utils.Message{systemMsg}, convTail...)
+			optimizedMessages, _, _ = PrepareMessagesForAI(allMessages, model)
+			if isActionModel && !Models.IsVisionModel(model.Name) {
+				optimizedMessages = stripImagesForNonVisionModel(optimizedMessages)
+			}
 		}
 	}
 
