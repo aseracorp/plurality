@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/azukaar/plurality/src/ai_tools"
+	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/memory"
 	"github.com/azukaar/plurality/src/miniapps"
@@ -244,8 +245,30 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		// backend KV cache hot. No megacave re-collapse.
 		utils.Log("[Eco] content ≈%d tokens ≤ trigger %d — sending unchanged (stable prefix for caching)", estTotalTokens, trigger)
 	} else {
-		// Content exceeded the trigger: staged deterministic megacave collapse.
-		utils.Log("[Eco] content ≈%d tokens > trigger %d — staged megacave compaction", estTotalTokens, trigger)
+		// Content exceeded the trigger. We make the collapse DURABLE — this is
+		// what the checkpoint is for: fold the older history into a megacave
+		// machine-excerpt checkpoint and mark those messages compacted in the
+		// DB, so THIS and every later request load (system + checkpoint summary
+		// + tail up to the checkpoint) — small, context-preserving, and
+		// byte-stable across turns (KV cache stays hot). Without the durable
+		// write, every turn re-loaded the full history and re-megacaved it
+		// in-memory: context kept being collapsed and the prefix kept changing
+		// (cache busted + context loss).
+		utils.Log("[Eco] content ≈%d tokens > trigger %d — DURABLE megacave compaction", estTotalTokens, trigger)
+		folded, dErr := db.CompactConversationDurable(
+			ctx, conv.ID, conv.Messages, 24,
+			nil,
+			func(msgs []utils.Message) string { return MachineExcerptMegacave(msgs) },
+		)
+		utils.Log("[Eco] durable compaction folded %d messages", folded)
+		if dErr != nil {
+			utils.Error("[Eco] durable compaction failed; falling back to in-memory staged collapse", dErr)
+		}
+		// Reload the compacted conversation (checkpoint summary + uncompacted
+		// tail) so this request and every later one send the stable small set.
+		if reloaded, rErr := db.GetConversationByIdInternal(ctx, conv.ID); rErr == nil {
+			conv = *reloaded
+		}
 		convTail := resolveEcoContextCompaction(conv.Messages, windowTokens, contentBudget)
 		if len(convTail) > 0 {
 			allMessages = append([]utils.Message{systemMsg}, convTail...)
