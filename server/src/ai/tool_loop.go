@@ -337,7 +337,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 
 		// Refresh conversation from DB (finalizeStream already pushed the assistant message)
 		// Use the internal variant so any eco checkpoint pair is included —
-		// the LLM context filter (filterCheckpointsForRequest) handles
+		// the staged eco resolver (resolveEcoContextCompaction) handles
 		// whether to keep or drop it based on the user's eco toggle.
 		updatedConversation, err := db.GetConversationByIdInternal(ctx, ar.ConversationID)
 		if err != nil {

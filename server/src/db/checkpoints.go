@@ -19,7 +19,7 @@ import (
 // sits in the messages table at the seq boundary between the summarised
 // turns (older) and the live tail (newer). It is invisible to the client —
 // getConversationFromDB filters it out — and only flows to the LLM when eco
-// mode is enabled (see ai/eco.go::filterCheckpointsForRequest).
+// mode is enabled (see ai/eco.go::resolveEcoContextCompaction).
 const EcoCheckpointToolName = "eco_checkpoint"
 
 // CheckpointPair locates and carries the contents of a conversation's
@@ -665,7 +665,7 @@ func hardFirstKeptIdx(messages []utils.Message, keep int) int {
 }
 
 // writeDurableSummaryText renders a message slice for the durable-compaction
-// summary input (same shape as the eco renderMessagesForSummary output).
+// summary input (same shape as the eco MachineExcerptMegacave output).
 func writeDurableSummaryText(b *strings.Builder, msgs []utils.Message) {
 	for _, m := range msgs {
 		switch m.Role {

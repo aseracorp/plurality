@@ -161,15 +161,6 @@ func startOfLastTurn(messages []utils.Message) int {
 	return indexOfLastUser(messages)
 }
 
-// endOfLastTurn returns the index AFTER the last user turn's trailing tool
-// results (== len(messages) when the last turn extends to the end).
-func endOfLastTurn(messages []utils.Message, start int) int {
-	if start < 0 {
-		return len(messages)
-	}
-	return len(messages)
-}
-
 // userOnlyWithLastAssistant reduces to USER messages plus the final assistant
 // message that appears before any user message (stage C input).
 func userOnlyWithLastAssistant(messages []utils.Message) []utils.Message {
