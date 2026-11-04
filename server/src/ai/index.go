@@ -155,8 +155,10 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// older than it. When eco is off: drop the checkpoint pair entirely
 	// and send the raw history.
 	windowTokens := Models.MaxContextTokensForPrefixed(model.Name)
-	visibleMessages := filterCheckpointsForRequest(conv.Messages, conv.ModelSelected.EcoMode, windowTokens)
-	allMessages := append([]utils.Message{systemMsg}, visibleMessages...)
+	// Unified path: build the full history (system + conversation). The staged
+	// resolver below returns it UNCHANGED when it fits (byte-stable prefix =>
+	// KV caching) and collapses deterministically via megacave when it doesn't.
+	allMessages := append([]utils.Message{systemMsg}, conv.Messages...)
 	optimizedMessages, hasAttachments, hasDocAttachments := PrepareMessagesForAI(allMessages, model)
 
 	// A non-vision action model must NEVER receive base64 image payloads:
@@ -212,12 +214,6 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	attachTokens := estimateImageTokens(optimizedMessages)
 	overheadTokens := toolsTaxBytes/3 + len(sysChars)/4 + attachTokens + 512 // 512 for messaging/schema wrappers
 
-	convChars := 0
-	for i := range allMessages {
-		convChars += allMessages[i].Content.TotalContentChars()
-	}
-	estTotalTokens := convChars/3 + overheadTokens
-
 	// Room we reserve for the system prompt, tool schemas, and the model's
 	// reply; the rest of the window is the content budget the staged resolver
 	// must fit within.
@@ -227,18 +223,14 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		contentBudget = 8192
 	}
 
-	trigger := effectiveEcoTrigger(model.Name)
-	if estTotalTokens <= trigger || trigger <= 0 {
-		// Content is below the trigger (or trigger disabled) — send unchanged,
-		// stable prefix for KV caching.
-		utils.Log("[Eco] content ≈%d tokens ≤ trigger %d — sending unchanged (stable prefix for caching)", estTotalTokens, trigger)
-	} else {
-		// Content exceeded the trigger — staged deterministic megacave collapse.
-		utils.Log("[Eco] content ≈%d tokens > trigger %d — staged megacave compaction", estTotalTokens, trigger)
-		convTail := resolveEcoContextCompaction(conv.Messages, windowTokens, contentBudget)
-		if len(convTail) == 0 {
-			convTail = conv.Messages
-		}
+	// Unified staged resolution: the resolver returns the history UNCHANGED
+	// when it fits the content budget (so below-trigger stays byte-stable for
+	// KV caching) and stages a deterministic megacave collapse (A / B / C / D)
+	// only when it does not. This is the SINGLE cap mechanism — it replaces
+	// the old filterCheckpointsForRequest + capTail*/trimTail*/shrinkTail*
+	// machinery entirely (#84/#95/#101/#135).
+	convTail := resolveEcoContextCompaction(conv.Messages, windowTokens, contentBudget)
+	if len(convTail) > 0 {
 		allMessages = append([]utils.Message{systemMsg}, convTail...)
 		optimizedMessages, _, _ = PrepareMessagesForAI(allMessages, model)
 		if isActionModel && !Models.IsVisionModel(model.Name) {
