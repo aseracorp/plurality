@@ -439,12 +439,14 @@ func CompactConversationDurable(
 		return 0, nil
 	}
 
-	// STAGE-1 machine excerpt: when a deterministic (no-LLM) excerpt producer
-	// is supplied (Caveman /caveman-compress-style megacave), use it FIRST. It
-	// is fast (no model call) and preserves code/paths/IDs verbatim, so the
-	// durable compaction no longer stalls for minutes on a slow self-hosted
-	// summarizer (the bug behind "durable compaction never sent a compacted
-	// request to strata" — the summary call itself was blocking the retry).
+	// Compaction is MACHINE-ONLY: it must never call an LLM. The folded history
+	// is replaced by the deterministic megacave excerpt (Caveman
+	// /caveman-compress-style; no model call) when a producer is supplied, and
+	// otherwise by a mechanical raw excerpt of the folded text. Either way this
+	// is a pure history transform for the future conversation workflow — no
+	// request is ever sent to a chat model (the old LLM "summary" fallback
+	// blocked the retry for minutes on a slow self-hosted model and meant
+	// compaction was oddly doing model inference at all).
 	summary := ""
 	if machineSummary != nil {
 		summary = strings.TrimSpace(machineSummary(folded))
@@ -453,18 +455,8 @@ func CompactConversationDurable(
 		}
 	}
 	if summary == "" {
-		// STAGE-2 LLM summary: only when no machine producer was given, or it
-		// returned nothing. Best-effort; any failure falls back to the raw
-		// excerpt text so compaction ALWAYS makes progress.
-		if summaryFn != nil {
-			summary, err = summaryFn(text)
-			if err != nil {
-				utils.Error("[DurableCompact] summary model call failed — falling back to raw text", err)
-				summary = ""
-			}
-		}
-	}
-	if summary == "" {
+		// Mechanical fallback (no LLM): mark it clearly so a resumed workflow
+		// knows the older messages were rolled up, then cap the size.
 		summary = "[compacted by Plurality — summary unavailable; raw excerpt follows]\n" + text
 		if len(summary) > maxDurableSummaryChars {
 			summary = summary[len(summary)-maxDurableSummaryChars:]

@@ -219,9 +219,11 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				// model (swift-1.5-iq3_s) blocked for minutes and no compacted
 				// request ever reached the backend. The LLM summary is only
 				// used as a fallback if the machine excerpt is unavailable.
+				// Machine-only compaction: no LLM call. The megacave excerpt
+				// replaces the folded history for the future workflow.
 				removed, cErr := db.CompactConversationDurable(
 					ar.Ctx, ar.ConversationID, conversation.Messages, 24,
-					func(text string) (string, error) { return summarizeForCompact(text) },
+					nil,
 					func(msgs []utils.Message) string { return MachineExcerptMegacave(msgs) },
 				)
 				if cErr != nil {

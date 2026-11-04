@@ -130,15 +130,6 @@ func TruncateOversizedMessages(messages []utils.Message) []utils.Message {
 	return out
 }
 
-// summarizeForCompact produces the checkpoint summary used by the durable
-// context-limit compaction (db.CompactConversationDurable). It runs on the
-// configured fast model (same one the eco checkpoint path uses) so the
-// summary call itself fits comfortably in the fast model's window.
-func summarizeForCompact(text string) (string, error) {
-	textModel, _ := fastShortcutModels()
-	return GenerateCheckpointSummary(text, textModel)
-}
-
 // ---------------------------------------------------------------------------
 // Megacave machine excerpt (Caveman /caveman-compress, deterministic, no-LLM)
 // ---------------------------------------------------------------------------

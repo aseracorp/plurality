@@ -1276,52 +1276,25 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 		return
 	}
 
-	excerpt := renderMessagesForSummary(conv.Messages[startIdx:cutoff])
-	var input string
+	// Compaction is MACHINE-ONLY — it never calls an LLM. The folded history
+	// (everything between the previous checkpoint and the cutoff) is replaced
+	// by the deterministic megacave machine excerpt (Caveman
+	// /caveman-compress-style; no model call): code/paths/IDs verbatim,
+	// JSON compressed, prose trimmed. This is a pure history transform for the
+	// future conversation workflow — no request is sent to a chat model.
+	// (The previous two-stage LLM "megacave"/"dumb eco" summary calls both ran
+	// model inference, which blocked the retry for minutes on the slow
+	// self-hosted model.)
+	excerptMessages := conv.Messages[startIdx:cutoff]
+	summary := MachineExcerptMegacave(excerptMessages)
 	if priorSummary != "" {
-		input = "PRIOR CHECKPOINT:\n" + priorSummary + "\n\nNEW MESSAGES:\n" + excerpt
-	} else {
-		input = excerpt
-	}
-
-	textModel, _ := fastShortcutModels()
-
-	// Two-stage eco compaction (megacave first, dumb eco second):
-	//
-	//   STAGE 1 — megacave (first context hit): no checkpoint exists yet
-	//   (existingCheckpointEndIdx < 0). Run the faithful megacave compress:
-	//   prose/framing compressed hard, but code blocks, file paths,
-	//   identifiers, IDs, URLs and exact quoted values kept VERBATIM (the
-	//   /caveman-compress contract). This yields a larger but far more
-	//   faithful checkpoint, so the conversation's original goal and concrete
-	//   facts survive compaction.
-	//
-	//   STAGE 2 — dumb eco (second context hit): a checkpoint already exists
-	//   (existingCheckpointEndIdx >= 0), meaning the context limit was hit a
-	//   SECOND time. Now fall back to the lossy-LLM summary
-	//   (GenerateCheckpointSummary): smaller and faster, acceptable because
-	//   it is folding NEW messages on top of an existing (megacave) summary.
-	var summary string
-	var summaryErr error
-	if existingCheckpointEndIdx < 0 {
-		utils.Log("[Eco] stage-1 megacave compress for conv %s (no prior checkpoint)", conversationID)
-		summary, summaryErr = GenerateMegacaveCheckpoint(input, textModel)
-		if summaryErr != nil {
-			utils.Error("[Eco] megacave checkpoint compression failed", summaryErr)
-			return
-		}
-	} else {
-		utils.Log("[Eco] stage-2 eco summary for conv %s (prior checkpoint exists — second context hit)", conversationID)
-		summary, summaryErr = GenerateCheckpointSummary(input, textModel)
-		if summaryErr != nil {
-			utils.Error("[Eco] checkpoint summary generation failed", summaryErr)
-			return
-		}
+		// Keep the rolling carry-forward: the machine excerpt stands in for
+		// NEW messages, the prior checkpoint for everything older.
+		summary = priorSummary + "\n\n[newer history, machine-compacted]\n" + summary
 	}
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
-		utils.Error("[Eco] checkpoint returned empty", nil)
-		return
+		summary = "[compacted by Plurality — machine excerpt unavailable; older messages were rolled into this checkpoint]"
 	}
 
 	// Build the assistant + tool pair. Look up the actual DB seq for the
