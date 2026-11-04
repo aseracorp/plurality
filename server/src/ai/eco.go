@@ -4,15 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
-	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/db"
-	"github.com/azukaar/plurality/src/docsupport"
 	"github.com/azukaar/plurality/src/utils"
 )
 
