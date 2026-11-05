@@ -179,6 +179,19 @@ func MessageSeqAt(ctx context.Context, conversationID string, sliceOffset int) (
 		conversationID, sliceOffset,
 	).Scan(&seq)
 	if err != nil {
+		// When the slice offset points past the end of the non-compacted rows
+		// (e.g. the in-memory view carried checkpoint pairs / attachments
+		// whose rows are not counted in this query, or an index arithmetic
+		// skew), return NO error with seq=0 so callers treat it as "no
+		// boundary" instead of aborting durable compaction. Observed live:
+		// "durable compaction failed; falling back to in-memory staged
+		// collapse : sql: no rows in result set" on EVERY overflow turn,
+		// because this error aborted CompactConversationDurable before it could
+		// write any checkpoint. Treat sql.ErrNoRows as empty, propagate real
+		// errors.
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
 		return 0, err
 	}
 	return seq, nil
@@ -477,6 +490,14 @@ func CompactConversationDurable(
 	boundarySeq, err := MessageSeqAt(ctx, conversationID, firstKeptIdx)
 	if err != nil {
 		return 0, err
+	}
+	if boundarySeq == 0 {
+		// MessageSeqAt reports "no boundary" when the offset points past the
+		// non-compacted rows (see MessageSeqAt). Cannot determine where to
+		// insert the checkpoint — skip this round without aborting so the
+		// request still proceeds; durable compaction will succeed on a later
+		// turn when the view lines up with the DB.
+		return 0, nil
 	}
 
 	tx, err := d.Begin()
