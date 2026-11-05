@@ -238,10 +238,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// overheadTokens was inflated by ~450k of attachment base64), which
 	// re-collapsed history / re-ran dynamic reconfig and invalidated the KV
 	// cache despite content being far below the trigger at 128k tokens.
-	convTextTokens := 0
-	for i := range conv.Messages {
-		convTextTokens += conv.Messages[i].Content.TotalContentChars() / 3
-	}
+	convTextTokens := SentViewTokens(conv.Messages)
 	estTotalTokens := convTextTokens + nonAttachOverhead
 
 	trigger := effectiveEcoTrigger(model.Name)

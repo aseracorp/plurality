@@ -105,6 +105,29 @@ func userContextFor(userID string) context.Context {
 
 // approxTokens estimates token count from total chars (~3 chars/token for the
 // dense tool/code content that dominates these conversations).
+// SentViewTokens estimates the token size of the conversation view that is
+// ACTUALLY sent to the model.
+//
+// The request path loads conversations with includeCompacted=true (the client
+// needs the full history), so the raw slice carries rows that durable
+// compaction has already folded into a checkpoint and that are NOT part of the
+// request. Counting them made the eco trigger read ~1.25M tokens while the sent
+// view was ~23k (observed live: a 54x disagreement on the same request). The
+// trigger then fired durable compaction on EVERY turn, and each firing inserts
+// a checkpoint pair at the kept-window boundary — rewriting the HEAD of the
+// history, the exact pattern that collapses KV prompt-cache reuse to the stable
+// system block (reproduced on strata: reuse 32049 -> 17116).
+func SentViewTokens(messages []utils.Message) int {
+	chars := 0
+	for i := range messages {
+		if messages[i].Compacted {
+			continue // folded into a checkpoint; not part of the request
+		}
+		chars += messages[i].Content.TotalContentChars()
+	}
+	return chars / 3
+}
+
 func approxTokens(messages []utils.Message) int {
 	chars := 0
 	for i := range messages {

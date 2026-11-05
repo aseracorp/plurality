@@ -172,7 +172,11 @@ type Message struct {
 	// reduced before the provider saw it (est. uncompressed tokens / provider
 	// prompt_tokens). 0 = no compression proxy active for the model / unknown.
 	CompressionRatio float64 `json:"compression_ratio,omitempty"`
-	Model            Model   `json:"model,omitempty"`
+	// Compacted is set from the messages.compacted column: the row is part
+	// of the conversation history but is folded into a checkpoint and is NOT
+	// loaded into the request. Used to gate the eco trigger on what is sent.
+	Compacted bool  `json:"compacted,omitempty"`
+	Model     Model `json:"model,omitempty"`
 }
 
 // TextContent returns the text of the first "text" content part.
