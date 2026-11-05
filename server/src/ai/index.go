@@ -212,31 +212,36 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// per-request trim/shrink/overhead machinery (#84/#95/#101/#135) which
 	// re-shaped the messages every tool-loop iteration and broke caching.
 	sysChars := systemMsg.TextContent()
-	attachTokens := estimateImageTokens(optimizedMessages)
-	overheadTokens := toolsTaxBytes/3 + len(sysChars)/4 + attachTokens + 512 // 512 for messaging/schema wrappers
+	// note: attachment bytes are deliberately NOT counted toward the trigger /
+	// content budget (images are stripped before the action-model request).
 
 	// Room we reserve for the system prompt, tool schemas, and the model's
 	// reply; the rest of the window is the content budget the staged resolver
 	// must fit within.
 	const replyReserve = 4096 + 2048
-	contentBudget := windowTokens - overheadTokens - replyReserve
+	contentBudget := windowTokens - nonAttachOverhead - replyReserve
 	if contentBudget <= 0 {
 		contentBudget = 8192
 	}
 
-	// Estimate the ACTUAL total request size (text only — image base64 is
-	// counted separately in overheadTokens) so we can gate compaction on the
-	// eco trigger. CRITICAL: the resolver must ONLY run when content really
-	// exceeds the trigger. Without this gate (the regression in #149's final
-	// merge), the resolver was called on EVERY request and re-megacaved older
-	// turns every turn — producing a new megacave artifact each time, so the
-	// request prefix was never byte-stable (strata cached only ~8192 tokens)
-	// and the agent lost the older verbatim turns it shouldn't have.
+	// Estimate the ACTUAL request size that will be SENT, to gate compaction
+	// on the eco trigger. Images/attachments are STRIPPED before the action
+	// model request (`stripImagesForNonVisionModel` + attachment indexing), so
+	// they must NOT count toward the trigger — otherwise the trigger fires
+	// spuriously on attachment byte volume (observed live: estTotalTokens
+	// ≈608k when the sent text is only ~156k, because `attachTokens` /
+	// overheadTokens was inflated by ~450k of attachment base64), which
+	// re-collapsed history / re-ran dynamic reconfig and invalidated the KV
+	// cache despite content being far below the trigger at 128k tokens.
 	convTextTokens := 0
 	for i := range conv.Messages {
 		convTextTokens += conv.Messages[i].Content.TotalContentChars() / 3
 	}
-	estTotalTokens := convTextTokens + overheadTokens
+	// Trigger + content-budget sizing both exclude attachments (they are not
+	// sent on an action-model request). System prompt + tool schemas + a small
+	// wrapper margin are the only non-text overhead that should count.
+	nonAttachOverhead := toolsTaxBytes/3 + len(sysChars)/4 + 512
+	estTotalTokens := convTextTokens + nonAttachOverhead
 
 	trigger := effectiveEcoTrigger(model.Name)
 	if estTotalTokens <= trigger {
