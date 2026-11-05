@@ -215,6 +215,11 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// note: attachment bytes are deliberately NOT counted toward the trigger /
 	// content budget (images are stripped before the action-model request).
 
+	// Trigger + content-budget sizing both exclude attachments (they are not
+	// sent on an action-model request). System prompt + tool schemas + a small
+	// wrapper margin are the only non-text overhead that should count.
+	nonAttachOverhead := toolsTaxBytes/3 + len(sysChars)/4 + 512
+
 	// Room we reserve for the system prompt, tool schemas, and the model's
 	// reply; the rest of the window is the content budget the staged resolver
 	// must fit within.
@@ -237,10 +242,6 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	for i := range conv.Messages {
 		convTextTokens += conv.Messages[i].Content.TotalContentChars() / 3
 	}
-	// Trigger + content-budget sizing both exclude attachments (they are not
-	// sent on an action-model request). System prompt + tool schemas + a small
-	// wrapper margin are the only non-text overhead that should count.
-	nonAttachOverhead := toolsTaxBytes/3 + len(sysChars)/4 + 512
 	estTotalTokens := convTextTokens + nonAttachOverhead
 
 	trigger := effectiveEcoTrigger(model.Name)
