@@ -260,7 +260,6 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		utils.Log("[Eco] content ≈%d tokens > trigger %d — DURABLE megacave compaction", estTotalTokens, trigger)
 		folded, dErr := db.CompactConversationDurable(
 			ctx, conv.ID, conv.Messages, 24,
-			nil,
 			func(msgs []utils.Message) string { return MachineExcerptMegacave(msgs) },
 		)
 		utils.Log("[Eco] durable compaction folded %d messages", folded)

@@ -274,19 +274,38 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		id = 3
 	}
 	if !fits(candidate) {
-		// STAGE D — drop megacaved excerpt turns one-by-one from the start
-		// until it fits. Iteratively re-megacave the remaining set.
+		// STAGE D — shrink the excerpted set from the OLDEST turn until the
+		// excerpt fits alongside the newest user turn.
 		candidate = nil
 		id = 4
-		// Greedy: repeatedly drop the oldest user turn (then assistant/tool)
-		// and re-megacave until it fits or only a few messages remain.
+		lastUser := indexOfLastUser(all)
+		var tail []utils.Message
 		work := all
-		for len(work) > 0 && !fits(megacaveOnly(work)) {
-			// drop the oldest user turn
+		if lastUser >= 0 {
+			tail = all[lastUser:]
+			work = all[:lastUser]
+		}
+		for len(work) > 0 {
+			cand := append(megacaveOnly(work), tail...)
+			// len(cand) > len(tail) means the excerpt was actually produced; an
+			// excerpt-less candidate is just the tail, which stages A/B already
+			// tried, so keep shrinking instead of declaring a fit.
+			if len(cand) > len(tail) && fits(cand) {
+				candidate = cand
+				break
+			}
 			work = dropOldestTurn(work)
 		}
-		if art := megacaveArtifact(work, "megacave_D"); art != nil {
-			candidate = append(candidate, art...)
+		if candidate == nil {
+			// Nothing fits. The excerpt is capped (maxMegacaveExcerptChars =
+			// 60_000 chars ≈ 20_000 est tokens), so for any budget below that cap
+			// shrinking can NEVER succeed — contentBudget floors at 8192, i.e.
+			// every model under ~29k tokens of window lands here. Returning EMPTY
+			// was the bug: the caller's `if len(convTail) > 0` guard then silently
+			// sent the full uncompressed history — an oversized request on exactly
+			// the path that needed compaction. Keep the newest user turn alone: the
+			// request must carry the user's actual message.
+			candidate = tail
 		}
 	}
 
