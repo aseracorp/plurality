@@ -618,7 +618,7 @@ func getConversationFromDB(db *sql.DB, id string, includeCompacted bool) (*utils
 		compactedFilter = " AND compacted = 0"
 	}
 	msgRows, err := db.Query(
-		`SELECT id, role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, prompt_tokens, completion_tokens, response_cost, compression_ratio, model
+		`SELECT id, role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, prompt_tokens, completion_tokens, response_cost, compression_ratio, model, compacted
 		 FROM messages WHERE conversation_id = ?`+compactedFilter+` ORDER BY seq`, id,
 	)
 	if err != nil {
@@ -635,6 +635,7 @@ func getConversationFromDB(db *sql.DB, id string, includeCompacted bool) (*utils
 		var name *string
 		var timestamp *string
 		var modelJSON *string
+		var compacted int
 
 		err := msgRows.Scan(
 			&msgID,
@@ -650,6 +651,7 @@ func getConversationFromDB(db *sql.DB, id string, includeCompacted bool) (*utils
 			&msg.ResponseCost,
 			&msg.CompressionRatio,
 			&modelJSON,
+			&compacted,
 		)
 		if err != nil {
 			return nil, err
@@ -667,6 +669,7 @@ func getConversationFromDB(db *sql.DB, id string, includeCompacted bool) (*utils
 			msg.Timestamp = *timestamp
 		}
 		msg.Model = unmarshalModel(modelJSON)
+		msg.Compacted = compacted != 0
 
 		// Expose the stable DB id to clients for dedupe/merge. Fall back to the
 		// tool_call_id for tool messages (legacy rows) — those are still unique
