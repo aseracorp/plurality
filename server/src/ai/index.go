@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/azukaar/plurality/src/ai_tools"
+	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/memory"
@@ -259,6 +260,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		utils.Log("[Eco] content ≈%d tokens > trigger %d — DURABLE megacave compaction", estTotalTokens, trigger)
 		folded, dErr := db.CompactConversationDurable(
 			ctx, conv.ID, conv.Messages, 24,
+			auth.GetConfig().Eco.TargetTokens,
 			func(msgs []utils.Message) string { return MachineExcerptMegacave(msgs) },
 		)
 		utils.Log("[Eco] durable compaction folded %d messages", folded)

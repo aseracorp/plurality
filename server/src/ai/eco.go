@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"math"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -39,13 +40,6 @@ const defaultEcoTriggerTokens = 100_000
 // their existing "cfg.TriggerTokens <= 0" gate working.
 func effectiveEcoTrigger(modelName string) int {
 	cfg := auth.GetConfig().Eco
-	// Eco triggers when the conversation content exceeds the configured
-	// absolute threshold (default 100K, configurable via config.eco.trigger_tokens)
-	// OR exceeds the model's context window — whichever is SMALLER, so a
-	// small-window model compacts at its window and a large-window model at
-	// the configured threshold. (The old 0.8*context_fraction factor is gone:
-	// it caused premature compaction and, combined with per-turn re-trimming,
-	// broke prompt caching.)
 	static := cfg.TriggerTokens
 	if static <= 0 {
 		static = defaultEcoTriggerTokens
@@ -54,10 +48,53 @@ func effectiveEcoTrigger(modelName string) int {
 	if window <= 0 {
 		return static
 	}
-	if window < static {
-		return window
+	// ContextFraction scales the trigger to a FRACTION of the model window,
+	// exactly as src/auth/config.go documents it ("the effective trigger is
+	// min(TriggerTokens, round(ContextFraction * window))"). The factor was
+	// removed earlier as a fix for premature compaction, but the machinery
+	// that caused that — the per-request trim/shrink/overhead passes of
+	// #84/#95/#101/#135 — no longer exists, and the trigger now measures the
+	// accurate sent view (SentViewTokens) rather than the inflated full
+	// history. So the documented dynamic trigger is safe to honour again.
+	//
+	// This is the operator's lever for keeping a conversation inside the
+	// backend's CACHEABLE footprint, which is smaller than its raw context
+	// window. Measured on strata (window 262144, --kv-resident 131072):
+	// prompt-cache reuse holds at 89.7% under 200k tokens and collapses to
+	// 25.3% above it (15.5s -> 154s prefill per turn, engine "conversation
+	// cache: ... evictions" climbing past 11 on a 16 GiB / 4-slot park
+	// budget). A trigger of min(static, 0.8*window) = 209715 sits ABOVE that
+	// cliff, so compaction can never intervene before thrash starts; lowering
+	// context_fraction moves the ceiling under it.
+	//
+	// ContextFraction <= 0 disables the dynamic part (static trigger only).
+	return ecoTriggerFor(static, window, cfg.ContextFraction)
+}
+
+// ecoTriggerFor is the pure arithmetic behind effectiveEcoTrigger, split out so
+// the min()/rounding contract is testable without a model registry or config
+// file. Returns min(static, round(fraction*window)) when a positive fraction is
+// set, and never exceeds the window.
+func ecoTriggerFor(static, window int, fraction float64) int {
+	if window <= 0 {
+		return static
 	}
-	return static
+	// The trigger can never be above the window: a trigger above the context
+	// leaves no path that keeps a request inside it.
+	limit := static
+	if window < limit {
+		limit = window
+	}
+	if fraction > 0 {
+		scaled := int(math.Round(fraction * float64(window)))
+		if scaled > window {
+			scaled = window // fraction > 1 must not push the trigger past the context
+		}
+		if scaled > 0 && scaled < limit {
+			return scaled
+		}
+	}
+	return limit
 }
 
 // userContextFor builds a background context carrying just the userID
