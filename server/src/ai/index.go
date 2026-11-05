@@ -10,7 +10,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/azukaar/plurality/src/ai_tools"
 	"github.com/azukaar/plurality/src/db"
@@ -260,7 +259,6 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		utils.Log("[Eco] content ≈%d tokens > trigger %d — DURABLE megacave compaction", estTotalTokens, trigger)
 		folded, dErr := db.CompactConversationDurable(
 			ctx, conv.ID, conv.Messages, 24,
-			nil,
 			func(msgs []utils.Message) string { return MachineExcerptMegacave(msgs) },
 		)
 		utils.Log("[Eco] durable compaction folded %d messages", folded)
@@ -284,24 +282,17 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 
 	msgReqList, _ := convertMessagesToOpenAI(optimizedMessages, model)
 
-	// Append the current time as a tiny FINAL message at the END of the
-	// request. The system prompt (above) stays byte-stable across turns, so
-	// llama.cpp/avalon reuse the KV cache for the system prompt + the whole
-	// conversation history and only (re-)process the few tokens of this
-	// trailing message + the model's reply. This is what makes prompt
-	// caching actually work for a long-lived agent loop: consecutive turns
-	// share a byte-identical prefix.
-	requestData.Messages = msgReqList
-	// The current time as a trailing user-role message. It sits at the very
-	// END of the request, so the shared prefix (system prompt + full
-	// history) is byte-identical across turns and fully cacheable. Only a
-	// handful of tail tokens change per turn. A dedicated message (rather
-	// than text appended to the last user message) keeps the prefix stable
-	// even when the last user message is unchanged.
-	requestData.Messages = append(requestData.Messages, StandardMessageReq{
-		Role:    "user",
-		Content: "The current time is " + time.Now().Format("2006-01-02 15:04"),
-	})
+	// Attach the current time to the request WITHOUT claiming a turn (see
+	// appendCurrentTimeTail: a trailing "system"/"user"/"tool" message each
+	// breaks a different self-hosted chat template, and the "user" form is what
+	// makes the model narrate the clock back at the user).
+	//
+	// The clock is appended to the END of the newest message, so the system
+	// prompt and the entire history stay byte-identical across turns and the
+	// KV/prompt cache is reused; only a handful of tail tokens and the model's
+	// reply are (re-)processed. That is what makes prompt caching work for a
+	// long-lived agent loop.
+	requestData.Messages = appendCurrentTimeTail(msgReqList)
 
 	// Prompt caching for self-hosted (llama.cpp/avalon/strata) backends.
 	// Prompt caching for ALL models (local AND cloud). Sending

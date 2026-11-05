@@ -53,6 +53,18 @@ func openTestUserDB(t *testing.T, userID string) *sql.DB {
 	return testDB
 }
 
+// mechanicalExcerpt is a pure (no-LLM) machine summary for tests: it renders
+// each folded message on its own line. Compaction is machine-only (#147), so
+// durable compaction needs a producer of this shape — the old tests passed an
+// LLM-style summariser to the (never-invoked) summaryFn parameter instead.
+func mechanicalExcerpt(msgs []utils.Message) string {
+	var b strings.Builder
+	for _, m := range msgs {
+		b.WriteString(m.Role + ": " + strings.TrimSpace(m.TextContent()) + "\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
 func TestCompactConversationDurable(t *testing.T) {
 	db := openTestUserDB(t, "sam")
 
@@ -96,9 +108,8 @@ func TestCompactConversationDurable(t *testing.T) {
 
 	// Compact: keep the newest 24 (which here is everything except old rows
 	// get folded — with keep=24 > 21 nothing should be removed).
-	removed, err := CompactConversationDurable(ctx, "c_durable", full, 24, func(text string) (string, error) {
-		return "SUMMARY: " + text[:min(len(text), 50)], nil
-	})
+	removed, err := CompactConversationDurable(ctx, "c_durable", full, 24,
+		func(msgs []utils.Message) string { return mechanicalExcerpt(msgs) })
 	if err != nil {
 		t.Fatalf("compact: %v", err)
 	}
@@ -108,9 +119,8 @@ func TestCompactConversationDurable(t *testing.T) {
 
 	// Now keep only 5: the older rows should be folded and MARKED compacted
 	// (never deleted).
-	removed, err = CompactConversationDurable(ctx, "c_durable", full, 5, func(text string) (string, error) {
-		return "SUMMARY: " + text[:min(len(text), 50)], nil
-	})
+	removed, err = CompactConversationDurable(ctx, "c_durable", full, 5,
+		func(msgs []utils.Message) string { return mechanicalExcerpt(msgs) })
 	if err != nil {
 		t.Fatalf("compact keep=5: %v", err)
 	}
@@ -211,7 +221,6 @@ func liveCheckpointSeqs(ctx context.Context, conversationID string) ([]int64, er
 	}
 	return seqs, rows.Err()
 }
-
 
 // itoa is a tiny strconv-free int formatter for test messages.
 func itoa(n int) string {
@@ -348,14 +357,19 @@ func TestCompactConversationDurable_MovesCheckpointForward(t *testing.T) {
 		t.Fatalf("expected 22 messages before compaction, got %d", len(full))
 	}
 
-	// The stub summariser must NOT echo its input: the durable path prefixes
-	// the previous summary as "PRIOR CHECKPOINT:\n<old summary>", which a real
-	// model folds in, and the assertion below checks that the seed summary did
-	// not leak verbatim into the new pair. A stub that copies raw input bytes
-	// would echo "OLD SEED SUMMARY" and fail on its own echo, not on a bug.
-	removed, err := CompactConversationDurable(ctx, "c_move", full, 6, func(text string) (string, error) {
-		return "NEW SUMMARY (folded " + itoa(len(text)) + " chars)", nil
-	})
+	// The stub must NOT echo its input: the durable path prefixes the previous
+	// summary as "PRIOR CHECKPOINT:\n<old summary>", and the assertion below
+	// checks the seed summary did not leak verbatim into the new pair. A stub
+	// that copies raw input bytes would echo "OLD SEED SUMMARY" and fail on its
+	// own echo, not on a bug.
+	//
+	// This is the test that exposed the dead `summaryFn` parameter: #147 made
+	// compaction machine-only, so the summariser passed here was accepted and
+	// NEVER INVOKED. The stored summary was the mechanical fallback
+	// ("[compacted by Plurality — summary unavailable...]"), which is why the
+	// "expected the NEW summary" assertion could never pass.
+	removed, err := CompactConversationDurable(ctx, "c_move", full, 6,
+		func(msgs []utils.Message) string { return "NEW SUMMARY (folded " + itoa(len(msgs)) + " messages)" })
 	if err != nil {
 		t.Fatalf("compact: %v", err)
 	}

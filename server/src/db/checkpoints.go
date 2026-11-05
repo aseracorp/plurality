@@ -304,35 +304,37 @@ func ReplaceCheckpoint(
 // conversation's existing eco checkpoint summary (creating one if none
 // exists), then physically DELETE those rows inside one transaction. The
 // summary input is bounded (see maxDurableSummaryChars below) so a huge
-// history cannot blow the fast model's window; when the summary model call
-// fails we fall back to a bounded raw dump so durable progress is still
-// made. Deleting triggers the FTS and vector cleanup triggers already
+// history cannot blow the excerpt budget; when no machine excerpt is produced
+// we fall back to a bounded raw dump so durable progress is still made. Deleting triggers the FTS and vector cleanup triggers already
 // defined in schema (messages_fts_delete / messages_vec_delete).
 
 const maxDurableSummaryChars = 80_000 // mirrors ai perMsgBudget family; summary input bound
 const durableKeepDefault = 30         // newest messages kept verbatim
 
-// CompactConversationDurable folds the oldest messages of a conversation
-// into its rolling checkpoint summary (creating one if absent) and deletes
-// them from the DB. `messages` must be the conversation's full message list
-// in seq order (as returned by GetConversationByIdInternal). `keep` is the
-// number of newest messages preserved verbatim. `summaryFn` summarises the
-// input text; when it returns an error or empty string a bounded raw dump
-// is stored instead. Returns the number of messages removed.
+// CompactConversationDurable folds the oldest messages of a conversation into
+// its rolling checkpoint summary (creating one if absent) and marks the folded
+// rows compacted (never deleted). `messages` must be the conversation's full
+// message list in seq order. `keep` is the number of newest messages preserved
+// verbatim. `machineSummary` renders the folded messages into the excerpt that
+// becomes the summary; compaction is MACHINE-ONLY (#147) so this must be a pure
+// transform — it must never call an LLM. When it is nil, or returns an empty
+// string, a bounded mechanical raw dump is stored instead. Returns the number of
+// messages folded.
+//
+// The former `summaryFn func(text string) (string, error)` parameter is REMOVED:
+// #147 made compaction machine-only and left it accepted, documented and
+// plumbed through every call site but never invoked. Tests passing a summariser
+// there silently got the mechanical fallback, which is how
+// TestCompactConversationDurable_MovesCheckpointForward came to fail.
 func CompactConversationDurable(
 	ctx context.Context,
 	conversationID string,
 	messages []utils.Message,
 	keep int,
-	summaryFn func(text string) (string, error),
-	machineSummaryFn ...func([]utils.Message) string,
+	machineSummary func([]utils.Message) string,
 ) (int, error) {
 	if keep <= 0 {
 		keep = durableKeepDefault
-	}
-	var machineSummary func([]utils.Message) string
-	if len(machineSummaryFn) > 0 && machineSummaryFn[0] != nil {
-		machineSummary = machineSummaryFn[0]
 	}
 	userID, ok := ctx.Value("userID").(string)
 	if !ok {

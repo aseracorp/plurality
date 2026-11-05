@@ -223,7 +223,6 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				// replaces the folded history for the future workflow.
 				removed, cErr := db.CompactConversationDurable(
 					ar.Ctx, ar.ConversationID, conversation.Messages, 24,
-					nil,
 					func(msgs []utils.Message) string { return MachineExcerptMegacave(msgs) },
 				)
 				if cErr != nil {
