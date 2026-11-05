@@ -173,8 +173,18 @@ func MessageSeqAt(ctx context.Context, conversationID string, sliceOffset int) (
 		return 0, err
 	}
 	var seq int64
+	// The slice this resolves belongs to the FULL ordered message history of
+	// the conversation (the caller passes conv.Messages, which includes
+	// already-`compacted` rows via GetConversationById). Using `compacted = 0`
+	// here made the OFFSET overshoot when prior compactions had marked rows
+	// compacted — the in-memory offset indexed the full history but the query
+	// returned only the non-compacted subset, so `sql: no rows` came back for
+	// any offset past that subset, MessageSeqAt returned (0,nil), and durable
+	// compaction bailed with `folded 0` on EVERY overflow turn (observed live:
+	// DBG_boundary firstKeptIdx=2071 return 0 while the conversation had 13k
+	// messages). Index into the FULL ordered history by seq.
 	err = d.QueryRowContext(ctx,
-		`SELECT seq FROM messages WHERE conversation_id = ? AND compacted = 0
+		`SELECT seq FROM messages WHERE conversation_id = ?
 		 ORDER BY seq ASC LIMIT 1 OFFSET ?`,
 		conversationID, sliceOffset,
 	).Scan(&seq)
@@ -492,11 +502,6 @@ func CompactConversationDurable(
 		return 0, err
 	}
 	if boundarySeq == 0 {
-		// MessageSeqAt reports "no boundary" when the offset points past the
-		// non-compacted rows (see MessageSeqAt). Cannot determine where to
-		// insert the checkpoint — skip this round without aborting so the
-		// request still proceeds; durable compaction will succeed on a later
-		// turn when the view lines up with the DB.
 		return 0, nil
 	}
 
