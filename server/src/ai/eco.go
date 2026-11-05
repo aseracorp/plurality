@@ -274,44 +274,98 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		id = 3
 	}
 	if !fits(candidate) {
-		// STAGE D — shrink the excerpted set from the OLDEST turn until the
-		// excerpt fits alongside the newest user turn.
+		// STAGE D — the budget is SMALLER THAN A MEGACAVE EXCERPT CAN EVER BE.
+		// The excerpt saturates at maxMegacaveExcerptChars (60_000 chars
+		// = ~20_000 est tokens), so shrinking the folded set turn-by-turn
+		// cannot help: `fits` can never become true below that floor. The old
+		// greedy loop drained the slice to nil, megacaveArtifact(nil) returned
+		// nil, and the resolver emitted an EMPTY history — the caller's
+		// `if len(convTail) > 0` guard then silently shipped the FULL
+		// UNCOMPACTED history, an oversized request exactly when compaction was
+		// needed. contentBudget floors at 8192, so this was reachable for every
+		// model with a window under ~29k tokens.
+		//
+		// Correct move: shrink the EXCERPT ITSELF to the budget, and always keep
+		// the newest user message verbatim so the model sees the live request.
 		candidate = nil
 		id = 4
 		lastUser := indexOfLastUser(all)
 		var tail []utils.Message
-		work := all
+		older := all
 		if lastUser >= 0 {
 			tail = all[lastUser:]
-			work = all[:lastUser]
+			older = all[:lastUser]
 		}
-		for len(work) > 0 {
-			cand := append(megacaveOnly(work), tail...)
-			// len(cand) > len(tail) means the excerpt was actually produced; an
-			// excerpt-less candidate is just the tail, which stages A/B already
-			// tried, so keep shrinking instead of declaring a fit.
-			if len(cand) > len(tail) && fits(cand) {
-				candidate = cand
-				break
-			}
-			work = dropOldestTurn(work)
+		// Room left for the excerpt once the live tail + the artifact pair's
+		// structural overhead are accounted for.
+		room := budgetTokens - approxTokens(tail) - toolOverheadTokens - 20
+		if art := megacaveArtifactBudgeted(older, "megacave_D", room); art != nil {
+			candidate = append(candidate, art...)
 		}
-		if candidate == nil {
-			// Nothing fits. The excerpt is capped (maxMegacaveExcerptChars =
-			// 60_000 chars ≈ 20_000 est tokens), so for any budget below that cap
-			// shrinking can NEVER succeed — contentBudget floors at 8192, i.e.
-			// every model under ~29k tokens of window lands here. Returning EMPTY
-			// was the bug: the caller's `if len(convTail) > 0` guard then silently
-			// sent the full uncompressed history — an oversized request on exactly
-			// the path that needed compaction. Keep the newest user turn alone: the
-			// request must carry the user's actual message.
-			candidate = tail
+		candidate = append(candidate, tail...)
+		if approxTokens(candidate) > budgetTokens {
+			utils.Log("[Eco] stage D: budget %d tokens below the live tail (~%d) — sending tail + maximal excerpt",
+				budgetTokens, approxTokens(tail))
 		}
 	}
 
 	utils.Log("[Eco] resolved staged compaction (stage %d ids, %d messages, ≈%d tokens / budget %d)",
 		id, len(candidate), approxTokens(candidate), budgetTokens)
 	return candidate
+}
+
+// megacaveArtifactBudgeted is megacaveArtifact with the excerpt hard-capped at
+// budgetTokens (chars = tokens*3, the same conversion approxTokens uses). Stage
+// D needs this: there the budget is BELOW the excerpt's natural saturation size,
+// so the excerpt — not the conversation — is the thing that must shrink. A
+// non-positive budget yields a small placeholder rather than nil, so the caller
+// always receives a well-formed assistant/tool pair.
+func megacaveArtifactBudgeted(folded []utils.Message, toolCallID string, budgetTokens int) []utils.Message {
+	excerpt := MachineExcerptMegacave(folded)
+	if excerpt == "" {
+		return nil
+	}
+	if maxChars := budgetTokens * 3; maxChars > 0 && len(excerpt) > maxChars {
+		excerpt = truncateExcerpt(excerpt, maxChars)
+	}
+	aiMsg := utils.Message{
+		Role: "assistant",
+		ToolCalls: []utils.ToolCall{{
+			ID:   toolCallID,
+			Type: "function",
+			Function: utils.FunctionCall{
+				Name:      "megacave_excerpt",
+				Arguments: "{}",
+			},
+		}},
+	}
+	toolMsg := utils.Message{
+		Role:       "tool",
+		Content:    utils.NewTextContent(excerpt),
+		ToolCallID: toolCallID,
+		Name:       "megacave_excerpt",
+	}
+	return []utils.Message{aiMsg, toolMsg}
+}
+
+// truncateExcerpt keeps the head and the tail (60/40) of an excerpt around an
+// elision banner, so the oldest context and the most recent context — the two
+// ends a model actually needs — survive a hard budget cut.
+func truncateExcerpt(s string, maxChars int) string {
+	if maxChars <= 0 {
+		return "[megacave excerpt elided: budget too small]"
+	}
+	if len(s) <= maxChars {
+		return s
+	}
+	banner := "\n...[megacave excerpt truncated: elided for budget]...\n"
+	if maxChars <= len(banner) {
+		return s[:maxChars]
+	}
+	room := maxChars - len(banner)
+	head := room * 60 / 100
+	tail := room - head
+	return s[:head] + banner + s[len(s)-tail:]
 }
 
 // megacaveOnly returns megacaveArtifact(msgs) flattened, or nil.

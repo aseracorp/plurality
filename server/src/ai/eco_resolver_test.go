@@ -214,12 +214,11 @@ func TestResolver_OverflowStageC(t *testing.T) {
 	}
 }
 
-// TestResolver_OverflowStageDShrinksExcerpt: stage D shrinks the excerpted set
-// from the oldest turn until the excerpt fits alongside the newest user turn.
-// The excerpt saturates at maxMegacaveExcerptChars, so a budget just above that
-// cap plus one user turn is reachable: the artifact must be present (id
-// "megacave_only", built from the shrunken set) and the newest user message
-// must be kept verbatim.
+// TestResolver_OverflowStageDShrinksExcerpt: stage D runs when the budget is
+// below what a megacave excerpt can naturally be (the excerpt saturates at
+// maxMegacaveExcerptChars). Stage D must then cap the EXCERPT ITSELF to the
+// remaining budget and keep the newest user message verbatim, so the output
+// both fits and stays well-formed.
 func TestResolver_OverflowStageDShrinksExcerpt(t *testing.T) {
 	msgs := mkConv(200, 900)
 	// Stage C (user-only megacave of 200 turns) is ~1409 tokens, so a budget
@@ -234,13 +233,16 @@ func TestResolver_OverflowStageDShrinksExcerpt(t *testing.T) {
 	}
 	artID, excerpt, ok := findMegacaveArtifact(out)
 	if !ok {
-		t.Fatal("stage D must keep a megacave artifact when the shrunken excerpt fits")
+		t.Fatal("stage D must keep a megacave artifact when the excerpt can be capped")
 	}
-	if !strings.HasPrefix(artID, "megacave_only") {
-		t.Fatalf("stage D artifact id should be megacave_only, got %q", artID)
+	if !strings.HasPrefix(artID, "megacave_D") {
+		t.Fatalf("stage D artifact id should be megacave_D, got %q", artID)
 	}
 	if excerpt == "" {
 		t.Fatal("stage D artifact carries an empty excerpt")
+	}
+	if len(excerpt) >= maxMegacaveExcerptChars {
+		t.Errorf("stage D excerpt was not capped to the budget: %d chars", len(excerpt))
 	}
 	var sawLatestUser bool
 	for i := range out {

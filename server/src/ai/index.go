@@ -291,14 +291,23 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// caching actually work for a long-lived agent loop: consecutive turns
 	// share a byte-identical prefix.
 	requestData.Messages = msgReqList
-	// The current time as a trailing user-role message. It sits at the very
-	// END of the request, so the shared prefix (system prompt + full
-	// history) is byte-identical across turns and fully cacheable. Only a
-	// handful of tail tokens change per turn. A dedicated message (rather
-	// than text appended to the last user message) keeps the prefix stable
-	// even when the last user message is unchanged.
+	// The current time as a trailing message at the very END of the request,
+	// so the shared prefix (system prompt + full history) stays byte-identical
+	// across turns and fully cacheable: only a handful of tail tokens change
+	// per turn. A dedicated message (rather than text appended to the last
+	// user message) keeps the prefix stable even when the last user message is
+	// unchanged.
+	//
+	// The role MUST NOT be "user". A trailing user-role message occupies the
+	// user-turn slot that the model is expected to answer, so every turn the
+	// model is handed a "user message" that says only "The current time is
+	// ...". On chat templates that force alternating roles this makes the
+	// injected line look like the user's actual request (the model narrates
+	// the timestamp back, stalls on it, and in tool loops it becomes an
+	// apparent user turn). "system" carries no conversational intent, so the
+	// model reads it as context, and it does not claim a turn.
 	requestData.Messages = append(requestData.Messages, StandardMessageReq{
-		Role:    "user",
+		Role:    "system",
 		Content: "The current time is " + time.Now().Format("2006-01-02 15:04"),
 	})
 
