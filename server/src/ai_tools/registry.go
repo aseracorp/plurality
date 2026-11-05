@@ -2,6 +2,7 @@ package ai_tools
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/azukaar/plurality/src/auth"
@@ -85,7 +86,21 @@ func GetRequests(userID string, model utils.Model, ClientSideTools []utils.Funct
 		clientSent[ct.Name] = true
 	}
 
-	for _, tool := range Registry {
+	// Collect the selected Registry tools, then emit them in a CANONICAL
+	// order. `Registry` is a map, and Go randomizes map iteration order on
+	// EVERY `range` — so the tools array (which the chat template renders
+	// into the prompt prefix) was byte-shuffled on every request. Observed
+	// live on strata: prompt-cache reuse collapsed to exactly 16384 tokens
+	// (4 checkpoints = the stable system block only) and every agent turn
+	// re-prefilled 40-70k tokens (38-50 s) instead of reusing the prefix.
+	type selectedTool struct {
+		name string
+		req  utils.ToolsRequest
+	}
+	var chosen []selectedTool
+
+	for id, tool := range Registry {
+		_ = id
 		if tool.ToolID == ConversationAttachmentsTool.ToolID || tool.ToolID == ReadDocumentTool.ToolID || tool.ToolID == SearchDocumentTool.ToolID {
 			continue // handled separately below
 		}
@@ -143,12 +158,18 @@ func GetRequests(userID string, model utils.Model, ClientSideTools []utils.Funct
 					req.Function.Description += " (Note: editing an image directly from a server file path is also supported, but requires the user to enable the 'Read Files (Server)' tool — ask the user to enable it if they want to edit a file by path.)"
 				}
 			}
-			requests = append(requests, req)
+			chosen = append(chosen, selectedTool{name: selKey, req: req})
 		}
+	}
+	sort.Slice(chosen, func(i, j int) bool { return chosen[i].name < chosen[j].name })
+	for _, c := range chosen {
+		requests = append(requests, c.req)
 	}
 
 	// Server-side MCP tools (from data/mcp.json). Names are already
 	// namespaced (serverName__toolName) by mcp.ToolsRequests().
+	// Server-side MCP tools arrive already sorted by name (mcp.ToolsRequests
+	// sorts — its source is a map too).
 	for _, mcpReq := range mcp.ToolsRequests(userID) {
 		if _, ok := selected[mcpReq.Function.Name]; ok {
 			requests = append(requests, mcpReq)
@@ -157,13 +178,21 @@ func GetRequests(userID string, model utils.Model, ClientSideTools []utils.Funct
 
 	// Client-side tools (MCP tools from Flutter, skills). MCP tools arrive
 	// already namespaced from the client.
+	// Client-side tools (MCP tools from Flutter, skills). Sort the selected
+	// ones by name: the client's send-order must not shuffle the prompt
+	// prefix either (same KV-cache contract as the Registry loop).
+	var clientChosen []selectedTool
 	for _, tool := range ClientSideTools {
 		if _, ok := selected[tool.Name]; ok {
-			requests = append(requests, utils.ToolsRequest{
-				Type:     "function",
-				Function: tool,
+			clientChosen = append(clientChosen, selectedTool{
+				name: tool.Name,
+				req:  utils.ToolsRequest{Type: "function", Function: tool},
 			})
 		}
+	}
+	sort.Slice(clientChosen, func(i, j int) bool { return clientChosen[i].name < clientChosen[j].name })
+	for _, c := range clientChosen {
+		requests = append(requests, c.req)
 	}
 
 	// Force-include conversation_attachments when the conversation has attachments

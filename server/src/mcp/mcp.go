@@ -523,7 +523,19 @@ func ToolsRequests(userID string) []utils.ToolsRequest {
 	defer mu.RUnlock()
 	merged := mergedTools(userID)
 	out := make([]utils.ToolsRequest, 0, len(merged))
-	for nsName, t := range merged {
+	// mergedTools returns a map; Go randomizes map iteration order on EVERY
+	// `range`. The tools array is rendered into the prompt PREFIX by the chat
+	// template, so an unstable order shuffles the prefix on every request and
+	// busts the backend KV prompt cache (observed on strata: reuse stuck at
+	// exactly 16384 tokens, 40-70k tokens re-prefilled per agent turn).
+	// Emit in canonical (sorted) order.
+	names := make([]string, 0, len(merged))
+	for nsName := range merged {
+		names = append(names, nsName)
+	}
+	sort.Strings(names)
+	for _, nsName := range names {
+		t := merged[nsName]
 		desc := fmt.Sprintf("[MCP server: %s] %s", t.ServerName, t.Description)
 		out = append(out, utils.ToolsRequest{
 			Type: "function",
