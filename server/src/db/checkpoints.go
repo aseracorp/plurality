@@ -315,7 +315,15 @@ const durableKeepDefault = 30         // newest messages kept verbatim
 // its rolling checkpoint summary (creating one if absent) and marks the folded
 // rows compacted (never deleted). `messages` must be the conversation's full
 // message list in seq order. `keep` is the number of newest messages preserved
-// verbatim. `machineSummary` renders the folded messages into the excerpt that
+// verbatim. `tokenTarget` is the token width the SURVIVING window must fit
+// into (est. chars/3, the same convention as ai.SentViewTokens); pass 0 to
+// disable and keep the pure message-count behaviour. Count-only folding cannot
+// make progress on a conversation whose newest user turn is a long tool loop
+// (~200 tool/assistant rows, 200k+ tokens): "fold the oldest len-keep" folds
+// nearly nothing and the kept window stays oversized, which is the "durable
+// removed 0 every step" shape noted below. With a target, the kept window is
+// shrunk to it, bounded below by `keep` so a single oversized turn can always
+// be folded. `machineSummary` renders the folded messages into the excerpt that
 // becomes the summary; compaction is MACHINE-ONLY (#147) so this must be a pure
 // transform — it must never call an LLM. When it is nil, or returns an empty
 // string, a bounded mechanical raw dump is stored instead. Returns the number of
@@ -331,6 +339,7 @@ func CompactConversationDurable(
 	conversationID string,
 	messages []utils.Message,
 	keep int,
+	tokenTarget int,
 	machineSummary func([]utils.Message) string,
 ) (int, error) {
 	if keep <= 0 {
@@ -423,6 +432,36 @@ func CompactConversationDurable(
 	if len(messages)-firstKeptIdx > keep*2 {
 		if hard := hardFirstKeptIdx(messages, keep); hard > firstKeptIdx {
 			firstKeptIdx = hard
+		}
+	}
+
+	// Token-aware shrink. The bounds above are MESSAGE counts; they cannot
+	// express "this kept window is 200k tokens". Measured on strata: a live
+	// conversation grew 148k -> 162k tokens in ~5 minutes of tool-loop turns
+	// and the request crossed the engine's prompt-cache cliff (reuse 89.7%
+	// under 200k, 25.3% over it: 15s -> 154s prefill per turn), while durable
+	// compaction reported folded 0 because the newest user turn is one huge
+	// tool wall. Shrink the kept window to `tokenTarget` (0 disables),
+	// landing only on a user boundary, and never below the newest `keep`
+	// messages so the in-flight turn keeps a floor.
+	if tokenTarget > 0 {
+		// Last index we may keep at: the newest message, walked BACK off a tool
+		// row so the window never starts orphaned. `keep` is a MESSAGE floor and
+		// cannot express "these 24 messages are 240k tokens", so the token target
+		// is allowed to keep fewer than `keep` — that is the whole point. The
+		// invariant that must never break is that the window is non-empty: the
+		// resolver's #161 fix had a nil-return path that made the caller ship the
+		// FULL uncompressed history, and an all-folded window lands there.
+		last := len(messages) - 1
+		for last > 0 && messages[last].Role == "tool" {
+			last--
+		}
+		for keptWindowTokens(messages, firstKeptIdx) > tokenTarget {
+			next := nextKeptBoundaryIdx(messages, firstKeptIdx+1)
+			if next < 0 || next > last {
+				break
+			}
+			firstKeptIdx = next
 		}
 	}
 
@@ -671,6 +710,39 @@ func turnAnchoredFirstKeptIdx(messages []utils.Message, keep int) int {
 // "tool" row (which would orphan its parent assistant tool_call). Used as the
 // hard cap when the turn-anchored window is itself an oversized tool wall, so
 // durable compaction can always fold a meaningful chunk and make progress.
+// keptWindowTokens estimates the token width of the live (surviving) window
+// starting at `from`, using the same chars/3 convention as ai.SentViewTokens.
+// Checkpoint rows are counted (they ARE sent) and attachments are excluded:
+// attachment bytes are stripped before an action-model request, so counting
+// them here would over-shrink. Kept deliberately cheap: this is a fold-bound
+// heuristic, not the request-time trigger.
+func keptWindowTokens(messages []utils.Message, from int) int {
+	chars := 0
+	for i := from; i < len(messages); i++ {
+		chars += messages[i].Content.TotalContentChars()
+	}
+	return chars / 3
+}
+
+// nextKeptBoundaryIdx returns the first index at or after `from` that may START
+// a live window, or -1. A user row is the preferred boundary; an assistant row
+// is accepted so a token target can shrink INSIDE a long tool loop (a turn that
+// is one wall of tool rows contains no user row at all, so a user-only boundary
+// can never shrink it). A tool row is never a valid start: its parent
+// assistant/tool_call would have been folded away, leaving an orphan tool
+// message, which is a hard API error for strict providers. Checkpoint rows are
+// skipped: the checkpoint pair is relocated as a unit.
+func nextKeptBoundaryIdx(messages []utils.Message, from int) int {
+	for i := from; i < len(messages); i++ {
+		m := messages[i]
+		if m.Role == "tool" || IsCheckpointMessage(m) {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
 func hardFirstKeptIdx(messages []utils.Message, keep int) int {
 	n := len(messages)
 	if n == 0 {

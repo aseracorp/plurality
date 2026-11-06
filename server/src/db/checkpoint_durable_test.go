@@ -108,7 +108,7 @@ func TestCompactConversationDurable(t *testing.T) {
 
 	// Compact: keep the newest 24 (which here is everything except old rows
 	// get folded — with keep=24 > 21 nothing should be removed).
-	removed, err := CompactConversationDurable(ctx, "c_durable", full, 24,
+	removed, err := CompactConversationDurable(ctx, "c_durable", full, 24, 0,
 		func(msgs []utils.Message) string { return mechanicalExcerpt(msgs) })
 	if err != nil {
 		t.Fatalf("compact: %v", err)
@@ -119,7 +119,7 @@ func TestCompactConversationDurable(t *testing.T) {
 
 	// Now keep only 5: the older rows should be folded and MARKED compacted
 	// (never deleted).
-	removed, err = CompactConversationDurable(ctx, "c_durable", full, 5,
+	removed, err = CompactConversationDurable(ctx, "c_durable", full, 5, 0,
 		func(msgs []utils.Message) string { return mechanicalExcerpt(msgs) })
 	if err != nil {
 		t.Fatalf("compact keep=5: %v", err)
@@ -368,7 +368,7 @@ func TestCompactConversationDurable_MovesCheckpointForward(t *testing.T) {
 	// NEVER INVOKED. The stored summary was the mechanical fallback
 	// ("[compacted by Plurality — summary unavailable...]"), which is why the
 	// "expected the NEW summary" assertion could never pass.
-	removed, err := CompactConversationDurable(ctx, "c_move", full, 6,
+	removed, err := CompactConversationDurable(ctx, "c_move", full, 6, 0,
 		func(msgs []utils.Message) string { return "NEW SUMMARY (folded " + itoa(len(msgs)) + " messages)" })
 	if err != nil {
 		t.Fatalf("compact: %v", err)
