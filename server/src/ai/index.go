@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/azukaar/plurality/src/ai_tools"
-	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/memory"
@@ -257,28 +256,34 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		// write, every turn re-loaded the full history and re-megacaved it
 		// in-memory: context kept being collapsed and the prefix kept changing
 		// (cache busted + context loss).
-		utils.Log("[Eco] content ≈%d tokens > trigger %d — DURABLE megacave compaction", estTotalTokens, trigger)
-		folded, dErr := db.CompactConversationDurable(
-			ctx, conv.ID, conv.Messages, 24,
-			auth.GetConfig().Eco.TargetTokens,
-			func(msgs []utils.Message) string { return MachineExcerptMegacave(msgs) },
-		)
-		utils.Log("[Eco] durable compaction folded %d messages", folded)
-		if dErr != nil {
-			utils.Error("[Eco] durable compaction failed; falling back to in-memory staged collapse", dErr)
-		}
-		// Reload the compacted conversation (checkpoint summary + uncompacted
-		// tail) so this request and every later one send the stable small set.
-		if reloaded, rErr := db.GetConversationByIdInternal(ctx, conv.ID); rErr == nil {
-			conv = *reloaded
-		}
-		convTail := resolveEcoContextCompaction(conv.Messages, windowTokens, contentBudget)
+		utils.Log("[Eco] content ≈%d tokens > trigger %d — staged megacave compaction", estTotalTokens, trigger)
+		// The staged resolver (A -> D) is the single decision point: it builds
+		// the view to SEND, and tells us how much history that view dropped.
+		// The context window is the target — there is no separate "target
+		// tokens" knob and no window multiplicator. In the common case only
+		// stage A runs: fold everything older than the current turn, keep the
+		// live turn verbatim.
+		convTail, foldFrom := resolveEcoContextCompaction(conv.Messages, windowTokens, contentBudget)
 		if len(convTail) > 0 {
 			allMessages = append([]utils.Message{systemMsg}, convTail...)
 			optimizedMessages, _, _ = PrepareMessagesForAI(allMessages, model)
 			if isActionModel && !Models.IsVisionModel(model.Name) {
 				optimizedMessages = stripImagesForNonVisionModel(optimizedMessages)
 			}
+		}
+		// Make the SAME fold durable, so the next turn loads a conversation
+		// that already fits and keeps a byte-stable prefix (KV cache hot).
+		// Folding exactly what the resolver dropped is the point: less leaves
+		// the next request oversized, more loses context the model needs.
+		if foldFrom > 0 {
+			folded, dErr := db.CompactConversationDurable(
+				ctx, conv.ID, conv.Messages, foldFrom,
+				func(msgs []utils.Message) string { return MachineExcerptMegacave(msgs) },
+			)
+			if dErr != nil {
+				utils.Error("[Eco] durable compaction failed (this request still sent the staged view)", dErr)
+			}
+			utils.Log("[Eco] durable compaction folded %d messages at boundary %d", folded, foldFrom)
 		}
 	}
 

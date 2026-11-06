@@ -108,7 +108,7 @@ func TestCompactConversationDurable(t *testing.T) {
 
 	// Compact: keep the newest 24 (which here is everything except old rows
 	// get folded — with keep=24 > 21 nothing should be removed).
-	removed, err := CompactConversationDurable(ctx, "c_durable", full, 24, 0,
+	removed, err := CompactConversationDurable(ctx, "c_durable", full, 0,
 		func(msgs []utils.Message) string { return mechanicalExcerpt(msgs) })
 	if err != nil {
 		t.Fatalf("compact: %v", err)
@@ -119,7 +119,11 @@ func TestCompactConversationDurable(t *testing.T) {
 
 	// Now keep only 5: the older rows should be folded and MARKED compacted
 	// (never deleted).
-	removed, err = CompactConversationDurable(ctx, "c_durable", full, 5, 0,
+	// foldFrom = the index of the newest user turn: the production contract is
+	// "fold everything the staged resolver dropped", and the resolver never
+	// folds the live turn. Indexing the full history (checkpoint pair at 0/1,
+	// 10 turns, newest user last) puts that boundary at 20.
+	removed, err = CompactConversationDurable(ctx, "c_durable", full, 20,
 		func(msgs []utils.Message) string { return mechanicalExcerpt(msgs) })
 	if err != nil {
 		t.Fatalf("compact keep=5: %v", err)
@@ -242,62 +246,110 @@ func min(a, b int) int {
 	return b
 }
 
-// TestTurnAnchoredFirstKeptIdx pins the turn-anchored keep boundary:
-// the kept window must always start on a user message (newest user turn is
-// the floor; previous user turn included when it fits), and a conversation
-// with NO user messages (pure background-agent tool loop) must never start
-// on a tool row.
-func TestTurnAnchoredFirstKeptIdx(t *testing.T) {
-	// Helper to build a message list: turns of user+assistant+tool, then a
-	// trailing tool chain with no user (the "in-flight turn").
-	mk := func(roles []string) []utils.Message {
-		var msgs []utils.Message
-		for _, r := range roles {
-			m := utils.Message{Role: r}
-			if r == "tool" {
-				m.Content = utils.NewTextContent("tool result")
-				m.Name = "system_tools__shell_exec"
-			} else {
-				m.Content = utils.NewTextContent("content")
-			}
-			msgs = append(msgs, m)
+// TestCompactConversationDurable_FoldFromContract pins the new fold contract:
+// `foldFrom` is the index where the LIVE tail begins, chosen by the staged
+// resolver (the context window is the target), so durable compaction must:
+//   - fold nothing when foldFrom <= 0 (the history already fits),
+//   - never start the live window on a tool row (an orphan tool result whose
+//     parent tool_call was folded is a hard API error for strict providers),
+//   - always leave a non-empty live window (an all-folded conversation is how
+//     a caller ends up shipping the FULL uncompressed history).
+func TestCompactConversationDurable_FoldFromContract(t *testing.T) {
+	testDB := openTestUserDB(t, "ff")
+	ctx := context.WithValue(context.Background(), "userID", "ff")
+	const cid = "c_ff"
+	if _, err := testDB.Exec(`INSERT INTO conversations (id, title, last_message_at) VALUES (?, 't', '2026-01-01T00:00:00Z')`, cid); err != nil {
+		t.Fatalf("conv: %v", err)
+	}
+	// user, assistant, user, then a tool wall (assistant/tool pairs) and a
+	// final user turn.
+	roles := []string{"user", "assistant", "user"}
+	for i := 0; i < 6; i++ {
+		roles = append(roles, "assistant", "tool")
+	}
+	roles = append(roles, "user")
+	seq := 1
+	for i, r := range roles {
+		m := utils.Message{Role: r, Content: utils.NewTextContent("m" + itoa(i))}
+		if r == "tool" {
+			m.Name = "system_tools__shell_exec"
+			m.ToolCallID = "c" + itoa(i)
 		}
-		return msgs
+		b, _ := json.Marshal(m.Content)
+		if _, err := testDB.Exec(`INSERT INTO messages (conversation_id, seq, role, name, tool_call_id, content) VALUES (?, ?, ?, ?, ?, ?)`,
+			cid, seq, r, m.Name, m.ToolCallID, string(b)); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		seq++
+	}
+	full, err := loadRawConversationMessagesForTest(ctx, cid)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(full) != len(roles) {
+		t.Fatalf("loaded %d, want %d", len(full), len(roles))
 	}
 
-	// 1. Normal: user/assistant turns, newest user turn is the floor.
-	msgs := mk([]string{"user", "assistant", "user", "assistant", "user", "assistant"})
-	idx := turnAnchoredFirstKeptIdx(msgs, 4)
-	if msgs[idx].Role != "user" {
-		t.Fatalf("expected kept window to start on a user message, got %q at idx %d", msgs[idx].Role, idx)
-	}
-	// The newest user turn (index 4) must be inside the kept window.
-	if idx > 4 {
-		t.Fatalf("expected newest user turn (idx 4) to be kept, got start idx %d", idx)
-	}
-
-	// 2. Long tool chain after the newest user: the whole in-flight turn is
-	// kept even when it exceeds `keep` messages.
-	msgs = mk([]string{"user", "assistant", "tool", "tool", "tool", "tool", "tool"})
-	idx = turnAnchoredFirstKeptIdx(msgs, 3)
-	if idx != 0 {
-		t.Fatalf("expected floor at the user message (idx 0), got %d", idx)
+	// foldFrom = 0 / negative: nothing to fold.
+	for _, ff := range []int{0, -1} {
+		removed, err := CompactConversationDurable(ctx, cid, full, ff, mechanicalExcerpt)
+		if err != nil {
+			t.Fatalf("foldFrom=%d: %v", ff, err)
+		}
+		if removed != 0 {
+			t.Fatalf("foldFrom=%d must fold nothing, folded %d", ff, removed)
+		}
 	}
 
-	// 3. No user messages at all: fall back to newest `keep` but never start
-	// on a tool row (would orphan its parent assistant call).
-	msgs = mk([]string{"assistant", "tool", "assistant", "tool", "assistant", "tool", "tool"})
-	idx = turnAnchoredFirstKeptIdx(msgs, 4)
-	if msgs[idx].Role == "tool" {
-		t.Fatalf("expected kept window to never start on a tool row, got idx %d role %q", idx, msgs[idx].Role)
+	// foldFrom landing on a TOOL row must be advanced to a legal boundary.
+	toolIdx := -1
+	for i, m := range full {
+		if m.Role == "tool" {
+			toolIdx = i
+			break
+		}
 	}
-	if idx < len(msgs)-4 {
-		t.Fatalf("expected fallback window within newest %d, got start idx %d", 4, idx)
+	if toolIdx < 0 {
+		t.Fatal("setup: no tool row")
+	}
+	if _, err := CompactConversationDurable(ctx, cid, full, toolIdx, mechanicalExcerpt); err != nil {
+		t.Fatalf("tool-boundary fold: %v", err)
+	}
+	after, err := loadRawConversationMessagesForTest(ctx, cid)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	var live []utils.Message
+	for _, m := range after {
+		if !m.Compacted && !IsCheckpointMessage(m) {
+			live = append(live, m)
+		}
+	}
+	if len(live) == 0 {
+		t.Fatal("live window emptied")
+	}
+	if live[0].Role == "tool" {
+		t.Fatalf("live window starts on a tool row (%q)", live[0].Role)
 	}
 
-	// 4. Empty slice.
-	if idx := turnAnchoredFirstKeptIdx(nil, 5); idx != 0 {
-		t.Fatalf("expected 0 for empty slice, got %d", idx)
+	// foldFrom past the end must not collapse the conversation.
+	removed, err := CompactConversationDurable(ctx, cid, full, len(full)+5, mechanicalExcerpt)
+	if err != nil {
+		t.Fatalf("oversized foldFrom: %v", err)
+	}
+	_ = removed
+	after2, err := loadRawConversationMessagesForTest(ctx, cid)
+	if err != nil {
+		t.Fatalf("reload2: %v", err)
+	}
+	var live2 []utils.Message
+	for _, m := range after2 {
+		if !m.Compacted && !IsCheckpointMessage(m) {
+			live2 = append(live2, m)
+		}
+	}
+	if len(live2) == 0 {
+		t.Fatal("oversized foldFrom emptied the live window")
 	}
 }
 
@@ -368,7 +420,7 @@ func TestCompactConversationDurable_MovesCheckpointForward(t *testing.T) {
 	// NEVER INVOKED. The stored summary was the mechanical fallback
 	// ("[compacted by Plurality — summary unavailable...]"), which is why the
 	// "expected the NEW summary" assertion could never pass.
-	removed, err := CompactConversationDurable(ctx, "c_move", full, 6, 0,
+	removed, err := CompactConversationDurable(ctx, "c_move", full, 6,
 		func(msgs []utils.Message) string { return "NEW SUMMARY (folded " + itoa(len(msgs)) + " messages)" })
 	if err != nil {
 		t.Fatalf("compact: %v", err)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"math"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -24,20 +23,15 @@ var summaryInFlight atomic.Bool
 // private copy; we mirror it here because it is unexported there.
 const defaultEcoTriggerTokens = 100_000
 
-// effectiveEcoTrigger computes the compaction trigger for a conversation,
-// honouring the model's declared context window when available.
+// effectiveEcoTrigger computes the compaction trigger for a conversation:
+// the configured absolute threshold, lowered to the model's declared context
+// window when that window is smaller. So compaction fires on EITHER condition
+// — crossing TriggerTokens, or no longer fitting the context — and a
+// small-window model compacts at its window instead of waiting for a 100k
+// floor it can never reach. There is no window multiplicator: the window
+// itself is the ceiling, and the staged resolver fits the history to it.
 //
-//   - If the model declares a context window (MaxContextTokensFor > 0) and
-//     Eco.ContextFraction > 0, the candidate trigger is
-//     round(ContextFraction * window) tokens. The effective trigger is then
-//     min(config trigger, candidate): the static trigger stays an absolute
-//     ceiling, but a small-window model now compacts much earlier instead of
-//     waiting forever for a 100k floor it can never reach.
-//   - If the window is unknown (0) or the fraction is disabled (<= 0), the
-//     configured static trigger is used unchanged.
-//
-// Returns the static trigger when nothing dynamic applies, so callers keep
-// their existing "cfg.TriggerTokens <= 0" gate working.
+// Returns the static trigger when the window is unknown (0).
 func effectiveEcoTrigger(modelName string) int {
 	cfg := auth.GetConfig().Eco
 	static := cfg.TriggerTokens
@@ -45,61 +39,11 @@ func effectiveEcoTrigger(modelName string) int {
 		static = defaultEcoTriggerTokens
 	}
 	window := Models.MaxContextTokensFor(modelName)
-	if window <= 0 {
-		return static
+	if window > 0 && window < static {
+		return window
 	}
-	// ContextFraction scales the trigger to a FRACTION of the model window,
-	// exactly as src/auth/config.go documents it ("the effective trigger is
-	// min(TriggerTokens, round(ContextFraction * window))"). The factor was
-	// removed earlier as a fix for premature compaction, but the machinery
-	// that caused that — the per-request trim/shrink/overhead passes of
-	// #84/#95/#101/#135 — no longer exists, and the trigger now measures the
-	// accurate sent view (SentViewTokens) rather than the inflated full
-	// history. So the documented dynamic trigger is safe to honour again.
-	//
-	// This is the operator's lever for keeping a conversation inside the
-	// backend's CACHEABLE footprint, which is smaller than its raw context
-	// window. Measured on strata (window 262144, --kv-resident 131072):
-	// prompt-cache reuse holds at 89.7% under 200k tokens and collapses to
-	// 25.3% above it (15.5s -> 154s prefill per turn, engine "conversation
-	// cache: ... evictions" climbing past 11 on a 16 GiB / 4-slot park
-	// budget). A trigger of min(static, 0.8*window) = 209715 sits ABOVE that
-	// cliff, so compaction can never intervene before thrash starts; lowering
-	// context_fraction moves the ceiling under it.
-	//
-	// ContextFraction <= 0 disables the dynamic part (static trigger only).
-	return ecoTriggerFor(static, window, cfg.ContextFraction)
+	return static
 }
-
-// ecoTriggerFor is the pure arithmetic behind effectiveEcoTrigger, split out so
-// the min()/rounding contract is testable without a model registry or config
-// file. Returns min(static, round(fraction*window)) when a positive fraction is
-// set, and never exceeds the window.
-func ecoTriggerFor(static, window int, fraction float64) int {
-	if window <= 0 {
-		return static
-	}
-	// The trigger can never be above the window: a trigger above the context
-	// leaves no path that keeps a request inside it.
-	limit := static
-	if window < limit {
-		limit = window
-	}
-	if fraction > 0 {
-		scaled := int(math.Round(fraction * float64(window)))
-		if scaled > window {
-			scaled = window // fraction > 1 must not push the trigger past the context
-		}
-		if scaled > 0 && scaled < limit {
-			return scaled
-		}
-	}
-	return limit
-}
-
-// userContextFor builds a background context carrying just the userID
-// claim that the db package looks for. Used by the eco summary goroutine
-// so a client disconnect or LLM-loop end doesn't cancel it mid-summary.
 func userContextFor(userID string) context.Context {
 	return context.WithValue(context.Background(), "userID", userID)
 }
@@ -247,7 +191,17 @@ func userOnlyWithLastAssistant(messages []utils.Message) []utils.Message {
 // resolveEcoContextCompaction computes the message view to SEND when the
 // conversation exceeds the eco trigger, following stages A -> B -> C -> D.
 // `all` is the full conversation (system already prepended is NOT included).
-func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTokens int) []utils.Message {
+//
+// It returns the view plus `foldFrom`: the index in `all` from which the LIVE
+// tail begins, i.e. how much of the history the chosen stage folded into the
+// excerpt. The durable path needs that number — it is the whole point of the
+// staged design: the context window is the target, so durable compaction must
+// fold EXACTLY what the resolver dropped, no more (context loss) and no less
+// (the "folded 0 every step" shape that leaves the next request oversized).
+// Stages A-D always keep the newest user turn and everything after it, so
+// foldFrom never splits the live turn. foldFrom is 0 when the history already
+// fits (view returned unchanged).
+func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTokens int) (msgs []utils.Message, foldFrom int) {
 	const toolOverheadTokens = 40 // small noise margin for the injected excerpt pair
 
 	fits := func(msgs []utils.Message) bool {
@@ -260,7 +214,7 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 	// hitting. Compaction only starts when content does not fit.
 	if fits(all) {
 		utils.Log("[Eco] staged resolver: full history fits (≈%d / %d tokens) — unchanged, stable prefix", approxTokens(all), budgetTokens)
-		return all
+		return all, 0
 	}
 
 	// We build the candidate from user+assistant/tool messages (system is
@@ -283,6 +237,7 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		}
 		candidate = cand
 		id = 1
+		foldFrom = turnStart
 	}
 	if !fits(candidate) {
 		// STAGE B — no tail; keep only the most recent user message.
@@ -299,6 +254,7 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		}
 		candidate = cand
 		id = 2
+		foldFrom = lastUser
 	}
 	if !fits(candidate) {
 		// STAGE C — user messages + last assistant before a user, megacaved.
@@ -309,6 +265,7 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		}
 		candidate = cand
 		id = 3
+		foldFrom = lastUserIdxSafe(all)
 	}
 	if !fits(candidate) {
 		// STAGE D — the budget is SMALLER THAN A MEGACAVE EXCERPT CAN EVER BE.
@@ -326,6 +283,7 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		// the newest user message verbatim so the model sees the live request.
 		candidate = nil
 		id = 4
+		foldFrom = lastUserIdxSafe(all)
 		lastUser := indexOfLastUser(all)
 		var tail []utils.Message
 		older := all
@@ -346,9 +304,28 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		}
 	}
 
-	utils.Log("[Eco] resolved staged compaction (stage %d ids, %d messages, ≈%d tokens / budget %d)",
-		id, len(candidate), approxTokens(candidate), budgetTokens)
-	return candidate
+	// Never fold the whole history: an empty live tail is how the caller ends
+	// up shipping the FULL uncompressed history (its `len(convTail) > 0`
+	// guard), the oversized-request defect #161 removed.
+	if foldFrom >= len(all) {
+		foldFrom = lastUserIdxSafe(all)
+	}
+	if foldFrom < 0 {
+		foldFrom = 0
+	}
+	utils.Log("[Eco] resolved staged compaction (stage %d ids, %d messages, ≈%d tokens / budget %d, folding %d of %d)",
+		id, len(candidate), approxTokens(candidate), budgetTokens, foldFrom, len(all))
+	return candidate, foldFrom
+}
+
+// lastUserIdxSafe returns the index of the newest user message, or 0 when the
+// conversation has none. Used as the durable fold floor: the newest user turn
+// is never folded away.
+func lastUserIdxSafe(all []utils.Message) int {
+	if i := indexOfLastUser(all); i > 0 {
+		return i
+	}
+	return 0
 }
 
 // megacaveArtifactBudgeted is megacaveArtifact with the excerpt hard-capped at
@@ -456,185 +433,51 @@ func lastAssistantPromptTokens(messages []utils.Message) int {
 	return 0
 }
 
-// findCutoffIndex returns the index in `messages` that marks the start of
-// the live tail to keep — everything strictly before this index goes into
-// the new checkpoint summary. messages[cutoff..] is preserved; the
-// returned index always sits at a clean turn boundary (no message
-// splitting).
-//
-// Algorithm (walking forward from oldest):
-//   - targetDrop = lastPromptTokens − targetTokens. This is how many
-//     cumulative tokens we want to shave off the head.
-//   - PromptTokens on an assistant message is already cumulative — it's
-//     the size of the prompt at the moment that assistant spoke, i.e.
-//     system + all preceding messages.
-//   - The first assistant whose PromptTokens ≥ targetDrop is the one
-//     whose turn pushed the running total past the threshold. Compact
-//     through the end of that assistant's turn; cutoff is the next
-//     message (typically the next user turn, after any trailing tool
-//     results).
-//   - If even the last non-final assistant doesn't cross targetDrop, fall
-//     back to ending the compaction right before the final assistant's
-//     turn so we still make progress.
-//   - The cutoff must move past any existing checkpoint pair so we don't
-//     loop on the same range.
-func findCutoffIndex(messages []utils.Message, lastPromptTokens, targetTokens int, existingCheckpointEndIdx int) int {
-	if lastPromptTokens <= targetTokens {
-		// The recorded lastPT is often LOWER than the target even when the
-		// true persisted history is gigantic: the LLM only ever saw a
-		// budget-capped tail, so its usage reflects the small tail, not the
-		// full DB history (observed: conversation 319ce9283cac61666757b88a —
-		// lastPT ~30k vs trigger 104857 but ~700k tokens persisted, so every
-		// eco tick logged "no satisfying cutoff ... skip" and NO checkpoint
-		// was ever moved forward). Fall back to a CHAR-BASED cutoff: keep the
-		// newest messages that fit within the target token budget (~4
-		// chars/token, same density assumption the request guard uses) and
-		// fold everything older into the rolling summary. This guarantees
-		// eco compaction always advances on oversized never-compacted
-		// conversations instead of skipping forever.
-		return findCharCutoffIndex(messages, targetTokens, existingCheckpointEndIdx)
+// ecoContentBudget is the content budget the staged resolver must fit within:
+// the model's context window minus room for the system prompt, tool schemas
+// and the model's reply. Callers that do not have the marshalled request in
+// hand (the tool-loop overflow recovery, the eco tick) use this so the view
+// they SEND and the fold they PERSIST come from the same number. The request
+// path computes a tighter budget from the measured tool-schema + system byte
+// counts; this is the standing approximation.
+func ecoContentBudget(modelName string) int {
+	window := Models.MaxContextTokensForPrefixed(modelName)
+	const reserve = 4096 + 2048 + 512
+	if budget := window - reserve; budget > 0 {
+		return budget
 	}
-	targetDrop := lastPromptTokens - targetTokens
-
-	lastAsstIdx := -1
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "assistant" {
-			lastAsstIdx = i
-			break
-		}
-	}
-	if lastAsstIdx < 0 {
-		return -1
-	}
-
-	minCutoff := existingCheckpointEndIdx + 1
-	if minCutoff < 1 {
-		minCutoff = 1
-	}
-
-	// Walk from oldest forward. PromptTokens is cumulative, so the first
-	// assistant with PT ≥ targetDrop is where we've crossed. But we must
-	// pick the LAST such assistant (closest to the end): picking the first
-	// one makes cutoff land right after the old checkpoint, so on the next
-	// eco tick cutoff < minCutoff and compaction bails forever — leaving
-	// the live tail to grow unbounded (observed: one checkpoint at seq 139,
-	// then 3,740 raw messages with no further compaction).
-	//
-	// Walking farthest-forward maximises how much history each compact
-	// folds into the summary, so cutoff strictly advances every tick.
-	crossingAsst := -1
-	lastCrossing := -1
-	for i, m := range messages {
-		if i >= lastAsstIdx {
-			break
-		}
-		if m.Role != "assistant" || m.PromptTokens <= 0 {
-			continue
-		}
-		if m.PromptTokens >= targetDrop {
-			if crossingAsst < 0 {
-				crossingAsst = i
-			}
-			lastCrossing = i
-		}
-	}
-	// Prefer the farthest-forward crossing (strictly past the old
-	// checkpoint) so cutoff advances; if none exists beyond the
-	// checkpoint, fall back to the plain first crossing.
-	if lastCrossing >= 0 {
-		crossingAsst = lastCrossing
-	}
-
-	// Fallback: nobody crossed. Use the last non-final assistant so we at
-	// least compact everything up to the most recent turn we can safely
-	// drop. If there is no such assistant (only the final asst exists),
-	// no compaction is possible.
-	if crossingAsst < 0 {
-		for i := lastAsstIdx - 1; i >= 0; i-- {
-			if messages[i].Role == "assistant" && messages[i].PromptTokens > 0 {
-				crossingAsst = i
-				break
-			}
-		}
-	}
-	if crossingAsst < 0 {
-		return -1
-	}
-
-	// Cutoff = first message after this assistant's turn. If the chosen
-	// assistant had tool_calls, the matching role:"tool" results sit
-	// right after it — step past every one so the assistant's tool_calls
-	// and their results stay together in the dropped section. We never
-	// want a kept tail that starts with an orphan tool result whose
-	// parent tool_call lives in the (now-summarised) checkpoint.
-	cutoff := crossingAsst + 1
-	for cutoff < len(messages) && messages[cutoff].Role == "tool" {
-		cutoff++
-	}
-
-	if cutoff < minCutoff {
-		return -1
-	}
-	if cutoff >= len(messages) {
-		// Would leave nothing live — refuse.
-		return -1
-	}
-	return cutoff
+	return 8192
 }
 
-// findCharCutoffIndex is the char-budget fallback used when the recorded
-// lastPromptTokens is at/below the target (the LLM only ever saw a
-// budget-capped tail, so its usage understates the real DB history — observed
-// conversation 319ce9283cac61666757b88a: lastPT ~30k but >700k tokens
-// persisted, so every eco tick logged "no satisfying cutoff ... skip" and no
-// checkpoint ever moved). It drops the OLDEST whole turns (user-anchored)
-// until the kept suffix fits within ~4 chars/token of the target budget, and
-// always preserves the newest user turn — the same floor rule as the live
-// tail. Returns the index of the first kept message, or -1 when there is
-// nothing to fold.
-func findCharCutoffIndex(messages []utils.Message, targetTokens, existingCheckpointEndIdx int) int {
-	if len(messages) == 0 || targetTokens <= 0 {
+// ecoCutoffIndex returns the index in `messages` where the LIVE tail begins:
+// everything before it is folded into the rolling checkpoint.
+//
+// The staged resolver decides this, which is the whole point of the design:
+// there is no "target" token count. The context window is the target, so the
+// same stages A -> D that build the outgoing request view also say how much
+// history has to go, and the durable fold matches it exactly. Folding less
+// leaves the next request oversized (the "folded 0 every step" shape); folding
+// more loses context the model still needs.
+//
+// Returns -1 when nothing can be folded (the history already fits, or the
+// conversation is too short to give up any turn).
+func ecoCutoffIndex(messages []utils.Message, modelName string) int {
+	if len(messages) == 0 {
 		return -1
 	}
-	targetChars := targetTokens * 4 // ~4 chars/token, same density as the request guard
-	prefix := make([]int, len(messages)+1)
-	for i := range messages {
-		prefix[i+1] = prefix[i] + messages[i].Content.TotalContentChars()
-	}
-	if prefix[len(messages)] <= targetChars {
-		// The whole history already fits within the target budget — nothing
-		// to fold without starving the live turn.
+	window := Models.MaxContextTokensForPrefixed(modelName)
+	_, foldFrom := resolveEcoContextCompaction(messages, window, ecoContentBudget(modelName))
+	if foldFrom <= 0 {
 		return -1
 	}
-	// Floor: the newest user message and its in-flight turn are ALWAYS kept.
-	floor := len(messages) - 1
-	for floor > 0 && messages[floor].Role != "user" {
-		floor--
+	// Never fold the newest user turn, and never fold everything.
+	if floor := startOfLastTurn(messages); foldFrom > floor {
+		foldFrom = floor
 	}
-	keptStart := 0
-	for {
-		if prefix[len(messages)]-prefix[keptStart] <= targetChars {
-			break
-		}
-		// Advance to the next user boundary — the start of the oldest kept
-		// turn. Dropping up to it removes a WHOLE turn, never a partial one.
-		next := keptStart + 1
-		for next < len(messages) && messages[next].Role != "user" {
-			next++
-		}
-		if next > floor {
-			// Only the newest user turn remains and it alone exceeds the
-			// budget: keep it whole (the per-message tail cap still bounds
-			// it on the request path).
-			keptStart = floor
-			break
-		}
-		keptStart = next
-	}
-	if keptStart <= existingCheckpointEndIdx || keptStart >= len(messages) {
+	if foldFrom <= 0 || foldFrom >= len(messages) {
 		return -1
 	}
-	return keptStart
+	return foldFrom
 }
 
 // runEcoSummary is the entry point spawned as a goroutine on every user
@@ -676,8 +519,8 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	}
 
 	cfg := auth.GetConfig().Eco
-	if cfg.TriggerTokens <= 0 || cfg.TargetTokens <= 0 {
-		utils.Log("[Eco] eco config disabled (trigger=%d target=%d) — skip", cfg.TriggerTokens, cfg.TargetTokens)
+	if cfg.TriggerTokens <= 0 {
+		utils.Log("[Eco] eco config disabled (trigger=%d) — skip", cfg.TriggerTokens)
 		return
 	}
 
@@ -724,7 +567,7 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 		}
 		utils.Log("[Eco] conv %s lastPT=%d below trigger=%d but raw history ≈%d chars → durable-compacting", conversationID, lastPT, trigger, rawChars)
 	} else {
-		utils.Log("[Eco] conv %s lastPT=%d > trigger=%d (model context-aware) — compacting toward target=%d", conversationID, lastPT, trigger, cfg.TargetTokens)
+		utils.Log("[Eco] conv %s lastPT=%d > trigger=%d (model context-aware) — compacting to fit the context window", conversationID, lastPT, trigger)
 	}
 
 	// Locate the existing checkpoint (if any) and compute where the new
@@ -749,9 +592,9 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 		}
 	}
 
-	cutoff := findCutoffIndex(conv.Messages, lastPT, cfg.TargetTokens, existingCheckpointEndIdx)
+	cutoff := ecoCutoffIndex(conv.Messages, modelName)
 	if cutoff < 0 {
-		utils.Log("[Eco] no satisfying cutoff for conv %s (lastPT=%d target=%d, %d messages) — skip", conversationID, lastPT, cfg.TargetTokens, len(conv.Messages))
+		utils.Log("[Eco] no satisfying cutoff for conv %s (lastPT=%d, %d messages) — skip", conversationID, lastPT, len(conv.Messages))
 		return
 	}
 	utils.Log("[Eco] conv %s cutoff=%d (of %d messages), prior checkpoint end=%d", conversationID, cutoff, len(conv.Messages), existingCheckpointEndIdx)
