@@ -41,7 +41,7 @@ func TestResolver_BelowTriggerReturnsUnchanged(t *testing.T) {
 	msgs := mkConv(3, 100) // small
 	window := 65536
 	budget := 60000
-	out := resolveEcoContextCompaction(msgs, window, budget)
+	out, _ := resolveEcoContextCompaction(msgs, window, budget)
 	if len(out) != len(msgs) {
 		t.Fatalf("below-trigger: expected %d messages unchanged, got %d", len(msgs), len(out))
 	}
@@ -114,7 +114,7 @@ func TestResolver_OverflowStageA(t *testing.T) {
 	window := 65536
 	budget := budgetForStage(capTokens, 931/3, 931/3, 5, 1)
 
-	out := resolveEcoContextCompaction(msgs, window, budget)
+	out, _ := resolveEcoContextCompaction(msgs, window, budget)
 	if len(out) == 0 {
 		t.Fatal("resolver returned empty on overflow")
 	}
@@ -158,7 +158,7 @@ func TestResolver_OverflowStageB(t *testing.T) {
 	window := 65536
 	budget := budgetForStage(capTokens, 931/3, 931/3, 5, 2)
 
-	out := resolveEcoContextCompaction(msgs, window, budget)
+	out, _ := resolveEcoContextCompaction(msgs, window, budget)
 	if len(out) == 0 {
 		t.Fatal("resolver returned empty")
 	}
@@ -198,7 +198,7 @@ func TestResolver_OverflowStageB(t *testing.T) {
 // TestResolver_OverflowStageC: with a budget too small for stages A/B, the
 // resolver degrades to user-only plus the last assistant (stage C).
 func TestResolver_OverflowStageC(t *testing.T) {
-	out := resolveEcoContextCompaction(mkConv(200, 900), 65536, 2500)
+	out, _ := resolveEcoContextCompaction(mkConv(200, 900), 65536, 2500)
 	if len(out) == 0 {
 		t.Fatal("resolver returned empty")
 	}
@@ -227,7 +227,7 @@ func TestResolver_OverflowStageDShrinksExcerpt(t *testing.T) {
 	// result, ~330 tokens), so ~1000 leaves stage D a fit it can only reach by
 	// SHRINKING the excerpt — which is what this asserts.
 	budget := 1000
-	out := resolveEcoContextCompaction(msgs, 65536, budget)
+	out, _ := resolveEcoContextCompaction(msgs, 65536, budget)
 	if len(out) == 0 {
 		t.Fatal("resolver returned empty")
 	}
@@ -270,7 +270,7 @@ func TestResolver_OverflowStageDShrinksExcerpt(t *testing.T) {
 // user messages only through the excerpt.
 func TestResolver_NeverReturnsEmptyOnTinyBudget(t *testing.T) {
 	for _, budget := range []int{200, 1000, 8192} {
-		out := resolveEcoContextCompaction(mkConv(500, 900), 65536, budget)
+		out, _ := resolveEcoContextCompaction(mkConv(500, 900), 65536, budget)
 		if len(out) == 0 {
 			t.Fatalf("budget %d: resolver returned empty (caller would send full history)", budget)
 		}
@@ -300,7 +300,7 @@ func latestUserRequestSurvives(msgs []utils.Message, needle string) bool {
 // injected at the FRONT of the history, so a malformed pair would break every
 // compacted request.
 func TestResolver_ArtifactIsWellFormed(t *testing.T) {
-	out := resolveEcoContextCompaction(mkConv(200, 900), 65536, 4000)
+	out, _ := resolveEcoContextCompaction(mkConv(200, 900), 65536, 4000)
 	if len(out) < 2 {
 		t.Fatalf("expected at least the artifact pair, got %d messages", len(out))
 	}
@@ -337,8 +337,8 @@ func TestResolver_IdempotentOnAlreadySmall(t *testing.T) {
 	msgs := mkConv(2, 50)
 	window := 65536
 	budget := 60000
-	first := resolveEcoContextCompaction(msgs, window, budget)
-	second := resolveEcoContextCompaction(first, window, budget)
+	first, _ := resolveEcoContextCompaction(msgs, window, budget)
+	second, _ := resolveEcoContextCompaction(first, window, budget)
 	if len(first) != len(second) {
 		t.Fatalf("not idempotent: %d vs %d messages", len(first), len(second))
 	}

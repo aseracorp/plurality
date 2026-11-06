@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/azukaar/plurality/src/ai_tools"
-	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/storage"
@@ -222,9 +221,13 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				// used as a fallback if the machine excerpt is unavailable.
 				// Machine-only compaction: no LLM call. The megacave excerpt
 				// replaces the folded history for the future workflow.
+				// The staged resolver decides the fold: the context window is
+				// the target, so durable compaction folds exactly what stages
+				// A -> D dropped.
+				_, foldFrom := resolveEcoContextCompaction(conversation.Messages,
+					Models.MaxContextTokensForPrefixed(model.Name), ecoContentBudget(model.Name))
 				removed, cErr := db.CompactConversationDurable(
-					ar.Ctx, ar.ConversationID, conversation.Messages, 24,
-					auth.GetConfig().Eco.TargetTokens,
+					ar.Ctx, ar.ConversationID, conversation.Messages, foldFrom,
 					func(msgs []utils.Message) string { return MachineExcerptMegacave(msgs) },
 				)
 				if cErr != nil {
