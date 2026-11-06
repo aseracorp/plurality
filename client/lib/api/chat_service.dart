@@ -1321,13 +1321,29 @@ class ChatService {
     final session = getSession(conversationId);
     final resolvedId = session.value.resolvedConversationId ?? conversationId;
 
-    session.value = ChatSessionState(
-      state: ConversationState.idle,
-      resolvedConversationId: session.value.resolvedConversationId,
-    );
-
+    // Reload the persisted conversation BEFORE dropping the streaming
+    // overlay. The old order cleared `items` first and then fired the reload
+    // un-awaited: between the two the chat had no streaming content AND no
+    // DB messages, so the reply vanished and the history looked blank until a
+    // later refresh brought it back ("history disappears, I have to reopen /
+    // restart"). If the reload failed outright, the assistant reply was gone
+    // from the screen for good.
+    var loaded = false;
     if (resolvedId.isNotEmpty) {
-      _conversationsNotifier?.loadConversation(resolvedId);
+      loaded = await (_conversationsNotifier?.loadConversation(resolvedId) ??
+          Future<bool>.value(false));
+    }
+
+    if (loaded || resolvedId.isEmpty) {
+      session.value = ChatSessionState(
+        state: ConversationState.idle,
+        resolvedConversationId: session.value.resolvedConversationId,
+      );
+    } else {
+      // Snapshot fetch failed — keep the streamed reply visible instead of
+      // blanking the conversation. It is already persisted server-side, so
+      // the next open/reconnect will render it from the DB.
+      session.value = session.value.copyWith(state: ConversationState.idle);
     }
   }
 }

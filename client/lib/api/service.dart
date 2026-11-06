@@ -116,10 +116,24 @@ class ConversationsNotifier extends StateNotifier<ConversationsState> {
     await ConversationStorage.mergeConversations(newConv);
     if (kIsWeb) {
       // Web: in-memory list is authoritative; Hive is metadata cache only.
+      //
+      // The list endpoint strips messages (db.ListConversations sets
+      // conv.Messages = nil), and on web nothing else keeps history
+      // persisted. Assigning `newConv` wholesale therefore REPLACED every
+      // conversation object — dropping the messages of every chat that
+      // wasn't currently open. Anything that triggers a refresh (the
+      // "Refresh" menu, auth init, a status-stream event for an unknown
+      // conversation, app resume) blanked the history of all other chats
+      // until you reopened them. That is the reported "my chat history
+      // disappears" bug.
+      //
+      // Merge metadata onto the existing in-memory objects instead, keeping
+      // the loaded messages in place.
       if (newConv.isNotEmpty) {
+        final merged = mergeServerListWithCache(state.conversations, newConv);
         state = ConversationsState(
-          conversations: newConv,
-          folderMap: _organizeFolders(newConv),
+          conversations: merged,
+          folderMap: _organizeFolders(merged),
         );
       }
       return;
@@ -127,19 +141,78 @@ class ConversationsNotifier extends StateNotifier<ConversationsState> {
     _loadConversations();
   }
 
-  void loadConversation(String id) async {
+  /// Combine a server list snapshot ([fresh], messages stripped by
+  /// GET /conversations) with the client-side list ([cached]), preserving the
+  /// message history already loaded in memory for each conversation.
+  ///
+  /// Server metadata (title, icon, folder, model_selected, state, trigger)
+  /// wins because it is authoritative; only [Conversation.messages] is
+  /// carried over from the cache. On web the in-memory list is the single
+  /// store of message history, so replacing list entries wholesale deletes
+  /// every chat's history except the one being viewed — this is the guard
+  /// against that regression.
+  static List<Conversation> mergeServerListWithCache(
+    List<Conversation> cached,
+    List<Conversation> fresh,
+  ) {
+    final byId = {for (final c in cached) c.id: c};
+    final merged = <Conversation>[];
+    for (final entry in fresh) {
+      final previous = byId[entry.id];
+      if (previous != null &&
+          previous.messages.isNotEmpty &&
+          entry.messages.isEmpty) {
+        // Server stripped the messages for this endpoint — keep what we have.
+        entry.messages = previous.messages;
+      }
+      merged.add(entry);
+    }
+    return merged;
+  }
+
+  /// Returns true when the server snapshot was fetched and merged into state.
+  /// Callers (notably _finalizeSession) use the result to decide whether it
+  /// is safe to drop the streaming overlay — clearing it before a successful
+  /// reload is what made an assistant reply vanish from the screen.
+  Future<bool> loadConversation(String id) async {
     if (id == '') {
-      return;
+      return false;
     }
 
-    var conv = await apiService.getConversation(id);
+    Conversation? conv;
+    try {
+      conv = await apiService.getConversation(id);
+    } on APIException catch (e) {
+      // A transient failure (offline, server restart, 5xx, expired token)
+      // must leave the cached history on screen and be visible. Previously
+      // this throw escaped an un-awaited async method, so opening a chat
+      // during a server blip silently showed nothing at all.
+      print('loadConversation($id) failed: ${e.message}');
+      return false;
+    }
     if (conv != null) {
       // Merge the server snapshot into the locally cached conversation
       // instead of replacing it. The server sends stable per-message ids
       // (messages.id); merging preserves local-only messages (e.g. an
       // optimistic user message still in flight) and keeps the message list
       // stable so the unread tracker sees genuinely new assistant messages.
-      final local = ConversationStorage.getConversation(id);
+      //
+      // The merge base must be the IN-MEMORY conversation on web: Hive is a
+      // metadata-only box there, so ConversationStorage.getConversation()
+      // returns an object with no messages. Merging against that empty base
+      // discarded local-only messages (the optimistic user message you just
+      // sent, tool/approved items not yet persisted) — the "some messages in
+      // between are gone" symptom.
+      Conversation? local;
+      if (kIsWeb) {
+        for (final c in state.conversations) {
+          if (c.id == id) {
+            local = c;
+            break;
+          }
+        }
+      }
+      local ??= ConversationStorage.getConversation(id);
       int newMessages = 0;
       if (local != null && local.messages.isNotEmpty && conv.messages.isNotEmpty) {
         newMessages =
@@ -171,7 +244,9 @@ class ConversationsNotifier extends StateNotifier<ConversationsState> {
       // to ChatService which guards against double-dispatch via the lock,
       // active-stream, and in-flight-resume checks.
       ChatService().resumeTrailingClientToolsIfNeeded(id);
+      return true;
     }
+    return false;
   }
 
   // Add a message
