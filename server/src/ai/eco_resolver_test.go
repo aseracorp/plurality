@@ -359,3 +359,62 @@ func TestMegacavePreservesCodeBlock(t *testing.T) {
 		t.Errorf("megacave did not preserve code block verbatim:\n%s", out)
 	}
 }
+
+// TestResolver_EveryStageIsSendable asserts the invariant the per-stage tests
+// were missing: a resolved view must be an ACCEPTABLE chat request. Megacaving
+// every user row into a tool message leaves no role:"user" row at all, and the
+// chat template rejects that outright (measured on strata: stage C returned
+// 400 "No user query found in messages" while fits/A/B/D cached at 98-99.9%).
+// A compaction stage that cannot be sent is not a fallback, it is an outage.
+func TestResolver_EveryStageIsSendable(t *testing.T) {
+	const capTokens = maxMegacaveExcerptChars / 3
+	msgs := mkConv(200, 900)
+	budgets := map[string]int{
+		"fits":  60000,
+		"A":     budgetForStage(capTokens, 931/3, 931/3, 5, 1),
+		"B":     budgetForStage(capTokens, 931/3, 931/3, 5, 2),
+		"C":     5000,
+		"D":     200,
+		"D-sat": 1000,
+	}
+	for name, budget := range budgets {
+		out, _ := resolveEcoContextCompaction(msgs, 65536, budget)
+		if len(out) == 0 {
+			t.Fatalf("%s: empty view", name)
+		}
+		var users, tools, opens int
+		for _, m := range out {
+			switch m.Role {
+			case "user":
+				users++
+			case "tool":
+				tools++
+			}
+		}
+		if out[0].Role == "tool" {
+			opens = 1
+		}
+		if users == 0 {
+			t.Fatalf("%s: view has NO user message (roles: user=%d tool=%d) — every provider rejects this request", name, users, tools)
+		}
+		if opens == 1 {
+			t.Fatalf("%s: view starts on a tool row — orphan tool_call", name)
+		}
+		// The newest user turn must survive every stage: it is the live ask.
+		var newest string
+		for _, m := range msgs {
+			if m.Role == "user" {
+				newest = m.TextContent()
+			}
+		}
+		var found bool
+		for _, m := range out {
+			if m.Role == "user" && m.TextContent() == newest {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s: newest user turn %q was folded away", name, newest)
+		}
+	}
+}

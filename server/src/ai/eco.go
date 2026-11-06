@@ -258,10 +258,26 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 	}
 	if !fits(candidate) {
 		// STAGE C — user messages + last assistant before a user, megacaved.
-		reduced := userOnlyWithLastAssistant(all)
+		//
+		// The newest user message is kept VERBATIM, exactly as stage D does.
+		// Megacaving the WHOLE reduced set (which is every user row) leaves the
+		// view with ZERO role:"user" messages, and every chat template rejects
+		// that: strata answers 400 "No user query found in messages." Measured
+		// end-to-end against the live engine — stages fits/A/B/D all cache at
+		// 98-99.9% reuse, stage C alone was an outright request failure. The
+		// stage-C unit tests only assert the artifact exists, so a view that
+		// cannot be sent passed them; see TestResolver_EveryStageIsSendable.
+		lastUser := indexOfLastUser(all)
+		var reduced []utils.Message
+		if lastUser > 0 {
+			reduced = userOnlyWithLastAssistant(all[:lastUser])
+		}
 		var cand []utils.Message
 		if art := megacaveArtifact(reduced, "megacave_C"); art != nil {
 			cand = append(cand, art...)
+		}
+		if lastUser >= 0 {
+			cand = append(cand, all[lastUser])
 		}
 		candidate = cand
 		id = 3

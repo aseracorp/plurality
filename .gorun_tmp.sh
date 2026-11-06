@@ -1,1 +1,0 @@
-apt-get update -qq >/tmp/a.log 2>&1; apt-get install -y -qq libsqlite3-dev gcc >>/tmp/a.log 2>&1; go build ./... 2>&1 | head -20; echo BUILD_RC=$?; go vet ./src/ai/ ./src/db/ ./src/auth/ 2>&1 | head -20; go test ./src/db/ ./src/ai/ ./src/mcp/ ./src/utils/ ./src/ai_tools/ -count=1 2>&1 | tail -12
