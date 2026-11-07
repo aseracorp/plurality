@@ -36,7 +36,8 @@ import 'package:super_sliver_list/super_sliver_list.dart';
 import 'toolcall-badge.dart';
 import 'fs_read_attach.dart' show isFsReadAttachCall;
 import 'fs_write_diff.dart';
-import 'wait_badge.dart' show isHiddenWaitResume, isHiddenWaitResumeMessage;
+import 'wait_badge.dart' show isHiddenWaitResume;
+import 'visible_messages.dart' show selectVisibleMessages;
 
 class ChatInterface extends ConsumerStatefulWidget {
   final String conversationId;
@@ -323,14 +324,21 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
   // Extract the model selection logic to a separate method
   void _loadConversation(String id) {
     final conversationsNotifier = ref.read(conversationsProvider.notifier);
-    try {
-      conversationsNotifier.loadConversation(id);
-    } catch (e) {
-      SnackBar(
-        content: Text('Failed to load conversation: $e'),
-        showCloseIcon: true,
+    // loadConversation is async and swallows API errors internally; the
+    // surrounding try/catch below could never see them (the future was
+    // dropped), which is why a failed load looked like "history is just
+    // missing". Await it, surface the failure, and offer a retry.
+    conversationsNotifier.loadConversation(id).then((ok) {
+      if (ok || !mounted) return;
+      showTopSnackBar(
+        Overlay.of(context),
+        PrettySnackbar(
+          message:
+              'Could not load this conversation. Your messages are safe on the server — tap to retry.',
+          type: SnackbarType.error,
+        ),
       );
-    }
+    });
   }
 
   void _setSelectedModel(ModelSelected modelSelected) {
@@ -1118,24 +1126,14 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
 
     // Filter out tool result messages and dedupe against streaming.
     // Skip any DB message whose content is already rendered by the streaming section.
-    var visibleMessages = messages.where((m) {
-      if (m.role == 'tool') return false;
-      // Synthetic "Timer is done" assistant messages exist only as a hook for
-      // the LLM — they have no user-facing payload.
-      if (isHiddenWaitResumeMessage(m)) return false;
-      if (!hasStreamingContent) return true;
-      // Skip assistant messages that are fully covered by streaming items
-      if (m.role == 'assistant') {
-        final hasText = m.textContent.isNotEmpty;
-        final hasToolCalls = m.toolCalls != null && m.toolCalls!.isNotEmpty;
-        final allToolsInStream = hasToolCalls &&
-            m.toolCalls!.every((tc) => streamingToolIds.contains(tc.id));
-        final textInStream = hasText && sessionState.streamingText.contains(m.textContent);
-        // If everything in this message is already in streaming, skip it
-        if ((!hasText || textInStream) && (!hasToolCalls || allToolsInStream)) return false;
-      }
-      return true;
-    }).toList();
+    // Filter out tool result messages and dedupe against the streaming
+    // section. Logic lives in selectVisibleMessages() so it is unit-testable.
+    var visibleMessages = selectVisibleMessages(
+      messages: messages,
+      hasStreamingContent: hasStreamingContent,
+      streamingText: sessionState.streamingText,
+      streamingToolIds: streamingToolIds,
+    );
 
     final itemCount = visibleMessages.length
         + (hasStreamingContent ? 1 : 0)

@@ -170,6 +170,13 @@ class ConversationStorage {
   /// Returns the number of messages the server added that were NOT known
   /// locally — the caller can use that to drive unread counting.
   static int mergeServerMessages(Conversation local, List<Message> server) {
+    if (server.isEmpty) {
+      // An empty snapshot must NEVER blank an already loaded history. On web
+      // the in-memory list is the only place message history lives (Hive
+      // holds metadata only), so merging an empty list here is exactly what
+      // showed up as "my chat history disappeared".
+      return 0;
+    }
     final byKey = <String, Message>{};
     String keyOf(Message m) {
       if (m.id != null && m.id!.isNotEmpty) return 'id:${m.id}';
