@@ -47,8 +47,14 @@ func (t ToolInfo) NamespacedName() string {
 }
 
 type mcpServerConfig struct {
-	Command     string   `json:"command"`
-	Args        []string `json:"args"`
+	Command string   `json:"command"`
+	Args    []string `json:"args"`
+	// Env carries KEY=VALUE entries for the subprocess. Prefer it over
+	// embedding credentials in args (argv is world-readable in
+	// /proc/<pid>/cmdline). Values may be "${VAR}" to reference a variable
+	// from the server's own environment, so mcp.json can name a secret
+	// without containing it.
+	Env         []string `json:"env"`
 	Stateful    bool     `json:"stateful"`
 	Description string   `json:"description"`
 }
@@ -172,7 +178,10 @@ func Init() {
 		data, err := os.ReadFile(configPath)
 		if os.IsNotExist(err) {
 			defaultCfg := defaultMCPConfig()
-			if werr := os.WriteFile(configPath, []byte(defaultCfg), 0644); werr != nil {
+			// 0600: this file can carry server credentials (env entries, args).
+			// 0644 made every api key in it world-readable to any process and
+			// any user on the host, including inside bind-mounted paths.
+			if werr := os.WriteFile(configPath, []byte(defaultCfg), 0600); werr != nil {
 				utils.Error("[MCP] Failed to write default config", werr)
 			} else {
 				utils.Log("[MCP] Created default config at %s", configPath)
@@ -263,7 +272,7 @@ func loadUserConfig(userID string, cfg mcpFile) {
 		}
 
 		utils.Log("[MCP] (%s) Starting %s (%s)...", logPrefix, name, cmdPath)
-		pm := NewProcessManager(name, cmdPath, server.Args)
+		pm := NewProcessManager(name, cmdPath, server.Args, server.Env)
 		if err := pm.Start(); err != nil {
 			utils.Error("[MCP] ("+logPrefix+") Failed to start "+name, err)
 			continue
@@ -723,7 +732,7 @@ func getOrCreateConvProcess(conversationID, serverName string, cfg mcpServerConf
 	}
 
 	// Spawn a new process for this conversation.
-	pm := NewProcessManager(serverName+"/"+conversationID, cfg.Command, cfg.Args)
+	pm := NewProcessManager(serverName+"/"+conversationID, cfg.Command, cfg.Args, cfg.Env)
 	if err := pm.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start stateful MCP %s for conversation: %w", serverName, err)
 	}

@@ -68,22 +68,40 @@ func execManageMCP(_ context.Context, input string, conv utils.Conversation) uti
 		if err != nil {
 			return utils.NewTextContent(fmt.Sprintf("Error reading config: %s", err.Error()))
 		}
-		return utils.NewTextContent(string(data))
+		// Credentials must never reach the model. This text becomes an
+		// assistant/tool message in the conversation: it is persisted to the
+		// conversations DB, re-sent to the provider on every subsequent turn of
+		// this conversation, and included in context compaction and search.
+		// Returning the file verbatim pastes API keys into all of that.
+		return utils.NewTextContent(mcp.RedactSecrets(string(data)))
 
 	case "set":
 		if params.Config == "" {
 			return utils.NewTextContent("Error: 'config' parameter is required for 'set' mode.")
 		}
 
-		// Validate JSON structure
-		var cfg struct {
-			MCPServers map[string]interface{} `json:"mcpServers"`
-		}
+		// Validate JSON structure. Decoded generically (not into a struct) so
+		// the redaction round-trip below can walk it.
+		var cfg map[string]interface{}
 		if err := json.Unmarshal([]byte(params.Config), &cfg); err != nil {
 			return utils.NewTextContent(fmt.Sprintf("Error: invalid JSON: %s", err.Error()))
 		}
-		if cfg.MCPServers == nil {
+		if s, ok := cfg["mcpServers"]; !ok || s == nil {
 			return utils.NewTextContent("Error: config must have 'mcpServers' object.")
+		}
+
+		// 'get' returns secrets redacted, so a config the model round-tripped
+		// back through 'set' carries "***REDACTED***" wherever a credential
+		// used to be. Writing that verbatim would permanently destroy the
+		// user's real keys and brick every server that uses them. Restore the
+		// existing values at the matching paths before persisting.
+		if prevRaw, err := os.ReadFile(configPath); err == nil {
+			var prev map[string]interface{}
+			if json.Unmarshal(prevRaw, &prev) == nil {
+				if n := mcp.RestoreRedactedSecrets(cfg, prev); n > 0 {
+					utils.Log("[MCP] restored %d redacted credential(s) from the existing config", n)
+				}
+			}
 		}
 
 		// Pretty-print the config
@@ -96,7 +114,7 @@ func execManageMCP(_ context.Context, input string, conv utils.Conversation) uti
 		if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
 			return utils.NewTextContent(fmt.Sprintf("Error creating user data dir: %s", err.Error()))
 		}
-		if err := os.WriteFile(configPath, formatted, 0644); err != nil {
+		if err := os.WriteFile(configPath, formatted, 0600); err != nil {
 			return utils.NewTextContent(fmt.Sprintf("Error writing config: %s", err.Error()))
 		}
 

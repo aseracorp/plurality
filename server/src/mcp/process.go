@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +25,12 @@ type ProcessManager struct {
 	name    string
 	command string
 	args    []string
+	// env is the explicit environment for the subprocess (KEY=VALUE entries).
+	// Credentials belong here, never in args: argv is world-readable via
+	// /proc/<pid>/cmdline (mode 0444) and is copied into `ps`, shell history,
+	// core dumps and audit logs, while a process environment is only readable
+	// by its owner (/proc/<pid>/environ, mode 0400).
+	env []string
 
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -62,14 +70,49 @@ type rpcError struct {
 }
 
 // NewProcessManager builds a manager but does NOT spawn the process.
-func NewProcessManager(name, command string, args []string) *ProcessManager {
+// env entries (KEY=VALUE) are appended to the parent environment for the
+// child; secrets must be passed this way and never through args.
+func NewProcessManager(name, command string, args []string, env []string) *ProcessManager {
 	return &ProcessManager{
 		name:    name,
 		command: command,
 		args:    args,
+		env:     env,
 		pending: make(map[string]chan rpcResult),
 		exited:  make(chan struct{}),
 	}
+}
+
+// expandEnvArgs substitutes ${VAR} references in command args from the
+// process environment. It exists so mcp.json can name a secret without
+// containing it:
+//
+//	"args": ["--token", "${GITHUB_PERSONAL_ACCESS_TOKEN}"]
+//
+// Unset variables expand to an empty string, which surfaces as a visible
+// startup failure of the child rather than a silently broken credential.
+func expandEnvArgs(args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	out := make([]string, len(args))
+	for i, a := range args {
+		if strings.Contains(a, "${") {
+			a = os.Expand(a, func(k string) string { return os.Getenv(k) })
+		}
+		out[i] = a
+	}
+	return out
+}
+
+// childEnv composes the subprocess environment: the parent environment plus
+// any configured KEY=VALUE entries, with the configured entries taking
+// precedence (last wins in exec.Cmd).
+func (p *ProcessManager) childEnv() []string {
+	if len(p.env) == 0 {
+		return nil // inherit unchanged
+	}
+	return append(os.Environ(), p.env...)
 }
 
 // Start spawns the subprocess and starts the reader goroutines.
@@ -81,7 +124,10 @@ func (p *ProcessManager) Start() error {
 		return fmt.Errorf("process %s already running", p.name)
 	}
 
-	cmd := exec.Command(p.command, p.args...)
+	cmd := exec.Command(p.command, expandEnvArgs(p.args)...)
+	if e := p.childEnv(); e != nil {
+		cmd.Env = e
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("stdin pipe: %w", err)
@@ -225,7 +271,11 @@ func (p *ProcessManager) readStderr() {
 	scanner := bufio.NewScanner(p.stderr)
 	scanner.Buffer(make([]byte, 1024*1024), 8*1024*1024)
 	for scanner.Scan() {
-		line := scanner.Text()
+		// Child stderr is echoed into the server log AND the debug buffer, and
+		// MCP servers routinely print the commands they run — observed in the
+		// wild as `git clone "https://user:<PAT>@github.com/…"` landing in
+		// server.log. Scrub before it reaches any sink.
+		line := RedactSecrets(scanner.Text())
 		utils.Log("[mcp:%s stderr] %s", p.name, line)
 		p.appendLog("[stderr] " + line)
 	}
