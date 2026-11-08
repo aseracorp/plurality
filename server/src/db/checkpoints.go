@@ -159,10 +159,63 @@ func GetCheckpoint(ctx context.Context, conversationID string) (*CheckpointPair,
 	return pair, nil
 }
 
+// MessageSeqByID resolves a message's stable DB row id (utils.Message.ID,
+// populated by getConversationFromDB from messages.id) to its seq.
+//
+// Identity-based boundary resolver, replacing the positional OFFSET lookup for
+// the durable fold boundary. The positional lookup is valid only for a FULL
+// history slice; the durable path gets its slice from
+// GetConversationByIdInternal, which EXCLUDES compacted = 1 rows and INJECTS
+// the synthetic checkpoint pair, so slice index and SQL OFFSET count different
+// row sets and diverge further on every compaction. Observed on live traffic:
+//
+//	folding 1035 of 1036 -> durable removed 24
+//	folding 1037 of 1062 -> durable removed 0
+//	folding 1065 of 1070 -> durable removed 26
+//	folding 1067 of 1074 -> durable removed 0   (turn dies at the window)
+//
+// Identity names a specific row regardless of which view produced the slice.
+//
+// Returns (0, nil) for absent/unparseable ids (legacy rows, synthetic
+// checkpoint pairs) so callers can fall back.
+func MessageSeqByID(ctx context.Context, conversationID string, id string) (int64, error) {
+	if id == "" {
+		return 0, nil
+	}
+	userID, ok := ctx.Value("userID").(string)
+	if !ok {
+		return 0, errors.New("user ID not found in request context")
+	}
+	d, err := GetUserDB(userID)
+	if err != nil {
+		return 0, err
+	}
+	var rowID int64
+	if _, err := fmt.Sscanf(id, "%d", &rowID); err != nil || rowID <= 0 {
+		return 0, nil // tool_call_id fallback / checkpoint pair
+	}
+	var seq int64
+	err = d.QueryRowContext(ctx,
+		`SELECT seq FROM messages WHERE conversation_id = ? AND id = ?`,
+		conversationID, rowID,
+	).Scan(&seq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return seq, nil
+}
+
 // MessageSeqAt returns the seq value of the (sliceOffset)-th message of a
-// conversation in seq-ascending order. Used by the eco summary code to
-// resolve a slice index (from an in-memory load) back to the actual DB
-// seq, which may differ if prior checkpoints have created gaps.
+// conversation in seq-ascending order.
+//
+// CONTRACT: valid ONLY for a slice that is the FULL ordered history (every row
+// including compacted ones), i.e. getConversationByIdIncludeCompacted. NOT
+// valid for the LLM-facing view from GetConversationByIdInternal, which omits
+// compacted rows and carries the injected checkpoint pair. Prefer
+// MessageSeqByID whenever the message carries a DB id.
 func MessageSeqAt(ctx context.Context, conversationID string, sliceOffset int) (int64, error) {
 	userID, ok := ctx.Value("userID").(string)
 	if !ok {
@@ -519,12 +572,26 @@ func CompactConversationDurable(
 	if firstKeptIdx >= len(messages) {
 		return 0, nil
 	}
-	boundarySeq, err := MessageSeqAt(ctx, conversationID, firstKeptIdx)
+	// Resolve the boundary by STABLE IDENTITY first. The slice here comes from
+	// the LLM-facing view (GetConversationByIdInternal), which omits compacted
+	// rows and carries the injected checkpoint pair, so a positional OFFSET
+	// lookup into the FULL history indexes a different row set and diverges
+	// after every compaction — the observed `durable removed 0`.
+	boundarySeq, err := MessageSeqByID(ctx, conversationID, messages[firstKeptIdx].ID)
 	if err != nil {
 		return 0, err
 	}
 	if boundarySeq == 0 {
-		return 0, nil
+		// Legacy rows / synthetic pair with no DB id: fall back to positional.
+		boundarySeq, err = MessageSeqAt(ctx, conversationID, firstKeptIdx)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if boundarySeq == 0 {
+		utils.Log("[DurableCompact] cannot resolve fold boundary: id=%q sliceIdx=%d sliceLen=%d conv=%s — NOT compacting",
+			messages[firstKeptIdx].ID, firstKeptIdx, len(messages), conversationID)
+		return 0, fmt.Errorf("durable compaction: unresolved fold boundary at slice index %d", firstKeptIdx)
 	}
 
 	tx, err := d.Begin()
@@ -556,6 +623,13 @@ func CompactConversationDurable(
 		return 0, err
 	}
 	removed, _ := res.RowsAffected()
+	if removed == 0 {
+		// A positive boundary that folds nothing is a bug, not a no-op: it is
+		// the wedge that made every overflow turn "succeed" while shipping the
+		// full history. Report it loudly instead of returning quietly.
+		utils.Log("[DurableCompact] boundary seq=%d (sliceIdx=%d sliceLen=%d conv=%s) folded 0 rows — history NOT shrinking",
+			boundarySeq, firstKeptIdx, len(messages), conversationID)
+	}
 
 	// Persist the new summary by MOVING the checkpoint forward: delete the
 	// old pair (if any) and insert a fresh pair at the boundary, mirroring
