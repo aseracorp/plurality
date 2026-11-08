@@ -38,6 +38,8 @@ import 'fs_read_attach.dart' show isFsReadAttachCall;
 import 'fs_write_diff.dart';
 import 'wait_badge.dart' show isHiddenWaitResume;
 import 'visible_messages.dart' show selectVisibleMessages;
+import 'conversation_load.dart'
+    show ConversationLoadOutcome, conversationLoadOutcome;
 
 class ChatInterface extends ConsumerStatefulWidget {
   final String conversationId;
@@ -328,8 +330,15 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
     // surrounding try/catch below could never see them (the future was
     // dropped), which is why a failed load looked like "history is just
     // missing". Await it, surface the failure, and offer a retry.
+    // The new-chat screen has no conversation id: there is nothing to load,
+    // and loadConversation('') reports that as false. Treat it as a no-op —
+    // this is what made a fresh page load (with no chat opened yet) show the
+    // red "Could not load this conversation" banner.
     conversationsNotifier.loadConversation(id).then((ok) {
-      if (ok || !mounted) return;
+      if (!mounted) return;
+      if (conversationLoadOutcome(id, ok) != ConversationLoadOutcome.failed) {
+        return;
+      }
       showTopSnackBar(
         Overlay.of(context),
         PrettySnackbar(
