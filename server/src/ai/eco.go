@@ -104,7 +104,7 @@ func SentViewTokens(messages []utils.Message) int {
 		if messages[i].Compacted {
 			continue // folded into a checkpoint; not part of the request
 		}
-		chars += messages[i].Content.TotalContentChars()
+		chars += messageWireChars(messages[i])
 	}
 	return chars / 3
 }
@@ -112,7 +112,7 @@ func SentViewTokens(messages []utils.Message) int {
 func approxTokens(messages []utils.Message) int {
 	chars := 0
 	for i := range messages {
-		chars += messages[i].Content.TotalContentChars()
+		chars += messageWireChars(messages[i])
 	}
 	return chars / 3
 }
@@ -458,7 +458,7 @@ func lastAssistantPromptTokens(messages []utils.Message) int {
 // counts; this is the standing approximation.
 func ecoContentBudget(modelName string) int {
 	window := Models.MaxContextTokensForPrefixed(modelName)
-	const reserve = 4096 + 2048 + 512
+	reserve := ecoReplyReserveForName(modelName) + 512
 	if budget := window - reserve; budget > 0 {
 		return budget
 	}
@@ -574,7 +574,7 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 			if db.IsCheckpointMessage(m) {
 				continue
 			}
-			rawChars += m.Content.TotalContentChars()
+			rawChars += messageWireChars(m)
 		}
 		// ~4 chars/token — same density assumption the request guard uses.
 		if rawChars/4 <= trigger {
