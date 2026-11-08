@@ -224,6 +224,25 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// must fit within.
 	const replyReserve = 4096 + 2048
 	contentBudget := windowTokens - nonAttachOverhead - replyReserve
+
+	// The eco trigger is the SECOND ceiling, and the resolver has to aim at
+	// whichever of the two is TIGHTER. Compaction is meant to fire when the
+	// content crosses the configured trigger OR no longer fits the window, but
+	// the resolver only ever sees `contentBudget`. On a large-window model the
+	// window budget is looser than the trigger (observed live on strata:
+	// budget 221834 vs trigger 64000), so every request past the trigger
+	// reached the resolver, got the answer "full history fits — unchanged,
+	// stable prefix", folded 0 messages and sent the full history: the gate
+	// fired on every turn and compaction never happened. Clamping the target
+	// to the trigger makes crossing the threshold actually compact.
+	//
+	// Units: the trigger is compared against convText + nonAttachOverhead,
+	// while the resolver's fits() measures conversation content only, so the
+	// overhead is subtracted here to keep both sides on the same basis.
+	trigger := effectiveEcoTrigger(model.Name)
+	if triggerBudget := trigger - nonAttachOverhead; triggerBudget < contentBudget {
+		contentBudget = triggerBudget
+	}
 	if contentBudget <= 0 {
 		contentBudget = 8192
 	}
@@ -240,7 +259,6 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	convTextTokens := SentViewTokens(conv.Messages)
 	estTotalTokens := convTextTokens + nonAttachOverhead
 
-	trigger := effectiveEcoTrigger(model.Name)
 	if estTotalTokens <= trigger {
 		// Content is within the trigger: send the (already-checkpoint-collapsed)
 		// conversation UNCHANGED. Byte-stable prefix across turns keeps the

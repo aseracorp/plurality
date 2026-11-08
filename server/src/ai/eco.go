@@ -459,7 +459,20 @@ func lastAssistantPromptTokens(messages []utils.Message) int {
 func ecoContentBudget(modelName string) int {
 	window := Models.MaxContextTokensForPrefixed(modelName)
 	const reserve = 4096 + 2048 + 512
-	if budget := window - reserve; budget > 0 {
+	// Same OR gate as the request path (see index.go): compaction fires when
+	// content crosses the eco trigger OR no longer fits the window, so the
+	// resolver has to aim at the TIGHTER of the two ceilings. A window-derived
+	// budget alone lets a large-window model answer "fits" long after the
+	// trigger, which folds 0 and compacts nothing. `reserve` is subtracted from
+	// both sides so the comparison stays on the conversation-content basis the
+	// resolver's fits() uses.
+	budget := window - reserve
+	if trigger := effectiveEcoTrigger(modelName); trigger > 0 {
+		if tb := trigger - reserve; tb < budget {
+			budget = tb
+		}
+	}
+	if budget > 0 {
 		return budget
 	}
 	return 8192
