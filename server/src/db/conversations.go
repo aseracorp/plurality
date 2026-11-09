@@ -134,8 +134,14 @@ func PushMessage(ctx context.Context, conversation utils.Conversation, message u
 		search.EnqueueEmbed(db, LiteLLMBaseURL, "message", fmt.Sprintf("%d", msgID), message.TextContent())
 	}
 
-	// Reload the full conversation
-	updated, err := getConversationFromDB(db, conversation.ID, true)
+	// Reload the conversation in LLM-FACING form: rows folded into the rolling
+	// checkpoint (compacted=1) are excluded, and the live checkpoint pair is
+	// included. This is the view every LLM request must be built from (#167/#168);
+	// shoving the full non-destructive history here is what made the context
+	// guard reject requests that compaction had already made to fit (observed:
+	// 741 messages shipped while only 198 were live, 464 folded). The client
+	// still gets the full history via GetConversationById.
+	updated, err := getConversationFromDB(db, conversation.ID, false)
 	if err != nil {
 		return utils.Conversation{}, false, err
 	}
