@@ -217,30 +217,40 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// Trigger + content-budget sizing both exclude attachments (they are not
 	// sent on an action-model request). System prompt + tool schemas + a small
 	// wrapper margin are the only non-text overhead that should count.
-	nonAttachOverhead := toolsTaxBytes/3 + len(sysChars)/4 + 512
+	totalOverhead := toolsTaxBytes/3 + len(sysChars)/4 + 512
 
 	// Room we reserve for the system prompt, tool schemas, and the model's
 	// reply; the rest of the window is the content budget the staged resolver
 	// must fit within.
-	const replyReserve = 4096 + 2048
-	contentBudget := windowTokens - nonAttachOverhead - replyReserve
+	// replyReserve is ALSO sent as `max_tokens` (see requestData.MaxTokens), so the
+	// prompt ceiling computed here is the ceiling the backend enforces. Leaving
+	// MaxTokens nil makes llama.cpp-style backends default the output budget to
+	// "everything left in the slot": measured live at prompt_tokens 80621 with
+	// max_tokens 181515, i.e. 262144 - 181515 = 80629 - eight tokens of headroom
+	// over the 262144 window. The prompt is then free to inflate to the cap, and a
+	// few extra prompt tokens tip the request into "request exceeds the context
+	// window". A dynamic, window-aware reserve (per-model `max_tokens` honoured)
+	// sent as max_tokens makes compaction schedulable BEFORE the window.
+	replyReserve := ecoReplyReserve(model)
+	contentBudget := windowTokens - totalOverhead - replyReserve
 
 	// The eco trigger is the SECOND ceiling, and the resolver has to aim at
 	// whichever of the two is TIGHTER. Compaction is meant to fire when the
-	// content crosses the configured trigger OR no longer fits the window, but
+	// content crosses the trigger OR no longer fits the window, but
 	// the resolver only ever sees `contentBudget`. On a large-window model the
 	// window budget is looser than the trigger (observed live on strata:
 	// budget 221834 vs trigger 64000), so every request past the trigger
-	// reached the resolver, got the answer "full history fits — unchanged,
+	// reached the resolver, got the answer "full history fits - unchanged,
 	// stable prefix", folded 0 messages and sent the full history: the gate
 	// fired on every turn and compaction never happened. Clamping the target
 	// to the trigger makes crossing the threshold actually compact.
 	//
-	// Units: the trigger is compared against convText + nonAttachOverhead,
-	// while the resolver's fits() measures conversation content only, so the
-	// overhead is subtracted here to keep both sides on the same basis.
+	// Units: the trigger is compared against convText + totalOverhead (the
+	// estTotalTokens gate below), while the resolver's fits() measures
+	// conversation content only, so the overhead is subtracted here to keep
+	// both sides on the same basis.
 	trigger := effectiveEcoTrigger(model.Name)
-	if triggerBudget := trigger - nonAttachOverhead; triggerBudget < contentBudget {
+	if triggerBudget := trigger - totalOverhead; triggerBudget < contentBudget {
 		contentBudget = triggerBudget
 	}
 	if contentBudget <= 0 {
@@ -256,8 +266,26 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// overheadTokens was inflated by ~450k of attachment base64), which
 	// re-collapsed history / re-ran dynamic reconfig and invalidated the KV
 	// cache despite content being far below the trigger at 128k tokens.
-	convTextTokens := SentViewTokens(conv.Messages)
-	estTotalTokens := convTextTokens + nonAttachOverhead
+	// Count the FULL wire payload: text, image/document parts and assistant
+	// tool_call arguments. Counting text parts only is what let one request read
+	// ~52k tokens to the trigger while measuring ~438k on the wire: the trigger
+	// stayed under threshold, shipped the history UNCHANGED, and the conversation
+	// died on "request exceeds the context window" with compaction folding 0 rows
+	// on every retry.
+	//
+	// Images are subtracted right here for a NON-VISION action model, because
+	// stripImagesForNonVisionModel removes them from the request: counting them
+	// for such a model fires the trigger on base64 volume that never reaches the
+	// provider. For a VISION model the image bytes ARE sent and MUST count — one
+	// screenshot is 10-50k tokens, exactly the payload the text-only estimate was
+	// blind to.
+	estTotalTokens := SentViewTokens(conv.Messages) + totalOverhead
+	if isActionModel && !Models.IsVisionModel(model.Name) {
+		estTotalTokens -= sentViewImageTokens(conv.Messages)
+	}
+	if estTotalTokens < 0 {
+		estTotalTokens = 0
+	}
 
 	if estTotalTokens <= trigger {
 		// Content is within the trigger: send the (already-checkpoint-collapsed)
@@ -355,6 +383,17 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	nk := -1 // keep all prefix tokens (dynamic, grows with context)
 	requestData.NKeep = &nk
 
+	// Reserve the model's answer budget EXPLICITLY. Leaving MaxTokens nil makes
+	// llama.cpp-style backends default the output budget to "everything left in
+	// the slot": measured live at prompt_tokens 80621 with max_tokens 181515,
+	// i.e. 262144 - 181515 = 80629 — 8 tokens of headroom over the 262144 window.
+	// The prompt is then free to inflate to the cap, and the next few tokens tip
+	// the request into "request exceeds the context window". Sending the SAME
+	// reservation the eco budget already deducted makes prompt + output fit and
+	// makes the ceiling this guard enforces match what we asked the backend for.
+	mt := replyReserve
+	requestData.MaxTokens = &mt
+
 	utils.Debug("A new chat request is being made with the following model: %s", model.Name)
 
 	// Marshal WITHOUT HTML escaping. The default json.Marshal escapes &, <,
@@ -409,7 +448,8 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 			utils.Log("[Eco] compression-aware guard: est %d tokens / factor %.2f = %d post-compression vs window %d", estTokens, factor, postCompressionTokens, windowTokens)
 		}
 		// Keep room for the model's answer: max_tokens (4096) + safety.
-		const replyReserve = 4096 + 2048
+		// Room for the model's answer — the SAME reservation we send as
+		// max_tokens, so this guard and the backend agree on the prompt ceiling.
 		if postCompressionTokens > windowTokens-replyReserve {
 			utils.Log("[Eco] preemptive context guard: estimated %d tokens vs window %d — returning context-length error so the loop compacts and retries", estTokens, windowTokens)
 			return nil, 0, fmt.Errorf("request estimated to exceed the context window: ~%d tokens vs %d (max %d) — compacting history and retrying", estTokens, windowTokens, windowTokens-replyReserve)

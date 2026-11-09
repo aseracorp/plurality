@@ -7,6 +7,7 @@ import 'package:plurality/api/skills_service.dart';
 import 'package:plurality/api/filesystem_service.dart';
 import 'package:plurality/api/shell_service.dart';
 import 'package:plurality/api/client_identity.dart';
+import 'package:plurality/api/client_tool_ownership.dart';
 
 import '../auth/auth-service.dart';
 import '../utils/types.dart';
@@ -437,10 +438,17 @@ class ChatService {
     }
     if (conv == null || conv.messages.isEmpty) return;
 
-    // Lock arbitration: if someone else owns the lock, let them resume.
-    final lock = conv.modelSelected.clientLock;
-    final myId = ClientIdentity().id;
-    if (lock != null && myId.isNotEmpty && lock.id != myId) return;
+    // Lock arbitration: decide whether THIS client runs the tools. Two windows
+    // of one browser are now distinct clients (per-tab identity), so a lock
+    // held elsewhere defers here. Unowned means the previous holder died —
+    // this path only runs with no live stream, so recovering here is safe.
+    if (clientToolOwnership(
+          lockId: conv.modelSelected.clientLock?.id,
+          myId: ClientIdentity().id,
+        ) ==
+        ClientToolOwnership.defer) {
+      return;
+    }
 
     // Collect tool_call ids that already have matching tool result messages.
     final resolved = <String>{};
@@ -1022,9 +1030,14 @@ class ChatService {
     }
     final liveModelSelected = liveConv?.modelSelected ?? modelSelected;
 
-    final myId = ClientIdentity().id;
-    final lock = liveModelSelected.clientLock;
-    if (lock != null && myId.isNotEmpty && lock.id != myId) {
+    // Same arbitration as the resume path: the lock holder runs the tools, and
+    // an unowned conversation is run here (folder-attach claims the lock, so a
+    // chat that needs client tools is locked by the time tools can arrive).
+    if (clientToolOwnership(
+          lockId: liveModelSelected.clientLock?.id,
+          myId: ClientIdentity().id,
+        ) ==
+        ClientToolOwnership.defer) {
       session.value =
           session.value.copyWith(pendingClientTools: const []);
       return;
