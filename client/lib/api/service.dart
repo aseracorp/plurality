@@ -254,16 +254,18 @@ class ConversationsNotifier extends StateNotifier<ConversationsState> {
     required String conversationId,
     required Message message,
   }) async {
+    final cached = _findById(state.conversations, conversationId);
     final updated = await ConversationStorage.addMessage(
       conversationId: conversationId,
       message: message,
     );
 
     if (updated != null) {
+      final merged = applyLocalUpdate(cached, updated, append: message);
       final updatedConversations =
           state.conversations.map((conv) {
             if (conv.id == conversationId) {
-              return updated;
+              return merged;
             }
             return conv;
           }).toList();
@@ -275,6 +277,85 @@ class ConversationsNotifier extends StateNotifier<ConversationsState> {
     }
   }
 
+  /// Combine the locally-persisted view of a conversation ([updated], as
+  /// returned by a ConversationStorage mutator) with the in-memory copy the
+  /// UI is watching ([cached]), and return the object to publish into state.
+  ///
+  /// On web Hive stores METADATA ONLY (see `ConversationStorage._metaOnly`):
+  /// `getConversation()` hands back an object whose `messages` starts empty.
+  /// The mutators (`addMessage`, `updateConversationMetaData`, …) read that
+  /// object, tweak it and return it — and callers used to publish it straight
+  /// into `state.conversations`, REPLACING the in-memory conversation and
+  /// wiping its entire history. That is the "on send, the history and my
+  /// message disappear, leaving an empty chat" bug: the send path appends the
+  /// optimistic user message this way, and the client-lock claim fires
+  /// `updateConversationMetaData` on every send, so the chat blanked twice.
+  ///
+  /// The in-memory list is the single store of message history on web, so it
+  /// is the base here: the cached messages are kept and anything [updated]
+  /// brought back that is not already known (by identity, or by the stable
+  /// per-message id the server assigns) is appended. A mutator that appended
+  /// a message to the metadata-only shell returns exactly `[newMessage]`, so
+  /// the result is history + new message; on desktop, where storage already
+  /// holds the full history, the union is a no-op and nothing duplicates.
+  ///
+  /// [append] is the message the caller asked the mutator to add, passed
+  /// through so it survives even when the mutator dropped it.
+  static Conversation applyLocalUpdate(
+    Conversation? cached,
+    Conversation updated, {
+    Message? append,
+  }) {
+    if (cached != null && cached.messages.isNotEmpty) {
+      final merged = List<Message>.of(cached.messages);
+      // Same key convention as ConversationStorage.mergeServerMessages: the
+      // stable server id when present, otherwise a content fingerprint. Needed
+      // because off web the storage copy is a DESERIALIZED clone (distinct
+      // instances, legacy messages have no id) — matching by identity alone
+      // would re-append the entire history on every desktop send.
+      String keyOf(Message m) {
+        if (m.id != null && m.id!.isNotEmpty) return 'id:${m.id}';
+        return 'fp:${m.toolCallId ?? ''}|${m.role}|${m.textContent.hashCode}';
+      }
+
+      final known = merged.map(keyOf).toSet();
+      for (final m in updated.messages) {
+        final k = keyOf(m);
+        if (!known.contains(k)) {
+          known.add(k);
+          merged.add(m);
+        }
+      }
+      updated.messages = merged;
+    }
+
+    if (append != null) {
+      final alreadyPresent = updated.messages.any(
+        (m) =>
+            identical(m, append) ||
+            (append.id != null &&
+                append.id!.isNotEmpty &&
+                m.id == append.id),
+      );
+      if (!alreadyPresent) updated.messages.add(append);
+      // Only a real new message bumps recency; a metadata-only update (title,
+      // folder, model/lock claim) must not re-sort the sidebar.
+      updated.lastMessageAt = DateTime.now();
+    }
+    return updated;
+  }
+
+  /// Locate a conversation in a list by id (null when absent).
+  static Conversation? _findById(
+    List<Conversation> conversations,
+    String id,
+  ) {
+    for (final c in conversations) {
+      if (c.id == id) return c;
+    }
+    return null;
+  }
+
   // Update title
   Future<void> updateConversationMetaData({
     required String conversationId,
@@ -282,6 +363,7 @@ class ConversationsNotifier extends StateNotifier<ConversationsState> {
     String? icon,
     ModelSelected? modelSelected,
   }) async {
+    final cachedMeta = _findById(state.conversations, conversationId);
     final updated = await ConversationStorage.updateConversationMetaData(
       conversationId: conversationId,
       title: title,
@@ -290,10 +372,11 @@ class ConversationsNotifier extends StateNotifier<ConversationsState> {
     );
 
     if (updated != null) {
+      final merged = applyLocalUpdate(cachedMeta, updated);
       final updatedConversations =
           state.conversations.map((conv) {
             if (conv.id == conversationId) {
-              return updated;
+              return merged;
             }
             return conv;
           }).toList();
@@ -306,16 +389,18 @@ class ConversationsNotifier extends StateNotifier<ConversationsState> {
   }
 
   Future<void> updateConversationTitle(String id, String title) async {
+    final cachedTitle = _findById(state.conversations, id);
     final updated = await ConversationStorage.updateConversationTitle(
       id,
       title,
     );
 
     if (updated != null) {
+      final merged = applyLocalUpdate(cachedTitle, updated);
       final updatedConversations =
           state.conversations.map((conv) {
             if (conv.id == id) {
-              return updated;
+              return merged;
             }
             return conv;
           }).toList();
@@ -332,15 +417,17 @@ class ConversationsNotifier extends StateNotifier<ConversationsState> {
   }
 
   Future<void> updateConversationFolder(String id, String folder) async {
+    final cachedFolder = _findById(state.conversations, id);
     final updated = await ConversationStorage.updateConversationFolder(
       id,
       folder,
     );
     if (updated != null) {
+      final merged = applyLocalUpdate(cachedFolder, updated);
       final updatedConversations =
           state.conversations.map((conv) {
             if (conv.id == id) {
-              return updated;
+              return merged;
             }
             return conv;
           }).toList();
