@@ -269,6 +269,36 @@ func (ar *ActiveRequest) ClientCount() int {
 	return len(ar.clients)
 }
 
+// waitForClient blocks up to [d] for at least one SSE client to be attached
+// to this request, returning true as soon as one is. Used by the client-tool
+// dispatch path when the loop has no conversation stream attached yet: the
+// loop can park (closing its SSE clients) and be relaunched by the stall
+// watchdog on a fresh ActiveRequest that starts with zero clients. The device
+// is alive and will re-attach its stream, so a bounded grace window lets the
+// tool dispatch to the real client instead of synthesizing a "no client is
+// connected" error that no client ever sees. Never blocks past [d], and
+// returns immediately when the request is cancelled.
+func (ar *ActiveRequest) waitForClient(d time.Duration) bool {
+	if ar.ClientCount() > 0 {
+		return true
+	}
+	deadline := time.After(d)
+	tick := time.NewTicker(150 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ar.Ctx.Done():
+			return ar.ClientCount() > 0
+		case <-deadline:
+			return ar.ClientCount() > 0
+		case <-tick.C:
+			if ar.ClientCount() > 0 {
+				return true
+			}
+		}
+	}
+}
+
 // Broadcast sends an SSEEvent to all connected clients.
 // Disconnected clients are automatically removed.
 func (ar *ActiveRequest) Broadcast(event SSEEvent) {
@@ -577,6 +607,28 @@ func (r *statusRegistry) Remove(client *StatusClient) {
 	defer r.mu.Unlock()
 	delete(r.clients, client)
 	client.stopWriter()
+}
+
+// HasClientForUser reports whether the user currently has any status-stream
+// client attached. The status stream is the per-user, app-wide connection: a
+// client that lost its per-conversation SSE stream (the loop parked and closed
+// its clients, then the stall watchdog relaunched on a fresh ActiveRequest) is
+// still reachable here. The client-tool fast-fail path uses this to tell "a
+// live app that just needs to re-attach" apart from "nobody is listening at
+// all" (cron, background runs, watchdog resumes) — the latter may fail fast,
+// the former must be given a chance to dispatch its device tools.
+func (r *statusRegistry) HasClientForUser(userID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if userID == "" {
+		return false
+	}
+	for client := range r.clients {
+		if client.UserID == userID {
+			return true
+		}
+	}
+	return false
 }
 
 // BroadcastToUser sends a StatusEvent to all status clients belonging to a specific user.

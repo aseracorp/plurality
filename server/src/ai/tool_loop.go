@@ -501,34 +501,52 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		serverTools, clientTools := categorizeToolCalls(ar.UserID, assistantMessage.ToolCalls)
 
 		// Fast-fail client tools that can never be answered. Two cases:
-		//   1) The client did NOT advertise the tool in this request — the
+		//   1) The client did NOT advertise the tool in this request - the
 		//      model hallucinated the name (production: `write_file` and
 		//      `filesystem_server__fs_edit` from strata-swift; the real
-		//      tools are fs_read / fs_write). The stall watchdog would
-		//      eventually synthesize a generic "Client did not respond
-		//      within 90s" result, but that parks the whole loop for 90s+
-		//      and makes the conversation look dead.
-		//   2) Zero clients are attached to this loop — a watchdog-resumed
-		//      run (or a cron/background run) has no device to execute ANY
-		//      client tool, advertised or not (observed: "resuming
-		//      conversation ... with 0 connected clients" in the pve02b
-		//      cutover conversation, followed by another 90s park).
+		//      tools are fs_read / fs_write).
+		//   2) Nobody can run it: no SSE client is attached to this loop AND
+		//      no live app of this user is on the status stream - a cron run,
+		//      a background sub-agent, or a watchdog resume nobody re-attached.
 		// Both get a precise synthetic error result immediately so the LLM
 		// self-corrects on the next iteration instead of stalling.
+		//
+		// Case (2) needs a bounded grace window. The stall watchdog resumes a
+		// parked loop on a FRESH ActiveRequest, which starts with zero clients;
+		// a live desktop client (status stream connected, per-conversation
+		// stream re-attaching right now) would otherwise be failed instantly,
+		// burning one provider round-trip per iteration on a conversation whose
+		// device is present. See clientToolReattachGrace.
 		if len(clientTools) > 0 {
 			var executable []utils.ToolCall
+			// The reattach wait is paid once per tool batch, not per call.
+			reattachChecked := false
+			hasClientNow := false
 			for _, tc := range clientTools {
-				noClients := ar.ClientCount() == 0
-				unadvertised := !clientToolIsAdvertised(tc.Function.Name, payload.ClientSideTools)
-				if !noClients && !unadvertised {
+				advertised := clientToolIsAdvertised(tc.Function.Name, payload.ClientSideTools)
+				hasConversationClient := ar.ClientCount() > 0
+				if advertised && !hasConversationClient && !reattachChecked {
+					reattachChecked = true
+					hasClientNow = ar.waitForClient(clientToolReattachGrace)
+				}
+				if advertised && !hasConversationClient {
+					hasConversationClient = hasClientNow
+				}
+				hasStatusClient := StatusRegistry.HasClientForUser(ar.UserID)
+				if !clientToolUnreachable(advertised, hasConversationClient, hasStatusClient) {
 					executable = append(executable, tc)
 					continue
 				}
+				if advertised && hasStatusClient {
+					// Live app, no stream, grace expired: this is the signature of
+					// the loop-spinning stall, so make it findable in production.
+					utils.Log("[LLMLoop] client tool %s unreachable for %s: user has a live status stream but no conversation stream attached after %v", tc.Function.Name, ar.ConversationID, clientToolReattachGrace)
+				}
 				msg := "Error: tool '" + tc.Function.Name + "' cannot be executed by this client"
-				if unadvertised {
+				if !advertised {
 					msg += ": it was not advertised in this request (the model may have invented the name)."
 				} else {
-					msg += ": no client is currently connected to this conversation."
+					msg += ": no client is connected to this conversation and no live app of this user can run it."
 				}
 				msg += " If you need filesystem access, retry with a server-side tool (e.g. filesystem_server__fs_read / filesystem_server__fs_write) or one of the tools advertised in this conversation."
 				toolMessage := utils.Message{
@@ -834,6 +852,38 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 // clientToolStallTimeout is how long the LLM loop waits for a client-side
 // tool result before the stall watchdog synthesizes a timeout and resumes.
 const clientToolStallTimeout = 90 * time.Second
+
+// clientToolReattachGrace is how long the dispatch path waits for a client to
+// re-attach its conversation stream before declaring a client tool
+// unexecutable. The stall watchdog resumes a parked loop on a FRESH
+// ActiveRequest, which starts with zero SSE clients attached; the app is alive
+// (its per-user status stream is connected) and is re-attaching via
+// /chat/stream. Failing the tool instantly in that window synthesizes an
+// error the model acts on ("no client is connected") while the device is in
+// fact about to execute the call — the observed effect is the loop burning a
+// full provider round-trip per iteration on a conversation whose device is
+// present. A bounded grace window lets the call reach the device and keeps
+// the fast-fail for genuinely headless runs (cron, background sub-agents).
+const clientToolReattachGrace = 5 * time.Second
+
+// clientToolUnreachable reports whether a client-side tool call must be
+// short-circuited with a synthetic error instead of dispatched. Extracted from
+// the loop so the policy is unit-testable.
+//
+//   - unadvertised: the client did not advertise this tool in the request that
+//     started this loop, so no device handler exists (the model invented the
+//     name). Always fail fast, whatever the connection state.
+//   - no conversation client AND no status-stream client for this user: nobody
+//     can run it. Fail fast (cron / background runs / a resumed loop that
+//     nobody re-attached).
+//   - otherwise: dispatch. A live app for this user exists, so give its
+//     stream time to attach.
+func clientToolUnreachable(advertised, hasConversationClient, hasStatusClient bool) bool {
+	if !advertised {
+		return true
+	}
+	return !hasConversationClient && !hasStatusClient
+}
 
 // armClientToolWatchdog runs in the background while the LLM loop is parked
 // waiting for the client to POST results for client-side tools. If the client
