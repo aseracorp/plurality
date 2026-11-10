@@ -14,6 +14,20 @@ import 'shell_background_process.dart';
 /// The tool description includes a runtime environment block (OS, default
 /// shell, attached folder + git branch, platform syntax gotchas) so the model
 /// writes correct commands without exploratory probing.
+///
+/// ALL environment probing is non-blocking by design. `getToolDefinition` used
+/// to call `Process.runSync`: once for the PowerShell version, and three times
+/// per attached folder for the git block. `runSync` parks the Dart isolate
+/// until the child exits - on Windows spawning `powershell.exe` costs hundreds
+/// of milliseconds (more under EDR), and `git -C <attached folder>` blocks for
+/// seconds, or forever when the folder sits on a Tailscale/SMB path whose peer
+/// is asleep. `getToolDefinition` runs on the UI isolate before every
+/// `postChat` and every tool batch, so the app froze on send: no frames, no
+/// SSE reads, no tool dispatch, unresponsive socket. To the user that is "the
+/// client crashed"; the server sees the tool result never arrive, the 90s
+/// stall watchdog fires, and the loop relaunches with no client attached. The
+/// environment block is prompt enrichment, not correctness-critical, so it is
+/// served from caches that background probes fill.
 class ShellService {
   static const String toolName = 'shell_client__exec';
 
@@ -26,8 +40,22 @@ class ShellService {
   factory ShellService() => _instance;
   ShellService._internal();
 
-  // Cached at first call — re-derivable, but cheap to memoize.
+  // Environment probes are answered from these caches; the processes run
+  // asynchronously in the background. Nothing on the tool-dispatch path may
+  // block - see the class doc.
   String? _cachedShellInfo;
+  String? _gitInfoKey; // attached folder the cached git block describes
+  List<String> _cachedGitInfo = const [];
+  DateTime? _gitInfoAt;
+  Future<void>? _gitInfoFlight;
+
+  // A git probe against a network share (attached folders live on
+  // Tailscale/SMB in real deployments) can hang indefinitely; bound it.
+  static const Duration _probeTimeout = Duration(seconds: 10);
+
+  // The git block is prompt enrichment: branches and HEAD move slowly, so a
+  // short TTL keeps it fresh without spawning git on every single request.
+  static const Duration _gitInfoTtl = Duration(seconds: 30);
 
   /// Returns the tool definition to advertise to the LLM via `clientSideTools`.
   /// The shape mirrors `ShellClientExecToolRequest` on the server
@@ -110,27 +138,32 @@ class ShellService {
     if (_cachedShellInfo != null) return _cachedShellInfo!;
     if (kIsWeb) {
       _cachedShellInfo = 'n/a';
-    } else if (Platform.isWindows) {
-      _cachedShellInfo = _probePowerShellVersion();
+      return _cachedShellInfo!;
+    }
+    if (Platform.isWindows) {
+      // Answer immediately with the bare shell name and refine the version
+      // string on a later request. Probing here would park the isolate for
+      // the whole powershell.exe startup (hundreds of ms, longer under EDR).
+      _cachedShellInfo = 'powershell.exe';
+      _probePowerShellVersion().then((v) {
+        if (v != null) _cachedShellInfo = 'powershell.exe ($v)';
+      });
     } else {
-      final envShell = Platform.environment['SHELL'] ?? '/bin/sh';
-      _cachedShellInfo = envShell;
+      _cachedShellInfo = Platform.environment['SHELL'] ?? '/bin/sh';
     }
     return _cachedShellInfo!;
   }
 
-  String _probePowerShellVersion() {
-    try {
-      final r = Process.runSync(
-        'powershell.exe',
-        ['-NoProfile', '-Command', r'$PSVersionTable.PSVersion.ToString()'],
-      );
-      if (r.exitCode == 0) {
-        final v = (r.stdout as String).trim();
-        if (v.isNotEmpty) return 'powershell.exe ($v)';
-      }
-    } catch (_) {}
-    return 'powershell.exe';
+  /// Reads `$PSVersionTable.PSVersion` without blocking the isolate. Returns
+  /// null when powershell.exe is missing, blocked by endpoint security, or
+  /// slower than [_probeTimeout]; the caller keeps the plain shell name then.
+  Future<String?> _probePowerShellVersion() async {
+    final r = await _runCapture(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', r'$PSVersionTable.PSVersion.ToString()'],
+    );
+    if (r != null && r.$1 == 0 && r.$2.isNotEmpty) return r.$2;
+    return null;
   }
 
   String _homeDir() {
@@ -148,39 +181,80 @@ class ShellService {
     return _homeDir();
   }
 
+  /// Git summary for the attached folder, served from cache. Kicks off a
+  /// background refresh when the cache is cold, stale, or describes a
+  /// different folder, and returns whatever is known right now — it never
+  /// waits on a process.
   List<String> _gitInfo(String? attachedFolder) {
     if (attachedFolder == null || attachedFolder.isEmpty) return const [];
+    if (kIsWeb) return const [];
+    final fresh = _gitInfoKey == attachedFolder &&
+        _gitInfoAt != null &&
+        DateTime.now().difference(_gitInfoAt!) < _gitInfoTtl;
+    if (!fresh && _gitInfoFlight == null) {
+      _gitInfoFlight =
+          _refreshGitInfo(attachedFolder).whenComplete(() => _gitInfoFlight = null);
+    }
+    return _gitInfoKey == attachedFolder ? _cachedGitInfo : const [];
+  }
+
+  Future<void> _refreshGitInfo(String folder) async {
+    // One spawn per fact: on Windows CreateProcess is the expensive part, and
+    // the old code paid for three synchronous ones per tool-definition call.
+    final branch =
+        await _runCapture('git', ['-C', folder, 'rev-parse', '--abbrev-ref', 'HEAD']);
+    if (branch == null || branch.$1 != 0) {
+      _gitInfoKey = folder;
+      _gitInfoAt = DateTime.now();
+      _cachedGitInfo = const [];
+      return;
+    }
+    final out = <String>[];
+    final name = branch.$2;
+    // Detached HEAD reports the literal "HEAD"; show the short sha instead so
+    // the model still gets something actionable.
+    if (name.isEmpty || name == 'HEAD') {
+      final sha =
+          await _runCapture('git', ['-C', folder, 'rev-parse', '--short', 'HEAD']);
+      if (sha != null && sha.$1 == 0 && sha.$2.isNotEmpty) {
+        out.add('Detached HEAD at ${sha.$2}');
+      }
+    } else {
+      out.add('Current branch: $name');
+    }
+    final log =
+        await _runCapture('git', ['-C', folder, 'log', '--oneline', '-3']);
+    if (log != null && log.$1 == 0 && log.$2.isNotEmpty) {
+      out.add('Recent commits:');
+      for (final line in log.$2.split('\n')) {
+        if (line.isNotEmpty) out.add('  $line');
+      }
+    }
+    _gitInfoKey = folder;
+    _gitInfoAt = DateTime.now();
+    _cachedGitInfo = out;
+  }
+
+  /// Spawn [executable] with [args], drain both pipes, and return
+  /// (exitCode, trimmed stdout). Draining happens BEFORE the exit code is
+  /// observed so a full pipe cannot deadlock the child. Returns null when the
+  /// spawn fails or [_probeTimeout] overruns — a git probe against an attached
+  /// folder on a sleeping Tailscale/SMB peer can otherwise hang forever.
+  Future<(int, String)?> _runCapture(String executable, List<String> args) async {
     try {
-      final check = Process.runSync(
-        'git',
-        ['-C', attachedFolder, 'rev-parse', '--is-inside-work-tree'],
-      );
-      if (check.exitCode != 0) return const [];
-      final out = <String>[];
-      final branch = Process.runSync(
-        'git',
-        ['-C', attachedFolder, 'branch', '--show-current'],
-      );
-      if (branch.exitCode == 0) {
-        final b = (branch.stdout as String).trim();
-        if (b.isNotEmpty) out.add('Current branch: $b');
-      }
-      final log = Process.runSync(
-        'git',
-        ['-C', attachedFolder, 'log', '--oneline', '-3'],
-      );
-      if (log.exitCode == 0) {
-        final lines = (log.stdout as String).trim().split('\n');
-        if (lines.isNotEmpty && lines.first.isNotEmpty) {
-          out.add('Recent commits:');
-          for (final l in lines) {
-            out.add('  $l');
-          }
-        }
-      }
-      return out;
+      final pr = await Process.start(executable, args);
+      final stdoutFut = pr.stdout.transform(const SystemEncoding().decoder).join();
+      final stderrFut = pr.stderr.transform(const SystemEncoding().decoder).join();
+      final code = await pr.exitCode.timeout(_probeTimeout, onTimeout: () {
+        pr.kill(ProcessSignal.sigterm);
+        return -1;
+      });
+      final out =
+          await stdoutFut.timeout(_probeTimeout, onTimeout: () => '');
+      await stderrFut.timeout(_probeTimeout, onTimeout: () => '');
+      return (code, out.trim());
     } catch (_) {
-      return const [];
+      return null;
     }
   }
 
