@@ -227,6 +227,11 @@ func ensureRetryableBody(req *http.Request) {
 // stays parked behind a busy GPU queue.
 func DoLLMHTTPWithRetry(ctx context.Context, req *http.Request) (*http.Response, error) {
 	ensureRetryableBody(req)
+	// Prefix-cache pacing (see llmsched.go): spaced BEFORE the semaphore, so
+	// a request never sits on a scarce slot while it waits out the gap.
+	if err := scheduleModelSlot(ctx, modelFromLLMRequest(req)); err != nil {
+		return nil, err
+	}
 	retries := 0
 	for {
 		// Cloud/auxiliary calls use the cloud semaphore, NOT the capacity-1
@@ -311,6 +316,13 @@ func (r *releaseOnCloseReadCloser) Close() error {
 // and via the wrapped body on success.
 func DoLLMHTTPWithRetryHeld(ctx context.Context, req *http.Request) (*http.Response, error) {
 	ensureRetryableBody(req)
+	// Prefix-cache pacing (see llmsched.go). A serialized local-GPU model is
+	// already serialized, so the gate's value here is the TTL coalescing
+	// branch: when the local cache is cold, the queued conversations dispatch
+	// back-to-back and share the one prefill instead of each paying its own.
+	if err := scheduleModelSlot(ctx, modelFromLLMRequest(req)); err != nil {
+		return nil, err
+	}
 	if err := HoldLLMSlot(ctx); err != nil {
 		return nil, err
 	}

@@ -502,6 +502,12 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// Whether a model gets this treatment is decided by the per-model
 	// `serialize` config flag (see modelRequiresSerialization), with a
 	// name-matching fallback for existing deployments.
+	// Per-model cache pacing params (`cache_gap_ms`, `cache_ttl_s`) are
+	// registered here, next to the `serialize` flag, so a deployment can tune
+	// one backend's prefix-cache scheduling without global env vars (see
+	// utils/llmsched.go).
+	utils.RegisterModelScheduling(model)
+
 	if modelRequiresSerialization(model) {
 		resp, err := utils.DoLLMHTTPWithRetryHeld(ctx, req)
 		if err != nil {
