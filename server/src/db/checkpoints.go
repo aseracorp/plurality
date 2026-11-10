@@ -527,8 +527,16 @@ func CompactConversationDurable(
 
 	var input strings.Builder
 	if priorSummary != "" {
+		// Carry the previous summary forward BOUNDED. It used to be pasted in
+		// verbatim under a "PRIOR CHECKPOINT:" banner, and the mechanical
+		// fallback stored banner+text, so the stored summary embedded the
+		// previous banner: every compaction appended the entire previous
+		// summary, nesting "PRIOR CHECKPOINT:" one level deeper per turn
+		// (measured live: 15 nested banners, tool row 65243 -> 65663 chars,
+		// +~105 chars per turn). The head bytes of the prompt therefore moved
+		// every turn, which is what collapses prefix reuse.
 		input.WriteString("PRIOR CHECKPOINT:\n")
-		input.WriteString(priorSummary)
+		input.WriteString(boundPriorSummary(priorSummary, maxDurableSummaryChars/2))
 		input.WriteString("\n\nNEW MESSAGES:\n")
 	}
 	writeDurableSummaryText(&input, folded)
@@ -559,6 +567,10 @@ func CompactConversationDurable(
 		if len(summary) > maxDurableSummaryChars {
 			summary = summary[len(summary)-maxDurableSummaryChars:]
 		}
+		// The tail slice can start in the middle of a nested banner chain; strip
+		// any leading fragment so the stored summary always begins with exactly
+		// one marker (nesting is what made the head of the prompt move).
+		summary = strings.TrimPrefix(summary, "\n"+priorSummaryBanner)
 	}
 	summary = strings.TrimSpace(summary)
 
@@ -624,11 +636,23 @@ func CompactConversationDurable(
 	}
 	removed, _ := res.RowsAffected()
 	if removed == 0 {
-		// A positive boundary that folds nothing is a bug, not a no-op: it is
-		// the wedge that made every overflow turn "succeed" while shipping the
-		// full history. Report it loudly instead of returning quietly.
-		utils.Log("[DurableCompact] boundary seq=%d (sliceIdx=%d sliceLen=%d conv=%s) folded 0 rows — history NOT shrinking",
+		// Nothing was folded, so there is nothing new to summarise — and moving
+		// the pair would be pure damage. The checkpoint pair sits at the HEAD of
+		// the LLM view (GetConversationByIdInternal returns compacted=0 rows,
+		// pair first), so re-inserting it rewrites the first ~65k characters of
+		// every prompt: the backend KV prefix cache can then only reuse the
+		// stable system block (observed on strata: reuse 32049 -> 17116, and on
+		// the live strata-swift deployment prefill reuse stuck at ~24k of a
+		// ~95k prompt, i.e. the whole history re-prefilled every turn).
+		//
+		// This is the wedge the loud log below describes: conversation
+		// 08611c509032e6831ba6031f fired it on EVERY message
+		// ("durable compaction folded 0 messages at boundary 2"), rewriting the
+		// prompt head each turn while shrinking nothing. Roll the transaction
+		// back instead of churning the head.
+		utils.Log("[DurableCompact] boundary seq=%d (sliceIdx=%d sliceLen=%d conv=%s) folded 0 rows — leaving the checkpoint pair untouched (history NOT shrinking)",
 			boundarySeq, firstKeptIdx, len(messages), conversationID)
+		return 0, nil
 	}
 
 	// Persist the new summary by MOVING the checkpoint forward: delete the
@@ -703,6 +727,39 @@ func CompactConversationDurable(
 		return 0, err
 	}
 	return int(removed), nil
+}
+
+// priorSummaryBanner is the marker the durable summary uses to separate the
+// carried-forward summary from the newly folded messages.
+const priorSummaryBanner = "PRIOR CHECKPOINT:"
+
+// boundPriorSummary caps the summary carried into the next compaction.
+// The newest content is kept (it is the most relevant), older content is
+// dropped from the front, and nested banners from previous generations are
+// collapsed so the stored summary carries exactly one marker and stays
+// byte-stable at its head as far as the growth allows.
+func boundPriorSummary(prior string, maxChars int) string {
+	prior = strings.TrimSpace(prior)
+	if maxChars <= 0 {
+		return ""
+	}
+	// Collapse generations of nesting: keep only the last one.
+	for {
+		i := strings.LastIndex(prior, priorSummaryBanner+"\n")
+		if i < 0 {
+			break
+		}
+		tail := strings.TrimSpace(prior[i+len(priorSummaryBanner):])
+		if tail == "" {
+			break
+		}
+		prior = tail
+	}
+	prior = strings.TrimSpace(strings.TrimPrefix(prior, priorSummaryBanner))
+	if len(prior) > maxChars {
+		prior = prior[len(prior)-maxChars:]
+	}
+	return prior
 }
 
 // writeDurableSummaryText renders a message slice for the durable-compaction
