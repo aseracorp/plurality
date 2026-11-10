@@ -94,40 +94,140 @@ func dropDanglingToolResults(msgs []utils.Message) []utils.Message {
 // tail-cap uses the same bound so the two paths agree.
 const maxCompactMessageChars = 100_000
 
-// TruncateOversizedMessages bounds every message that would be sent to the
-// provider to maxCompactMessageChars characters. Messages are NOT dropped
-// (their role/turn boundary must be preserved so tool-call pairing stays
-// consistent); only their text body is truncated, with a clear banner, so
-// the model still sees the head of the content.
+// TruncateOversizedMessages bounds the WIRE PAYLOAD of every message that
+// would be sent to the provider to maxCompactMessageChars characters. Messages
+// are NOT dropped (their role/turn boundary must be preserved so tool-call
+// pairing stays consistent); only their TEXT body is truncated, with a clear
+// banner, so the model still sees the head of the content.
 //
-// Used by CompactConversationForContext so a context-overflow retry cannot
-// fail again on a single oversized message. Returns a NEW slice; the input
-// is not mutated.
+// The bound is the full payload — content parts PLUS assistant tool_call
+// arguments and the tool-role plumbing — i.e. exactly what messageWireChars
+// measures, so after this pass messageWireChars(m) <= maxCompactMessageChars
+// for every row. That identity is the contract with the eco trigger estimator
+// (boundedWireChars clamps to the same cap): the trigger and the request can
+// only agree if the sender enforces the cap. Estimating a bounded view while
+// shipping an unbounded one is what made the loop permanent: the trigger said
+// "fits", the preemptive context guard measured the raw bytes of an
+// unbounded 991440-char pasted logfile and rejected them, and the retry
+// compacted 0 rows (the oversized row IS the protected newest user turn)
+// before sending the identical request again — on every message.
+//
+// Used by CompactConversationForContext (context-overflow retry) and by the
+// normal send path (index.go). Returns a NEW slice; the input and its content
+// parts are NOT mutated.
+//
+// Non-text parts (image_url / file / pdf) are PRESERVED and their bytes count
+// toward the budget: the previous implementation rebuilt the content as a
+// single text part, silently deleting every attachment of an oversized message
+// — invisible on the retry-only call site, unacceptable once this guards the
+// normal send path.
 func TruncateOversizedMessages(messages []utils.Message) []utils.Message {
 	out := make([]utils.Message, 0, len(messages))
 	for _, m := range messages {
-		total := m.Content.TotalContentChars()
-		if total > maxCompactMessageChars {
-			txt := ""
-			for _, p := range m.Content.ContentParts() {
-				if p.Type == "text" {
-					txt += p.Text
+		// The cap covers the NON-IMAGE payload. Image bytes are the provider's
+		// real context cost (a screenshot is 10-50k tokens) and this helper must
+		// never trade them away: bounding the whole payload instead would let one
+		// big screenshot delete the user's text from the same message, which is a
+		// context-LOSS regression far worse than the bytes it saves. Images stay
+		// counted in full by the estimator and are handled by the attachment
+		// pipeline and the window guard, not here.
+		img := imageWireChars(m.Content)
+		nonImage := messageWireChars(m) - img
+		if nonImage <= maxCompactMessageChars {
+			out = append(out, m)
+			continue
+		}
+		banner := fmt.Sprintf(
+			"\n\n[message truncated by Plurality: original length %d chars exceeded the per-message context budget of %d chars]",
+			nonImage, maxCompactMessageChars)
+
+		parts := m.Content.ContentParts()
+		textWire := 0
+		for _, p := range parts {
+			if p.Type == "text" {
+				textWire += len(p.Text) + len(p.Filename)
+			}
+		}
+		// Plumbing that rides on the wire unchanged: tool_call arguments,
+		// name/tool_call_id, and non-text/non-image parts (file, pdf, snippet).
+		plumbing := nonImage - textWire
+		budget := maxCompactMessageChars - plumbing - len(banner)
+		if budget < 0 {
+			budget = 0
+		}
+		if textWire > budget {
+			utils.Log("[Compaction] truncating oversized message (role=%s non-image wire %d chars -> %d)", m.Role, nonImage, maxCompactMessageChars)
+			outParts := make([]utils.ContentPart, 0, len(parts))
+			textDone := false
+			for _, p := range parts {
+				if p.Type != "text" {
+					outParts = append(outParts, p)
+					continue
 				}
+				if textDone {
+					// The remaining text is represented by the truncated part.
+					continue
+				}
+				txt := p.Text
+				if textWire > budget {
+					keep := len(txt) - (textWire - budget)
+					if keep < 0 {
+						keep = 0
+					}
+					txt = txt[:keep]
+				}
+				outParts = append(outParts, utils.ContentPart{Type: "text", Text: txt + banner})
+				textDone = true
 			}
-			truncLen := len(txt)
-			if truncLen > maxCompactMessageChars {
-				truncLen = maxCompactMessageChars
+			if textDone {
+				m.Content = utils.NewPartsContent(outParts)
 			}
-			trunc := txt[:truncLen]
-			utils.Log("[Compaction] truncating oversized message (%d chars -> %d)", total, maxCompactMessageChars)
-			m.Content = utils.NewTextContent(trunc +
-				"\n\n[message truncated by Plurality: original length " +
-				fmt.Sprintf("%d", total) +
-				" chars across all content parts exceeded the per-message context budget]")
+		}
+		// Text alone may not be the oversized part: an assistant row can carry a
+		// huge tool_call argument blob (a file write, a page snapshot). The
+		// estimator counts those bytes, so the sender must bound them too —
+		// as VALID JSON, because providers reject malformed tool_calls.
+		if messageWireChars(m)-imageWireChars(m.Content) > maxCompactMessageChars {
+			m = elideToolCallArguments(m, maxCompactMessageChars+img)
 		}
 		out = append(out, m)
 	}
 	return out
+}
+
+// elideToolCallArguments shrinks an assistant message's tool_call ARGUMENTS
+// until its wire payload fits `cap`, replacing each blob with a compact,
+// VALID JSON object. Arguments are history: the model produced them, the tool
+// already ran, and the tool RESULT is the row that carries the information.
+// Replacing them with a marker is safe; truncating the JSON mid-string is not
+// (providers validate tool_calls arguments and answer 400).
+//
+// Returns the message unchanged when nothing is left to elide — e.g. a payload
+// made of a single huge image part, which this helper must never touch.
+func elideToolCallArguments(m utils.Message, cap int) utils.Message {
+	if len(m.ToolCalls) == 0 {
+		return m
+	}
+	wire := messageWireChars(m)
+	if wire <= cap {
+		return m
+	}
+	calls := make([]utils.ToolCall, len(m.ToolCalls))
+	copy(calls, m.ToolCalls)
+	for i := range calls {
+		if wire <= cap {
+			break
+		}
+		arg := calls[i].Function.Arguments
+		marker := fmt.Sprintf(`{"plurality_elided":%d}`, len(arg))
+		if len(marker) >= len(arg) {
+			continue
+		}
+		wire -= len(arg) - len(marker)
+		calls[i].Function.Arguments = marker
+	}
+	m.ToolCalls = calls
+	return m
 }
 
 // ---------------------------------------------------------------------------

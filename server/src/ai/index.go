@@ -333,6 +333,21 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		}
 	}
 
+	// THE SEND CAP, enforced once for every branch. TruncateOversizedMessages
+	// bounds each outgoing message to maxCompactMessageChars; the eco trigger
+	// estimator counts the SAME bound (ecoSentMessageCapChars). Applying it here
+	// — after the eco gate, so both the "sending unchanged" and the staged
+	// branch are covered — is what makes the estimate honest AND the request
+	// sendable at the same time.
+	//
+	// Applying it only in the overflow-retry path (the old shape) made the two
+	// estimates disagree on the first attempt: the trigger measured the bounded
+	// view, the preemptive context guard measured the raw marshalled bytes of
+	// an unbounded 991440-char pasted logfile, and the loop settled into
+	// guard -> compact (folds 0, the oversized row is the protected newest user
+	// turn) -> retry -> send on EVERY message.
+	optimizedMessages = TruncateOversizedMessages(optimizedMessages)
+
 	msgReqList, _ := convertMessagesToOpenAI(optimizedMessages, model)
 
 	// Attach the current time to the request WITHOUT claiming a turn (see

@@ -104,15 +104,46 @@ func SentViewTokens(messages []utils.Message) int {
 		if messages[i].Compacted {
 			continue // folded into a checkpoint; not part of the request
 		}
-		chars += messageWireChars(messages[i])
+		chars += boundedWireChars(messages[i])
 	}
 	return chars / 3
+}
+
+// ecoSentMessageCapChars is the per-message volume ceiling of the view that is
+// SENT to the provider. TruncateOversizedMessages (context_compaction.go)
+// bounds every outgoing message to maxCompactMessageChars, so anything above
+// that in the stored history is NOT sent. The estimator must measure the same
+// bound, or the eco trigger charges the request for bytes the provider never
+// sees.
+//
+// Live proof (conversation 08611c509032e6831ba6031f, "System Status Check"):
+// one user message held a pasted logfile of 991440 chars. Raw counting made
+// that single row ~330k est tokens, so `content ≈388917 tokens > trigger
+// 150000` on EVERY turn — the gate demanded compaction that can never succeed,
+// because no fold of the OLDER history shrinks one oversized NEWEST message.
+const ecoSentMessageCapChars = maxCompactMessageChars
+
+// boundedWireChars is messageWireChars clamped to what is actually sendable.
+// The clamp applies to the NON-IMAGE payload only, mirroring the sender
+// (TruncateOversizedMessages bounds the non-image bytes of every outgoing
+// message and never touches image parts): image bytes are real provider context
+// cost — one screenshot is 10-50k tokens — and clamping them too would recreate
+// the blind spot this estimator exists to close (conversation
+// aeb657c899e600ff1a822ffb: trigger ≈52508 tokens vs 438246 on the wire, request
+// shipped unchanged, conversation dead on "request exceeds the context window").
+func boundedWireChars(m utils.Message) int {
+	img := imageWireChars(m.Content)
+	nonImage := messageWireChars(m) - img
+	if nonImage > ecoSentMessageCapChars {
+		nonImage = ecoSentMessageCapChars
+	}
+	return nonImage + img
 }
 
 func approxTokens(messages []utils.Message) int {
 	chars := 0
 	for i := range messages {
-		chars += messageWireChars(messages[i])
+		chars += boundedWireChars(messages[i])
 	}
 	return chars / 3
 }
@@ -214,7 +245,14 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 	// hitting. Compaction only starts when content does not fit.
 	if fits(all) {
 		utils.Log("[Eco] staged resolver: full history fits (≈%d / %d tokens) — unchanged, stable prefix", approxTokens(all), budgetTokens)
-		return all, 0
+		// "Fits" is measured on the BOUNDED view (boundedWireChars), so a single
+		// oversized row (the 991440-char pasted logfile) does NOT demand
+		// compaction — no fold of older history can shrink it, and demanding one
+		// is the wedge that ran the full compaction path on every turn. Return
+		// the view bounded the same way the estimator measures it, so the caller
+		// sends exactly what was budgeted. Truncation is deterministic, so the
+		// prefix stays byte-stable across turns (KV cache).
+		return TruncateOversizedMessages(all), 0
 	}
 
 	// We build the candidate from user+assistant/tool messages (system is
@@ -309,6 +347,16 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		}
 		// Room left for the excerpt once the live tail + the artifact pair's
 		// structural overhead are accounted for.
+		// The tail is bounded BEFORE it is budgeted. A single oversized message
+		// in the live tail (the pasted-logfile case) makes approxTokens(tail)
+		// exceed the whole budget, so `room` goes negative, the excerpt
+		// collapses to a placeholder, and the candidate comes back at
+		// ~334587 tokens against a 113984 budget — permanently. Nothing in
+		// stages A-D can fix that by folding, because the oversized row IS the
+		// newest user message that the fold floor protects. The same helper the
+		// overflow-retry path uses caps it, and the resolver then measures what
+		// it will actually send.
+		tail = TruncateOversizedMessages(tail)
 		room := budgetTokens - approxTokens(tail) - toolOverheadTokens - 20
 		if art := megacaveArtifactBudgeted(older, "megacave_D", room); art != nil {
 			candidate = append(candidate, art...)
@@ -319,6 +367,13 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 				budgetTokens, approxTokens(tail))
 		}
 	}
+
+	// Bound the view we are about to send, in EVERY stage. Stages A/B/C all
+	// keep the newest user message verbatim, so an oversized newest message
+	// survives every stage unchanged; without this the resolver returns a view
+	// the preemptive context guard rejects, and the loop settles into
+	// guard -> compact (folds 0) -> retry -> send on every single message.
+	candidate = TruncateOversizedMessages(candidate)
 
 	// Never fold the whole history: an empty live tail is how the caller ends
 	// up shipping the FULL uncompressed history (its `len(convTail) > 0`
