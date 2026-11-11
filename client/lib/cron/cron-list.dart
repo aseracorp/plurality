@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/cron-service.dart';
 import '../api/mini-apps.dart';
 import '../utils/types.dart';
+import '../utils/textsafe.dart' show ellipsize;
 import '../widgets/preset_dropdown.dart';
 
 const _defaultPresetId = 'default-background-agent';
@@ -333,8 +334,5 @@ class _CronTile extends ConsumerWidget {
     );
   }
 
-  static String _summary(String s) {
-    if (s.length <= 40) return s;
-    return '${s.substring(0, 40)}...';
-  }
+  static String _summary(String s) => ellipsize(s, 40);
 }

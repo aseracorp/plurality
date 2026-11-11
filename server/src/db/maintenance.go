@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -210,7 +211,7 @@ func truncateText(s string) (string, bool) {
 	if len(s) <= maintenanceMaxChars {
 		return s, false
 	}
-	return s[:maintenanceMaxChars] + fmt.Sprintf(maintenanceBanner, len(s)), true
+	return textsafe.HeadBytes(s, maintenanceMaxChars) + fmt.Sprintf(maintenanceBanner, len(s)), true
 }
 
 func nullableString(s *string) interface{} {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -174,7 +175,7 @@ func TruncateOversizedMessages(messages []utils.Message) []utils.Message {
 					if keep < 0 {
 						keep = 0
 					}
-					txt = txt[:keep]
+					txt = textsafe.TailBytes(txt, keep)
 				}
 				outParts = append(outParts, utils.ContentPart{Type: "text", Text: txt + banner})
 				textDone = true
@@ -288,7 +289,7 @@ func MachineExcerptMegacave(messages []utils.Message) string {
 		}
 		room := budget - b.Len()
 		if len(s) > room {
-			s = s[:room]
+			s = textsafe.HeadBytes(s, room)
 		}
 		b.WriteString(s)
 		b.WriteString("\n")
@@ -371,12 +372,12 @@ func writeMegacaveText(b *strings.Builder, text string, budget int, writeLine fu
 	}
 	// Long prose/tool dump: head+tail with elision banner.
 	if len(trimmed) > maxMegacaveToolShowChars {
-		head := trimmed[:maxMegacaveToolShowChars*3/5]
+		head := textsafe.HeadBytes(trimmed, maxMegacaveToolShowChars*3/5)
 		tailStart := len(trimmed) - maxMegacaveToolShowChars*2/5
 		if tailStart < len(head) {
 			tailStart = len(head)
 		}
-		tail := trimmed[tailStart:]
+		tail := textsafe.TailBytes(trimmed, len(trimmed)-tailStart)
 		writeLine(head)
 		writeLine(fmt.Sprintf("[... megacave elided %d chars ...]", len(trimmed)-(len(head)+len(tail))))
 		writeLine(tail)

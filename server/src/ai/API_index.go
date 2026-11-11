@@ -14,6 +14,7 @@ import (
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/storage"
+	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -533,14 +534,14 @@ func generateTitleAndIcon(ctx context.Context, conversation utils.Conversation) 
 	for _, message := range messages {
 		content := message.TextContent()
 		if len(content) > 2000 {
-			content = content[:2000]
+			content = textsafe.HeadBytes(content, 2000)
 		}
 		titlePayload += message.Role + ": \n"
 		titlePayload += content + "\n\n"
 	}
 
 	if len(titlePayload) > 500 {
-		titlePayload = titlePayload[:500]
+		titlePayload = textsafe.HeadBytes(titlePayload, 500)
 	}
 
 	textModel, imageModel := fastShortcutModels()

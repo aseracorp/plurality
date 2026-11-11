@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/ledongthuc/pdf"
+
+	"github.com/azukaar/plurality/src/textsafe"
 )
 
 // ParsePDF extracts text from a PDF byte slice.
@@ -55,7 +57,7 @@ func ParsePDF(data []byte, pages string, maxChars int) (string, error) {
 		if charCount+len(text) > maxChars {
 			remaining := maxChars - charCount
 			if remaining > 0 {
-				b.WriteString(text[:remaining])
+				b.WriteString(textsafe.HeadBytes(text, remaining))
 			}
 			b.WriteString("\n[truncated]")
 			break

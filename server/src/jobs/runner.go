@@ -6,6 +6,7 @@ import (
 
 	"github.com/azukaar/plurality/src/ai"
 	"github.com/azukaar/plurality/src/db"
+	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -234,5 +235,5 @@ func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	return textsafe.Head(s, n) + "..."
 }

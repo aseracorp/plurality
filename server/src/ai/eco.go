@@ -10,6 +10,7 @@ import (
 
 	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/db"
+	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -445,12 +446,12 @@ func truncateExcerpt(s string, maxChars int) string {
 	}
 	banner := "\n...[megacave excerpt truncated: elided for budget]...\n"
 	if maxChars <= len(banner) {
-		return s[:maxChars]
+		return textsafe.HeadBytes(s, maxChars)
 	}
 	room := maxChars - len(banner)
 	head := room * 60 / 100
 	tail := room - head
-	return s[:head] + banner + s[len(s)-tail:]
+	return textsafe.HeadBytes(s, head) + banner + textsafe.TailBytes(s, tail)
 }
 
 // megacaveOnly returns megacaveArtifact(msgs) flattened, or nil.

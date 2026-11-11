@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
+import '../utils/textsafe.dart';
 
 class SkillInfo {
   final String name;
@@ -139,7 +140,7 @@ class SkillsService {
       var content = await file.readAsString();
       // Cap at ~50KB
       if (content.length > 50000) {
-        content = content.substring(0, 50000) +
+        content = headGraphemes(content, 50000) +
             '\n\n[Content truncated — file exceeds 50KB limit]';
       }
       return content;

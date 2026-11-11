@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'openid_signin.dart';
 import '../api/models_service.dart';
+import '../utils/textsafe.dart' show ellipsize;
 
 class User {
   final String username;
@@ -313,7 +314,7 @@ class AuthService {
       }),
     );
     print('[OpenID] exchange: server responded ${resp.statusCode} '
-        'body="${resp.body.length > 200 ? '${resp.body.substring(0, 200)}…' : resp.body}"');
+        'body="${ellipsize(resp.body, 200, suffix: '…')}"');
     if (resp.statusCode != 200) {
       throw AuthException(_decodeError(resp));
     }

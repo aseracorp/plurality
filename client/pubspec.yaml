@@ -70,6 +70,9 @@ dependencies:
   pcmtowave: ^0.0.1
   web: ^1.1.1
   device_info_plus: ^11.2.0
+  # Grapheme-aware truncation (lib/utils/textsafe.dart). Transitive via the
+  # Flutter SDK, declared here because the app imports it directly.
+  characters: ^1.4.1
 
 
 dev_dependencies:

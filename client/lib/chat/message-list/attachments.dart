@@ -5,6 +5,7 @@ import 'image.dart';
 import 'text-preview.dart';
 import '../../utils/types.dart';
 import '../../utils/file-types.dart';
+import '../../utils/textsafe.dart';
 import '../../api/api.dart';
 import 'dart:convert';
 
@@ -62,7 +63,7 @@ class AttachmentViewer extends StatelessWidget {
     res = "";
     for (var line in resLines) {
       if (line.length > 100) {
-        res += line.substring(0, 100) + '...\n';
+        res += headGraphemes(line, 100) + '...\n';
       } else {
         res += line + '\n';
       }

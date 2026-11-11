@@ -10,6 +10,7 @@ import '../../api/chat_service.dart';
 import '../../api/tts.dart';
 import '../../utils/types.dart';
 import '../../utils/index.dart' show formatToolDisplayName;
+import '../../utils/textsafe.dart' show avatarLetter;
 import '../../utils/image_loader.dart';
 import '../../auth/account.dart';
 import 'conversation-list.dart';
@@ -190,7 +191,7 @@ class ConversationItem extends StatelessWidget {
                 return CircleAvatar(
                   backgroundColor: Colors.primaries[conversation.title.hashCode.abs() % Colors.primaries.length],
                   child: Text(
-                    conversation.title.isNotEmpty ? conversation.title[0].toUpperCase() : '?',
+                    avatarLetter(conversation.title),
                     style: TextStyle(color: Colors.white),
                   ),
                 );
@@ -200,7 +201,7 @@ class ConversationItem extends StatelessWidget {
             avatar = CircleAvatar(
               backgroundColor: Colors.primaries[conversation.title.hashCode.abs() % Colors.primaries.length],
               child: Text(
-                conversation.title.isNotEmpty ? conversation.title[0].toUpperCase() : '?',
+                avatarLetter(conversation.title),
                 style: TextStyle(color: Colors.white),
               ),
             );

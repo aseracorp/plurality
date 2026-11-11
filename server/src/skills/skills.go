@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -269,7 +270,7 @@ func ReadFile(userID, skillName, fileName string) (string, error) {
 		return "", fmt.Errorf("reading file: %w", err)
 	}
 	if len(data) > maxBytes {
-		return string(data[:maxBytes]) + "\n\n[Content truncated — file exceeds 50KB limit]", nil
+		return textsafe.HeadBytes(string(data), maxBytes) + "\n\n[Content truncated — file exceeds 50KB limit]", nil
 	}
 	return string(data), nil
 }

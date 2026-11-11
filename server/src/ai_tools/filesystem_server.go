@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/azukaar/plurality/src/textsafe"
 	"io"
 	"os"
 	"path/filepath"
@@ -395,7 +396,9 @@ func fsRead(path string) string {
 	if truncated {
 		n = fsServerMaxReadBytes
 	}
-	out := string(buf[:n])
+	// n is a byte budget, so buf[:n] can end mid-rune; string() would carry a
+	// partial sequence (rendered as U+FFFD downstream). Trim to whole runes.
+	out := textsafe.HeadBytes(string(buf[:n]), n)
 	if truncated {
 		out += fmt.Sprintf("\n\n[Content truncated — file exceeds %d bytes]", fsServerMaxReadBytes)
 	}

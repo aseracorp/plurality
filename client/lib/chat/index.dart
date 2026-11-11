@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:plurality/chat/conversation-list/conversation-item.dart';
 import 'package:plurality/chat/message-list/chat-interface.dart';
 import 'package:plurality/utils/index.dart';
+import 'package:plurality/utils/textsafe.dart'
+    show firstGrapheme, headGraphemes;
 import 'package:plurality/utils/deep_link.dart';
 import '../api/service.dart';
 import '../api/api.dart';
@@ -365,7 +367,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                             )
                                             : Text(
                                               convTitle.isNotEmpty
-                                                  ? convTitle[0].toUpperCase()
+                                                  ? firstGrapheme(convTitle).toUpperCase()
                                                   : '?',
                                               style: TextStyle(
                                                 color: Colors.white,
@@ -634,6 +636,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 // Keep this helper function
 String buildTitle(String title) {
   title = title == "" ? 'Untitled' : title.replaceAll(RegExp(r'\*\*'), '');
-  title = (title.length > 100 ? '${title.substring(0, 100)}' : title);
+  title = headGraphemes(title, 100);
   return title;
 }

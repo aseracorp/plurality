@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -133,7 +134,7 @@ func extractMainContent(doc *goquery.Document, url string) string {
 	// If the result is too long, truncate it
 	const maxLength = 8000
 	if len(result) > maxLength {
-		result = result[:maxLength] + "...\n\n[Content truncated due to length]"
+		result = textsafe.HeadBytes(result, maxLength) + "...\n\n[Content truncated due to length]"
 	}
 
 	// search for all links
