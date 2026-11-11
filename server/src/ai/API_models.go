@@ -10,6 +10,7 @@ import (
 	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/skills"
+	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -317,5 +318,5 @@ func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	return textsafe.Head(s, n) + "..."
 }

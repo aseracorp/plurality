@@ -17,6 +17,7 @@ import (
 	"github.com/azukaar/plurality/src/memory"
 	"github.com/azukaar/plurality/src/miniapps"
 	"github.com/azukaar/plurality/src/skills"
+	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -624,7 +625,7 @@ func convertMessagesToOpenAI(messages []utils.Message, _ utils.Model) ([]Standar
 					} else if !json.Valid([]byte(args)) {
 						preview := args
 						if len(preview) > 120 {
-							preview = preview[:120]
+							preview = textsafe.HeadBytes(preview, 120)
 						}
 						utils.Log("[convertMessagesToOpenAI] tool_call %s (%s) has invalid JSON args; replacing with {}. First 120 chars: %s",
 							tc.ID, fn.Name, preview)

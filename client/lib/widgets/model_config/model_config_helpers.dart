@@ -3,6 +3,7 @@ import 'package:plurality/api/MCP.dart';
 import 'package:plurality/api/models_service.dart';
 import 'package:plurality/api/skills_service.dart';
 import 'package:plurality/utils/types.dart';
+import 'package:plurality/utils/textsafe.dart' show ellipsize;
 
 /// Convert map value ("true"/"ask"/null) to toggle state ("on"/"ask"/"off").
 String mapValueToToggle(String? mapValue) {
@@ -169,9 +170,7 @@ List<Map<String, dynamic>> buildFunctions(ModelsData data) {
     if (serverName == null || serverName.isEmpty) continue;
 
     var description = tool['description'] ?? 'No description available';
-    if (description.length > 100) {
-      description = description.substring(0, 100) + '...';
-    }
+    description = ellipsize(description, 100);
     if (description.contains('\n')) {
       description = description.split('\n')[0];
     }

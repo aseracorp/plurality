@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -565,7 +566,7 @@ func CompactConversationDurable(
 		// knows the older messages were rolled up, then cap the size.
 		summary = "[compacted by Plurality — summary unavailable; raw excerpt follows]\n" + text
 		if len(summary) > maxDurableSummaryChars {
-			summary = summary[len(summary)-maxDurableSummaryChars:]
+			summary = textsafe.TailBytes(summary, maxDurableSummaryChars)
 		}
 		// The tail slice can start in the middle of a nested banner chain; strip
 		// any leading fragment so the stored summary always begins with exactly
@@ -757,7 +758,7 @@ func boundPriorSummary(prior string, maxChars int) string {
 	}
 	prior = strings.TrimSpace(strings.TrimPrefix(prior, priorSummaryBanner))
 	if len(prior) > maxChars {
-		prior = prior[len(prior)-maxChars:]
+		prior = textsafe.TailBytes(prior, maxChars)
 	}
 	return prior
 }

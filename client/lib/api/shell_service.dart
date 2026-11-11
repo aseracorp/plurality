@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:path/path.dart' as path;
 
 import 'shell_background_process.dart';
+import '../utils/textsafe.dart';
 
 /// Singleton that exposes a namespaced device-side shell tool to the LLM and
 /// executes it locally via PowerShell (Windows) or sh (macOS/Linux). Mirrors
@@ -518,7 +519,7 @@ class ShellService {
   String _capForResponse(String s, int cap) {
     if (s.isEmpty) return '(empty)';
     if (s.length <= cap) return s;
-    return '${s.substring(0, cap)}\n... (truncated)';
+    return '${headGraphemes(s, cap)}\n... (truncated)';
   }
 
   String _formatMs(Duration d) {
@@ -528,8 +529,7 @@ class ShellService {
     return '${s}s';
   }
 
-  String _truncate(String s, int n) =>
-      s.length <= n ? s : '${s.substring(0, n)}...';
+  String _truncate(String s, int n) => ellipsize(s, n);
 
   int _asInt(dynamic v, int fallback) {
     if (v == null) return fallback;

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:path/path.dart' as path;
+import '../utils/textsafe.dart';
 
 /// Singleton that exposes two namespaced device-side filesystem tools to the
 /// LLM and executes them locally, sandboxed to a folder the user has attached
@@ -343,7 +344,7 @@ class FilesystemService {
       final slice = lines.sublist(start - 1, actualEnd).join('\n');
       var out = slice;
       if (out.length > _maxReadBytes) {
-        out = out.substring(0, _maxReadBytes) +
+        out = headGraphemes(out, _maxReadBytes) +
             '\n[Truncated — segment exceeds $_maxReadBytes bytes]';
       }
       return 'Lines $start..$actualEnd of ${path.basename(filePath)}:\n$out';

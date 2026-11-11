@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/azukaar/plurality/src/db"
+	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -426,7 +427,7 @@ func (sp *StreamProcessor) finalizeStream(ctx context.Context) utils.Message {
 		if !json.Valid([]byte(args)) {
 			preview := args
 			if len(preview) > 120 {
-				preview = preview[:120]
+				preview = textsafe.HeadBytes(preview, 120)
 			}
 			utils.Log("[StreamProcessor] tool_call %s (%s) args truncated/invalid; failing call. First 120 chars: %s",
 				tc.ID, tc.Function.Name, preview)

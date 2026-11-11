@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/xuri/excelize/v2"
+
+	"github.com/azukaar/plurality/src/textsafe"
 )
 
 // ParseXLSX extracts text from an XLSX byte slice.
@@ -48,7 +50,7 @@ func ParseXLSX(data []byte, maxChars int) (string, error) {
 			if charCount+len(line) > maxChars {
 				remaining := maxChars - charCount
 				if remaining > 0 {
-					b.WriteString(line[:remaining])
+					b.WriteString(textsafe.HeadBytes(line, remaining))
 				}
 				b.WriteString("\n[truncated]")
 				return strings.TrimSpace(b.String()), nil

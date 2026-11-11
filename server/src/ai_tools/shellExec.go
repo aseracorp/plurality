@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -204,7 +205,7 @@ func runShellForeground(ctx context.Context, params shellExecParams) utils.Messa
 	if stdout.Len() > 0 {
 		out := stdout.String()
 		if len(out) > 50000 {
-			out = out[:50000] + "\n... (truncated)"
+			out = textsafe.HeadBytes(out, 50000) + "\n... (truncated)"
 		}
 		result.WriteString(out)
 	} else {
@@ -214,7 +215,7 @@ func runShellForeground(ctx context.Context, params shellExecParams) utils.Messa
 	if stderr.Len() > 0 {
 		errOut := stderr.String()
 		if len(errOut) > 10000 {
-			errOut = errOut[:10000] + "\n... (truncated)"
+			errOut = textsafe.HeadBytes(errOut, 10000) + "\n... (truncated)"
 		}
 		result.WriteString(errOut)
 	} else {
@@ -331,7 +332,7 @@ func formatBackgroundStatus(bp *bgProcess, tailBytes int) string {
 	if stdoutLen > 0 {
 		out := stdoutTail
 		if len(out) > 50000 {
-			out = out[len(out)-50000:]
+			out = textsafe.TailBytes(out, 50000)
 			result.WriteString("(truncated to last 50000 bytes for response size)\n")
 		}
 		result.WriteString(out)
@@ -342,7 +343,7 @@ func formatBackgroundStatus(bp *bgProcess, tailBytes int) string {
 	if stderrLen > 0 {
 		errOut := stderrTail
 		if len(errOut) > 10000 {
-			errOut = errOut[len(errOut)-10000:]
+			errOut = textsafe.TailBytes(errOut, 10000)
 			result.WriteString("(truncated to last 10000 bytes for response size)\n")
 		}
 		result.WriteString(errOut)
@@ -356,5 +357,5 @@ func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	return textsafe.Head(s, n) + "..."
 }

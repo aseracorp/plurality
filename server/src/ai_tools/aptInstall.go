@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -88,7 +89,7 @@ func execAptInstall(ctx context.Context, input string, conv utils.Conversation) 
 	if stdout.Len() > 0 {
 		out := stdout.String()
 		if len(out) > 20000 {
-			out = out[:20000] + "\n... (truncated)"
+			out = textsafe.HeadBytes(out, 20000) + "\n... (truncated)"
 		}
 		result.WriteString("--- Output ---\n")
 		result.WriteString(out)
@@ -97,7 +98,7 @@ func execAptInstall(ctx context.Context, input string, conv utils.Conversation) 
 	if stderr.Len() > 0 {
 		errOut := stderr.String()
 		if len(errOut) > 5000 {
-			errOut = errOut[:5000] + "\n... (truncated)"
+			errOut = textsafe.HeadBytes(errOut, 5000) + "\n... (truncated)"
 		}
 		result.WriteString("\n--- Errors ---\n")
 		result.WriteString(errOut)

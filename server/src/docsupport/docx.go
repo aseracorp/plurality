@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/azukaar/plurality/src/textsafe"
 )
 
 // ParseDOCX extracts text from a DOCX byte slice.
@@ -84,7 +86,7 @@ func extractDOCXText(r io.Reader, maxChars int) (string, error) {
 			if charCount+len(text) > maxChars {
 				remaining := maxChars - charCount
 				if remaining > 0 {
-					b.WriteString(text[:remaining])
+					b.WriteString(textsafe.HeadBytes(text, remaining))
 				}
 				b.WriteString("\n[truncated]")
 				return b.String(), nil

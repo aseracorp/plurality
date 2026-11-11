@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/azukaar/plurality/src/textsafe"
 )
 
 // ParsePPTX extracts text from a PPTX byte slice.
@@ -127,7 +129,7 @@ func extractPPTXSlideText(r io.Reader, remaining int) (string, bool) {
 			if charCount+len(text) > remaining {
 				left := remaining - charCount
 				if left > 0 {
-					b.WriteString(text[:left])
+					b.WriteString(textsafe.HeadBytes(text, left))
 				}
 				return b.String(), true
 			}
