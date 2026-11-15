@@ -115,20 +115,59 @@ func findMegacaveArtifact(msgs []utils.Message) (toolCallID, excerpt string, ok 
 // real stage A/B candidates blew through, and the resolver correctly escalated
 // to C — the test then reported "expected stage A, got megacave_C" while the
 // resolver was right and the PROBE was lying.
+// stageSizes measures the ESTIMATED token size of each stage candidate for a
+// fixture. The summary is UNCAPPED, so these sizes are a property of the
+// fixture and the megacave transform, not of a cap constant; deriving budgets
+// from measurements keeps the tests honest when the transform changes.
+//
+// Mirrors resolveEcoContextCompaction stage-for-stage on a conversation with no
+// checkpoint (pairEnd == -1). Since the fold-loop fix every stage keeps the
+// SAME live tail (all rows from the newest user turn onwards) and differs only
+// in how much of the FOLDED set the summary represents, so the probe measures
+// exactly that: A = whole folded set, B = the B floor (oldest turns given up,
+// at least one turn kept), C = the B floor reduced to user/assistant rows.
+// The probe tool-call ids MUST carry the "megacave_" prefix: the estimator
+// (boundedWireChars) exempts the rolling-summary row from the per-message send
+// cap via checkpointSummaryCarrier, matching the tool name "megacave_<stage>".
+// A probe named "probe_A" is NOT exempt, so approxTokens clamps it and reports
+// a stage size far below what the resolver measures — budgets derived from it
+// then land on the wrong stage.
 func stageSizes(t *testing.T, msgs []utils.Message) (a, b, c int) {
 	t.Helper()
 	pairEnd := checkpointPairEnd(msgs)
-	turnStart := startOfLastTurn(msgs)
-	lastUser := indexOfLastUser(msgs)
+	tailStart := startOfLastTurn(msgs)
+	if tailStart >= 0 && tailStart <= pairEnd {
+		tailStart = pairEnd + 1
+	}
+	if tailStart < 0 {
+		tailStart = 0
+	}
+	tail := TruncateOversizedMessages(msgs[tailStart:])
+	folded := foldableRange(msgs, pairEnd, tailStart)
 
-	aArt := megacaveArtifact(foldableRange(msgs, pairEnd, turnStart), "megacave_probeA", "")
-	a = approxTokens(append(append([]utils.Message{}, aArt...), msgs[turnStart:]...))
+	aArt := megacaveArtifact(folded, "megacave_probeA", "")
+	a = approxTokens(append(append([]utils.Message{}, aArt...), tail...))
 
-	bArt := megacaveArtifact(foldableRange(msgs, pairEnd, lastUser), "megacave_probeB", "")
-	b = approxTokens(append(append([]utils.Message{}, bArt...), msgs[lastUser]))
+	// B floor: give up the OLDEST folded turns, keeping at least one turn
+	// represented. dropOldestTurn drains to EMPTY (len 0 < len(prev) keeps the
+	// loop going), while searchVariants(allowEmpty:false) stops one variant
+	// short of the empty one — so the probe must stop at the last NON-EMPTY
+	// variant. Probing the empty variant measures C's floor and the fixture
+	// then reports "cannot discriminate B/C".
+	floor := folded
+	for {
+		next := dropOldestTurn(floor)
+		if len(next) >= len(floor) || len(next) == 0 {
+			break
+		}
+		floor = next
+	}
+	bArt := megacaveArtifactWithDropMarker(floor, "megacave_probeB", "", len(folded)-len(floor))
+	b = approxTokens(append(append([]utils.Message{}, bArt...), tail...))
 
-	cArt := megacaveArtifact(userOnlyWithLastAssistant(foldableRange(msgs, pairEnd, lastUser)), "megacave_probeC", "")
-	c = approxTokens(append(append([]utils.Message{}, cArt...), msgs[lastUser]))
+	cFloor := userOnlyWithLastAssistant(floor)
+	cArt := megacaveArtifactWithDropMarker(cFloor, "megacave_probeC", "", len(folded)-len(cFloor))
+	c = approxTokens(append(append([]utils.Message{}, cArt...), tail...))
 	return a, b, c
 }
 
@@ -249,8 +288,14 @@ func TestResolver_OverflowStageB(t *testing.T) {
 			sawLatestAssistant = true
 		}
 	}
-	if sawLatestAssistant {
-		t.Error("stage B should drop the tail beyond the latest user message")
+	// Stage B must NOT give up the live tail. The old contract ("B keeps only
+	// the newest user row") is the collapse-to-floor bug: on the agentic shape
+	// the newest user row is index 2 and everything after it is the in-flight
+	// working context, so shipping that one row discarded the agent's whole
+	// context for 97 consecutive turns (conversation 6751a6d5ac78c156d07fec21).
+	// B differs from A only in how much FOLDED history the summary keeps.
+	if !sawLatestAssistant {
+		t.Error("stage B must keep the live tail (rows after the newest user message) — dropping it is the collapse-to-floor bug")
 	}
 }
 
@@ -376,13 +421,36 @@ func TestResolver_StageDMarksNothingWhenThereIsNothingToFold(t *testing.T) {
 		t.Fatal("resolver returned empty (caller would send the full history)")
 	}
 	if artID, excerpt, ok := findMegacaveArtifact(out); ok {
-		if strings.Contains(excerpt, "oldest context dropped") {
-			t.Errorf("stage D claims a drop it did not make: %q", excerpt[:160])
+		// The two loss markers SHARE the "oldest context dropped:" prefix and
+		// count DIFFERENT things (folded rows vs characters of the roll-up), so
+		// a coarse Contains on the prefix audits the wrong loss. The rows marker
+		// is the one that would be a lie here: the folded set is EMPTY, so no
+		// row was given up and the durable fold marks nothing.
+		if strings.Contains(excerpt, "messages of this conversation were folded away") {
+			t.Errorf("stage D claims it folded rows away, folded set is empty: %q", first(excerpt, 200))
 		}
-		// The prior roll-up must still be carried forward verbatim — it is the
-		// only representation of everything folded in earlier rounds.
-		if !strings.Contains(excerpt, "PRIOR ROLL-UP") {
-			t.Errorf("prior roll-up lost from the summary: %q", excerpt[:160])
+		if strings.Contains(excerpt, "live context trimmed") {
+			t.Errorf("stage D claims a tail trim with nothing trimmed: %q", first(excerpt, 200))
+		}
+		// The prior roll-up is the only representation of everything folded in
+		// earlier rounds, so it is dropped ONLY when the request physically has
+		// no room for it: here the newest message alone (bounded to
+		// ecoSentMessageCapChars) dwarfs the 200-token budget, so the roll-up
+		// cannot be kept and the honest empty-roll-up banner is correct. If the
+		// budget leaves room, the roll-up must be carried forward verbatim.
+		anchorTokens := approxTokens(TruncateOversizedMessages(msgs[2:]))
+		if room := 200 - anchorTokens; room > 60 && !strings.Contains(excerpt, "PRIOR ROLL-UP") {
+			t.Errorf("prior roll-up dropped although ~%d tokens of room remain: %q", room, first(excerpt, 200))
+		}
+		// An empty roll-up must always carry a banner saying so — the fold marks
+		// the represented rows compacted=1, so a silent checkpoint is permanent
+		// amnesia. Two banners exist: the plain "nothing to summarise" one, and
+		// the "dropped in full" one stage D emits when it had a roll-up and the
+		// request cannot fit any of it.
+		bannered := strings.Contains(excerpt, "rolled into this checkpoint") ||
+			strings.Contains(excerpt, "dropped in full")
+		if !strings.Contains(excerpt, "PRIOR ROLL-UP") && !bannered {
+			t.Errorf("empty roll-up carried with no honest banner: %q", first(excerpt, 200))
 		}
 		_ = artID
 	}
@@ -412,13 +480,46 @@ func TestResolver_StageDDropMarkerCountIsAccurate(t *testing.T) {
 	if !ok {
 		t.Fatal("stage D must keep a megacave artifact")
 	}
-	var claimed int
-	if _, err := fmt.Sscanf(excerpt, "[oldest context dropped: %d ", &claimed); err != nil {
-		t.Fatalf("marker not parseable: %q", excerpt[:120])
+	foldedTotal := len(foldableRange(msgs, checkpointPairEnd(msgs), startOfLastTurn(msgs)))
+	tailTotal := len(msgs) - startOfLastTurn(msgs)
+
+	// Two distinct losses, two distinct markers, two denominators. The durable
+	// one counts FOLDED rows (compacted=1, gone); the tail one counts rows
+	// trimmed from the LIVE tail for this request only (compacted=0, they come
+	// back). Asserting a single literal silently audits the wrong loss.
+	var rowsClaimed, tailClaimed, charsClaimed int
+	var sawRows, sawTail, sawChars bool
+	if i := strings.Index(excerpt, "[oldest context dropped: "); i >= 0 {
+		if _, err := fmt.Sscanf(excerpt[i:], "[oldest context dropped: %d ", &rowsClaimed); err == nil {
+			sawRows = true
+		}
 	}
-	foldedTotal := len(foldableRange(msgs, checkpointPairEnd(msgs), indexOfLastUser(msgs)))
-	if claimed <= 0 || claimed > foldedTotal {
-		t.Fatalf("marker claims %d dropped rows, folded set is %d rows", claimed, foldedTotal)
+	if i := strings.Index(excerpt, "[oldest context dropped: "); i >= 0 {
+		var n int
+		if _, err := fmt.Sscanf(excerpt[i:], "[oldest context dropped: %d characters", &n); err == nil {
+			charsClaimed, sawChars = n, true
+		}
+	}
+	if i := strings.Index(excerpt, "[live context trimmed for this request: the "); i >= 0 {
+		if _, err := fmt.Sscanf(excerpt[i:], "[live context trimmed for this request: the %d most recent", &tailClaimed); err == nil {
+			sawTail = true
+		}
+	}
+	if !sawRows && !sawTail && !sawChars {
+		t.Fatalf("no loss marker in the stage D summary: %q", first(excerpt, 200))
+	}
+	if sawRows && (rowsClaimed <= 0 || rowsClaimed > foldedTotal) {
+		t.Fatalf("marker claims %d folded rows dropped, folded set is %d rows", rowsClaimed, foldedTotal)
+	}
+	if sawChars && charsClaimed <= 0 {
+		t.Fatalf("chars marker claims %d characters", charsClaimed)
+	}
+	if sawTail {
+		// The tail trim is bounded by the tail, and must be counted as
+		// "rows given up beyond the task anchor", never as the anchor itself.
+		if tailClaimed <= 0 || tailClaimed > tailTotal-1 {
+			t.Fatalf("tail marker claims %d trimmed rows, tail is %d rows (anchor always kept)", tailClaimed, tailTotal)
+		}
 	}
 }
 
