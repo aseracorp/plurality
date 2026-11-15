@@ -2,22 +2,13 @@ package ai
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
+	"fmt"
 	"strings"
-	"sync/atomic"
-	"time"
 
 	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/db"
-	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
-
-// summaryInFlight is the global single-flight gate for eco-mode summary
-// jobs. Only one summary runs across the whole server at any time;
-// conversations that miss their window pick up on the next user turn.
-var summaryInFlight atomic.Bool
 
 // defaultEcoTriggerTokens is the default absolute eco-trigger threshold (tokens)
 // when config.eco.trigger_tokens is unset. The auth package keeps its own
@@ -133,6 +124,13 @@ const ecoSentMessageCapChars = maxCompactMessageChars
 // aeb657c899e600ff1a822ffb: trigger ≈52508 tokens vs 438246 on the wire, request
 // shipped unchanged, conversation dead on "request exceeds the context window").
 func boundedWireChars(m utils.Message) int {
+	if checkpointSummaryCarrier(m) {
+		// Exempt from the per-message cap, exactly like the sender
+		// (TruncateOversizedMessages). Counting it clamped would let the trigger
+		// read the summary as smaller than it is and ship a request the
+		// preemptive context guard then rejects.
+		return messageWireChars(m)
+	}
 	img := imageWireChars(m.Content)
 	nonImage := messageWireChars(m) - img
 	if nonImage > ecoSentMessageCapChars {
@@ -144,6 +142,15 @@ func boundedWireChars(m utils.Message) int {
 func approxTokens(messages []utils.Message) int {
 	chars := 0
 	for i := range messages {
+		// SAME basis as SentViewTokens / the sender: rows durable compaction has
+		// already folded (compacted = 1) are NOT part of the request, so they
+		// must not be charged to it. The request path loads conversations with
+		// includeCompacted = true, so the slice handed to the resolver carries
+		// them; counting them made the resolver measure a request that never
+		// leaves and demand folds that shrink nothing.
+		if messages[i].Compacted {
+			continue
+		}
 		chars += boundedWireChars(messages[i])
 	}
 	return chars / 3
@@ -152,18 +159,149 @@ func approxTokens(messages []utils.Message) int {
 // megacaveArtifact returns a [assistant, tool] checkpoint pair carrying the
 // megacave machine excerpt of the given messages, so the excerpt is rendered
 // as a normal message the model can read.
-func megacaveArtifact(folded []utils.Message, toolCallID string) []utils.Message {
-	excerpt := MachineExcerptMegacave(folded)
+func megacaveArtifact(folded []utils.Message, toolCallID string, prior string) []utils.Message {
+	excerpt := carryForward(prior, MachineExcerptMegacave(folded))
 	if excerpt == "" {
 		return nil
 	}
+	return checkpointArtifactMessages(folded, toolCallID, excerpt)
+}
+
+// checkpointPairEnd returns the index of the LAST message of the eco
+// checkpoint pair that sits at the head of the LLM view, or -1 when the
+// conversation has no checkpoint. The pair is [assistant(tool_call
+// eco_checkpoint), tool(summary)]; the view loads it as the first rows
+// (GetConversationByIdInternal returns compacted=0 rows ordered by seq, the
+// pair rows are the only non-compacted rows below the fold boundary).
+//
+// Stages must fold strictly AFTER this index: folding the pair would destroy
+// the summary of everything it stands for and rewrite the head of the prompt
+// (prefix-cache collapse).
+func checkpointPairEnd(all []utils.Message) int {
+	last := -1
+	for i := range all {
+		if db.IsCheckpointMessage(all[i]) {
+			last = i
+		}
+	}
+	return last
+}
+
+// foldableRange is the slice of history a stage may fold into the summary:
+// the rows strictly after the checkpoint pair and strictly before `end`.
+// Returns nil when the range is empty or `end` is negative, so
+// megacaveArtifact yields no artifact (nothing to summarise) and the stage
+// degenerates to sending the tail verbatim.
+func foldableRange(all []utils.Message, pairEnd, end int) []utils.Message {
+	start := pairEnd + 1
+	if end < 0 || start >= end {
+		return nil
+	}
+	// The slice handed to the resolver can contain rows durable compaction has
+	// ALREADY folded (the request path loads includeCompacted = true). Those are
+	// represented by the prior checkpoint summary — re-summarising them into the
+	// new one duplicates the same history in every prompt. Checkpoint rows
+	// inside the range (a second pair, legacy data) are skipped for the same
+	// reason.
+	out := make([]utils.Message, 0, end-start)
+	for i := start; i < end; i++ {
+		if all[i].Compacted || db.IsCheckpointMessage(all[i]) {
+			continue
+		}
+		out = append(out, all[i])
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// priorSummaryFromView returns the summary text carried by the checkpoint pair
+// at the head of the view, or "". It is the roll-up of everything the
+// conversation folded away in earlier rounds.
+//
+// It must be carried forward VERBATIM into the next summary (carryForward),
+// never re-megacaved: the megacave transform compresses prose hard, and running
+// it over the prior summary degrades it a little more every round — the
+// "summary of a summary of a summary" erosion. It must also never simply be
+// dropped: the durable fold replaces the pair, so a summary that does not carry
+// the prior one silently deletes all older history (the fold's own
+// PRIOR CHECKPOINT: plumbing built the text into a string the machine path
+// then threw away, so every fold lost the previous summary).
+func priorSummaryFromView(all []utils.Message, pairEnd int) string {
+	if pairEnd < 0 || pairEnd >= len(all) {
+		return ""
+	}
+	m := all[pairEnd]
+	if m.Role != "tool" || !db.IsCheckpointMessage(m) {
+		return ""
+	}
+	return strings.TrimSpace(m.Content.TextContent())
+}
+
+// carryForward renders the new summary as prior + newly folded history, so one
+// checkpoint pair always represents the WHOLE prefix it stands for.
+func carryForward(prior, excerpt string) string {
+	prior = strings.TrimSpace(prior)
+	excerpt = strings.TrimSpace(excerpt)
+	if prior == "" {
+		return excerpt
+	}
+	if excerpt == "" {
+		return prior
+	}
+	return prior + "\n\n[newer history, machine-compacted]\n" + excerpt
+}
+
+// oldestDroppedMarker names, in the summary text itself, how much folded
+// history stage D had to give up. The dropped rows are marked compacted by the
+// durable fold, so without this marker the loss is invisible: the model reads a
+// summary that silently omits the oldest turns. Naming the size keeps the loss
+// honest and inspectable (and inspectable from the stored checkpoint alone).
+func oldestDroppedMarker(droppedRows int) string {
+	return fmt.Sprintf("[oldest context dropped: %d messages of this conversation were folded away and are NOT represented in this summary \u2014 the request cannot fit them.]\n\n", droppedRows)
+}
+
+// megacaveArtifactWithDropMarker is megacaveArtifact plus an explicit notice of
+// how much folded history stage D had to drop from the summary.
+//
+// The composition (carry forward FIRST, then test for emptiness) is the whole
+// point and mirrors megacaveArtifact: stage D sets foldFrom to pairEnd+1, i.e.
+// the fold supersedes the checkpoint PAIR itself. Checking the new excerpt alone
+// and returning nil when it is empty (nothing left to summarise, or nothing
+// foldable at all) drops the prior roll-up from the view AND lets the durable
+// fold mark the pair compacted with no replacement summary — permanently
+// deleting every row earlier folds represented. That is the "context lost on
+// restart" bug reached from the other side, so the emptiness test runs on the
+// CARRIED text.
+//
+// The marker goes AFTER the carried roll-up, never in front of it: the pair is
+// the first content of the prompt after the system block, and a drop count that
+// changes every round at the HEAD moves the prompt prefix and invalidates the
+// backend KV cache exactly like the nested "PRIOR CHECKPOINT:" banners did.
+func megacaveArtifactWithDropMarker(folded []utils.Message, toolCallID string, prior string, droppedRows int) []utils.Message {
+	newExcerpt := MachineExcerptMegacave(folded)
+	if droppedRows > 0 {
+		newExcerpt = oldestDroppedMarker(droppedRows) + newExcerpt
+	}
+	carried := strings.TrimSpace(carryForward(prior, newExcerpt))
+	if carried == "" {
+		return nil
+	}
+	return checkpointArtifactMessages(folded, toolCallID, carried)
+}
+
+// checkpointArtifactMessages wraps a rendered summary in the
+// [assistant tool_call, tool result] pair the model reads.
+func checkpointArtifactMessages(folded []utils.Message, toolCallID, excerpt string) []utils.Message {
+	_ = folded
 	aiMsg := utils.Message{
 		Role: "assistant",
 		ToolCalls: []utils.ToolCall{{
 			ID:   toolCallID,
 			Type: "function",
 			Function: utils.FunctionCall{
-				Name:      "megacave_excerpt",
+				Name:      toolCallID,
 				Arguments: "{}",
 			},
 		}},
@@ -172,7 +310,7 @@ func megacaveArtifact(folded []utils.Message, toolCallID string) []utils.Message
 		Role:       "tool",
 		Content:    utils.NewTextContent(excerpt),
 		ToolCallID: toolCallID,
-		Name:       "megacave_excerpt",
+		Name:       toolCallID,
 	}
 	return []utils.Message{aiMsg, toolMsg}
 }
@@ -256,20 +394,30 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		return TruncateOversizedMessages(all), 0
 	}
 
+	// The checkpoint pair is the head of the LLM view and the carrier of the
+	// rolling summary. It is NEVER a fold target: folding it (a) destroys the
+	// summary of everything it represents and (b) rewrites the first ~65 KB of
+	// every prompt, which collapses the backend KV prefix cache to the system
+	// block. Stages below fold strictly the rows AFTER the pair.
+	pairEnd := checkpointPairEnd(all)
+	prior := priorSummaryFromView(all, pairEnd)
+
 	// We build the candidate from user+assistant/tool messages (system is
 	// added by the caller after this).
 	turnStart := startOfLastTurn(all)
 	var candidate []utils.Message
 	id := 0
+	foldFrom = 0
 
-	// STAGE A
+	// STAGE A — latest full turn verbatim + megacave of everything between the
+	// checkpoint pair and that turn. The summary is UNCAPPED: it is the roll-up
+	// of the history being given up, and the fit test below is what decides how
+	// much history that is.
 	{
 		var cand []utils.Message
-		if turnStart > 0 {
-			older := all[:turnStart]
-			if art := megacaveArtifact(older, "megacave_A"); art != nil {
-				cand = append(cand, art...)
-			}
+		folded := foldableRange(all, pairEnd, turnStart)
+		if art := megacaveArtifact(folded, "megacave_A", prior); art != nil {
+			cand = append(cand, art...)
 		}
 		if turnStart >= 0 {
 			cand = append(cand, all[turnStart:]...)
@@ -277,16 +425,18 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		candidate = cand
 		id = 1
 		foldFrom = turnStart
+		utils.Log("[Eco/stageA] folded %d rows -> view %d msgs ~%d tokens (budget %d, fits=%v)",
+			len(folded), len(candidate), approxTokens(candidate), budgetTokens, fits(candidate))
 	}
 	if !fits(candidate) {
-		// STAGE B — no tail; keep only the most recent user message.
+		// STAGE B — no tail: keep only the most recent USER message verbatim,
+		// megacave everything between the pair and it. Differs from A when the
+		// last turn carries assistant/tool rows after the user row.
 		lastUser := indexOfLastUser(all)
 		var cand []utils.Message
-		if lastUser > 0 {
-			older := all[:lastUser]
-			if art := megacaveArtifact(older, "megacave_B"); art != nil {
-				cand = append(cand, art...)
-			}
+		folded := foldableRange(all, pairEnd, lastUser)
+		if art := megacaveArtifact(folded, "megacave_B", prior); art != nil {
+			cand = append(cand, art...)
 		}
 		if lastUser >= 0 {
 			cand = append(cand, all[lastUser])
@@ -294,6 +444,8 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		candidate = cand
 		id = 2
 		foldFrom = lastUser
+		utils.Log("[Eco/stageB] folded %d rows -> view %d msgs ~%d tokens (budget %d, fits=%v)",
+			len(folded), len(candidate), approxTokens(candidate), budgetTokens, fits(candidate))
 	}
 	if !fits(candidate) {
 		// STAGE C — user messages + last assistant before a user, megacaved.
@@ -302,17 +454,17 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		// Megacaving the WHOLE reduced set (which is every user row) leaves the
 		// view with ZERO role:"user" messages, and every chat template rejects
 		// that: strata answers 400 "No user query found in messages." Measured
-		// end-to-end against the live engine — stages fits/A/B/D all cache at
+		// end-to-end against the live engine — stages A/B/D all cache at
 		// 98-99.9% reuse, stage C alone was an outright request failure. The
-		// stage-C unit tests only assert the artifact exists, so a view that
+		// stage-C unit tests only asserted the artifact exists, so a view that
 		// cannot be sent passed them; see TestResolver_EveryStageIsSendable.
 		lastUser := indexOfLastUser(all)
 		var reduced []utils.Message
 		if lastUser > 0 {
-			reduced = userOnlyWithLastAssistant(all[:lastUser])
+			reduced = userOnlyWithLastAssistant(foldableRange(all, pairEnd, lastUser))
 		}
 		var cand []utils.Message
-		if art := megacaveArtifact(reduced, "megacave_C"); art != nil {
+		if art := megacaveArtifact(reduced, "megacave_C", prior); art != nil {
 			cand = append(cand, art...)
 		}
 		if lastUser >= 0 {
@@ -321,72 +473,131 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		candidate = cand
 		id = 3
 		foldFrom = lastUserIdxSafe(all)
+		utils.Log("[Eco/stageC] folded %d rows -> view %d msgs ~%d tokens (budget %d, fits=%v)",
+			len(reduced), len(candidate), approxTokens(candidate), budgetTokens, fits(candidate))
 	}
 	if !fits(candidate) {
-		// STAGE D — the budget is SMALLER THAN A MEGACAVE EXCERPT CAN EVER BE.
-		// The excerpt saturates at maxMegacaveExcerptChars (60_000 chars
-		// = ~20_000 est tokens), so shrinking the folded set turn-by-turn
-		// cannot help: `fits` can never become true below that floor. The old
-		// greedy loop drained the slice to nil, megacaveArtifact(nil) returned
-		// nil, and the resolver emitted an EMPTY history — the caller's
-		// `if len(convTail) > 0` guard then silently shipped the FULL
-		// UNCOMPACTED history, an oversized request exactly when compaction was
-		// needed. contentBudget floors at 8192, so this was reachable for every
-		// model with a window under ~29k tokens.
+		// STAGE D — give up the OLDEST folded turns until the view fits, keeping
+		// the summary of everything that remains (still UNCAPPED). The live tail
+		// stays the newest user message verbatim, as stages B and C send it.
 		//
-		// Correct move: shrink the EXCERPT ITSELF to the budget, and always keep
-		// the newest user message verbatim so the model sees the live request.
-		candidate = nil
+		// This is the documented stage-D contract ("drop megacaved turns
+		// one-by-one from the START until the remainder fits"), NOT an excerpt
+		// cap. Capping the excerpt is what produced the truncated checkpoint
+		// ending mid-sentence ("Clean fi"), and a cap cannot help: the excerpt
+		// saturates at the cap, so `fits` can never go true below that floor —
+		// the old greedy loop drained the slice to nil, megacaveArtifact(nil)
+		// returned nil, and the resolver emitted an EMPTY history, which the
+		// caller's `len(convTail) > 0` guard then replaced with the FULL
+		// UNCOMPACTED history (defect #161).
+		//
+		// Dropping a turn genuinely shrinks the summary (measured: the megacave
+		// transform runs at ratio ~0.107, so total = W - 0.893*folded is
+		// monotone in folded), which is what makes the search terminate.
+		//
+		// The dropped rows are marked compacted by the durable fold and are NOT
+		// in the summary, so the loss is recorded OUT LOUD in the summary text
+		// (dropMarker) instead of silently eating the oldest context.
+		lastUser := indexOfLastUser(all)
+		// The verbatim tail of stage D is the newest USER message only — exactly
+		// the shape stage C settled on. Taking the WHOLE newest turn here
+		// (`all[lastUser:]`, i.e. its assistant + tool rows too) made the ladder
+		// NON-MONOTONE: D is entered only because C's smaller view did not fit,
+		// and D's floor then sat ABOVE C's size, so the resolver shipped a view
+		// larger than the one it had just rejected (measured on a 200-turn
+		// fixture: C ~2000 tokens rejected at budget 356, D returned ~3075).
+		// D's job is to give up FOLDED history, never to widen the tail.
+		tail := TruncateOversizedMessages(all[max(lastUser, 0):min(lastUser+1, len(all))])
+		folded := foldableRange(all, pairEnd, lastUser)
+
+		// Precompute the drop sequence: variants[k] is the folded set after
+		// giving up the k OLDEST turns. Building it copies message SLICES (cheap);
+		// the expensive part is the megacave render, which must NOT run per step.
+		//
+		// The linear loop re-rendered the excerpt of the WHOLE remaining set on
+		// every step — O(N^2) in characters. Measured: a 500-turn fixture spent
+		// 147s in stage D; the live 10.5M-char conversation would spend minutes in
+		// the request path. The fit predicate is monotone in rows dropped (megacave
+		// ratio ~0.107, so total = W - 0.893*folded), so "smallest k that fits" is
+		// a binary search over log2(N) renders instead of N of them.
+		variants := [][]utils.Message{folded}
+		for {
+			prev := variants[len(variants)-1]
+			next := dropOldestTurn(prev)
+			if len(next) >= len(prev) {
+				break // nothing left to give up (one turn, or only non-user rows)
+			}
+			variants = append(variants, next)
+		}
+
+		// Every variant is a suffix-shaped subset, so the verbatim tail is the
+		// same for all of them; only the summary changes.
+		candOf := func(k int) []utils.Message {
+			var cand []utils.Message
+			art := megacaveArtifactWithDropMarker(variants[k], "megacave_D", prior, len(folded)-len(variants[k]))
+			if art != nil {
+				cand = append(cand, art...)
+			}
+			return append(cand, tail...)
+		}
+
+		lo, hi, found := 0, len(variants)-1, -1
+		for lo <= hi {
+			mid := (lo + hi) / 2
+			if fits(candOf(mid)) {
+				found = mid
+				hi = mid - 1
+			} else {
+				lo = mid + 1
+			}
+		}
+		if found < 0 {
+			// Nothing fits, not even the smallest summary. Keep the largest fold:
+			// the live tail stays verbatim, the summary keeps what it can, and the
+			// marker records the loss. (Never return an empty view — the caller's
+			// `len(convTail) > 0` guard would then send the FULL history, defect
+			// #161.)
+			found = len(variants) - 1
+		}
+		droppedRows := len(folded) - len(variants[found])
+		candidate = candOf(found)
+		utils.Log("[Eco/stageD] probed %d drop steps -> kept %d of %d folded rows (dropped %d) -> view %d msgs ~%d tokens (budget %d, fits=%v)",
+			len(variants), len(variants[found]), len(folded), droppedRows, len(candidate), approxTokens(candidate), budgetTokens, fits(candidate))
 		id = 4
 		foldFrom = lastUserIdxSafe(all)
-		lastUser := indexOfLastUser(all)
-		var tail []utils.Message
-		older := all
-		if lastUser >= 0 {
-			tail = all[lastUser:]
-			older = all[:lastUser]
-		}
-		// Room left for the excerpt once the live tail + the artifact pair's
-		// structural overhead are accounted for.
-		// The tail is bounded BEFORE it is budgeted. A single oversized message
-		// in the live tail (the pasted-logfile case) makes approxTokens(tail)
-		// exceed the whole budget, so `room` goes negative, the excerpt
-		// collapses to a placeholder, and the candidate comes back at
-		// ~334587 tokens against a 113984 budget — permanently. Nothing in
-		// stages A-D can fix that by folding, because the oversized row IS the
-		// newest user message that the fold floor protects. The same helper the
-		// overflow-retry path uses caps it, and the resolver then measures what
-		// it will actually send.
-		tail = TruncateOversizedMessages(tail)
-		room := budgetTokens - approxTokens(tail) - toolOverheadTokens - 20
-		if art := megacaveArtifactBudgeted(older, "megacave_D", room); art != nil {
-			candidate = append(candidate, art...)
-		}
-		candidate = append(candidate, tail...)
 		if approxTokens(candidate) > budgetTokens {
-			utils.Log("[Eco] stage D: budget %d tokens below the live tail (~%d) — sending tail + maximal excerpt",
-				budgetTokens, approxTokens(tail))
+			utils.Log("[Eco] stage D: budget %d tokens — summary of %d rows + live tail (~%d) is the smallest foldable view; %d rows dropped from the summary",
+				budgetTokens, len(variants[found]), approxTokens(tail), droppedRows)
 		}
 	}
 
-	// Bound the view we are about to send, in EVERY stage. Stages A/B/C all
-	// keep the newest user message verbatim, so an oversized newest message
-	// survives every stage unchanged; without this the resolver returns a view
-	// the preemptive context guard rejects, and the loop settles into
+	// Bound the view we are about to send, in EVERY stage, with the same
+	// transform the estimator measures (boundedWireChars). Stages A/B/C/D keep
+	// the newest user message verbatim, so an oversized newest message survives
+	// every stage unchanged; without this the resolver returns a view the
+	// preemptive context guard rejects, and the loop settles into
 	// guard -> compact (folds 0) -> retry -> send on every single message.
 	candidate = TruncateOversizedMessages(candidate)
 
-	// Never fold the whole history: an empty live tail is how the caller ends
-	// up shipping the FULL uncompressed history (its `len(convTail) > 0`
-	// guard), the oversized-request defect #161 removed.
+	// Never fold the whole history and never fold the checkpoint pair: an empty
+	// live tail is how the caller ends up shipping the FULL uncompressed
+	// history (its `len(convTail) > 0` guard), and folding the pair destroys the
+	// rolling summary. foldFrom must land strictly after the pair and at or
+	// before the newest user turn.
+	if floor := lastUserIdxSafe(all); foldFrom > floor {
+		foldFrom = floor
+	}
 	if foldFrom >= len(all) {
 		foldFrom = lastUserIdxSafe(all)
+	}
+	if pairEnd >= 0 && foldFrom <= pairEnd {
+		foldFrom = pairEnd + 1
 	}
 	if foldFrom < 0 {
 		foldFrom = 0
 	}
-	utils.Log("[Eco] resolved staged compaction (stage %d ids, %d messages, ≈%d tokens / budget %d, folding %d of %d)",
-		id, len(candidate), approxTokens(candidate), budgetTokens, foldFrom, len(all))
+	utils.Log("[Eco] resolved staged compaction (stage %d, %d messages, ~%d tokens / budget %d, folding %d of %d, pair ends at %d)",
+		id, len(candidate), approxTokens(candidate), budgetTokens, foldFrom, len(all), pairEnd)
 	return candidate, foldFrom
 }
 
@@ -398,69 +609,6 @@ func lastUserIdxSafe(all []utils.Message) int {
 		return i
 	}
 	return 0
-}
-
-// megacaveArtifactBudgeted is megacaveArtifact with the excerpt hard-capped at
-// budgetTokens (chars = tokens*3, the same conversion approxTokens uses). Stage
-// D needs this: there the budget is BELOW the excerpt's natural saturation size,
-// so the excerpt — not the conversation — is the thing that must shrink. A
-// non-positive budget yields a small placeholder rather than nil, so the caller
-// always receives a well-formed assistant/tool pair.
-func megacaveArtifactBudgeted(folded []utils.Message, toolCallID string, budgetTokens int) []utils.Message {
-	excerpt := MachineExcerptMegacave(folded)
-	if excerpt == "" {
-		return nil
-	}
-	if maxChars := budgetTokens * 3; maxChars > 0 && len(excerpt) > maxChars {
-		excerpt = truncateExcerpt(excerpt, maxChars)
-	}
-	aiMsg := utils.Message{
-		Role: "assistant",
-		ToolCalls: []utils.ToolCall{{
-			ID:   toolCallID,
-			Type: "function",
-			Function: utils.FunctionCall{
-				Name:      "megacave_excerpt",
-				Arguments: "{}",
-			},
-		}},
-	}
-	toolMsg := utils.Message{
-		Role:       "tool",
-		Content:    utils.NewTextContent(excerpt),
-		ToolCallID: toolCallID,
-		Name:       "megacave_excerpt",
-	}
-	return []utils.Message{aiMsg, toolMsg}
-}
-
-// truncateExcerpt keeps the head and the tail (60/40) of an excerpt around an
-// elision banner, so the oldest context and the most recent context — the two
-// ends a model actually needs — survive a hard budget cut.
-func truncateExcerpt(s string, maxChars int) string {
-	if maxChars <= 0 {
-		return "[megacave excerpt elided: budget too small]"
-	}
-	if len(s) <= maxChars {
-		return s
-	}
-	banner := "\n...[megacave excerpt truncated: elided for budget]...\n"
-	if maxChars <= len(banner) {
-		return textsafe.HeadBytes(s, maxChars)
-	}
-	room := maxChars - len(banner)
-	head := room * 60 / 100
-	tail := room - head
-	return textsafe.HeadBytes(s, head) + banner + textsafe.TailBytes(s, tail)
-}
-
-// megacaveOnly returns megacaveArtifact(msgs) flattened, or nil.
-func megacaveOnly(msgs []utils.Message) []utils.Message {
-	art := megacaveArtifact(msgs, "megacave_only")
-	if art == nil {
-		return nil
-	}
-	return art
 }
 
 // dropOldestTurn removes the oldest user turn (user message plus any
@@ -492,19 +640,6 @@ func dropOldestTurn(msgs []utils.Message) []utils.Message {
 	return out
 }
 
-// lastAssistantPromptTokens scans the conversation backwards and returns
-// the prompt_tokens value of the most recent assistant message that
-// reported usage. Returns 0 if no such message exists yet (brand-new
-// conversation on its first user turn).
-func lastAssistantPromptTokens(messages []utils.Message) int {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "assistant" && messages[i].PromptTokens > 0 {
-			return messages[i].PromptTokens
-		}
-	}
-	return 0
-}
-
 // ecoContentBudget is the content budget the staged resolver must fit within:
 // the model's context window minus room for the system prompt, tool schemas
 // and the model's reply. Callers that do not have the marshalled request in
@@ -532,246 +667,4 @@ func ecoContentBudget(modelName string) int {
 		return budget
 	}
 	return 8192
-}
-
-// ecoCutoffIndex returns the index in `messages` where the LIVE tail begins:
-// everything before it is folded into the rolling checkpoint.
-//
-// The staged resolver decides this, which is the whole point of the design:
-// there is no "target" token count. The context window is the target, so the
-// same stages A -> D that build the outgoing request view also say how much
-// history has to go, and the durable fold matches it exactly. Folding less
-// leaves the next request oversized (the "folded 0 every step" shape); folding
-// more loses context the model still needs.
-//
-// Returns -1 when nothing can be folded (the history already fits, or the
-// conversation is too short to give up any turn).
-func ecoCutoffIndex(messages []utils.Message, modelName string) int {
-	if len(messages) == 0 {
-		return -1
-	}
-	window := Models.MaxContextTokensForPrefixed(modelName)
-	_, foldFrom := resolveEcoContextCompaction(messages, window, ecoContentBudget(modelName))
-	if foldFrom <= 0 {
-		return -1
-	}
-	// Never fold the newest user turn, and never fold everything.
-	if floor := startOfLastTurn(messages); foldFrom > floor {
-		foldFrom = floor
-	}
-	if foldFrom <= 0 || foldFrom >= len(messages) {
-		return -1
-	}
-	return foldFrom
-}
-
-// runEcoSummary is the entry point spawned as a goroutine on every user
-// message. It returns quickly without doing work in any of these cases:
-//   - global single-flight slot is busy
-//   - conversation has eco mode disabled
-//   - last prompt_tokens is below the configured trigger
-//   - no satisfying cutoff (conversation isn't long enough yet)
-//
-// When all gates pass, it summarises the oldest turns into a new checkpoint
-// pair and atomically swaps out any prior pair via db.ReplaceCheckpoint.
-// Errors are logged and swallowed — the next user turn will retry.
-func runEcoSummary(ctx context.Context, conversationID string) {
-	utils.Log("[Eco] tick for conv %s", conversationID)
-	if !summaryInFlight.CompareAndSwap(false, true) {
-		utils.Log("[Eco] summary already in flight — skipping conv %s", conversationID)
-		return
-	}
-	defer summaryInFlight.Store(false)
-
-	// Bound every DB access in this goroutine. The single SQLite connection
-	// (SetMaxOpenConns(1)) is shared with live reads/writes (message pushes,
-	// the embed worker, conversation loads); if the pool is wedged we must
-	// fail fast and release the global single-flight slot so normal traffic
-	// and future compactions are not starved. The summary LLM call
-	// (GenerateCheckpointSummary) runs on its own HTTP client and is not
-	// affected by this deadline.
-	dbCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	defer cancel()
-
-	conv, err := db.GetConversationByIdInternal(dbCtx, conversationID)
-	if err != nil {
-		utils.Error("[Eco] could not load conversation", err)
-		return
-	}
-	if !conv.ModelSelected.EcoMode {
-		utils.Log("[Eco] conv %s has eco mode off — skip", conversationID)
-		return
-	}
-
-	cfg := auth.GetConfig().Eco
-	if cfg.TriggerTokens <= 0 {
-		utils.Log("[Eco] eco config disabled (trigger=%d) — skip", cfg.TriggerTokens)
-		return
-	}
-
-	// Resolve the conversation's chat model so the trigger can be scaled to
-	// its context window (dynamic compaction).
-	modelName := ""
-	if conv.ModelSelected.Text != nil {
-		modelName = conv.ModelSelected.Text.Name
-	} else if conv.ModelSelected.Vision != nil {
-		modelName = conv.ModelSelected.Vision.Name
-	}
-	trigger := effectiveEcoTrigger(modelName)
-	if trigger <= 0 {
-		trigger = cfg.TriggerTokens
-	}
-
-	lastPT := lastAssistantPromptTokens(conv.Messages)
-	if lastPT == 0 {
-		utils.Log("[Eco] conv %s has no assistant prompt_tokens yet — skip", conversationID)
-		return
-	}
-	if lastPT <= trigger {
-		// The recorded lastPT is often LOWER than the trigger even when the
-		// true persisted history is gigantic: the LLM only ever saw a
-		// budget-capped tail, so its usage reflects the small tail, not the
-		// full DB history. On conversation 319ce9283cac61666757b88a this
-		// left one checkpoint stuck at seq 154 while 839 messages (≈700k
-		// tokens) piled up behind it — every turn then dead-ended in the
-		// preemptive context guard. Fall back to a raw-history-size gate: if
-		// the persisted message content (minus checkpoints) exceeds the
-		// trigger's worth of characters, durable-compact now instead of
-		// waiting forever for lastPT to catch up.
-		rawChars := 0
-		for _, m := range conv.Messages {
-			if db.IsCheckpointMessage(m) {
-				continue
-			}
-			rawChars += messageWireChars(m)
-		}
-		// ~4 chars/token — same density assumption the request guard uses.
-		if rawChars/4 <= trigger {
-			utils.Log("[Eco] conv %s lastPT=%d below trigger=%d (model context-aware) — skip", conversationID, lastPT, trigger)
-			return
-		}
-		utils.Log("[Eco] conv %s lastPT=%d below trigger=%d but raw history ≈%d chars → durable-compacting", conversationID, lastPT, trigger, rawChars)
-	} else {
-		utils.Log("[Eco] conv %s lastPT=%d > trigger=%d (model context-aware) — compacting to fit the context window", conversationID, lastPT, trigger)
-	}
-
-	// Locate the existing checkpoint (if any) and compute where the new
-	// cutoff must land.
-	existingCheckpointEndIdx := -1
-	var oldPairIDs []int64
-	var priorSummary string
-	if pair, err := db.GetCheckpoint(dbCtx, conversationID); err == nil && pair != nil {
-		priorSummary = pair.Summary
-		oldPairIDs = []int64{pair.AssistantID}
-		if pair.ToolID != 0 {
-			oldPairIDs = append(oldPairIDs, pair.ToolID)
-		}
-		// existingCheckpointEndIdx is the index in conv.Messages of the
-		// tool half of the pair. We find the assistant half by tool-call
-		// name match, then add 1 for the tool half.
-		for i, m := range conv.Messages {
-			if m.Role == "assistant" && db.IsCheckpointMessage(m) {
-				existingCheckpointEndIdx = i + 1 // assume tool half follows immediately
-				break
-			}
-		}
-	}
-
-	cutoff := ecoCutoffIndex(conv.Messages, modelName)
-	if cutoff < 0 {
-		utils.Log("[Eco] no satisfying cutoff for conv %s (lastPT=%d, %d messages) — skip", conversationID, lastPT, len(conv.Messages))
-		return
-	}
-	utils.Log("[Eco] conv %s cutoff=%d (of %d messages), prior checkpoint end=%d", conversationID, cutoff, len(conv.Messages), existingCheckpointEndIdx)
-
-	// Slice of messages to fold into the new summary: everything strictly
-	// between the existing checkpoint and the cutoff.
-	startIdx := 0
-	if existingCheckpointEndIdx >= 0 {
-		startIdx = existingCheckpointEndIdx + 1
-	}
-	if startIdx >= cutoff {
-		return
-	}
-
-	// Compaction is MACHINE-ONLY — it never calls an LLM. The folded history
-	// (everything between the previous checkpoint and the cutoff) is replaced
-	// by the deterministic megacave machine excerpt (Caveman
-	// /caveman-compress-style; no model call): code/paths/IDs verbatim,
-	// JSON compressed, prose trimmed. This is a pure history transform for the
-	// future conversation workflow — no request is sent to a chat model.
-	// (The previous two-stage LLM "megacave"/"dumb eco" summary calls both ran
-	// model inference, which blocked the retry for minutes on the slow
-	// self-hosted model.)
-	excerptMessages := conv.Messages[startIdx:cutoff]
-	summary := MachineExcerptMegacave(excerptMessages)
-	if priorSummary != "" {
-		// Keep the rolling carry-forward: the machine excerpt stands in for
-		// NEW messages, the prior checkpoint for everything older.
-		summary = priorSummary + "\n\n[newer history, machine-compacted]\n" + summary
-	}
-	summary = strings.TrimSpace(summary)
-	if summary == "" {
-		summary = "[compacted by Plurality — machine excerpt unavailable; older messages were rolled into this checkpoint]"
-	}
-
-	// Build the assistant + tool pair. Look up the actual DB seq for the
-	// message at the cutoff slice position — gaps can exist after prior
-	// checkpoint replacements, so slice index != seq in general.
-	insertSeq, err := db.MessageSeqAt(dbCtx, conversationID, cutoff)
-	if err != nil {
-		utils.Error("[Eco] could not resolve insert seq", err)
-		return
-	}
-	toolCallID := "eco_" + randomHex(8)
-	now := time.Now().Format(time.RFC3339)
-
-	assistantMsg := utils.Message{
-		Role:      "assistant",
-		Content:   utils.MessageContent{},
-		Timestamp: now,
-		ToolCalls: []utils.ToolCall{{
-			ID:   toolCallID,
-			Type: "function",
-			Function: utils.FunctionCall{
-				Name:      db.EcoCheckpointToolName,
-				Arguments: "{}",
-			},
-		}},
-	}
-	toolMsg := utils.Message{
-		Role:       "tool",
-		Content:    utils.NewTextContent(summary),
-		ToolCallID: toolCallID,
-		Name:       db.EcoCheckpointToolName,
-		Timestamp:  now,
-	}
-
-	if err := db.ReplaceCheckpoint(dbCtx, conversationID, oldPairIDs, assistantMsg, toolMsg, insertSeq); err != nil {
-		utils.Error("[Eco] persisting checkpoint failed", err)
-		return
-	}
-	utils.Log("[Eco] checkpoint written for conv %s (cutoff=%d, lastPT=%d → kept tail ≈%d tokens)", conversationID, cutoff, lastPT, lastPT-tokensBeforeCutoff(conv.Messages, cutoff))
-}
-
-// tokensBeforeCutoff is a logging helper — it returns the prompt_tokens
-// value of the first assistant message at or after the cutoff, which
-// approximates "tokens of system + everything before cutoff". Returns 0 if
-// no assistant follows.
-func tokensBeforeCutoff(messages []utils.Message, cutoff int) int {
-	for i := cutoff; i < len(messages); i++ {
-		if messages[i].Role == "assistant" && messages[i].PromptTokens > 0 {
-			return messages[i].PromptTokens
-		}
-	}
-	return 0
-}
-
-// randomHex mirrors db.GenerateID but with a caller-chosen byte width. Used
-// for synthesising tool_call_id values that won't collide with real LLM
-// output (those are model-generated strings).
-func randomHex(nBytes int) string {
-	b := make([]byte, nBytes)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }

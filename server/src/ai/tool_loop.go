@@ -456,12 +456,6 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				}()
 			}
 
-			// Eco-mode rolling-checkpoint compaction. Spawned at the end of
-			// the LLM loop so it can read the just-recorded assistant
-			// prompt_tokens. Uses an independent user-scoped context so a
-			// client disconnect doesn't interrupt the summary call.
-			go runEcoSummary(userContextFor(ar.UserID), ar.ConversationID)
-
 			return
 		}
 

@@ -93,6 +93,6 @@ func TestResolver_FitsBelowBothCeilingsStaysByteStable(t *testing.T) {
 	}
 }
 
-// The durable call sites (tool_loop.go, ecoCutoffIndex) share ecoContentBudget,
+// The durable call sites (index.go, tool_loop.go) share ecoContentBudget,
 // which applies the same clamp; the resolver-level tests above pin the
 // behaviour, and the clamp arithmetic is asserted there.

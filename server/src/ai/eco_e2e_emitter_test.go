@@ -70,7 +70,11 @@ func TestEmitE2EScenarios(t *testing.T) {
 	if out == "" {
 		t.Skip("PL_E2E_OUT not set")
 	}
-	const capTokens = maxMegacaveExcerptChars / 3 // 20000 est tokens
+	// Budgets come from the MEASURED stage sizes of the big fixture: the
+	// summary is uncapped, so stage sizes are a property of the fixture and the
+	// megacave transform, not of a cap constant.
+	probe := mkRealConv(200, compressibleToolChars)
+	aTok, bTok, cTok := stageSizes(t, probe)
 
 	type scen struct {
 		Name   string
@@ -79,11 +83,11 @@ func TestEmitE2EScenarios(t *testing.T) {
 		Chars  int
 	}
 	small := scen{Name: "fits", Budget: 60000, Turns: 3, Chars: 100}
-	big := scen{Name: "A", Budget: capTokens + 931/3 + 1000, Turns: 200, Chars: 900}
-	bigB := scen{Name: "B", Budget: capTokens + 200, Turns: 200, Chars: 900}
-	bigC := scen{Name: "C", Budget: 5000, Turns: 200, Chars: 900}
-	bigD := scen{Name: "D", Budget: 200, Turns: 200, Chars: 900}
-	bigD2 := scen{Name: "D_shrink", Budget: 1000, Turns: 200, Chars: 900}
+	big := scen{Name: "A", Budget: aTok + 1000, Turns: 200, Chars: compressibleToolChars}
+	bigB := scen{Name: "B", Budget: bTok + (aTok-bTok)/2, Turns: 200, Chars: compressibleToolChars}
+	bigC := scen{Name: "C", Budget: cTok + (bTok-cTok)/2, Turns: 200, Chars: compressibleToolChars}
+	bigD := scen{Name: "D", Budget: 200, Turns: 200, Chars: compressibleToolChars}
+	bigD2 := scen{Name: "D_drop_oldest", Budget: cTok / 4, Turns: 200, Chars: compressibleToolChars}
 
 	res := map[string]any{}
 	for _, s := range []scen{small, big, bigB, bigC, bigD, bigD2} {
@@ -123,7 +127,7 @@ func TestEmitE2EScenarios(t *testing.T) {
 	sweepBudget := ecoContentBudget("strata-sweep-unknown-model") // default window - reserve
 	prevStage := ""
 	for _, turns := range []int{1, 4, 8, 16, 32, 64, 96, 128, 160, 200, 300, 500, 800} {
-		conv := mkRealConv(turns, 900)
+		conv := mkRealConv(turns, compressibleToolChars)
 		view, ff := resolveEcoContextCompaction(conv, 65536, sweepBudget)
 		stage := "fits"
 		if id, _, ok := findMegacaveArtifact(view); ok {
@@ -149,7 +153,7 @@ func TestEmitE2EScenarios(t *testing.T) {
 	// budgets (budget = window - 6656). This localises the blast radius of a
 	// broken stage: stage C sits in a narrow band, so only small-window models
 	// ever reach it.
-	conv200 := mkRealConv(200, 900)
+	conv200 := mkRealConv(200, compressibleToolChars)
 	prev := ""
 	for _, b := range []int{60000, 30000, 22000, 21000, 20400, 15000, 10000, 6000, 5000, 3500, 2500, 1500, 800, 200} {
 		view, ff := resolveEcoContextCompaction(conv200, 65536, b)
