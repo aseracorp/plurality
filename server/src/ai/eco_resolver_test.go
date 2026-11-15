@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -16,6 +17,18 @@ func mkMsg(role, text string) utils.Message {
 func mkTool(name, text string) utils.Message {
 	return utils.Message{Role: "tool", Name: name, Content: utils.NewTextContent(text)}
 }
+
+// compressibleToolChars is the minimum tool-dump size the megacave transform
+// shrinks. writeMegacaveText elides a dump only above maxMegacaveToolShowChars
+// (6000); below that it just collapses whitespace, and the per-row headers it
+// adds ("TOOL_RESULT shell:", "USER:") make the excerpt LARGER than the rows it
+// came from. A fixture with 900-char dumps therefore measured stage A (~64669
+// est tokens) ABOVE the full history (~62400), the resolver correctly answered
+// "the whole history fits", returned it uncompressed, and the stage tests
+// reported "no megacave artifact" while the resolver was right. Real tool
+// results are far above the threshold (the measured live conversation
+// compresses to ratio ~0.107), so fixtures must live on that side of the line.
+const compressibleToolChars = 9_000
 
 // mkConv builds a synthetic conversation: system + N user/assistant turns,
 // each turn containing a big tool dump (to make it large).
@@ -85,34 +98,113 @@ func findMegacaveArtifact(msgs []utils.Message) (toolCallID, excerpt string, ok 
 	return "", "", false
 }
 
-// budgetForStage derives budgets that deterministically land the resolver on a
-// given stage, relative to the megacave excerpt cap (the stages are defined by
-// what the 60k-char excerpt cap allows through, so deriving budgets from the
-// constant keeps the tests honest if the cap changes).
-func budgetForStage(capTokens, perTurnTokens, lastTurnTokens, lastUserTokens int, stage int) int {
-	switch stage {
-	case 1: // excerpt + last full turn fits
-		return capTokens + lastTurnTokens + 1000
-	case 2: // excerpt + last full turn does NOT fit; excerpt + last user fits
-		// The excerpt saturates at the cap, so stage A ~ cap+oneTurn and
-		// stage B ~ cap+oneUser. Land between them.
-		_ = lastUserTokens
-		return capTokens + 200
-	case 3: // neither fits; user-only + last assistant fits
-		return lastUserTokens*10 + 500
-	default: // stage D: everything above fails, drop-oldest re-megacaves
-		return 200
+// stageSizes measures the ESTIMATED token size of each stage candidate for a
+// fixture. The summary is UNCAPPED, so these sizes are a property of the
+// fixture and the megacave transform, not of a cap constant; deriving budgets
+// from measurements keeps the tests honest when the transform changes.
+//
+// Mirrors resolveEcoContextCompaction stage-for-stage on a conversation with no
+// checkpoint (pairEnd == -1).
+// The probe tool-call ids MUST carry the "megacave_" prefix. The estimator
+// (boundedWireChars) exempts the rolling-summary row from the per-message send
+// cap via checkpointSummaryCarrier, which matches the tool name
+// "megacave_<stage>" — and the summary is UNCAPPED by design. A probe named
+// "probe_A" is NOT exempt, so approxTokens clamped it to
+// ecoSentMessageCapChars and reported a stage size ~3x smaller than what the
+// resolver actually measures. budgetForStage then produced a budget that the
+// real stage A/B candidates blew through, and the resolver correctly escalated
+// to C — the test then reported "expected stage A, got megacave_C" while the
+// resolver was right and the PROBE was lying.
+// stageSizes measures the ESTIMATED token size of each stage candidate for a
+// fixture. The summary is UNCAPPED, so these sizes are a property of the
+// fixture and the megacave transform, not of a cap constant; deriving budgets
+// from measurements keeps the tests honest when the transform changes.
+//
+// Mirrors resolveEcoContextCompaction stage-for-stage on a conversation with no
+// checkpoint (pairEnd == -1). Since the fold-loop fix every stage keeps the
+// SAME live tail (all rows from the newest user turn onwards) and differs only
+// in how much of the FOLDED set the summary represents, so the probe measures
+// exactly that: A = whole folded set, B = the B floor (oldest turns given up,
+// at least one turn kept), C = the B floor reduced to user/assistant rows.
+// The probe tool-call ids MUST carry the "megacave_" prefix: the estimator
+// (boundedWireChars) exempts the rolling-summary row from the per-message send
+// cap via checkpointSummaryCarrier, matching the tool name "megacave_<stage>".
+// A probe named "probe_A" is NOT exempt, so approxTokens clamps it and reports
+// a stage size far below what the resolver measures — budgets derived from it
+// then land on the wrong stage.
+func stageSizes(t *testing.T, msgs []utils.Message) (a, b, c int) {
+	t.Helper()
+	pairEnd := checkpointPairEnd(msgs)
+	tailStart := startOfLastTurn(msgs)
+	if tailStart >= 0 && tailStart <= pairEnd {
+		tailStart = pairEnd + 1
 	}
+	if tailStart < 0 {
+		tailStart = 0
+	}
+	tail := TruncateOversizedMessages(msgs[tailStart:])
+	folded := foldableRange(msgs, pairEnd, tailStart)
+
+	aArt := megacaveArtifact(folded, "megacave_probeA", "")
+	a = approxTokens(append(append([]utils.Message{}, aArt...), tail...))
+
+	// B floor: give up the OLDEST folded turns, keeping at least one turn
+	// represented. dropOldestTurn drains to EMPTY (len 0 < len(prev) keeps the
+	// loop going), while searchVariants(allowEmpty:false) stops one variant
+	// short of the empty one — so the probe must stop at the last NON-EMPTY
+	// variant. Probing the empty variant measures C's floor and the fixture
+	// then reports "cannot discriminate B/C".
+	floor := folded
+	for {
+		next := dropOldestTurn(floor)
+		if len(next) >= len(floor) || len(next) == 0 {
+			break
+		}
+		floor = next
+	}
+	bArt := megacaveArtifactWithDropMarker(floor, "megacave_probeB", "", len(folded)-len(floor))
+	b = approxTokens(append(append([]utils.Message{}, bArt...), tail...))
+
+	cFloor := userOnlyWithLastAssistant(floor)
+	cArt := megacaveArtifactWithDropMarker(cFloor, "megacave_probeC", "", len(folded)-len(cFloor))
+	c = approxTokens(append(append([]utils.Message{}, cArt...), tail...))
+	return a, b, c
+}
+
+// budgetForStage picks a budget that lands the resolver on `stage`
+// (1=A, 2=B, 3=C) for this fixture, i.e. big enough for that stage's own
+// candidate and small enough to exclude the previous, larger one.
+// Returns -1 when the fixture cannot discriminate the stages.
+func budgetForStage(t *testing.T, msgs []utils.Message, stage int) int {
+	t.Helper()
+	a, b, c := stageSizes(t, msgs)
+	switch stage {
+	case 1:
+		return a + 1000
+	case 2:
+		if b+50 >= a {
+			return -1
+		}
+		return b + (a-b)/2
+	case 3:
+		if c+50 >= b {
+			return -1
+		}
+		return c + (b-c)/2
+	}
+	return -1
 }
 
 // TestResolver_OverflowStageA: when content exceeds the budget, stage A keeps
 // the latest full turn verbatim and megacaves everything older, so context is
 // preserved via the excerpt rather than dropped.
 func TestResolver_OverflowStageA(t *testing.T) {
-	const capTokens = maxMegacaveExcerptChars / 3
-	msgs := mkConv(200, 900) // 200 turns, big tool dumps -> exceeds the excerpt cap
+	msgs := mkConv(200, compressibleToolChars) // 200 turns, big tool dumps -> far past any budget
 	window := 65536
-	budget := budgetForStage(capTokens, 931/3, 931/3, 5, 1)
+	budget := budgetForStage(t, msgs, 1)
+	if budget < 0 {
+		t.Fatal("fixture cannot reach stage A")
+	}
 
 	out, _ := resolveEcoContextCompaction(msgs, window, budget)
 	if len(out) == 0 {
@@ -152,11 +244,17 @@ func TestResolver_OverflowStageA(t *testing.T) {
 
 // TestResolver_OverflowStageB: when stage A is still too big, stage B keeps
 // only the most recent USER message plus the megacave of everything older.
+//
+// A and B differ by the rows of the newest turn that B gives up (A keeps the
+// whole turn verbatim, B keeps only its user row), so a budget between B's size
+// and A's size lands deterministically on B.
 func TestResolver_OverflowStageB(t *testing.T) {
-	const capTokens = maxMegacaveExcerptChars / 3
-	msgs := mkConv(200, 900)
+	msgs := mkConv(200, compressibleToolChars)
 	window := 65536
-	budget := budgetForStage(capTokens, 931/3, 931/3, 5, 2)
+	budget := budgetForStage(t, msgs, 2)
+	if budget < 0 {
+		t.Fatal("fixture cannot discriminate A/B (stage A must be larger than stage B)")
+	}
 
 	out, _ := resolveEcoContextCompaction(msgs, window, budget)
 	if len(out) == 0 {
@@ -190,15 +288,26 @@ func TestResolver_OverflowStageB(t *testing.T) {
 			sawLatestAssistant = true
 		}
 	}
-	if sawLatestAssistant {
-		t.Error("stage B should drop the tail beyond the latest user message")
+	// Stage B must NOT give up the live tail. The old contract ("B keeps only
+	// the newest user row") is the collapse-to-floor bug: on the agentic shape
+	// the newest user row is index 2 and everything after it is the in-flight
+	// working context, so shipping that one row discarded the agent's whole
+	// context for 97 consecutive turns (conversation 6751a6d5ac78c156d07fec21).
+	// B differs from A only in how much FOLDED history the summary keeps.
+	if !sawLatestAssistant {
+		t.Error("stage B must keep the live tail (rows after the newest user message) — dropping it is the collapse-to-floor bug")
 	}
 }
 
-// TestResolver_OverflowStageC: with a budget too small for stages A/B, the
-// resolver degrades to user-only plus the last assistant (stage C).
+// TestResolver_OverflowStageC: with a budget too small for stages A and B, the
+// resolver degrades to user messages plus the last assistant (stage C).
 func TestResolver_OverflowStageC(t *testing.T) {
-	out, _ := resolveEcoContextCompaction(mkConv(200, 900), 65536, 2500)
+	msgs := mkConv(200, compressibleToolChars)
+	budget := budgetForStage(t, msgs, 3)
+	if budget < 0 {
+		t.Fatal("fixture cannot discriminate B/C (stage B must be larger than stage C)")
+	}
+	out, foldFrom := resolveEcoContextCompaction(msgs, 65536, budget)
 	if len(out) == 0 {
 		t.Fatal("resolver returned empty")
 	}
@@ -212,38 +321,51 @@ func TestResolver_OverflowStageC(t *testing.T) {
 	if excerpt == "" {
 		t.Fatal("stage C artifact carries an empty excerpt")
 	}
+	// Stage C must fold strictly between the checkpoint pair and the newest
+	// user turn: it never folds the live ask.
+	lastUser := indexOfLastUser(msgs)
+	if foldFrom > lastUser {
+		t.Fatalf("foldFrom %d must never fold the newest user turn (idx %d)", foldFrom, lastUser)
+	}
+	if foldFrom <= 0 {
+		t.Fatalf("stage C must fold at least one row, foldFrom=%d", foldFrom)
+	}
 }
 
-// TestResolver_OverflowStageDShrinksExcerpt: stage D runs when the budget is
-// below what a megacave excerpt can naturally be (the excerpt saturates at
-// maxMegacaveExcerptChars). Stage D must then cap the EXCERPT ITSELF to the
-// remaining budget and keep the newest user message verbatim, so the output
-// both fits and stays well-formed.
-func TestResolver_OverflowStageDShrinksExcerpt(t *testing.T) {
-	msgs := mkConv(200, 900)
-	// Stage C (user-only megacave of 200 turns) is ~1409 tokens, so a budget
-	// below ~1449 reaches stage D. The minimum stage D candidate is the
-	// artifact pair plus the newest turn (user + assistant + 900-char tool
-	// result, ~330 tokens), so ~1000 leaves stage D a fit it can only reach by
-	// SHRINKING the excerpt — which is what this asserts.
-	budget := 1000
-	out, _ := resolveEcoContextCompaction(msgs, 65536, budget)
+// TestResolver_OverflowStageDDropsOldestTurns: stage D runs when stages A, B
+// and C are all too big. Its contract is the documented one — drop the OLDEST
+// folded turn, one at a time, rebuilding the (UNCAPPED) summary until the view
+// fits — NOT an excerpt cap.
+//
+// Capping the excerpt is what produced the checkpoint that ended mid-sentence
+// ("Clean fi"), and a cap cannot make the fit test pass: the excerpt saturates
+// at the cap, so `fits` never goes true below that floor. The old greedy loop
+// therefore drained the slice to nil, megacaveArtifact(nil) returned nil, and
+// the resolver emitted an EMPTY history, which the caller's `len(convTail) > 0`
+// guard replaced with the FULL UNCOMPACTED history (defect #161).
+func TestResolver_OverflowStageDDropsOldestTurns(t *testing.T) {
+	msgs := mkConv(200, compressibleToolChars)
+	a, b, c := stageSizes(t, msgs)
+	if c >= b {
+		t.Fatalf("fixture cannot discriminate C/D: C=%d, B=%d", c, b)
+	}
+	// Small enough to fail A, B and C, so the resolver must land on D.
+	budget := c / 4
+	out, foldFrom := resolveEcoContextCompaction(msgs, 65536, budget)
 	if len(out) == 0 {
-		t.Fatal("resolver returned empty")
+		t.Fatal("resolver returned empty (caller would send the full history)")
 	}
 	artID, excerpt, ok := findMegacaveArtifact(out)
 	if !ok {
-		t.Fatal("stage D must keep a megacave artifact when the excerpt can be capped")
+		t.Fatal("stage D must keep a megacave artifact")
 	}
 	if !strings.HasPrefix(artID, "megacave_D") {
-		t.Fatalf("stage D artifact id should be megacave_D, got %q", artID)
+		t.Fatalf("expected stage D artifact, got %q", artID)
 	}
 	if excerpt == "" {
 		t.Fatal("stage D artifact carries an empty excerpt")
 	}
-	if len(excerpt) >= maxMegacaveExcerptChars {
-		t.Errorf("stage D excerpt was not capped to the budget: %d chars", len(excerpt))
-	}
+	// The newest user message survives verbatim in every stage.
 	var sawLatestUser bool
 	for i := range out {
 		if out[i].Role == "user" && strings.Contains(out[i].TextContent(), "user request 9") {
@@ -253,24 +375,166 @@ func TestResolver_OverflowStageDShrinksExcerpt(t *testing.T) {
 	if !sawLatestUser {
 		t.Error("stage D must keep the newest user message verbatim")
 	}
-	if approxTokens(out) > budget {
-		t.Errorf("stage D output exceeds budget: ~%d tokens / budget %d", approxTokens(out), budget)
+	// DROPPING turns must genuinely shrink the view: that monotone shrink is
+	// what makes the loop terminate (an excerpt cap does not shrink below the
+	// cap, which is why the old loop never terminated).
+	if got := approxTokens(out); got >= c {
+		t.Errorf("stage D did not shrink the view: ~%d tokens >= stage C's ~%d", got, c)
+	}
+	// The loss must be recorded OUT LOUD: the dropped rows are marked compacted
+	// and are NOT represented in the summary, so the summary has to say so.
+	if !strings.Contains(excerpt, "oldest context dropped") {
+		t.Errorf("stage D dropped %d turns worth of history without marking it in the summary", (c-approxTokens(out))/(c/200+1))
+	}
+	if a <= 0 || b <= 0 {
+		t.Errorf("stage sizes unmeasured: A=%d B=%d", a, b)
+	}
+	if foldFrom <= 0 {
+		t.Errorf("stage D must fold at least one row, foldFrom=%d", foldFrom)
 	}
 }
 
-// TestResolver_NeverReturnsEmptyOnTinyBudget: regression test. The megacave
-// excerpt is capped at maxMegacaveExcerptChars (~20k est tokens) while
-// contentBudget floors at 8192, so for any budget below the cap stage D's
-// shrink loop can never fit. The old stage D returned NIL in that case, and
-// the caller's `if len(convTail) > 0` guard then sent the FULL uncompressed
-// history — an oversized request on the exact path meant to shrink it. The
-// resolver must therefore NEVER return an empty slice, and the newest user
-// request must survive compaction — verbatim when a stage keeps the newest
-// turn, or inside the megacave excerpt at stage C, which by design represents
-// user messages only through the excerpt.
+// TestResolver_StageDMarksNothingWhenThereIsNothingToFold: a loss marker must
+// only ever claim a loss that happened.
+//
+// The old version of this test asked for "stage D, whole folded set kept, no
+// marker" via a budget just under stage C. That state is unreachable: stage D
+// rebuilds the summary from the FULL folded set (stage C only reduced the SET to
+// user rows), so D's first candidate is always >= C's, and D is entered only
+// because C did not fit — so D always has to drop at least one turn before it
+// fits. Asserting "no drop" through the ladder therefore pins a state the code
+// can never reach.
+//
+// The reachable no-drop state is a conversation with nothing to fold: the newest
+// user turn is everything after the checkpoint pair. D then runs with an empty
+// folded set, so there is no excerpt AND no rows given up — neither an artifact
+// nor a marker may appear, and the oversized newest message must survive
+// bounded (it is the request; folding older history cannot shrink it).
+func TestResolver_StageDMarksNothingWhenThereIsNothingToFold(t *testing.T) {
+	pair := checkpointArtifactMessages(nil, "eco_checkpoint", "PRIOR ROLL-UP")
+	huge := strings.Repeat("z", ecoSentMessageCapChars+50000)
+	msgs := append(append([]utils.Message{}, pair...), mkMsg("user", huge))
+
+	budget := 200 // the newest message alone is far over it
+	out, foldFrom := resolveEcoContextCompaction(msgs, 65536, budget)
+	if len(out) == 0 {
+		t.Fatal("resolver returned empty (caller would send the full history)")
+	}
+	if artID, excerpt, ok := findMegacaveArtifact(out); ok {
+		// The two loss markers SHARE the "oldest context dropped:" prefix and
+		// count DIFFERENT things (folded rows vs characters of the roll-up), so
+		// a coarse Contains on the prefix audits the wrong loss. The rows marker
+		// is the one that would be a lie here: the folded set is EMPTY, so no
+		// row was given up and the durable fold marks nothing.
+		if strings.Contains(excerpt, "messages of this conversation were folded away") {
+			t.Errorf("stage D claims it folded rows away, folded set is empty: %q", first(excerpt, 200))
+		}
+		if strings.Contains(excerpt, "live context trimmed") {
+			t.Errorf("stage D claims a tail trim with nothing trimmed: %q", first(excerpt, 200))
+		}
+		// The prior roll-up is the only representation of everything folded in
+		// earlier rounds, so it is dropped ONLY when the request physically has
+		// no room for it: here the newest message alone (bounded to
+		// ecoSentMessageCapChars) dwarfs the 200-token budget, so the roll-up
+		// cannot be kept and the honest empty-roll-up banner is correct. If the
+		// budget leaves room, the roll-up must be carried forward verbatim.
+		anchorTokens := approxTokens(TruncateOversizedMessages(msgs[2:]))
+		if room := 200 - anchorTokens; room > 60 && !strings.Contains(excerpt, "PRIOR ROLL-UP") {
+			t.Errorf("prior roll-up dropped although ~%d tokens of room remain: %q", room, first(excerpt, 200))
+		}
+		// An empty roll-up must always carry a banner saying so — the fold marks
+		// the represented rows compacted=1, so a silent checkpoint is permanent
+		// amnesia. Two banners exist: the plain "nothing to summarise" one, and
+		// the "dropped in full" one stage D emits when it had a roll-up and the
+		// request cannot fit any of it.
+		bannered := strings.Contains(excerpt, "rolled into this checkpoint") ||
+			strings.Contains(excerpt, "dropped in full")
+		if !strings.Contains(excerpt, "PRIOR ROLL-UP") && !bannered {
+			t.Errorf("empty roll-up carried with no honest banner: %q", first(excerpt, 200))
+		}
+		_ = artID
+	}
+	var sawNewestUser bool
+	for i := range out {
+		if out[i].Role == "user" && strings.Contains(out[i].TextContent(), "zzzz") {
+			sawNewestUser = true
+		}
+	}
+	if !sawNewestUser {
+		t.Error("the newest user message must survive in every stage")
+	}
+	if foldFrom > len(pair) {
+		t.Errorf("nothing is foldable past the checkpoint pair, foldFrom=%d (pair ends at %d)", foldFrom, len(pair)-1)
+	}
+}
+
+// TestResolver_StageDDropMarkerCountIsAccurate: the marker names a row count, and
+// the durable fold marks exactly those rows compacted, so the number has to be
+// the number of folded rows NOT represented in the summary. A wrong count is a
+// false audit trail of context loss.
+func TestResolver_StageDDropMarkerCountIsAccurate(t *testing.T) {
+	msgs := mkConv(200, compressibleToolChars)
+	_, _, c := stageSizes(t, msgs)
+	out, _ := resolveEcoContextCompaction(msgs, 65536, c/4)
+	_, excerpt, ok := findMegacaveArtifact(out)
+	if !ok {
+		t.Fatal("stage D must keep a megacave artifact")
+	}
+	foldedTotal := len(foldableRange(msgs, checkpointPairEnd(msgs), startOfLastTurn(msgs)))
+	tailTotal := len(msgs) - startOfLastTurn(msgs)
+
+	// Two distinct losses, two distinct markers, two denominators. The durable
+	// one counts FOLDED rows (compacted=1, gone); the tail one counts rows
+	// trimmed from the LIVE tail for this request only (compacted=0, they come
+	// back). Asserting a single literal silently audits the wrong loss.
+	var rowsClaimed, tailClaimed, charsClaimed int
+	var sawRows, sawTail, sawChars bool
+	if i := strings.Index(excerpt, "[oldest context dropped: "); i >= 0 {
+		if _, err := fmt.Sscanf(excerpt[i:], "[oldest context dropped: %d ", &rowsClaimed); err == nil {
+			sawRows = true
+		}
+	}
+	if i := strings.Index(excerpt, "[oldest context dropped: "); i >= 0 {
+		var n int
+		if _, err := fmt.Sscanf(excerpt[i:], "[oldest context dropped: %d characters", &n); err == nil {
+			charsClaimed, sawChars = n, true
+		}
+	}
+	if i := strings.Index(excerpt, "[live context trimmed for this request: the "); i >= 0 {
+		if _, err := fmt.Sscanf(excerpt[i:], "[live context trimmed for this request: the %d most recent", &tailClaimed); err == nil {
+			sawTail = true
+		}
+	}
+	if !sawRows && !sawTail && !sawChars {
+		t.Fatalf("no loss marker in the stage D summary: %q", first(excerpt, 200))
+	}
+	if sawRows && (rowsClaimed <= 0 || rowsClaimed > foldedTotal) {
+		t.Fatalf("marker claims %d folded rows dropped, folded set is %d rows", rowsClaimed, foldedTotal)
+	}
+	if sawChars && charsClaimed <= 0 {
+		t.Fatalf("chars marker claims %d characters", charsClaimed)
+	}
+	if sawTail {
+		// The tail trim is bounded by the tail, and must be counted as
+		// "rows given up beyond the task anchor", never as the anchor itself.
+		if tailClaimed <= 0 || tailClaimed > tailTotal-1 {
+			t.Fatalf("tail marker claims %d trimmed rows, tail is %d rows (anchor always kept)", tailClaimed, tailTotal)
+		}
+	}
+}
+
+// TestResolver_NeverReturnsEmptyOnTinyBudget: regression test for defect #161.
+// The old stage D hard-capped the megacave excerpt, so for any budget below the
+// cap the shrink loop could never fit, returned NIL, and the caller's
+// `if len(convTail) > 0` guard then sent the FULL uncompressed history — an
+// oversized request on the exact path meant to shrink it. The resolver must
+// therefore NEVER return an empty slice, and the newest user request must
+// survive compaction — verbatim when a stage keeps the newest turn, or inside
+// the megacave excerpt at stage C, which by design represents user messages
+// only through the excerpt.
 func TestResolver_NeverReturnsEmptyOnTinyBudget(t *testing.T) {
 	for _, budget := range []int{200, 1000, 8192} {
-		out, _ := resolveEcoContextCompaction(mkConv(500, 900), 65536, budget)
+		out, _ := resolveEcoContextCompaction(mkConv(500, compressibleToolChars), 65536, budget)
 		if len(out) == 0 {
 			t.Fatalf("budget %d: resolver returned empty (caller would send full history)", budget)
 		}
@@ -300,7 +564,7 @@ func latestUserRequestSurvives(msgs []utils.Message, needle string) bool {
 // injected at the FRONT of the history, so a malformed pair would break every
 // compacted request.
 func TestResolver_ArtifactIsWellFormed(t *testing.T) {
-	out, _ := resolveEcoContextCompaction(mkConv(200, 900), 65536, 4000)
+	out, _ := resolveEcoContextCompaction(mkConv(200, compressibleToolChars), 65536, 4000)
 	if len(out) < 2 {
 		t.Fatalf("expected at least the artifact pair, got %d messages", len(out))
 	}
@@ -367,15 +631,15 @@ func TestMegacavePreservesCodeBlock(t *testing.T) {
 // 400 "No user query found in messages" while fits/A/B/D cached at 98-99.9%).
 // A compaction stage that cannot be sent is not a fallback, it is an outage.
 func TestResolver_EveryStageIsSendable(t *testing.T) {
-	const capTokens = maxMegacaveExcerptChars / 3
-	msgs := mkConv(200, 900)
+	msgs := mkConv(200, compressibleToolChars)
+	a, b, c := stageSizes(t, msgs)
 	budgets := map[string]int{
 		"fits":  60000,
-		"A":     budgetForStage(capTokens, 931/3, 931/3, 5, 1),
-		"B":     budgetForStage(capTokens, 931/3, 931/3, 5, 2),
-		"C":     5000,
+		"A":     a + 1000,
+		"B":     b + (a-b)/2,
+		"C":     c + (b-c)/2,
 		"D":     200,
-		"D-sat": 1000,
+		"D-sat": c / 4,
 	}
 	for name, budget := range budgets {
 		out, _ := resolveEcoContextCompaction(msgs, 65536, budget)

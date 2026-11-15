@@ -117,8 +117,18 @@ func insertConversation(t *testing.T, ctx context.Context, convID string) {
 // TestCompactConversationDurable_PriorSummaryDoesNotNest drives durable
 // compaction repeatedly with machineSummary = nil — the mechanical fallback
 // ("[compacted by Plurality — summary unavailable...]") is the producer that
-// nested in production. The summary carried forward must stay bounded and must
-// never accumulate generations of "PRIOR CHECKPOINT:" banners.
+// nested in production.
+//
+// Two invariants, both measured live before this fix:
+//
+//  1. the stored summary never accumulates generations of "PRIOR CHECKPOINT:"
+//     banners (15 nested banners, tool row 65243 -> 65663 chars, +~105 chars
+//     per turn — the head bytes of every prompt moved and prefix reuse
+//     collapsed);
+//  2. the summary is an APPEND-ONLY extension of the previous stored summary
+//     (strings.HasPrefix). It is uncapped — a bounded summary silently drops
+//     the oldest folded rows — so byte-stability at its HEAD, not its length,
+//     is what keeps the backend KV prefix cache hot.
 func TestCompactConversationDurable_PriorSummaryDoesNotNest(t *testing.T) {
 	openTestUserDB(t, "sam")
 	ctx := context.WithValue(context.Background(), "userID", "sam")
@@ -137,6 +147,7 @@ func TestCompactConversationDurable_PriorSummaryDoesNotNest(t *testing.T) {
 	}
 
 	// Each round folds up to the 4th live user row, leaving a long live tail.
+	prevSummary := ""
 	for round := 0; round < 12; round++ {
 		full, err := loadRawConversationMessagesForTest(ctx, cid)
 		if err != nil {
@@ -169,9 +180,21 @@ func TestCompactConversationDurable_PriorSummaryDoesNotNest(t *testing.T) {
 			t.Fatalf("round %d: the stored summary nests %d %q banners (len=%d) — the head bytes of every prompt move, which collapses backend prefix reuse\nhead: %q",
 				round, n, priorSummaryBanner, len(summary), head)
 		}
-		if len(summary) > maxDurableSummaryChars {
-			t.Fatalf("round %d: stored summary %d chars exceeds the %d bound", round, len(summary), maxDurableSummaryChars)
+		// Append-only: the new stored summary must START with the previous one,
+		// byte for byte. The checkpoint pair is the first content of the prompt
+		// after the system block, so a prefix-extension leaves the prompt head
+		// untouched and the KV cache keeps reusing it; rewriting the head (the
+		// old truncating/rewriting shape) forces a full re-prefill every turn.
+		if prevSummary != "" && !strings.HasPrefix(summary, prevSummary) {
+			t.Fatalf("round %d: the stored summary is not an append-only extension of the previous one — the prompt head moves every fold (prefix-cache collapse).\nprev(%d chars) head: %q\nnew (%d chars) head: %q",
+				round, len(prevSummary), prevSummary[:min(200, len(prevSummary))], len(summary), summary[:min(200, len(summary))])
 		}
+		// Growth must be monotone: every folded turn adds content, and nothing
+		// is dropped from the front (that is the uncapped-summary contract).
+		if len(summary) <= len(prevSummary) && prevSummary != "" {
+			t.Fatalf("round %d: summary shrank from %d to %d chars — folded history was dropped, not carried forward", round, len(prevSummary), len(summary))
+		}
+		prevSummary = summary
 	}
 }
 

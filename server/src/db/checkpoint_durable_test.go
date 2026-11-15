@@ -468,8 +468,28 @@ func TestCompactConversationDurable_MovesCheckpointForward(t *testing.T) {
 	if !strings.Contains(summary, "NEW SUMMARY") {
 		t.Fatalf("expected the NEW summary, got: %q", summary)
 	}
-	if strings.Contains(summary, "OLD SEED") {
-		t.Fatalf("old seed summary leaked into the new pair: %q", summary)
+	// The prior roll-up must survive — append-only. Every row the PREVIOUS fold
+	// marked compacted is represented ONLY by this text, so dropping it on the
+	// next fold deletes all older history (the "context lost on restart" bug,
+	// which is exactly what the plumbing bug produced: the prior text was built
+	// into a string the machine path then threw away).
+	//
+	// It must appear EXACTLY ONCE, byte-for-byte, at the HEAD: the checkpoint
+	// pair is the first content of the prompt after the system block, so a
+	// stable head is what keeps the backend KV prefix cache reusing it.
+	// Generations of "PRIOR CHECKPOINT:" banners (measured live: 15 nested
+	// banners, +~105 chars per turn) are what broke that.
+	if !strings.HasPrefix(summary, "OLD SEED SUMMARY") {
+		t.Fatalf("prior roll-up not preserved verbatim at the head: %q", summary)
+	}
+	if n := strings.Count(summary, "OLD SEED"); n != 1 {
+		t.Fatalf("prior roll-up must be carried forward exactly once, found %d: %q", n, summary)
+	}
+	if !strings.Contains(summary, newerHistoryBanner) {
+		t.Fatalf("expected the append banner between the roll-up and the new excerpt, got: %q", summary)
+	}
+	if n := strings.Count(summary, priorSummaryBanner); n != 0 {
+		t.Fatalf("the new format must not write the nesting head marker, found %d: %q", n, summary)
 	}
 	// The kept tail must start on a non-tool boundary (turn-anchored).
 	// After compaction the first kept message should be an assistant or user,

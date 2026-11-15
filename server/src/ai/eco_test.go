@@ -71,22 +71,21 @@ func TestCompactConversationForContext_TruncatesOversizedMessage(t *testing.T) {
 	}
 }
 
-// TestEcoCutoffIndex_AdvancesOnNeverCompacted: the staged resolver is the only
-// cutoff authority now (there is no "target tokens" knob). A giant
-// never-compacted conversation must get a real cutoff that advances past the
-// existing checkpoint, never folds the newest user turn, and never leaves a
-// live window that starts on a tool row.
-func TestEcoCutoffIndex_AdvancesOnNeverCompacted(t *testing.T) {
+// TestResolver_FoldBoundaryOnNeverCompacted: the staged resolver is the only
+// fold-boundary authority now (there is no "target tokens" knob). A giant
+// never-compacted conversation must fold strictly past the existing checkpoint
+// pair, never fold the newest user turn, and never leave a live tail that
+// starts on a tool row.
+func TestResolver_FoldBoundaryOnNeverCompacted(t *testing.T) {
 	mk := func(role string, n int) utils.Message {
 		return utils.Message{Role: role, Content: utils.NewTextContent(strings.Repeat("x", n))}
 	}
 	var msgs []utils.Message
-	msgs = append(msgs, mk("assistant", 10), mk("tool", 10)) // 0,1 existing checkpoint
+	msgs = append(msgs, checkpointMsg(), toolMsg()) // 0,1 existing checkpoint pair
 	// Sized to OVERFLOW the default window: ecoContentBudget("unknown model")
-	// is 131072 - 6656 = 124416 tokens, and 30 turns x 30,020 chars is
-	// ~300k est tokens (chars/3), so the history genuinely does not fit. A
-	// smaller fixture fits the window and correctly gets NO cutoff — which is
-	// what the old 8-turn fixture did, and why it is no longer used here.
+	// is 131072 - 6656 = 124416 tokens, and 30 turns x 30,020 chars is ~300k
+	// est tokens (chars/3), so the history genuinely does not fit. A smaller
+	// fixture fits the window and correctly folds nothing.
 	for turn := 0; turn < 30; turn++ {
 		msgs = append(msgs, mk("user", 20))
 		for i := 0; i < 30; i++ {
@@ -96,32 +95,36 @@ func TestEcoCutoffIndex_AdvancesOnNeverCompacted(t *testing.T) {
 	newestUser := len(msgs)
 	msgs = append(msgs, mk("user", 20))
 
-	cut := ecoCutoffIndex(msgs, "gpt-test")
-	if cut <= 1 {
-		t.Fatalf("expected cutoff to advance past the checkpoint (idx 1), got %d (len=%d)", cut, len(msgs))
+	_, foldFrom := resolveEcoContextCompaction(msgs, 65536, ecoContentBudget("gpt-test"))
+	if foldFrom <= 1 {
+		t.Fatalf("expected the fold to advance past the checkpoint pair (idx 1), got %d (len=%d)", foldFrom, len(msgs))
 	}
-	if cut >= len(msgs) {
-		t.Fatalf("cutoff must leave live messages, got %d (len=%d)", cut, len(msgs))
+	if foldFrom >= len(msgs) {
+		t.Fatalf("fold must leave live messages, got %d (len=%d)", foldFrom, len(msgs))
 	}
-	if cut > newestUser {
-		t.Fatalf("cutoff %d must never fold the newest user turn (idx %d)", cut, newestUser)
+	if foldFrom > newestUser {
+		t.Fatalf("fold %d must never fold the newest user turn (idx %d)", foldFrom, newestUser)
 	}
-	if msgs[cut].Role == "tool" {
-		t.Fatalf("kept tail must not start on a tool row, got idx %d role %q", cut, msgs[cut].Role)
+	if msgs[foldFrom].Role == "tool" {
+		t.Fatalf("kept tail must not start on a tool row, got idx %d role %q", foldFrom, msgs[foldFrom].Role)
 	}
 }
 
-// TestEcoCutoffIndex_FitsReturnsNoCutoff pins that a conversation that already
-// fits the window gets NO cutoff: nothing is folded, the prefix stays
-// byte-stable and the KV cache stays hot.
-func TestEcoCutoffIndex_FitsReturnsNoCutoff(t *testing.T) {
+// TestResolver_FitsFoldsNothing pins that a conversation that already fits the
+// window is returned UNCHANGED with foldFrom == 0: nothing is folded, the
+// prefix stays byte-stable and the KV cache stays hot.
+func TestResolver_FitsFoldsNothing(t *testing.T) {
 	var msgs []utils.Message
 	for i := 0; i < 6; i++ {
 		msgs = append(msgs,
 			utils.Message{Role: "user", Content: utils.NewTextContent("short ask")},
 			utils.Message{Role: "assistant", Content: utils.NewTextContent("short answer")})
 	}
-	if cut := ecoCutoffIndex(msgs, "gpt-test"); cut != -1 {
-		t.Fatalf("fitting conversation must not be compacted, got cutoff %d", cut)
+	out, foldFrom := resolveEcoContextCompaction(msgs, 65536, 60000)
+	if foldFrom != 0 {
+		t.Fatalf("fitting conversation must not be compacted, got foldFrom %d", foldFrom)
+	}
+	if len(out) != len(msgs) {
+		t.Fatalf("fitting conversation must be returned unchanged: %d vs %d", len(out), len(msgs))
 	}
 }

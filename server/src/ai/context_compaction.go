@@ -7,9 +7,39 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
+
+// checkpointSummaryCarrier reports whether m is the TOOL half of an eco
+// checkpoint pair — the row that carries the rolling summary of everything the
+// conversation has folded away.
+//
+// That row must be EXEMPT from the per-message send cap below
+// (maxCompactMessageChars). The cap is a defence against one runaway message
+// (a pasted 991440-char logfile); the summary is not a runaway message, it is
+// the roll-up of thousands of them, and its size is decided by the fold loop's
+// fit test against the context window (ai.resolveEcoContextCompaction), which
+// measures it in full. Applying the 100k cap to it truncates the summary on the
+// way out and drops the oldest content with no marker — the silent context loss
+// the fold loop exists to prevent, reintroduced at the last hop.
+//
+// The estimator (eco.go boundedWireChars) applies the SAME exemption: the
+// trigger and the sender must measure the same bytes, or the gate fires on a
+// request that is not what leaves.
+func checkpointSummaryCarrier(m utils.Message) bool {
+	if m.Role != "tool" {
+		return false
+	}
+	if m.Name == db.EcoCheckpointToolName {
+		return true
+	}
+	// The in-memory staged view carries the same roll-up under a
+	// "megacave_<stage>" tool name (see ai.megacaveArtifact). Same rule: its
+	// size is the resolver's business, not this constant's.
+	return strings.HasPrefix(m.Name, "megacave_")
+}
 
 // isContextLengthError classifies an LLM error as "the request exceeded the
 // model's context window". Providers report this as context_length_exceeded,
@@ -125,6 +155,12 @@ const maxCompactMessageChars = 100_000
 func TruncateOversizedMessages(messages []utils.Message) []utils.Message {
 	out := make([]utils.Message, 0, len(messages))
 	for _, m := range messages {
+		if checkpointSummaryCarrier(m) {
+			// The rolling checkpoint summary is sized by the fold loop, not by
+			// this constant — see checkpointSummaryCarrier.
+			out = append(out, m)
+			continue
+		}
 		// The cap covers the NON-IMAGE payload. Image bytes are the provider's
 		// real context cost (a screenshot is 10-50k tokens) and this helper must
 		// never trade them away: bounding the whole payload instead would let one
@@ -263,51 +299,52 @@ var (
 	reFill = regexp.MustCompile(`(?i)^(the|a|an|and|or|but|so|then|well|ok|okay|right|now|so basically|so in summary|in other words|in conclusion)\\b.*$`)
 )
 
-// maxMegacaveExcerptChars bounds the machine-excerpt checkpoint.
-const maxMegacaveExcerptChars = 60_000
+// The machine excerpt is UNCAPPED. A bounded excerpt is not a summary, it is a
+// truncation: at 60_000 chars the excerpt of a long conversation hit the budget
+// mid-sentence (observed checkpoint: 61_715 bytes ending "Clean fi"), so the
+// model received a mutated transcript with the tail of the folded history
+// silently gone. The excerpt is the roll-up of the history the conversation is
+// giving up, so its size must be decided by what it has to preserve, not by a
+// constant. Fit against the context window is the CALLER's job
+// (ai.resolveEcoContextCompaction folds more history until the request fits);
+// capping the excerpt there is what produced the "folded everything, still
+// oversized, shipped an empty history" shape.
 
 // maxMegacaveToolShowChars is the head+tail budget shown for a single large
 // tool result (split ~60/40 head/tail around an elision banner).
 const maxMegacaveToolShowChars = 6_000
 
-// MachineExcerptMegacave renders a bounded, deterministic "megacave" machine
+// MachineExcerptMegacave renders a deterministic, UNCAPPED "megacave" machine
 // excerpt of the folded message history: facts/code/paths/IDs verbatim,
 // prose and structured noise aggressively compressed, NO LLM call. It mirrors
 // Caveman's /caveman-compress read_less contract so the checkpoint preserves
 // the conversation's concrete content without the latency/cost of a summary
 // model (the bug behind "durable compaction never sent a compacted request").
+//
+// Measured on a real 10.5M-char conversation: the transform compresses to
+// ~1.13M chars (ratio 0.107), i.e. folding history always shrinks the request
+// (total = W - 0.893 x folded) — the property the fold loop in
+// resolveEcoContextCompaction relies on.
 func MachineExcerptMegacave(messages []utils.Message) string {
 	var b strings.Builder
-	budget := maxMegacaveExcerptChars
 
 	writeLine := func(s string) {
 		if s == "" {
 			return
-		}
-		if b.Len() >= budget {
-			return
-		}
-		room := budget - b.Len()
-		if len(s) > room {
-			s = textsafe.HeadBytes(s, room)
 		}
 		b.WriteString(s)
 		b.WriteString("\n")
 	}
 
 	for _, m := range messages {
-		if b.Len() >= budget {
-			writeLine("[... megacave excerpt truncated: further history omitted ...]")
-			break
-		}
 		switch m.Role {
 		case "user":
 			writeLine("USER:")
-			writeMegacaveContent(&b, m, budget, writeLine)
+			writeMegacaveContent(&b, m, writeLine)
 			writeLine("")
 		case "assistant":
 			writeLine("ASSISTANT:")
-			writeMegacaveContent(&b, m, budget, writeLine)
+			writeMegacaveContent(&b, m, writeLine)
 			for _, tc := range m.ToolCalls {
 				args := compactJSON(tc.Function.Arguments)
 				writeLine("[tool_call " + tc.Function.Name + "] args=" + args)
@@ -315,7 +352,7 @@ func MachineExcerptMegacave(messages []utils.Message) string {
 			writeLine("")
 		case "tool":
 			writeLine("TOOL_RESULT " + m.Name + ":")
-			writeMegacaveContent(&b, m, budget, writeLine)
+			writeMegacaveContent(&b, m, writeLine)
 			writeLine("")
 		}
 	}
@@ -324,12 +361,9 @@ func MachineExcerptMegacave(messages []utils.Message) string {
 
 // writeMegacaveContent writes a message's text parts through the megacave
 // transforms: code/markdown fences verbatim, JSON/long text compressed.
-func writeMegacaveContent(b *strings.Builder, m utils.Message, budget int, writeLine func(string)) {
+func writeMegacaveContent(b *strings.Builder, m utils.Message, writeLine func(string)) {
 	parts := m.ContentParts()
 	for _, p := range parts {
-		if b.Len() >= budget {
-			return
-		}
 		if p.Type != "text" && p.Type != "snippet" {
 			continue
 		}
@@ -339,22 +373,19 @@ func writeMegacaveContent(b *strings.Builder, m utils.Message, budget int, write
 		if p.Filename != "" {
 			writeLine("[attachment: " + p.Filename + "]")
 		}
-		writeMegacaveText(b, p.Text, budget, writeLine)
+		writeMegacaveText(b, p.Text, writeLine)
 	}
 }
 
 // writeMegacaveText applies the per-text megacave transform: keep fenced code
 // blocks verbatim; compress JSON to single line with whitespace stripped;
 // otherwise trim prose to head+tail if oversized.
-func writeMegacaveText(b *strings.Builder, text string, budget int, writeLine func(string)) {
+func writeMegacaveText(b *strings.Builder, text string, writeLine func(string)) {
 	if strings.Contains(text, "```") || strings.Contains(text, "~~~") {
 		// Markdown-fenced code: preserve every line verbatim (fenced regions are
 		// the "code blocks" the /caveman-compress contract keeps intact).
 		for _, line := range strings.Split(text, "\n") {
 			writeLine(line)
-			if b.Len() >= budget {
-				return
-			}
 		}
 		return
 	}
@@ -393,9 +424,6 @@ func writeMegacaveText(b *strings.Builder, text string, budget int, writeLine fu
 			continue
 		}
 		writeLine(reWS.ReplaceAllString(l, " "))
-		if b.Len() >= budget {
-			return
-		}
 	}
 }
 

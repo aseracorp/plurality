@@ -224,11 +224,12 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				// The staged resolver decides the fold: the context window is
 				// the target, so durable compaction folds exactly what stages
 				// A -> D dropped.
-				_, foldFrom := resolveEcoContextCompaction(conversation.Messages,
+				stagedView, foldFrom := resolveEcoContextCompaction(conversation.Messages,
 					Models.MaxContextTokensForPrefixed(model.Name), ecoContentBudget(model.Name))
-				removed, cErr := db.CompactConversationDurable(
+				removed, cErr := db.CompactConversationDurableWithSummary(
 					ar.Ctx, ar.ConversationID, conversation.Messages, foldFrom,
 					func(msgs []utils.Message) string { return MachineExcerptMegacave(msgs) },
+					shippedSummary(stagedView),
 				)
 				if cErr != nil {
 					utils.Error("[LLMLoop] durable compaction failed (falling back to in-memory only)", cErr)
@@ -455,12 +456,6 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 					})
 				}()
 			}
-
-			// Eco-mode rolling-checkpoint compaction. Spawned at the end of
-			// the LLM loop so it can read the just-recorded assistant
-			// prompt_tokens. Uses an independent user-scoped context so a
-			// client disconnect doesn't interrupt the summary call.
-			go runEcoSummary(userContextFor(ar.UserID), ar.ConversationID)
 
 			return
 		}
