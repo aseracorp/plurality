@@ -368,6 +368,79 @@ func ReplaceCheckpoint(
 // Deleting triggers the FTS and vector cleanup triggers already defined in
 // schema (messages_fts_delete / messages_vec_delete).
 
+// composeDurableSummary builds the checkpoint summary from scratch: the machine
+// excerpt of the folded rows (mechanical raw text when no producer is wired),
+// carried forward APPEND-ONLY on the previous summary.
+//
+// The previous shape built the prior text into a string that the machine path
+// then threw away, so every fold lost the summary of everything folded before
+// it — "context lost on restart" with no error anywhere. Appending (never
+// rewriting, never capping) keeps the stored text a strict prefix-extension of
+// the previous one: the checkpoint pair is the first content of the prompt after
+// the system block, so its head bytes stay byte-identical and the backend KV
+// prefix cache keeps reusing them instead of re-prefilling every turn.
+func composeDurableSummary(machineSummary func([]utils.Message) string, priorSummary string, folded []utils.Message) string {
+	summary := ""
+	if machineSummary != nil {
+		summary = strings.TrimSpace(machineSummary(folded))
+		if summary == "" {
+			utils.Log("[DurableCompact] machine excerpt empty — using raw text")
+		}
+	}
+	if summary == "" {
+		var input strings.Builder
+		writeDurableSummaryText(&input, folded)
+		summary = strings.TrimSpace(input.String())
+		if summary == "" {
+			return ""
+		}
+		summary = "[compacted by Plurality — machine excerpt unavailable; raw excerpt follows]\n" + summary
+	}
+	return strings.TrimSpace(carryForwardSummary(priorSummary, summary))
+}
+
+// rowsBeyondBoundary returns the rows this fold marks compacted that sit AT OR
+// AFTER the boundary the caller summarized: the resolver summarized
+// messages[:foldFrom], the clamp can move firstKeptIdx forward.
+func rowsBeyondBoundary(messages []utils.Message, foldFrom, firstKeptIdx int) []utils.Message {
+	if foldFrom < 0 {
+		foldFrom = 0
+	}
+	if firstKeptIdx > len(messages) {
+		firstKeptIdx = len(messages)
+	}
+	if foldFrom >= firstKeptIdx {
+		return nil
+	}
+	out := make([]utils.Message, 0, firstKeptIdx-foldFrom)
+	for i := foldFrom; i < firstKeptIdx; i++ {
+		if IsCheckpointMessage(messages[i]) {
+			continue
+		}
+		out = append(out, messages[i])
+	}
+	return out
+}
+
+// representExtraRows renders the rows the stored summary did not cover, so the
+// fold cannot mark a row compacted (removing it from every future LLM view)
+// without saying what it contained.
+func representExtraRows(machineSummary func([]utils.Message) string, extra []utils.Message) string {
+	text := ""
+	if machineSummary != nil {
+		text = strings.TrimSpace(machineSummary(extra))
+	}
+	if text == "" {
+		var input strings.Builder
+		writeDurableSummaryText(&input, extra)
+		text = strings.TrimSpace(input.String())
+	}
+	if text == "" {
+		return fmt.Sprintf("[compacted by Plurality — %d messages were folded by the boundary clamp and are not represented in this summary]", len(extra))
+	}
+	return fmt.Sprintf("[folded by the boundary clamp, rendered here so nothing is lost]\n%s", text)
+}
+
 // lastUserIdx returns the index of the newest non-checkpoint user message,
 // used as the floor that durable compaction never folds past. Returns 0 when
 // the conversation has no user row, which the caller treats as "nothing can
@@ -402,6 +475,38 @@ func CompactConversationDurable(
 	messages []utils.Message,
 	foldFrom int,
 	machineSummary func([]utils.Message) string,
+) (int, error) {
+	return CompactConversationDurableWithSummary(ctx, conversationID, messages, foldFrom, machineSummary, "")
+}
+
+// CompactConversationDurableWithSummary marks the rows before foldFrom compacted
+// and stores `summary` as the new checkpoint summary VERBATIM.
+//
+// The request path must use this variant. ai.resolveEcoContextCompaction picks
+// the fold boundary AND sizes the summary to fit the context window (stage D
+// shrinks the carried-forward roll-up to what the budget leaves). When the
+// durable fold recomposed the summary itself - prior + UNCAPPED excerpt - it
+// stored something strictly larger than the request the resolver had just
+// measured as fitting, so the next load came back BIGGER than the request that
+// was sent. Measured in the closed-loop test (budget 40000 est tokens):
+//
+//	round 5: sent ~33987 -> reload ~34001, summary 74523 chars
+//	round 6: sent ~34090 -> reload ~40223, summary 93187 chars  (+18664)
+//
+// The fold reports progress while the request re-inflates every round, which is
+// the "compaction never kicks in, the conversation grew to the context size and
+// failed to continue" report - and the unbounded summary growth that left the
+// live conversation with 16 accumulated checkpoint pairs.
+//
+// An empty summary keeps the self-composing behaviour (db tests and any caller
+// without a staged view).
+func CompactConversationDurableWithSummary(
+	ctx context.Context,
+	conversationID string,
+	messages []utils.Message,
+	foldFrom int,
+	machineSummary func([]utils.Message) string,
+	summary string,
 ) (int, error) {
 	userID, ok := ctx.Value("userID").(string)
 	if !ok {
@@ -522,37 +627,24 @@ func CompactConversationDurable(
 	// Compaction is MACHINE-ONLY: it never calls an LLM. The folded history
 	// becomes the deterministic megacave excerpt (Caveman /caveman-compress
 	// style) when a producer is supplied, and a mechanical raw excerpt
-	// otherwise.
-	summary := ""
-	if machineSummary != nil {
-		summary = strings.TrimSpace(machineSummary(folded))
-		if summary == "" {
-			utils.Log("[DurableCompact] machine excerpt empty — using raw text")
-		}
+	// otherwise. When the CALLER already has a summary (the staged resolver's
+	// shipped view) it is stored as-is: it is the text the request was budgeted
+	// against, see CompactConversationDurableWithSummary.
+	if strings.TrimSpace(summary) == "" {
+		summary = composeDurableSummary(machineSummary, priorSummary, folded)
 	}
-	if summary == "" {
-		var input strings.Builder
-		writeDurableSummaryText(&input, folded)
-		summary = strings.TrimSpace(input.String())
-		if summary == "" {
-			// Nothing to say about the folded rows — do not move the pair.
-			return 0, nil
-		}
-		summary = "[compacted by Plurality — machine excerpt unavailable; raw excerpt follows]\n" + summary
+	if strings.TrimSpace(summary) == "" {
+		// Nothing to say about the folded rows — do not move the pair.
+		return 0, nil
 	}
 
-	// Carry the PRIOR summary forward, APPEND-ONLY, in front of the new
-	// excerpt. The previous shape built the prior text into a string that the
-	// machine path then threw away, so every fold lost the summary of
-	// everything folded before it — "context lost on restart" with no error
-	// anywhere. Appending (never rewriting, never capping) keeps the stored
-	// text a strict prefix-extension of the previous one: the checkpoint pair
-	// is the first content of the prompt after the system block, so its head
-	// bytes stay byte-identical and the backend KV prefix cache keeps reusing
-	// them instead of re-prefilling the whole history every turn.
-	summary = strings.TrimSpace(carryForwardSummary(priorSummary, summary))
-	if summary == "" {
-		summary = "[compacted by Plurality — older messages were rolled into this checkpoint]"
+	// The rows this transaction marks compacted must ALL be represented by the
+	// summary it stores. The boundary can be clamped forward past tool rows
+	// (an orphan tool result at the head of the live tail is a hard API error),
+	// and then the fold marks MORE rows than the caller's summary describes.
+	// Saying so out loud is cheaper than deleting history with no trace.
+	if extra := rowsBeyondBoundary(messages, foldFrom, firstKeptIdx); len(extra) > 0 {
+		summary = strings.TrimSpace(summary) + "\n\n" + representExtraRows(machineSummary, extra)
 	}
 
 	// Resolve DB seq of the first kept row so we can delete everything before

@@ -323,9 +323,10 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		// Folding exactly what the resolver dropped is the point: less leaves
 		// the next request oversized, more loses context the model needs.
 		if foldFrom > 0 {
-			folded, dErr := db.CompactConversationDurable(
+			folded, dErr := db.CompactConversationDurableWithSummary(
 				ctx, conv.ID, conv.Messages, foldFrom,
 				func(msgs []utils.Message) string { return MachineExcerptMegacave(msgs) },
+				shippedSummary(convTail),
 			)
 			if dErr != nil {
 				utils.Error("[Eco] durable compaction failed (this request still sent the staged view)", dErr)

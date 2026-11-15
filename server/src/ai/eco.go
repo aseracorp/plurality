@@ -240,6 +240,28 @@ func priorSummaryFromView(all []utils.Message, pairEnd int) string {
 	return strings.TrimSpace(m.Content.TextContent())
 }
 
+// shippedSummary returns the summary text the staged resolver put into the view
+// it decided to send, or "" when the view carries no checkpoint artifact.
+//
+// The durable fold must store THIS text, not one it composes itself. The
+// resolver sizes the carried-forward roll-up to what the content budget leaves
+// (stage D shrinks it); the fold recomposes prior + UNCAPPED excerpt, which is
+// strictly larger than the request the resolver measured as fitting. Storing the
+// self-composed text makes the conversation come back from the DB BIGGER than
+// the request that was just sent, so the fold reports progress while every later
+// request re-inflates — the "eco compaction never kicks in, the conversation
+// grew to the context size and then failed to continue" report, plus the
+// unbounded checkpoint growth (16 pairs, 61-68 KB each) seen on the live
+// conversation.
+func shippedSummary(view []utils.Message) string {
+	for _, m := range view {
+		if m.Role == "tool" && strings.HasPrefix(m.Name, "megacave_") {
+			return strings.TrimSpace(m.TextContent())
+		}
+	}
+	return ""
+}
+
 // carryForward renders the new summary as prior + newly folded history, so one
 // checkpoint pair always represents the WHOLE prefix it stands for.
 func carryForward(prior, excerpt string) string {
