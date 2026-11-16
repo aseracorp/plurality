@@ -49,6 +49,23 @@ func BuildAttachmentIndex(messages []Message, fileSizeFn FileSizeFunc) Attachmen
 			continue
 		}
 
+		// Skip the eco checkpoint roll-up. It is a tool-role message holding one
+		// large text part, which is exactly the shape this indexer treats as a
+		// "stale attachment" (non-image text > 3 KB, staleness threshold 1 user
+		// message past 50 KB). ai.PrepareMessagesForAI then replaces the indexed
+		// part with a one-line placeholder — deleting the ONLY representation of
+		// every row durable compaction folded away. The rows are already
+		// compacted = 1, so the conversation silently loses them, and the eco
+		// gate (which measures the summary in full) keeps demanding folds to
+		// satisfy a budget the shrunken request never needed.
+		//
+		// It is not an attachment and cannot be retrieved: conversation_attachments
+		// resolves through this index, so indexing it also offers the model a
+		// "retrievable attachment" that is really its own compressed history.
+		if IsCheckpointSummaryCarrier(msg) {
+			continue
+		}
+
 		parts := msg.ContentParts()
 
 		for partIdx, part := range parts {

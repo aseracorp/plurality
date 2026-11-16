@@ -7,7 +7,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
@@ -29,16 +28,7 @@ import (
 // trigger and the sender must measure the same bytes, or the gate fires on a
 // request that is not what leaves.
 func checkpointSummaryCarrier(m utils.Message) bool {
-	if m.Role != "tool" {
-		return false
-	}
-	if m.Name == db.EcoCheckpointToolName {
-		return true
-	}
-	// The in-memory staged view carries the same roll-up under a
-	// "megacave_<stage>" tool name (see ai.megacaveArtifact). Same rule: its
-	// size is the resolver's business, not this constant's.
-	return strings.HasPrefix(m.Name, "megacave_")
+	return utils.IsCheckpointSummaryCarrier(m)
 }
 
 // isContextLengthError classifies an LLM error as "the request exceeded the
