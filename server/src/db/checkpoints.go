@@ -20,7 +20,11 @@ import (
 // turns (older) and the live tail (newer). It is invisible to the client —
 // getConversationFromDB filters it out — and only flows to the LLM when eco
 // mode is enabled (see ai/eco.go::resolveEcoContextCompaction).
-const EcoCheckpointToolName = "eco_checkpoint"
+// The string is defined in utils (utils.EcoCheckpointToolName) because the
+// sender, the estimator and the attachment pipeline all need the same rule and
+// utils cannot import db. This alias keeps db.EcoCheckpointToolName as the name
+// persistence call sites already use.
+const EcoCheckpointToolName = utils.EcoCheckpointToolName
 
 // CheckpointPair locates and carries the contents of a conversation's
 // rolling checkpoint, if any. AssistantID is the row id of the assistant
@@ -39,6 +43,11 @@ type CheckpointPair struct {
 // whose function name is EcoCheckpointToolName; the tool half carries that
 // name in msg.Name.
 func IsCheckpointMessage(msg utils.Message) bool {
+	// Deliberately narrower than utils.IsCheckpointSummaryCarrier: this names the
+	// PERSISTED pair (tool name EcoCheckpointToolName / assistant tool call of the
+	// same name). The staged in-memory view carries the same roll-up under a
+	// "megacave_<stage>" name and is never a DB row, so widening this predicate
+	// to it would change fold-boundary arithmetic for no benefit.
 	if msg.Role == "tool" && msg.Name == EcoCheckpointToolName {
 		return true
 	}
