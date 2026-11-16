@@ -89,7 +89,12 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	var conversation utils.Conversation
 
 	if len(payload.ToolResults) > 0 {
-		// Client is submitting tool results — push each to DB, then resume LLM loop
+		// Client is submitting tool results — push each to DB, then resume LLM
+		// loop. An arriving device result is also the proof that the device is
+		// answering again, so drop its "unresponsive" memo: without this, a
+		// recovered isolate would keep being fast-failed for the rest of the
+		// window even though it just answered.
+		clientToolTimeouts.clear(payload.ConversationID)
 		for i := range payload.ToolResults {
 			payload.ToolResults[i].Timestamp = time.Now().Format(time.RFC3339)
 			if err := storage.ExtractBlobsFromMessage(userID, &payload.ToolResults[i]); err != nil {

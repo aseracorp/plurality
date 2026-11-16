@@ -529,6 +529,26 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				}
 				hasStatusClient := StatusRegistry.HasClientForUser(ar.UserID)
 				if !clientToolUnreachable(advertised, hasConversationClient, hasStatusClient) {
+					// The device answered its LAST call badly: the stall
+					// watchdog synthesized a timeout for this conversation, so
+					// the device isolate is parked (blocked syscall, sleeping
+					// share, laptop asleep, client quit). A live status stream
+					// makes the call look executable, and dispatching it would
+					// burn a second full stall budget with an identical
+					// outcome. Fail fast inside the memo window; the window
+					// expires so a recovered device works again on its own.
+					// Skipped only while no SSE client is attached to this loop:
+					// a client that just re-attached its stream is very likely
+					// the device coming back, and that call is worth the 90s
+					// gamble — a device that is truly wedged re-arms the memo
+					// via the watchdog, so the worst case is one probe per
+					// window, not one per iteration.
+					if advertised && !hasConversationClient && clientToolTimeouts.recentlyTimedOut(ar.ConversationID) {
+						msg := clientToolDeviceUnresponsive(tc.Function.Name)
+						utils.Log("[LLMLoop] client tool %s skipped for %s: device timed out within the last %v", tc.Function.Name, ar.ConversationID, clientToolTimeoutMemoWindow)
+						synthesizeClientToolResult(ctx, ar, &conversation, tc, msg)
+						continue
+					}
 					executable = append(executable, tc)
 					continue
 				}
@@ -544,27 +564,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 					msg += ": no client is connected to this conversation and no live app of this user can run it."
 				}
 				msg += " If you need filesystem access, retry with a server-side tool (e.g. filesystem_server__fs_read / filesystem_server__fs_write) or one of the tools advertised in this conversation."
-				toolMessage := utils.Message{
-					Role:       "tool",
-					Content:    utils.NewTextContent(msg),
-					ToolCallID: tc.ID,
-					Name:       tc.Function.Name,
-					Timestamp:  time.Now().Format(time.RFC3339),
-				}
-				ar.Broadcast(SSEEvent{
-					Type:           "tool_result",
-					ToolCallID:     tc.ID,
-					ToolName:       tc.Function.Name,
-					ToolResult:     msg,
-					IsServer:       false,
-					ConversationID: ar.ConversationID,
-				})
-				updatedConv, _, pushErr := db.PushMessage(ctx, conversation, toolMessage)
-				if pushErr != nil {
-					utils.Error("[LLMLoop] Error saving fast-fail client-tool error to DB", pushErr)
-				} else {
-					conversation = updatedConv
-				}
+				synthesizeClientToolResult(ctx, ar, &conversation, tc, msg)
 			}
 			clientTools = executable
 		}
@@ -922,6 +922,12 @@ func armClientToolWatchdog(ctx context.Context, ar *ActiveRequest, conv *utils.C
 		return
 	}
 
+	// Remember this for the dispatch path: a device that did not answer one
+	// call will not answer the next, and re-dispatching burns a fresh 90s per
+	// iteration. Cleared when a result does arrive (HandleChat), and expires
+	// with the window so a recovered device is usable again.
+	clientToolTimeouts.note(cur.ID)
+
 	now := time.Now().Format(time.RFC3339)
 	for _, tc := range outstanding {
 		// Skip if a tool row for this call appeared while we were waiting.
@@ -970,6 +976,40 @@ func armClientToolWatchdog(ctx context.Context, ar *ActiveRequest, conv *utils.C
 		ClientSideTools: clientSideTools,
 		AvailableSkills: nil,
 	})
+}
+
+// synthesizeClientToolResult broadcasts and persists a tool-result message for
+// a client-side call the server decided not to dispatch (unadvertised name,
+// nobody connected, device recently timed out). Shared so every fast-fail path
+// behaves identically: the model sees a tool row, the UI shows it, and the DB
+// stays consistent so hasToolResult / turn-scoped dedup agree.
+func synthesizeClientToolResult(ctx context.Context, ar *ActiveRequest, conversation *utils.Conversation, tc utils.ToolCall, msg string) {
+	toolMessage := utils.Message{
+		Role:       "tool",
+		Content:    utils.NewTextContent(msg),
+		ToolCallID: tc.ID,
+		Name:       tc.Function.Name,
+		Timestamp:  time.Now().Format(time.RFC3339),
+	}
+	ar.Broadcast(SSEEvent{
+		Type:           "tool_result",
+		ToolCallID:     tc.ID,
+		ToolName:       tc.Function.Name,
+		ToolResult:     msg,
+		IsServer:       false,
+		ConversationID: ar.ConversationID,
+	})
+	if conversation == nil {
+		// Nothing to persist into — the broadcast above is the whole point, and
+		// dereferencing a nil conversation would panic the loop goroutine.
+		return
+	}
+	updatedConv, _, pushErr := db.PushMessage(ctx, *conversation, toolMessage)
+	if pushErr != nil {
+		utils.Error("[LLMLoop] Error saving fast-fail client-tool error to DB", pushErr)
+	} else {
+		*conversation = updatedConv
+	}
 }
 
 // tailIsUserMessage reports whether the conversation ends with a user
