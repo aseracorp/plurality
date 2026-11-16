@@ -304,10 +304,21 @@ func oldestDroppedMarker(droppedRows int) string {
 // backend KV cache exactly like the nested "PRIOR CHECKPOINT:" banners did.
 func megacaveArtifactWithDropMarker(folded []utils.Message, toolCallID string, prior string, droppedRows int) []utils.Message {
 	newExcerpt := MachineExcerptMegacave(folded)
-	if droppedRows > 0 {
-		newExcerpt = oldestDroppedMarker(droppedRows) + newExcerpt
-	}
 	carried := strings.TrimSpace(carryForward(prior, newExcerpt))
+	if droppedRows > 0 {
+		marker := strings.TrimSpace(oldestDroppedMarker(droppedRows))
+		if carried == "" {
+			// Nothing to summarise AND nothing carried, yet rows were given up.
+			// The marker is the whole content, so it unavoidably sits at offset
+			// 0 — acceptable because there is no roll-up whose prefix the backend
+			// has already prefilled, and the pair must exist: the durable fold
+			// marks those rows compacted = 1, so a nil artifact here deletes them
+			// with no trace.
+			carried = marker
+		} else {
+			carried = carried + "\n\n" + marker
+		}
+	}
 	if carried == "" {
 		return nil
 	}
