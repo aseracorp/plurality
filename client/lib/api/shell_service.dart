@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:path/path.dart' as path;
 
 import 'shell_background_process.dart';
+import 'shell_run.dart';
 import '../utils/textsafe.dart';
 
 /// Singleton that exposes a namespaced device-side shell tool to the LLM and
@@ -77,18 +79,15 @@ class ShellService {
           },
           'command': {
             'type': 'string',
-            'description':
-                "The shell command to execute. Required for 'exec' and 'start'.",
+            'description': "The shell command to execute. Required for 'exec' and 'start'.",
           },
           'pwd': {
             'type': 'string',
-            'description':
-                "Working directory. Absolute paths used as-is; relative paths resolve against the attached folder if any, else the user's home directory.",
+            'description': "Working directory. Absolute paths used as-is; relative paths resolve against the attached folder if any, else the user's home directory.",
           },
           'task_id': {
             'type': 'string',
-            'description':
-                "Task identifier returned by 'start'. Required for 'status' and 'kill'.",
+            'description': "Task identifier returned by 'start'. Required for 'status' and 'kill'.",
           },
           'tail_bytes': {
             'type': 'integer',
@@ -159,10 +158,12 @@ class ShellService {
   /// null when powershell.exe is missing, blocked by endpoint security, or
   /// slower than [_probeTimeout]; the caller keeps the plain shell name then.
   Future<String?> _probePowerShellVersion() async {
-    final r = await _runCapture(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command', r'$PSVersionTable.PSVersion.ToString()'],
-    );
+    final r = await _runCapture('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      r'$PSVersionTable.PSVersion.ToString()',
+    ]);
     if (r != null && r.$1 == 0 && r.$2.isNotEmpty) return r.$2;
     return null;
   }
@@ -189,12 +190,13 @@ class ShellService {
   List<String> _gitInfo(String? attachedFolder) {
     if (attachedFolder == null || attachedFolder.isEmpty) return const [];
     if (kIsWeb) return const [];
-    final fresh = _gitInfoKey == attachedFolder &&
+    final fresh =
+        _gitInfoKey == attachedFolder &&
         _gitInfoAt != null &&
         DateTime.now().difference(_gitInfoAt!) < _gitInfoTtl;
     if (!fresh && _gitInfoFlight == null) {
-      _gitInfoFlight =
-          _refreshGitInfo(attachedFolder).whenComplete(() => _gitInfoFlight = null);
+      _gitInfoFlight = _refreshGitInfo(attachedFolder)
+          .whenComplete(() => _gitInfoFlight = null);
     }
     return _gitInfoKey == attachedFolder ? _cachedGitInfo : const [];
   }
@@ -202,8 +204,13 @@ class ShellService {
   Future<void> _refreshGitInfo(String folder) async {
     // One spawn per fact: on Windows CreateProcess is the expensive part, and
     // the old code paid for three synchronous ones per tool-definition call.
-    final branch =
-        await _runCapture('git', ['-C', folder, 'rev-parse', '--abbrev-ref', 'HEAD']);
+    final branch = await _runCapture('git', [
+      '-C',
+      folder,
+      'rev-parse',
+      '--abbrev-ref',
+      'HEAD',
+    ]);
     if (branch == null || branch.$1 != 0) {
       _gitInfoKey = folder;
       _gitInfoAt = DateTime.now();
@@ -215,16 +222,26 @@ class ShellService {
     // Detached HEAD reports the literal "HEAD"; show the short sha instead so
     // the model still gets something actionable.
     if (name.isEmpty || name == 'HEAD') {
-      final sha =
-          await _runCapture('git', ['-C', folder, 'rev-parse', '--short', 'HEAD']);
+      final sha = await _runCapture('git', [
+        '-C',
+        folder,
+        'rev-parse',
+        '--short',
+        'HEAD',
+      ]);
       if (sha != null && sha.$1 == 0 && sha.$2.isNotEmpty) {
         out.add('Detached HEAD at ${sha.$2}');
       }
     } else {
       out.add('Current branch: $name');
     }
-    final log =
-        await _runCapture('git', ['-C', folder, 'log', '--oneline', '-3']);
+    final log = await _runCapture('git', [
+      '-C',
+      folder,
+      'log',
+      '--oneline',
+      '-3',
+    ]);
     if (log != null && log.$1 == 0 && log.$2.isNotEmpty) {
       out.add('Recent commits:');
       for (final line in log.$2.split('\n')) {
@@ -241,17 +258,26 @@ class ShellService {
   /// observed so a full pipe cannot deadlock the child. Returns null when the
   /// spawn fails or [_probeTimeout] overruns — a git probe against an attached
   /// folder on a sleeping Tailscale/SMB peer can otherwise hang forever.
-  Future<(int, String)?> _runCapture(String executable, List<String> args) async {
+  Future<(int, String)?> _runCapture(
+    String executable,
+    List<String> args,
+  ) async {
     try {
       final pr = await Process.start(executable, args);
-      final stdoutFut = pr.stdout.transform(const SystemEncoding().decoder).join();
-      final stderrFut = pr.stderr.transform(const SystemEncoding().decoder).join();
-      final code = await pr.exitCode.timeout(_probeTimeout, onTimeout: () {
-        pr.kill(ProcessSignal.sigterm);
-        return -1;
-      });
-      final out =
-          await stdoutFut.timeout(_probeTimeout, onTimeout: () => '');
+      final stdoutFut = pr.stdout
+          .transform(const SystemEncoding().decoder)
+          .join();
+      final stderrFut = pr.stderr
+          .transform(const SystemEncoding().decoder)
+          .join();
+      final code = await pr.exitCode.timeout(
+        _probeTimeout,
+        onTimeout: () {
+          pr.kill(ProcessSignal.sigterm);
+          return -1;
+        },
+      );
+      final out = await stdoutFut.timeout(_probeTimeout, onTimeout: () => '');
       await stderrFut.timeout(_probeTimeout, onTimeout: () => '');
       return (code, out.trim());
     } catch (_) {
@@ -323,52 +349,46 @@ class ShellService {
 
     final shell = _shellCommand(command);
     final started = DateTime.now();
-    Process proc;
-    try {
-      proc = await Process.start(
-        shell.executable,
-        shell.args,
-        workingDirectory: pwd.isEmpty ? null : pwd,
-        runInShell: false,
-      );
-    } catch (e) {
-      return 'Error starting command: $e';
-    }
 
-    final stdoutFuture = proc.stdout.transform(utf8.decoder).join();
-    final stderrFuture = proc.stderr.transform(utf8.decoder).join();
-
-    var timedOut = false;
-    final timer = Timer(Duration(seconds: _foregroundTimeoutSeconds), () {
-      timedOut = true;
-      try {
-        proc.kill(ProcessSignal.sigterm);
-      } catch (_) {}
-    });
-
-    final exitCode = await proc.exitCode;
-    timer.cancel();
-    final stdoutStr = await stdoutFuture;
-    final stderrStr = await stderrFuture;
+    // Bounded on every stage: spawn, exit, pipe drains. See shell_run.dart —
+    // an unbounded `Process.start` / `exitCode` / drain here parks the UI
+    // isolate, which is what makes the client look frozen and makes the
+    // server report "Client did not respond within 90s" for this call and
+    // every device call after it.
+    final res = await runCommandBounded(
+      shell.executable,
+      shell.args,
+      workingDirectory: pwd,
+      timeout: Duration(seconds: _foregroundTimeoutSeconds),
+    );
     final duration = DateTime.now().difference(started);
 
     final out = StringBuffer();
     out.writeln('Command: $command');
     if (pwd.isNotEmpty) out.writeln('Working directory: $pwd');
     out.writeln('Duration: ${_formatMs(duration)}');
-    if (timedOut) {
+    if (res.spawnFailed) {
+      out.writeln('Status: SPAWN FAILED (${res.spawnError})');
+      out.writeln(
+        "For a frozen working directory, retry with a local 'pwd'. For a blocked "
+        'binary, the device is refusing to start it (endpoint security / group '
+        'policy) - use a server-side tool instead of retrying.',
+      );
+      return out.toString();
+    }
+    if (res.timedOut) {
       out.writeln(
         'Status: TIMED OUT after $_foregroundTimeoutSeconds seconds (process killed, partial output below). For long-running processes use operation \'start\' instead.',
       );
     } else {
-      out.writeln('Exit code: $exitCode');
+      out.writeln('Exit code: ${res.exitCode}');
     }
     out.writeln();
     out.writeln('--- STDOUT ---');
-    out.writeln(_capForResponse(stdoutStr, _stdoutResponseCap));
+    out.writeln(_capForResponse(res.stdout, _stdoutResponseCap));
     out.writeln();
     out.writeln('--- STDERR ---');
-    out.writeln(_capForResponse(stderrStr, _stderrResponseCap));
+    out.writeln(_capForResponse(res.stderr, _stderrResponseCap));
     return out.toString();
   }
 
@@ -384,6 +404,9 @@ class ShellService {
     }
     final pwd = _resolvePwd(args['pwd'] as String?, sandboxRoot);
     final shell = _shellCommand(command);
+    // Bounded spawn: see shell_run.dart. An unbounded Process.start here parks
+    // the UI isolate (blocked binary, or a working directory on a sleeping
+    // network share) and the client answers no tool call at all.
     Process proc;
     try {
       proc = await Process.start(
@@ -392,7 +415,12 @@ class ShellService {
         workingDirectory: pwd.isEmpty ? null : pwd,
         runInShell: false,
         mode: ProcessStartMode.normal,
-      );
+      ).timeout(const Duration(seconds: 10));
+    } on TimeoutException {
+      return 'Error starting background task: spawning "${shell.executable}" '
+          'timed out after 10s (endpoint security / group policy is blocking the '
+          'binary, or the working directory "$pwd" is an unavailable network '
+          'share). Retry with a local pwd, or use a server-side tool.';
     } catch (e) {
       return 'Error starting background task: $e';
     }
@@ -433,8 +461,10 @@ class ShellService {
     if (taskId.isEmpty) {
       return "Error: 'task_id' parameter is required for operation 'kill'.";
     }
-    final ok = await BgProcessRegistry()
-        .kill(taskId, const Duration(seconds: 2));
+    final ok = await BgProcessRegistry().kill(
+      taskId,
+      const Duration(seconds: 2),
+    );
     if (!ok) {
       return 'Error: no background task with task_id "$taskId".';
     }
@@ -501,8 +531,9 @@ class ShellService {
       return _homeDir();
     }
     if (path.isAbsolute(p)) return p;
-    final base =
-        (sandboxRoot != null && sandboxRoot.isNotEmpty) ? sandboxRoot : _homeDir();
+    final base = (sandboxRoot != null && sandboxRoot.isNotEmpty)
+        ? sandboxRoot
+        : _homeDir();
     return path.normalize(path.join(base, p));
   }
 
