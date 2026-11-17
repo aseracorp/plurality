@@ -322,8 +322,10 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		// that already fits and keeps a byte-stable prefix (KV cache hot).
 		// Folding exactly what the resolver dropped is the point: less leaves
 		// the next request oversized, more loses context the model needs.
+		folded := 0
 		if foldFrom > 0 {
-			folded, dErr := db.CompactConversationDurableWithSummary(
+			var dErr error
+			folded, dErr = db.CompactConversationDurableWithSummary(
 				ctx, conv.ID, conv.Messages, foldFrom,
 				func(msgs []utils.Message) string { return MachineExcerptMegacave(msgs) },
 				shippedSummary(convTail),
@@ -333,6 +335,11 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 			}
 			utils.Log("[Eco] durable compaction folded %d messages at boundary %d", folded, foldFrom)
 		}
+		// Change (ii): the fold moved nothing, so stage D's shrink of the
+		// roll-up has to be persisted where it was computed — in place on the
+		// pair row — or the next turn re-shrinks the full stored summary and
+		// moves the prompt head again. Advisory: never affects this request.
+		persistRolledUpShrinkIfNoProgress(ctx, conv.ID, convTail, foldFrom, folded)
 	}
 
 	// THE SEND CAP, enforced once for every branch. TruncateOversizedMessages

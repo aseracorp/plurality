@@ -235,6 +235,11 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 					utils.Error("[LLMLoop] durable compaction failed (falling back to in-memory only)", cErr)
 					removed = 0
 				}
+				// Same latch as the request path: the overflow guard reached a
+				// conversation whose fold cannot progress (the pair heads the
+				// live view), so stage D's shrink must be persisted in place on
+				// the pair row or the retry re-ships the full stored summary.
+				persistRolledUpShrinkIfNoProgress(ar.Ctx, ar.ConversationID, stagedView, foldFrom, removed)
 				reloaded, rErr := db.GetConversationByIdInternal(ar.Ctx, ar.ConversationID)
 				if rErr == nil {
 					conversation = *reloaded

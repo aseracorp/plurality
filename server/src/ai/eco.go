@@ -454,6 +454,34 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 	tailTokens := approxTokens(tail)
 	foldedAll := foldableRange(all, pairEnd, tailStart)
 
+	// THE FOLD TARGET — and the wedge this closes.
+	//
+	// tailStart is only a LEGAL durable boundary when something actually sits
+	// between the pair and the live tail. On the agentic shape the checkpoint
+	// pair IS the first live row, so foldableRange(pairEnd, tailStart) is EMPTY
+	// and tailStart is the newest user row, with the pair at tailStart-2. The
+	// durable fold resolves the boundary to that user row, and
+	//   UPDATE messages SET compacted = 1 WHERE seq < boundarySeq AND compacted = 0
+	// can then only match ZERO rows: everything below the pair is already
+	// compacted = 1, and the pair itself is excluded by pairIDs. Measured live:
+	// 216 + 51 consecutive "DurableCompact ... folded 0 rows" lines, one per
+	// message, across the 29 of 47 conversations whose live pair heads the view.
+	//
+	// A fold that cannot remove a row must not be requested at all, so the
+	// stages report foldTarget = 0: the durable fold is never called, so the
+	// pair keeps its row id, its seq and its position, no live row is shifted
+	// by +2, and the prompt head is not rewritten.
+	//
+	// This closes the CHURN, not the fit. When the range is empty the roll-up is
+	// the only shrinkable object, so stage D shrinks it and the shipped view
+	// carries text SHORTER than what is stored. Until that shrink is persisted
+	// the head still moves every turn (see persistRolledUpShrinkIfNoProgress,
+	// change (ii)) — reporting 0 alone would only make the log quieter.
+	foldTarget := 0
+	if len(foldedAll) > 0 {
+		foldTarget = tailStart
+	}
+
 	var candidate []utils.Message
 	id := 0
 	foldFrom = 0
@@ -464,7 +492,7 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		art := megacaveArtifact(foldedAll, "megacave_A", prior)
 		candidate = append(append([]utils.Message{}, art...), tail...)
 		id = 1
-		foldFrom = tailStart
+		foldFrom = foldTarget
 		utils.Log("[Eco/stageA] folded %d rows -> view %d msgs ~%d tokens (budget %d, tail %d rows ~%d tokens, fits=%v)",
 			len(foldedAll), len(candidate), approxTokens(candidate), budgetTokens, len(tail), tailTokens, fits(candidate))
 	}
@@ -567,7 +595,7 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		candidate = cand
 		_ = fitB
 		id = 2
-		foldFrom = tailStart
+		foldFrom = foldTarget
 		utils.Log("[Eco/stageB] folded set %d rows -> view %d msgs ~%d tokens (budget %d, tail %d rows ~%d tokens, fits=%v)",
 			len(foldedAll), len(candidate), approxTokens(candidate), budgetTokens, len(tail), tailTokens, fits(candidate))
 	}
@@ -585,7 +613,7 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		candC, _ := searchVariants(foldedAll, "megacave_C", true, userOnlyWithLastAssistant)
 		candidate = candC
 		id = 3
-		foldFrom = tailStart
+		foldFrom = foldTarget
 		utils.Log("[Eco/stageC] summary reduced to user/assistant rows -> view %d msgs ~%d tokens (budget %d, fits=%v)",
 			len(candidate), approxTokens(candidate), budgetTokens, fits(candidate))
 	}
@@ -594,12 +622,23 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		//
 		// 1. Give up folded turns (same search as B, which can reach the
 		//    prior-roll-up-only floor).
-		// 2. Shrink the carried-forward roll-up from its END. This is the only
-		//    lever left on the agentic shape, where the fold range between the
-		//    pair and the newest user turn is empty and the summary is the only
-		//    large object. Cutting the END (not the head) keeps the stored
-		//    summary a strict prefix of the previous one, so the prompt head
-		//    stays byte-stable and the shrink is cache-cheap.
+		// 2. Shrink the carried-forward roll-up by keeping its NEWEST bytes and
+		//    deleting the OLDEST ones off the FRONT. This is the only lever left
+		//    on the agentic shape, where the fold range between the pair and the
+		//    newest user turn is empty and the summary is the only large object.
+		//
+		//    Naming note (#182 kept the tested direction; this comment stops
+		//    lying about it): tailOfSummary keeps the NEWEST bytes, so it cuts
+		//    the FRONT of the text. That is the opposite of "cutting the END",
+		//    which this comment used to claim — and the claim is what made the
+		//    shrink look cache-cheap by construction. Cutting the front of the
+		//    object that sits at offset 0 of the prompt DOES move the prompt
+		//    head. The shrink is cache-cheap only when it is (a) bounded per
+		//    pass and (b) quantised (#182), AND (c) PERSISTED, so the same bytes
+		//    ship turn after turn — see persistRolledUpShrinkIfNoProgress.
+		//    Unpersisted, the shrink is recomputed against a tail that grows
+		//    every turn, so the head moves once per ~12 KiB of growth and the
+		//    quantisation becomes a re-prefill cadence instead of a brake.
 		// 3. Only if the LIVE TAIL alone is larger than the budget: keep the
 		//    newest user row plus the newest complete tool pairs. This degrades
 		//    the tail GRADUALLY, never to "one user row and nothing else".
@@ -752,7 +791,7 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 			}
 		}
 		id = 4
-		foldFrom = tailStart
+		foldFrom = foldTarget
 		utils.Log("[Eco/stageD] view %d msgs ~%d tokens (budget %d, tail %d rows ~%d tokens, summary -%d chars, tail -%d rows, fits=%v)",
 			len(candidate), approxTokens(candidate), budgetTokens, len(tail), tailTokens, droppedChars, droppedTailRows, fits(candidate))
 	}
@@ -770,14 +809,21 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 	// history (its `len(convTail) > 0` guard), and folding the pair destroys the
 	// rolling summary. foldFrom must land strictly after the pair and at the
 	// start of the live tail.
-	if floor := lastUserIdxSafe(all); foldFrom > floor {
-		foldFrom = floor
-	}
-	if foldFrom >= len(all) {
-		foldFrom = lastUserIdxSafe(all)
-	}
-	if pairEnd >= 0 && foldFrom <= pairEnd {
-		foldFrom = pairEnd + 1
+	// The clamps below exist to keep a REAL fold legal: strictly after the pair,
+	// never past the newest user turn, never the whole history. They must not
+	// re-inflate a deliberate 0 ("nothing foldable") back into pairEnd+1 — that
+	// is exactly the boundary that folds 0 rows, so the clamp would re-arm the
+	// wedge the caller just closed.
+	if foldFrom > 0 {
+		if floor := lastUserIdxSafe(all); foldFrom > floor {
+			foldFrom = floor
+		}
+		if foldFrom >= len(all) {
+			foldFrom = lastUserIdxSafe(all)
+		}
+		if pairEnd >= 0 && foldFrom <= pairEnd {
+			foldFrom = pairEnd + 1
+		}
 	}
 	if foldFrom < 0 {
 		foldFrom = 0
@@ -786,6 +832,54 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 	utils.Log("[Eco] resolved staged compaction (stage %d, %d messages, ~%d tokens / budget %d, folding %d of %d, pair ends at %d)",
 		id, len(candidate), approxTokens(candidate), budgetTokens, foldFrom, len(all), pairEnd)
 	return candidate, foldFrom
+}
+
+// persistRolledUpShrinkIfNoProgress latches the stage-D roll-up shrink into the
+// stored checkpoint pair when the durable fold made NO progress.
+//
+// THE CADENCE PROBLEM THIS CLOSES. Above the eco trigger, stage D shrinks the
+// carried-forward roll-up so the request fits. The shrink is computed against
+// the LIVE TAIL, which grows every turn, so the amount that has to be cut moves
+// every turn — and until now the shrunk text was thrown away at the end of the
+// request. The next turn therefore re-loaded the FULL stored roll-up and
+// re-shrank it from scratch, which moves the front of the object sitting at
+// offset 0 of the prompt (tailOfSummary keeps the NEWEST bytes). The backend can
+// then only reuse the prefix up to the last checkpoint before the cut — 8192 /
+// 16384 / 24576, exactly the floor family in the engine log — so the shrink
+// turns into a re-prefill cadence: one full re-prefill per ~12 KiB of tail
+// growth.
+//
+// Persisting the shrink makes the stored roll-up a monotone step function: once
+// cut, those bytes stay cut, so the SAME bytes ship turn after turn and prefix
+// reuse extends THROUGH the summary instead of stalling at 24576.
+//
+// GATE — the latch runs ONLY when the fold made no progress (foldFrom == 0,
+// folded == 0). When a fold did happen, CompactConversationDurableWithSummary
+// already stored the shipped summary VERBATIM, including the rowsBeyondBoundary
+// material appended by representExtraRows; the roll-up body is only PART of
+// that text, so latching it after a real fold would delete rows the stored
+// summary represents. That is context loss, and it is the one thing this
+// function must never do.
+//
+// The write is advisory: a failure costs the cache, never the request, so the
+// error is logged and swallowed.
+func persistRolledUpShrinkIfNoProgress(ctx context.Context, conversationID string, view []utils.Message, foldFrom, folded int) {
+	if foldFrom != 0 || folded != 0 {
+		return
+	}
+	body := rollupBodyFromShippedView(view)
+	if body == "" {
+		return
+	}
+	written, err := db.UpdateCheckpointSummaryShrink(ctx, conversationID, body)
+	if err != nil {
+		utils.Error("[Eco] roll-up shrink latch failed (request unaffected, cache cost only)", err)
+		return
+	}
+	if written {
+		utils.Log("[Eco] roll-up shrink latched in place (fold made no progress: %d rows at %d) — stored summary is now the shrunk text, prompt head stable",
+			folded, foldFrom)
+	}
 }
 
 // tailBudgeted degrades the LIVE TAIL gradually for stage D step 3: keep the
@@ -919,6 +1013,96 @@ func summaryWithDropMarker(keptPrior string, droppedRows int, droppedChars int, 
 		return keptPrior
 	}
 	return keptPrior + "\n\n" + note
+}
+
+// emptyRollUpBanners are the banners mustCheckpointArtifact renders when the
+// roll-up is gone. They are meta-text ABOUT the checkpoint, never roll-up
+// content, so they must never be latched into the pair row.
+var emptyRollUpBanners = []string{
+	"[earlier history rolled into this checkpoint]",
+	"dropped in full",
+}
+
+// dropMarkerPrefixes are the leading texts of the out-loud loss notices
+// summaryWithDropMarker appends AFTER the roll-up. They are derived from the
+// marker formatters themselves, so a reworded marker cannot silently drift out
+// of sync with the parser that has to find it.
+var dropMarkerPrefixes = []string{
+	markerHead(tailTrimmedMarker(0)),
+	markerHead(oldestCharsDroppedMarker(0)),
+	markerHead(oldestDroppedMarker(0)),
+}
+
+func markerHead(marker string) string {
+	if i := strings.Index(marker, ":"); i >= 0 {
+		return marker[:i+1]
+	}
+	return marker
+}
+
+// summaryCarrierText returns the summary text the view ships, from whichever
+// carrier it uses: the staged megacave artifact when a stage built one,
+// otherwise the carried checkpoint pair row (utils.EcoCheckpointToolName). A
+// view that needs no compaction ships the pair row verbatim, so the latch must
+// be able to read it — on that turn body == stored and the shrink guard refuses
+// the write as an exact no-op. The staged artifact wins when both are present
+// because it is what the request actually carries.
+func summaryCarrierText(view []utils.Message) string {
+	for i := range view {
+		m := view[i]
+		if m.Role == "tool" && strings.HasPrefix(m.Name, "megacave_") {
+			return strings.TrimSpace(m.TextContent())
+		}
+	}
+	for i := range view {
+		m := view[i]
+		if m.Role == "tool" && m.Name == utils.EcoCheckpointToolName {
+			return strings.TrimSpace(m.TextContent())
+		}
+	}
+	return ""
+}
+
+// rollupBodyFromShippedView returns the roll-up body the resolver decided to
+// ship, with the out-loud loss markers stripped, or "" when the view carries no
+// checkpoint artifact / the roll-up is gone.
+//
+// The durable latch must persist THIS, never shippedSummary(view). The markers
+// describe a PER-REQUEST shape: tailTrimmedMarker counts live-tail rows left
+// out of THIS request (they are back next turn) and oldestCharsDroppedMarker
+// counts characters removed in THIS pass. Writing them into the pair row makes
+// an ephemeral loss permanent and duplicates a banner that grows every turn,
+// inside the single row that is the only representation of every row earlier
+// folds marked compacted = 1.
+//
+// The markers are always appended after the roll-up — a marker at the HEAD
+// moves the prompt prefix — so the body is the text before the LAST marker.
+func rollupBodyFromShippedView(view []utils.Message) string {
+	text := summaryCarrierText(view)
+	if text == "" {
+		return ""
+	}
+	for _, b := range emptyRollUpBanners {
+		if strings.Contains(text, b) {
+			return ""
+		}
+	}
+	// The EARLIEST marker, not the last: summaryWithDropMarker appends the
+	// notices in order (tail notice first), so the first marker is where the
+	// marker BLOCK starts. Taking the last index would keep the earlier markers
+	// inside the body — and tailTrimmedMarker counts rows dropped from THIS
+	// request only, so that is exactly the per-request text that must never
+	// reach the pair row.
+	best := -1
+	for _, p := range dropMarkerPrefixes {
+		if i := strings.Index(text, "\n\n"+p); i >= 0 && (best < 0 || i < best) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return text
+	}
+	return strings.TrimSpace(text[:best])
 }
 
 // mustCheckpointArtifact is checkpointArtifactMessages with a guarantee: the
