@@ -188,11 +188,6 @@ func checkpointPairEnd(all []utils.Message) int {
 	return last
 }
 
-// foldableRange is the slice of history a stage may fold into the summary:
-// the rows strictly after the checkpoint pair and strictly before `end`.
-// Returns nil when the range is empty or `end` is negative, so
-// megacaveArtifact yields no artifact (nothing to summarise) and the stage
-// degenerates to sending the tail verbatim.
 func foldableRange(all []utils.Message, pairEnd, end int) []utils.Message {
 	start := pairEnd + 1
 	if end < 0 || start >= end {
@@ -622,42 +617,67 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		if cand, fitD := searchVariants(foldedAll, "megacave_D", true, nil); fitD {
 			candidate = cand
 		} else {
-			// Step 2: shrink the roll-up ONLY IF the tail can fit beside the
-			// shrunk summary. Dropping summary bytes the request cannot use for
-			// the tail is context loss that buys nothing — the loss marker would
-			// be honest and the behaviour still wrong.
+			// Step 2: fit the view. On the agentic shape the fold range between the
+			// pair and the newest user row is EMPTY, so the only two objects left
+			// are the roll-up and the live tail — and they are NOT equal levers:
+			// trimming the TAIL is reversible (those rows stay compacted = 0 and
+			// return next request), shrinking the ROLL-UP is permanent (it is the
+			// only representation of every row earlier folds marked compacted = 1).
 			//
-			// The room must be found by MEASURING the view, not by arithmetic on
-			// token counts. fits() measures the whole candidate through
-			// boundedWireChars, so every row (the artifact's assistant half, the
-			// summary row, each tail row) carries wire overhead. Sizing the
-			// summary as (budget - tailTokens) * 3 charges it room the tail's own
-			// overheads occupy, the candidate lands a few hundred tokens OVER
-			// budget, and the step-3 gate below then reports "the live tail
-			// exceeds budget" when it does not (measured: tail 18161 tokens,
-			// budget 24000) and trims live in-flight rows that fitted fine —
-			// context loss that buys nothing, exactly what this step forbids.
-			render := func(kept string) []utils.Message {
+			// The old loop spent the permanent lever FIRST, by arithmetic, with no
+			// floor. Live proof, conversation 141c6b2d33616fed6f2dd8dc 15:37:09:
+			//
+			//	[Eco/stageD] ... summary -101522 chars, tail -0 rows, fits=false
+			//
+			// 101522 of a 105366-char roll-up (96 %) deleted, tail untouched, and
+			// the request STILL missed the budget: permanent loss that bought
+			// nothing. Cutting the FRONT of the roll-up also moves the first bytes
+			// after the system block, and the engine for that turn logged
+			// `prompt 133973 = 24576 reused + 11093 read` (24576 = the system-block
+			// floor) with 14-82 s of re-prefill per turn.
+			//
+			// The live tail stays the LAST resort (step 3 trims it only when the
+			// tail ALONE is over budget — trimming it is what made a request
+			// answer with "only 27K tokens"). The roll-up is shrunk here, and
+			// the fix changes only HOW: bound the loss per pass, and quantise
+			// the cut so the prompt head is a step function instead of moving
+			// every turn.
+			const dropMarkerAllowance = 120 // room for the loss notice appended later
+			render := func(kept string, keptTail []utils.Message) []utils.Message {
 				return append(append([]utils.Message{},
-					mustCheckpointArtifact(foldedAll, "megacave_D", kept, len(foldedAll), len(prior)-len(kept), 0)...), tail...)
+					mustCheckpointArtifact(foldedAll, "megacave_D", kept,
+						len(foldedAll), len(prior)-len(kept), len(tail)-len(keptTail))...), keptTail...)
 			}
-			candidate = render(keptPrior)
-			for pass := 0; pass < 6 && len(keptPrior) > 0; pass++ {
-				over := approxTokens(candidate) - budgetTokens
-				if over <= 0 {
-					break
+			// 2a. Shrink the roll-up: loss bounded PER PASS, cut quantised.
+			keptPrior, keptTail = prior, tail
+			candidate = render(keptPrior, tail)
+			if !fits(candidate) && len(keptPrior) > 0 {
+				for pass := 0; pass < 8; pass++ {
+					if fits(candidate) {
+						break
+					}
+					want := len(keptPrior) - (approxTokens(candidate)-budgetTokens)*3
+					maxDelete := len(keptPrior) * rollupLossPerPassPercent / 100
+					if len(keptPrior)-want > maxDelete {
+						want = len(keptPrior) - maxDelete
+					}
+					want -= want % shrinkQuantumChars
+					if want >= len(keptPrior) {
+						want = len(keptPrior) - shrinkQuantumChars
+					}
+					if want <= 0 {
+						break
+					}
+					shrunk := tailOfSummary(keptPrior, want)
+					if len(shrunk) >= len(keptPrior) {
+						break
+					}
+					keptPrior = shrunk
+					droppedChars = len(prior) - len(keptPrior)
+					candidate = render(keptPrior, tail)
 				}
-				// Charge the shrink for the overhead the freed rows leave behind
-				// (toolOverheadTokens), so the loop converges on the FIRST pass
-				// instead of grazing the budget from above.
-				shrunk := tailOfSummary(keptPrior, len(keptPrior)-over*3-toolOverheadTokens*3)
-				if len(shrunk) >= len(keptPrior) {
-					break
-				}
-				keptPrior = shrunk
-				droppedChars = len(prior) - len(keptPrior)
-				candidate = render(keptPrior)
 			}
+			keptTail = tail
 
 			// Step 3 gate: the LIVE TAIL ALONE, beside the SMALLEST artifact the
 			// resolver can emit (the empty-roll-up banner), is over budget. That
@@ -675,9 +695,6 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 				// everything folded in earlier rounds, and trimming the tail
 				// already gives the model the room it needs.
 				artOnly := megacaveArtifact(nil, "megacave_D", keptPrior)
-				// dropMarkerAllowance: the loss notice is appended to the summary
-				// after the trim, so reserve room for it up front.
-				const dropMarkerAllowance = 120
 				// The summary must be shrunk to what the SHIPPED tail leaves, not
 				// to what the full tail leaves. Step 2 sized the summary against
 				// the whole tail; here the tail is about to be trimmed, and if the
@@ -696,7 +713,15 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 					sumRoomChars = 0
 				}
 				if len(keptPrior) > sumRoomChars {
-					keptPrior = tailOfSummary(keptPrior, sumRoomChars)
+					// Quantised: the summary is the first content after the
+					// system block, and this path runs on EVERY turn above
+					// budget. Cutting an exact-fit amount moved the head every
+					// single turn, so prefix reuse collapsed to the system block
+					// on every turn (measured live: `reused 24576` of a ~130k
+					// prompt, 32-82 s of re-prefill each). Snapping the room to a
+					// quantum makes the head a step function: it moves once per
+					// band, and the turns inside a band are byte-identical.
+					keptPrior = tailOfSummary(keptPrior, sumRoomChars-sumRoomChars%shrinkQuantumChars)
 					droppedChars = len(prior) - len(keptPrior)
 				}
 				artOnly = megacaveArtifact(nil, "megacave_D", keptPrior)
@@ -757,6 +782,7 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 	if foldFrom < 0 {
 		foldFrom = 0
 	}
+
 	utils.Log("[Eco] resolved staged compaction (stage %d, %d messages, ~%d tokens / budget %d, folding %d of %d, pair ends at %d)",
 		id, len(candidate), approxTokens(candidate), budgetTokens, foldFrom, len(all), pairEnd)
 	return candidate, foldFrom
@@ -809,23 +835,41 @@ func tailBudgeted(tail []utils.Message, roomTokens int) ([]utils.Message, int) {
 	return kept, i - 1
 }
 
-// tailOfSummary keeps the NEWEST `maxChars` of a carried-forward roll-up,
-// dropping its OLDEST portion.
+// rollupLossPerPassPercent bounds how much of the roll-up ONE shrink pass may
+// delete. The roll-up is the only representation of every row earlier folds
+// marked compacted = 1, so deleting it is permanent context loss.
 //
-// The stored summary is APPEND-ONLY (prior + banner + newer excerpt), so the
-// newest folded history sits at the END and the oldest at the FRONT. Cutting
-// the front therefore gives up the oldest context — the content the model is
-// least likely to need — which is the agreed last-resort rule
-// (notes/2026-11-14-eco-fold-loop-design.md: "keep the whole summary, drop only
-// its OLDEST portion, and prepend an explicit marker naming how much was
-// dropped"). Cutting the END would throw away the most recently folded turns,
-// i.e. the history nearest the live ask, in exchange for keeping the oldest.
+// Live proof (conversation 141c6b2d33616fed6f2dd8dc, 2026-11-16 15:37:09):
 //
-// The cost is acknowledged and accepted: cutting the front moves bytes at the
-// head of every prompt, and the checkpoint pair is the first content after the
-// system block, so backend KV prefix reuse collapses on that round. Content
-// correctness wins over one cache miss, and this path is a last resort, not the
-// common case. The marker is PREPENDED, consistent with the head moving anyway.
+//	[Eco/stageD] ... summary -101522 chars, tail -0 rows, fits=false
+//
+// one pass deleted 101522 of a 105366-char roll-up (96 %) while the request
+// missed the budget anyway — permanent loss that bought nothing.
+//
+// An ABSOLUTE floor is not the answer: a conversation whose live tail alone
+// approaches the budget physically cannot carry 75 % of a 100 KB roll-up, so
+// flooring the total makes the resolver ship an OVERSIZED request that dies on
+// "exceeds the context window" — the failure this path exists to prevent.
+// Measured with a 25 % absolute floor in the closed-loop fixture: the fold
+// stopped converging and the reload sat at ~43201 tokens against a 40000
+// budget.
+//
+// Per-pass is the enforceable, honest shape: no single fold guts the summary,
+// degradation spreads across rounds, and 8 passes still reach any size the
+// window physically requires.
+const rollupLossPerPassPercent = 10
+
+// shrinkQuantumChars coarsens the roll-up shrink so the PROMPT HEAD moves
+// rarely. The summary is the first content after the system block, and the
+// shrink path runs on every turn above budget: computing an exact-fit cut each
+// time moved the head every single turn, so backend prefix reuse collapsed to
+// the system block (measured live: `prompt 133973 tokens = 24576 reused +
+// 11093 read`, i.e. the whole ~130k history re-prefilled, 32-82 s per turn).
+// Snapping the cut to a quantum makes the head a step function — turns inside
+// one band are byte-identical and keep their cache; the head moves at most
+// once per band.
+const shrinkQuantumChars = 12 * 1024
+
 func tailOfSummary(prior string, maxChars int) string {
 	if maxChars <= 0 || prior == "" {
 		return ""
