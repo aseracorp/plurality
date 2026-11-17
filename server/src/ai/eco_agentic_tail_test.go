@@ -164,7 +164,12 @@ func TestAgenticView_PriorSummarySurvives(t *testing.T) {
 			// compacted=1 and nothing represents them. Silent amnesia.
 			t.Fatalf("budget %d: prior checkpoint summary dropped entirely (no artifact in the view)", budget)
 		}
-		if foldFrom <= checkpointPairEnd(msgs) {
+		// A NON-zero foldFrom must start strictly after the pair. foldFrom == 0
+		// means "nothing foldable" (the pair heads the live view, so the fold
+		// range is empty) and cannot reach into anything — asserting on 0 was
+		// the shape the sibling test TestAgenticView_TailSurvivesWhenItFits
+		// already guards with `foldFrom > 0 &&`.
+		if pe := checkpointPairEnd(msgs); foldFrom > 0 && foldFrom <= pe {
 			t.Fatalf("budget %d: foldFrom %d reaches into the checkpoint pair", budget, foldFrom)
 		}
 

@@ -811,6 +811,134 @@ func CompactConversationDurableWithSummary(
 	return int(removed), nil
 }
 
+// UpdateCheckpointSummaryShrink rewrites ONLY the summary text carried by the
+// tool half of the LIVE checkpoint pair, in place: same row id, same seq, same
+// tool_call_id, same assistant half, no compacted flag touched, no other row
+// touched. Returns whether the row was written.
+//
+// WHY IN PLACE. CompactConversationDurableWithSummary persists a fold by MOVING
+// the pair: mark the old pair compacted, shift every row >= boundarySeq by +2,
+// insert a fresh pair. That is the right shape for a FOLD — the boundary moved,
+// so the pair has to sit at the new boundary. It is the wrong shape for a
+// ROLL-UP SHRINK, where nothing moved: stage D shrank the summary text, the
+// fold removed 0 rows, and the pair is already the first live row. Re-inserting
+// it there rewrites the first tens of KB of every prompt and shifts the seq of
+// every live row, so the backend KV prefix cache can only reuse the stable
+// system block. Updating the one column that changed leaves the prompt head a
+// pure function of the text.
+//
+// WHY SHRINK-ONLY (this IS the latch). The write is accepted only when the new
+// text is STRICTLY SHORTER than the stored text. Callers reach this from a
+// request path that re-runs the shrink every turn against a live tail that
+// grows every turn, so an unguarded writer would (a) re-inflate the stored
+// summary — the #177 shape, where the durable state comes back BIGGER than the
+// request that was just measured as fitting, so compaction never converges —
+// and (b) move the prompt head on every turn that adds a byte. Refusing to grow
+// makes the stored roll-up a monotone non-increasing step function: identical
+// bytes turn after turn inside a shrink band, so prefix reuse extends THROUGH
+// the summary (measured ~55k tokens on the live conversation) instead of
+// stalling at the 24576 checkpoint floor.
+//
+// Empty text is refused. The pair row is the ONLY representation of every row
+// durable compaction marked compacted = 1 — the client still sees the full
+// history, GetConversationByIdInternal does not — so blanking it silently
+// deletes that history from every future request.
+//
+// No FTS/vector maintenance is needed: messages_fts is populated only for
+// user/assistant rows (see insertMessage) and vectors are keyed by message id,
+// which does not change. The row is a synthetic tool row and is never in the
+// search index.
+//
+// The read-then-write is not wrapped in a transaction: the shrink guard compares
+// against the text it just read, so two concurrent writers to the SAME
+// conversation could in principle both pass and the longer one land last.
+// Requests are serialised per conversation (one active request per conversation
+// id) and the pair row is synthetic, so no path writes it concurrently; if that
+// serialisation ever goes away, do the compare inside the write transaction.
+func UpdateCheckpointSummaryShrink(ctx context.Context, conversationID string, summary string) (bool, error) {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return false, nil
+	}
+	userID, ok := ctx.Value("userID").(string)
+	if !ok {
+		return false, errors.New("user ID not found in request context")
+	}
+	d, err := GetUserDB(userID)
+	if err != nil {
+		return false, err
+	}
+
+	// Locate the live pair exactly the way the fold does: the assistant row
+	// owning an eco_checkpoint tool call, then the tool row answering that call
+	// id. compacted = 0 on both — a superseded pair must never be revived.
+	var toolCallID string
+	var assistantID int64
+	rows, err := d.QueryContext(ctx,
+		`SELECT id, tool_calls FROM messages
+		 WHERE conversation_id = ? AND role = 'assistant' AND compacted = 0 AND tool_calls LIKE ?
+		 ORDER BY seq ASC`, conversationID, "%"+EcoCheckpointToolName+"%")
+	if err != nil {
+		return false, err
+	}
+	for rows.Next() {
+		var id int64
+		var tcJSON *string
+		if err := rows.Scan(&id, &tcJSON); err != nil {
+			rows.Close()
+			return false, err
+		}
+		for _, tc := range unmarshalToolCalls(tcJSON) {
+			if tc.Function.Name == EcoCheckpointToolName {
+				assistantID = id
+				toolCallID = tc.ID
+				break
+			}
+		}
+		if assistantID != 0 {
+			break
+		}
+	}
+	rows.Close()
+	if assistantID == 0 || toolCallID == "" {
+		return false, nil
+	}
+
+	var toolID int64
+	var stored *string
+	err = d.QueryRowContext(ctx,
+		`SELECT id, content FROM messages
+		 WHERE conversation_id = ? AND role = 'tool' AND tool_call_id = ? AND compacted = 0
+		 LIMIT 1`, conversationID, toolCallID).Scan(&toolID, &stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		// An assistant half with no live tool half is a half-pair the fold path
+		// cannot represent either; there is nothing to latch onto.
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	oldText := strings.TrimSpace(unmarshalMessageContent(stored).TextContent())
+	if oldText != "" && len(summary) >= len(oldText) {
+		// Not a shrink. Monotonicity is the whole point of the latch, and the
+		// equal-length case must be a real no-op: rewriting the row with the
+		// bytes it already carries dirties a WAL page every turn for zero gain.
+		return false, nil
+	}
+
+	// Rewrite the content column, preserving the row's other columns. The
+	// summary is a single text part, so re-marshalling NewTextContent matches
+	// the shape insertMessage wrote.
+	if _, err := d.ExecContext(ctx, `UPDATE messages SET content = ? WHERE id = ?`,
+		marshalMessageContent(utils.NewTextContent(summary)), toolID); err != nil {
+		return false, err
+	}
+	utils.Log("[DurableCompact] checkpoint summary shrunk in place: %d -> %d chars (id=%d seq untouched, conv=%s)",
+		len(oldText), len(summary), toolID, conversationID)
+	return true, nil
+}
+
 // priorSummaryBanner is the marker the durable summary uses to separate the
 // carried-forward summary from the newly folded messages.
 const priorSummaryBanner = "PRIOR CHECKPOINT:"
