@@ -611,16 +611,23 @@ func CompactConversationDurableWithSummary(
 		return 0, nil
 	}
 
-	// Render EVERY message before the boundary into the summary input, in
-	// chronological order. No budget and no skipping: the rows listed here are
-	// exactly the rows this transaction marks `compacted = 1`, so anything left
-	// out of the summary is context that silently disappears from every future
-	// request. Size is bounded by the boundary the CALLER chose, not by a
-	// constant here.
+	// Render EVERY compactable message before the boundary into the summary
+	// input, in chronological order. No budget: the rows listed here are exactly
+	// the rows this transaction can mark `compacted = 1`, so anything left out of
+	// the summary is context that silently disappears from every future request.
+	// Size is bounded by the boundary the CALLER chose, not by a constant here.
+	//
+	// Rows durable compaction has ALREADY folded are excluded: the request path
+	// loads with includeCompacted = true, so the slice carries them, and the
+	// UPDATE below can only mark compacted = 0 rows. Rendering them into the new
+	// summary would duplicate history the prior roll-up already represents (the
+	// summary grows toward the trigger, which is the #177 re-inflation shape),
+	// and it would make the "these are the rows this marks" claim false. Skipping
+	// them makes the render set, the fold set and the UPDATE's reach ONE set.
 	var folded []utils.Message
 	for i := 0; i < firstKeptIdx; i++ {
 		m := messages[i]
-		if IsCheckpointMessage(m) {
+		if m.Compacted || IsCheckpointMessage(m) {
 			continue
 		}
 		folded = append(folded, m)
