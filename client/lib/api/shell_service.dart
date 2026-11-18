@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -407,21 +406,30 @@ class ShellService {
     // Bounded spawn: see shell_run.dart. An unbounded Process.start here parks
     // the UI isolate (blocked binary, or a working directory on a sleeping
     // network share) and the client answers no tool call at all.
+    final startFuture = Process.start(
+      shell.executable,
+      shell.args,
+      workingDirectory: pwd.isEmpty ? null : pwd,
+      runInShell: false,
+      mode: ProcessStartMode.normal,
+    );
     Process proc;
     try {
-      proc = await Process.start(
-        shell.executable,
-        shell.args,
-        workingDirectory: pwd.isEmpty ? null : pwd,
-        runInShell: false,
-        mode: ProcessStartMode.normal,
-      ).timeout(const Duration(seconds: 10));
+      proc = await startFuture.timeout(const Duration(seconds: 10));
     } on TimeoutException {
+      // `.timeout` abandons the future; the spawn itself can still complete
+      // afterwards, leaving an unowned child. If that child inherits our stdio
+      // handles it keeps them open, and the FOREGROUND call that follows in the
+      // same dispatch chain then drains forever on its own pipes — the
+      // "every device call times out after this one" state. Kill the late
+      // spawn. This does NOT re-spawn: the command is launched at most once.
+      killLateSpawn(startFuture);
       return 'Error starting background task: spawning "${shell.executable}" '
           'timed out after 10s (endpoint security / group policy is blocking the '
           'binary, or the working directory "$pwd" is an unavailable network '
           'share). Retry with a local pwd, or use a server-side tool.';
     } catch (e) {
+      killLateSpawn(startFuture);
       return 'Error starting background task: $e';
     }
     final bp = await BgProcessRegistry().register(
