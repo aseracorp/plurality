@@ -196,70 +196,19 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				return
 			}
 			if isContextLengthError(err) {
-				// The conversation outgrew the model's context window. The
-				// shrink MUST be durable: an in-memory-only compaction is
-				// undone on the very next DB reload (the tool loop refreshes
-				// conversation.Messages from sqlite after every stream), so the
-				// next iteration re-ships the full history and re-triggers this
-				// guard forever (observed: conversation 319ce9283cac61666757b88a
-				// hit "estimated 134k tokens vs 131072" on EVERY turn, 839
-				// persisted messages, one checkpoint stuck at seq 154).
-				//
-				// 1) Durable: fold the oldest messages into the rolling
-				//    checkpoint summary and DELETE them from the DB. This is by
-				//    far the most effective lever — it physically shrinks what
-				//    every later request loads, including after a restart.
-				// 2) In-memory: also trim the live slice so THIS iteration's
-				//    retry is unchanged.
-				utils.Error("[LLMLoop] context length exceeded — compacting history (durable) and retrying", err)
-				// Stage-1: deterministic megacave machine excerpt (Caveman
-				// /caveman-compress-style, no LLM call) runs FIRST so the retry
-				// is compacted immediately — the old path called the LLM
-				// summarizer synchronously here, which on a slow self-hosted
-				// model (swift-1.5-iq3_s) blocked for minutes and no compacted
-				// request ever reached the backend. The LLM summary is only
-				// used as a fallback if the machine excerpt is unavailable.
-				// Machine-only compaction: no LLM call. The megacave excerpt
-				// replaces the folded history for the future workflow.
-				// The staged resolver decides the fold: the context window is
-				// the target, so durable compaction folds exactly what stages
-				// A -> D dropped.
-				stagedView, foldFrom := resolveEcoContextCompaction(conversation.Messages,
-					Models.MaxContextTokensForPrefixed(model.Name), ecoContentBudget(model.Name))
-				removed, cErr := db.CompactConversationDurableWithSummary(
-					ar.Ctx, ar.ConversationID, conversation.Messages, foldFrom,
-					func(msgs []utils.Message) string { return MachineExcerptMegacave(msgs) },
-					shippedSummary(stagedView),
-				)
-				if cErr != nil {
-					utils.Error("[LLMLoop] durable compaction failed (falling back to in-memory only)", cErr)
-					removed = 0
-				}
-				// Same latch as the request path: the overflow guard reached a
-				// conversation whose fold cannot progress (the pair heads the
-				// live view), so stage D's shrink must be persisted in place on
-				// the pair row or the retry re-ships the full stored summary.
-				persistRolledUpShrinkIfNoProgress(ar.Ctx, ar.ConversationID, stagedView, foldFrom, removed)
-				reloaded, rErr := db.GetConversationByIdInternal(ar.Ctx, ar.ConversationID)
-				if rErr == nil {
-					conversation = *reloaded
-				}
+				// The conversation outgrew the model's context window. Shrink
+				// the in-memory history and retry ONCE — otherwise a long
+				// conversation (this one hit 381k tokens vs 131k limit)
+				// dead-ends into an error/blank UI at workflow end.
+				utils.Error("[LLMLoop] context length exceeded — compacting history and retrying", err)
 				before := len(conversation.Messages)
 				conversation.Messages = CompactConversationForContext(conversation.Messages, 24)
 				after := len(conversation.Messages)
-				utils.Log("[LLMLoop] compacted conversation %s: durable removed %d, in-memory %d -> %d messages", ar.ConversationID, removed, before, after)
-				if after < before || removed > 0 {
-					// Surface an honest notice so a restart/resume never looks
-					// like amnesia: the older messages were folded into the
-					// rolling checkpoint summary, and the live tail was kept
-					// anchored on the most recent user turn.
-					notice := "(The conversation was too long for the model's context window — older messages were folded into a summary and the live tail was kept. Retrying …)"
-					if removed > 0 {
-						notice = fmt.Sprintf("(The conversation was too long for the model's context window — %d older messages were folded into a summary. Retrying …)", removed)
-					}
+				utils.Log("[LLMLoop] compacted conversation %s history %d -> %d messages", ar.ConversationID, before, after)
+				if after < before {
 					ar.Broadcast(SSEEvent{
 						Type:           "text",
-						Content:        notice,
+						Content:        "(The conversation was too long for the model's context window — older messages were compacted. Retrying …)",
 						ConversationID: ar.ConversationID,
 					})
 					continue
@@ -461,6 +410,12 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 					})
 				}()
 			}
+
+			// Eco-mode rolling-checkpoint compaction. Spawned at the end of
+			// the LLM loop so it can read the just-recorded assistant
+			// prompt_tokens. Uses an independent user-scoped context so a
+			// client disconnect doesn't interrupt the summary call.
+			go runEcoSummary(userContextFor(ar.UserID), ar.ConversationID)
 
 			return
 		}

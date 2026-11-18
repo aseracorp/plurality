@@ -1,35 +1,12 @@
 package ai
 
 import (
-	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
-	"unicode"
 
-	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
+	"github.com/azukaar/plurality/src/textsafe"
 )
-
-// checkpointSummaryCarrier reports whether m is the TOOL half of an eco
-// checkpoint pair — the row that carries the rolling summary of everything the
-// conversation has folded away.
-//
-// That row must be EXEMPT from the per-message send cap below
-// (maxCompactMessageChars). The cap is a defence against one runaway message
-// (a pasted 991440-char logfile); the summary is not a runaway message, it is
-// the roll-up of thousands of them, and its size is decided by the fold loop's
-// fit test against the context window (ai.resolveEcoContextCompaction), which
-// measures it in full. Applying the 100k cap to it truncates the summary on the
-// way out and drops the oldest content with no marker — the silent context loss
-// the fold loop exists to prevent, reintroduced at the last hop.
-//
-// The estimator (eco.go boundedWireChars) applies the SAME exemption: the
-// trigger and the sender must measure the same bytes, or the gate fires on a
-// request that is not what leaves.
-func checkpointSummaryCarrier(m utils.Message) bool {
-	return utils.IsCheckpointSummaryCarrier(m)
-}
 
 // isContextLengthError classifies an LLM error as "the request exceeded the
 // model's context window". Providers report this as context_length_exceeded,
@@ -41,7 +18,7 @@ func isContextLengthError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	needles := []string{"context_length_exceeded", "maximum context length", "input too long", "max_prompt_tokens", "context window", "exceeded the context length", "context length is", "request exceeds the context window"}
+	needles := []string{"context_length_exceeded", "maximum context length", "input too long", "max_prompt_tokens", "context window", "exceeded the context length", "context length is"}
 	for _, needle := range needles {
 		if strings.Contains(msg, needle) {
 			return true
@@ -110,456 +87,44 @@ func dropDanglingToolResults(msgs []utils.Message) []utils.Message {
 	return out
 }
 
+
 // maxCompactMessageChars is the per-message hard bound applied when the
 // in-memory history is compacted for a context-overflow retry. The eco
 // tail-cap uses the same bound so the two paths agree.
 const maxCompactMessageChars = 100_000
 
-// TruncateOversizedMessages bounds the WIRE PAYLOAD of every message that
-// would be sent to the provider to maxCompactMessageChars characters. Messages
-// are NOT dropped (their role/turn boundary must be preserved so tool-call
-// pairing stays consistent); only their TEXT body is truncated, with a clear
-// banner, so the model still sees the head of the content.
+// TruncateOversizedMessages bounds every message that would be sent to the
+// provider to maxCompactMessageChars characters. Messages are NOT dropped
+// (their role/turn boundary must be preserved so tool-call pairing stays
+// consistent); only their text body is truncated, with a clear banner, so
+// the model still sees the head of the content.
 //
-// The bound is the full payload — content parts PLUS assistant tool_call
-// arguments and the tool-role plumbing — i.e. exactly what messageWireChars
-// measures, so after this pass messageWireChars(m) <= maxCompactMessageChars
-// for every row. That identity is the contract with the eco trigger estimator
-// (boundedWireChars clamps to the same cap): the trigger and the request can
-// only agree if the sender enforces the cap. Estimating a bounded view while
-// shipping an unbounded one is what made the loop permanent: the trigger said
-// "fits", the preemptive context guard measured the raw bytes of an
-// unbounded 991440-char pasted logfile and rejected them, and the retry
-// compacted 0 rows (the oversized row IS the protected newest user turn)
-// before sending the identical request again — on every message.
-//
-// Used by CompactConversationForContext (context-overflow retry) and by the
-// normal send path (index.go). Returns a NEW slice; the input and its content
-// parts are NOT mutated.
-//
-// Non-text parts (image_url / file / pdf) are PRESERVED and their bytes count
-// toward the budget: the previous implementation rebuilt the content as a
-// single text part, silently deleting every attachment of an oversized message
-// — invisible on the retry-only call site, unacceptable once this guards the
-// normal send path.
+// Used by CompactConversationForContext so a context-overflow retry cannot
+// fail again on a single oversized message. Returns a NEW slice; the input
+// is not mutated.
 func TruncateOversizedMessages(messages []utils.Message) []utils.Message {
 	out := make([]utils.Message, 0, len(messages))
 	for _, m := range messages {
-		if checkpointSummaryCarrier(m) {
-			// The rolling checkpoint summary is sized by the fold loop, not by
-			// this constant — see checkpointSummaryCarrier.
-			out = append(out, m)
-			continue
-		}
-		// The cap covers the NON-IMAGE payload. Image bytes are the provider's
-		// real context cost (a screenshot is 10-50k tokens) and this helper must
-		// never trade them away: bounding the whole payload instead would let one
-		// big screenshot delete the user's text from the same message, which is a
-		// context-LOSS regression far worse than the bytes it saves. Images stay
-		// counted in full by the estimator and are handled by the attachment
-		// pipeline and the window guard, not here.
-		img := imageWireChars(m.Content)
-		nonImage := messageWireChars(m) - img
-		if nonImage <= maxCompactMessageChars {
-			out = append(out, m)
-			continue
-		}
-		banner := fmt.Sprintf(
-			"\n\n[message truncated by Plurality: original length %d chars exceeded the per-message context budget of %d chars]",
-			nonImage, maxCompactMessageChars)
-
-		parts := m.Content.ContentParts()
-		textWire := 0
-		for _, p := range parts {
-			if p.Type == "text" {
-				textWire += len(p.Text) + len(p.Filename)
-			}
-		}
-		// Plumbing that rides on the wire unchanged: tool_call arguments,
-		// name/tool_call_id, and non-text/non-image parts (file, pdf, snippet).
-		plumbing := nonImage - textWire
-		budget := maxCompactMessageChars - plumbing - len(banner)
-		if budget < 0 {
-			budget = 0
-		}
-		if textWire > budget {
-			utils.Log("[Compaction] truncating oversized message (role=%s non-image wire %d chars -> %d)", m.Role, nonImage, maxCompactMessageChars)
-			outParts := make([]utils.ContentPart, 0, len(parts))
-			textDone := false
-			for _, p := range parts {
-				if p.Type != "text" {
-					outParts = append(outParts, p)
-					continue
+		total := m.Content.TotalContentChars()
+		if total > maxCompactMessageChars {
+			txt := ""
+			for _, p := range m.Content.ContentParts() {
+				if p.Type == "text" {
+					txt += p.Text
 				}
-				if textDone {
-					// The remaining text is represented by the truncated part.
-					continue
-				}
-				txt := p.Text
-				if textWire > budget {
-					keep := len(txt) - (textWire - budget)
-					if keep < 0 {
-						keep = 0
-					}
-					txt = textsafe.TailBytes(txt, keep)
-				}
-				outParts = append(outParts, utils.ContentPart{Type: "text", Text: txt + banner})
-				textDone = true
 			}
-			if textDone {
-				m.Content = utils.NewPartsContent(outParts)
+			truncLen := len(txt)
+			if truncLen > maxCompactMessageChars {
+				truncLen = maxCompactMessageChars
 			}
-		}
-		// Text alone may not be the oversized part: an assistant row can carry a
-		// huge tool_call argument blob (a file write, a page snapshot). The
-		// estimator counts those bytes, so the sender must bound them too —
-		// as VALID JSON, because providers reject malformed tool_calls.
-		if messageWireChars(m)-imageWireChars(m.Content) > maxCompactMessageChars {
-			m = elideToolCallArguments(m, maxCompactMessageChars+img)
+			trunc := textsafe.HeadBytes(txt, truncLen)
+			utils.Log("[Compaction] truncating oversized message (%d chars -> %d)", total, maxCompactMessageChars)
+			m.Content = utils.NewTextContent(trunc +
+				"\n\n[message truncated by Plurality: original length " +
+				fmt.Sprintf("%d", total) +
+				" chars across all content parts exceeded the per-message context budget]")
 		}
 		out = append(out, m)
 	}
 	return out
-}
-
-// elideToolCallArguments shrinks an assistant message's tool_call ARGUMENTS
-// until its wire payload fits `cap`, replacing each blob with a compact,
-// VALID JSON object. Arguments are history: the model produced them, the tool
-// already ran, and the tool RESULT is the row that carries the information.
-// Replacing them with a marker is safe; truncating the JSON mid-string is not
-// (providers validate tool_calls arguments and answer 400).
-//
-// Returns the message unchanged when nothing is left to elide — e.g. a payload
-// made of a single huge image part, which this helper must never touch.
-func elideToolCallArguments(m utils.Message, cap int) utils.Message {
-	if len(m.ToolCalls) == 0 {
-		return m
-	}
-	wire := messageWireChars(m)
-	if wire <= cap {
-		return m
-	}
-	calls := make([]utils.ToolCall, len(m.ToolCalls))
-	copy(calls, m.ToolCalls)
-	for i := range calls {
-		if wire <= cap {
-			break
-		}
-		arg := calls[i].Function.Arguments
-		marker := fmt.Sprintf(`{"plurality_elided":%d}`, len(arg))
-		if len(marker) >= len(arg) {
-			continue
-		}
-		wire -= len(arg) - len(marker)
-		calls[i].Function.Arguments = marker
-	}
-	m.ToolCalls = calls
-	return m
-}
-
-// ---------------------------------------------------------------------------
-// Megacave machine excerpt (Caveman /caveman-compress, deterministic, no-LLM)
-// ---------------------------------------------------------------------------
-//
-// This is the STAGE-1 machine compaction for a context-overflow retry. It
-// mirrors Caveman's `/caveman-compress` contract ("every heading, code block,
-// and path intact") and the read_less structured compressor philosophy, but
-// runs entirely on the server with NO LLM call:
-//
-//   - code blocks, file paths, identifiers, IDs, URLs, error strings, exact
-//     numbers and quoted user requests are kept VERBATIM;
-//   - JSON / structured tool output is re-serialized with whitespace stripped
-//     (keys + values preserved, so nothing factual is lost);
-//   - prose and obvious framing are compressed hard (filler words removed,
-//     blank lines collapsed);
-//   - very long tool dumps are cut to head+tail with an elision banner.
-//
-// The result is a bounded "megacave" excerpt (<= maxMegacaveExcerptChars) that
-// stands in for the folded history in the roll-back checkpoint. Deterministic
-// and fast (microseconds, no model call) — so durable compaction can no longer
-// stall for minutes on a slow self-hosted summarizer (observed: swift-1.5-iq3_s
-// taking ~3.5 min per summary, during which no compacted request ever reached
-// the backend). The LLM summary (GenerateCheckpointSummary) remains available
-// as the stage-2 fallback for the second context hit.
-
-var (
-	// whitespace runs -> single space; blank lines collapse.
-	reWS = regexp.MustCompile(`\s+`)
-	// lines that are pure punctuation/filler we drop from prose.
-	reFill = regexp.MustCompile(`(?i)^(the|a|an|and|or|but|so|then|well|ok|okay|right|now|so basically|so in summary|in other words|in conclusion)\\b.*$`)
-)
-
-// The machine excerpt is UNCAPPED. A bounded excerpt is not a summary, it is a
-// truncation: at 60_000 chars the excerpt of a long conversation hit the budget
-// mid-sentence (observed checkpoint: 61_715 bytes ending "Clean fi"), so the
-// model received a mutated transcript with the tail of the folded history
-// silently gone. The excerpt is the roll-up of the history the conversation is
-// giving up, so its size must be decided by what it has to preserve, not by a
-// constant. Fit against the context window is the CALLER's job
-// (ai.resolveEcoContextCompaction folds more history until the request fits);
-// capping the excerpt there is what produced the "folded everything, still
-// oversized, shipped an empty history" shape.
-
-// maxMegacaveToolShowChars is the DEFAULT head+tail budget shown for a single
-// large tool result (split ~60/40 head/tail around an elision banner).
-//
-// It is a FALLBACK, not the operative number. A fixed cap cannot bound the
-// output of a whole conversation: measured on realistic prose+tool content the
-// megacave transform runs at ratio ~1.045 (it ADDS labels and newlines), and at
-// ~0.81 on the live event — not the 0.107 quoted below, which came from a
-// 10.5M-char JSON-heavy conversation where compactJSON does the work. The cause
-// is that this constant sits just BELOW the average tool row there (~6.8K
-// chars): rows just above the cap lose a few hundred chars, every row below it
-// is untouched, and the labels added on top outweigh that. Consequence: stages
-// A and B can NEVER fit an agentic conversation, so the lossy stages C/D become
-// the DEFAULT path above the trigger instead of the fringe case the spec
-// intends.
-//
-// MachineExcerptMegacaveBudget replaces it with a per-row budget DERIVED from
-// the caller's token budget, which is the only way to make the ratio < 1 a
-// property of the transform rather than a hope about the content.
-const maxMegacaveToolShowChars = 6_000
-
-// megacaveLabelOverheadChars is the per-ROW cost the transform ADDS beyond the
-// content it renders. It is the sum of everything emitted per row that is not
-// text from the message:
-//
-//	"USER:" / "ASSISTANT:" / "TOOL_RESULT <name>:"  + blank separator  ~32
-//	"[... megacave elided N chars ...]"  (one per row over the cap)     ~40
-//
-// It must include the banner: omitting it (an earlier shape, 32) underestimates
-// the rendered size by ~23 % on a row-heavy fold set, so the budgeted stage A
-// overflows the budget (measured: 1830-row fixture budget 93344 -> stage A
-// 102608), the ladder escalates to the lossy stages, and the authorization gate
-// then refuses every fold — the conversation never compacts durably.
-//
-// The artifact pair, banners and drop marker are charged ONCE by the caller via
-// megacaveArtifactOverheadTokens; charging them per row made the per-row budget
-// go negative on a 1830-row fold set.
-const megacaveLabelOverheadChars = 72
-
-// minMegacaveRowShowChars is the floor of the derived per-row budget. Below this
-// an excerpt stops being an excerpt: the caller's budget is so small relative to
-// the row count that no meaningful content fits. The floor exists so a fold set
-// that CANNOT be represented losslessly renders at the smallest honest size and
-// then FAILS the fit test (the resolver escalates, the authorization gate
-// refuses the fold, the request ships ephemeral) — it must never silently
-// become uncapped.
-const minMegacaveRowShowChars = 64
-
-// MegacaveRowBudget derives the per-row head+tail show budget for one machine
-// excerpt: `maxChars` is what the WHOLE excerpt may cost in characters, `rows`
-// is how many rows it has to cover.
-//
-// maxChars / rows is the exact uniform split, so the rendered total is at most
-// maxChars: the transform is then GUARANTEED not to exceed the budget it was
-// given, on any content shape. Rows smaller than the budget are rendered
-// verbatim (the common case: most rows are small), so the compression is
-// concentrated in the few rows that are large — which is exactly the intent of
-// the head+tail elision, and it is why this shrinks where the fixed constant
-// did not.
-//
-// Returns 0 (meaning "uncapped") when there is nothing to bound: zero rows, or a
-// budget so generous that every row already fits under the default constant.
-func MegacaveRowBudget(maxChars, rows int) int {
-	if rows <= 0 {
-		return 0
-	}
-	if maxChars <= 0 {
-		// No room at all: render at the smallest honest size so the fit test
-		// FAILS and the caller escalates / the authorization gate refuses.
-		// Returning 0 here would mean UNLIMITED, i.e. guarantee the overflow the
-		// budget exists to prevent.
-		return minMegacaveRowShowChars
-	}
-	per := (maxChars - megacaveLabelOverheadChars*rows) / rows
-	if per >= maxMegacaveToolShowChars {
-		return 0 // the fixed default is already tighter than the budget asks
-	}
-	if per < minMegacaveRowShowChars {
-		return minMegacaveRowShowChars
-	}
-	return per
-}
-
-// MachineExcerptMegacave renders a deterministic, UNCAPPED "megacave" machine
-// excerpt of the folded message history: facts/code/paths/IDs verbatim,
-// prose and structured noise aggressively compressed, NO LLM call. It mirrors
-// Caveman's /caveman-compress read_less contract so the checkpoint preserves
-// the conversation's concrete content without the latency/cost of a summary
-// model (the bug behind "durable compaction never sent a compacted request").
-//
-// Measured on a real 10.5M-char conversation: the transform compresses to
-// ~1.13M chars (ratio 0.107), i.e. folding history always shrinks the request
-// (total = W - 0.893 x folded) — the property the fold loop in
-// resolveEcoContextCompaction relies on. That ratio is JSON-dominated and does
-// NOT generalise: on realistic prose+tool content it is ~1.045. Use
-// MachineExcerptMegacaveBudget when the caller has a budget to respect.
-func MachineExcerptMegacave(messages []utils.Message) string {
-	return MachineExcerptMegacaveBudget(messages, 0)
-}
-
-// MachineExcerptMegacaveBudget is MachineExcerptMegacave with a per-row
-// head+tail budget (showChars <= 0 = uncapped, identical output to
-// MachineExcerptMegacave).
-//
-// This is the lever that makes the compaction ratio a GUARANTEE instead of a
-// content lottery: pass MegacaveRowBudget(budgetChars, len(messages)) and the
-// excerpt cannot exceed the budget the request is being fitted to, so stage A
-// can actually reach "fits" on an agentic conversation and stay lossless for
-// every row under the cap.
-func MachineExcerptMegacaveBudget(messages []utils.Message, showChars int) string {
-	var b strings.Builder
-
-	writeLine := func(s string) {
-		if s == "" {
-			return
-		}
-		b.WriteString(s)
-		b.WriteString("\n")
-	}
-
-	for _, m := range messages {
-		switch m.Role {
-		case "user":
-			writeLine("USER:")
-			writeMegacaveContent(&b, m, writeLine, showChars)
-			writeLine("")
-		case "assistant":
-			writeLine("ASSISTANT:")
-			writeMegacaveContent(&b, m, writeLine, showChars)
-			for _, tc := range m.ToolCalls {
-				args := compactJSON(tc.Function.Arguments)
-				writeLine("[tool_call " + tc.Function.Name + "] args=" + args)
-			}
-			writeLine("")
-		case "tool":
-			writeLine("TOOL_RESULT " + m.Name + ":")
-			writeMegacaveContent(&b, m, writeLine, showChars)
-			writeLine("")
-		}
-	}
-	return strings.TrimSpace(b.String())
-}
-
-// writeMegacaveContent writes a message's text parts through the megacave
-// transforms: code/markdown fences verbatim, JSON/long text compressed.
-// showChars <= 0 means the default constant cap.
-func writeMegacaveContent(b *strings.Builder, m utils.Message, writeLine func(string), showChars int) {
-	if showChars <= 0 {
-		showChars = maxMegacaveToolShowChars
-	}
-	parts := m.ContentParts()
-	for _, p := range parts {
-		if p.Type != "text" && p.Type != "snippet" {
-			continue
-		}
-		if p.Text == "" {
-			continue
-		}
-		if p.Filename != "" {
-			writeLine("[attachment: " + p.Filename + "]")
-		}
-		writeMegacaveText(b, p.Text, writeLine, showChars)
-	}
-}
-
-// writeMegacaveText applies the per-text megacave transform: keep fenced code
-// blocks verbatim; compress JSON to single line with whitespace stripped;
-// otherwise trim prose to head+tail if oversized. `showChars` is the per-row
-// head+tail budget (MegacaveRowBudget; <= 0 means the default constant).
-func writeMegacaveText(b *strings.Builder, text string, writeLine func(string), showChars int) {
-	if strings.Contains(text, "```") || strings.Contains(text, "~~~") {
-		// Markdown-fenced code: preserve every line verbatim (fenced regions are
-		// the "code blocks" the /caveman-compress contract keeps intact).
-		for _, line := range strings.Split(text, "\n") {
-			writeLine(line)
-		}
-		return
-	}
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return
-	}
-	// JSON-ish bodies: compact.
-	if looksJSON(trimmed) {
-		compacted := compactJSON(trimmed)
-		if len(compacted) > 0 {
-			writeLine(compacted)
-		}
-		return
-	}
-	// Long prose/tool dump: head+tail with elision banner.
-	if len(trimmed) > showChars {
-		head := textsafe.HeadBytes(trimmed, showChars*3/5)
-		tailStart := len(trimmed) - showChars*2/5
-		if tailStart < len(head) {
-			tailStart = len(head)
-		}
-		tail := textsafe.TailBytes(trimmed, len(trimmed)-tailStart)
-		writeLine(head)
-		writeLine(fmt.Sprintf("[... megacave elided %d chars ...]", len(trimmed)-(len(head)+len(tail))))
-		writeLine(tail)
-		return
-	}
-	// Normal prose: collapse whitespace, drop obvious filler lines.
-	for _, line := range strings.Split(trimmed, "\n") {
-		l := strings.TrimSpace(line)
-		if l == "" {
-			continue
-		}
-		if reWS.ReplaceAllString(l, " ") == "" {
-			continue
-		}
-		writeLine(reWS.ReplaceAllString(l, " "))
-	}
-}
-
-// looksJSON reports whether a string is likely JSON output (object or array).
-func looksJSON(s string) bool {
-	t := strings.TrimSpace(s)
-	if t == "" {
-		return false
-	}
-	if t[0] != '{' && t[0] != '[' {
-		return false
-	}
-	return json.Valid([]byte(t))
-}
-
-// compactJSON re-serializes JSON with whitespace stripped (keys + values
-// preserved verbatim, so no factual loss), falling back to whitespace collapse
-// if re-marshalling fails.
-func compactJSON(s string) string {
-	t := strings.TrimSpace(s)
-	if !looksJSON(t) {
-		return reWS.ReplaceAllString(t, " ")
-	}
-	var v interface{}
-	if err := json.Unmarshal([]byte(t), &v); err != nil {
-		return reWS.ReplaceAllString(t, " ")
-	}
-	out, err := json.Marshal(v)
-	if err != nil {
-		return reWS.ReplaceAllString(t, " ")
-	}
-	return string(out)
-}
-
-// isFillerLine reports trivial prose lines (mostly for the review/keep).
-func isFillerLine(line string) bool {
-	l := strings.ToLower(strings.TrimSpace(line))
-	if l == "" {
-		return true
-	}
-	if reFill.MatchString(l) {
-		return true
-	}
-	// lines consisting only of punctuation/symbols
-	for _, r := range l {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			return false
-		}
-	}
-	return true
 }
