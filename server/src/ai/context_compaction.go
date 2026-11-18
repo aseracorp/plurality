@@ -320,17 +320,32 @@ var (
 // property of the transform rather than a hope about the content.
 const maxMegacaveToolShowChars = 6_000
 
-// megacaveLabelOverheadChars bounds the per-row cost the transform ADDS (the
-// "USER:" / "ASSISTANT:" / "TOOL_RESULT name:" line, the elision banner, blank
-// separators). Subtracted from the derived per-row budget so the sum of the
-// rendered rows stays inside the caller's budget, not just the text.
-const megacaveLabelOverheadChars = 192
+// megacaveLabelOverheadChars is the per-ROW cost the transform ADDS beyond the
+// content it renders. It is the sum of everything emitted per row that is not
+// text from the message:
+//
+//	"USER:" / "ASSISTANT:" / "TOOL_RESULT <name>:"  + blank separator  ~32
+//	"[... megacave elided N chars ...]"  (one per row over the cap)     ~40
+//
+// It must include the banner: omitting it (an earlier shape, 32) underestimates
+// the rendered size by ~23 % on a row-heavy fold set, so the budgeted stage A
+// overflows the budget (measured: 1830-row fixture budget 93344 -> stage A
+// 102608), the ladder escalates to the lossy stages, and the authorization gate
+// then refuses every fold — the conversation never compacts durably.
+//
+// The artifact pair, banners and drop marker are charged ONCE by the caller via
+// megacaveArtifactOverheadTokens; charging them per row made the per-row budget
+// go negative on a 1830-row fold set.
+const megacaveLabelOverheadChars = 72
 
 // minMegacaveRowShowChars is the floor of the derived per-row budget. Below this
 // an excerpt stops being an excerpt: the caller's budget is so small relative to
-// the row count that no meaningful content fits, and the right answer is to fold
-// FEWER rows (the ladder), not to render every row as 200 chars of noise.
-const minMegacaveRowShowChars = 256
+// the row count that no meaningful content fits. The floor exists so a fold set
+// that CANNOT be represented losslessly renders at the smallest honest size and
+// then FAILS the fit test (the resolver escalates, the authorization gate
+// refuses the fold, the request ships ephemeral) — it must never silently
+// become uncapped.
+const minMegacaveRowShowChars = 64
 
 // MegacaveRowBudget derives the per-row head+tail show budget for one machine
 // excerpt: `maxChars` is what the WHOLE excerpt may cost in characters, `rows`
@@ -347,8 +362,15 @@ const minMegacaveRowShowChars = 256
 // Returns 0 (meaning "uncapped") when there is nothing to bound: zero rows, or a
 // budget so generous that every row already fits under the default constant.
 func MegacaveRowBudget(maxChars, rows int) int {
-	if rows <= 0 || maxChars <= 0 {
+	if rows <= 0 {
 		return 0
+	}
+	if maxChars <= 0 {
+		// No room at all: render at the smallest honest size so the fit test
+		// FAILS and the caller escalates / the authorization gate refuses.
+		// Returning 0 here would mean UNLIMITED, i.e. guarantee the overflow the
+		// budget exists to prevent.
+		return minMegacaveRowShowChars
 	}
 	per := (maxChars - megacaveLabelOverheadChars*rows) / rows
 	if per >= maxMegacaveToolShowChars {

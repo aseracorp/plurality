@@ -175,24 +175,138 @@ func stageSizes(t *testing.T, msgs []utils.Message) (a, b, c int) {
 // (1=A, 2=B, 3=C) for this fixture, i.e. big enough for that stage's own
 // candidate and small enough to exclude the previous, larger one.
 // Returns -1 when the fixture cannot discriminate the stages.
+//
+// BUDGET-AWARE (step 4 of the plan): the resolver renders the machine excerpt
+// with a per-row budget DERIVED from the budget it is given
+// (MegacaveRowBudget), so a stage's size is a function of the budget, not a
+// constant of the fixture. Probing uncapped sizes and then picking a budget
+// from them lands the resolver one stage early — the exact failure the probe
+// comments above describe, one layer up. The budgets are therefore found by
+// bisecting on "does this stage fit at this budget", using the same rendering
+// the resolver uses.
 func budgetForStage(t *testing.T, msgs []utils.Message, stage int) int {
 	t.Helper()
-	a, b, c := stageSizes(t, msgs)
-	switch stage {
-	case 1:
+	a, _, c := stageSizes(t, msgs)
+	if stage == 1 {
 		return a + 1000
+	}
+	lo, hi := c/4, a+1000 // the answer for stages 2/3 lies in this range
+	switch stage {
 	case 2:
-		if b+50 >= a {
-			return -1
+		// The budget that lands the resolver on B: the last budget at which
+		// stage A's own candidate does NOT fit (the resolver escalates), and at
+		// which B's best candidate DOES fit.
+		esc := escalationPoint(t, msgs, 1, lo, hi)
+		if esc < 0 {
+			return -1 // A always fits: B is unreachable on this fixture
 		}
-		return b + (a-b)/2
+		budget := esc - 1
+		if budget <= c+50 {
+			return -1 // below C's floor: cannot discriminate B/C
+		}
+		if probeStageSize(msgs, budget, 2) > budget {
+			return -1 // B does not fit there either: the resolver would land on C
+		}
+		return budget
 	case 3:
-		if c+50 >= b {
-			return -1
+		esc := escalationPoint(t, msgs, 2, lo, hi)
+		if esc < 0 {
+			return -1 // B always fits: C is unreachable on this fixture
 		}
-		return c + (b-c)/2
+		budget := esc - 1
+		if probeStageSize(msgs, budget, 3) > budget {
+			return -1 // C does not fit there: the resolver would land on D
+		}
+		return budget
 	}
 	return -1
+}
+
+// escalationPoint returns the SMALLEST budget at which stage `stage`'s candidate
+// FITS, i.e. the boundary at which the resolver stops escalating past it. The
+// caller uses budget = return-1 to land the resolver ON the next stage.
+//
+// `size > budget` is true at small budgets (the render floors at
+// minMegacaveRowShowChars per row) and false at large ones (the render plateaus
+// at the uncapped size while the budget keeps growing), so the predicate is
+// monotone and the boundary bisects. Returns -1 when the stage fails across the
+// whole range and `lo` when it already fits at `lo`.
+func escalationPoint(t *testing.T, msgs []utils.Message, stage, lo, hi int) int {
+	t.Helper()
+	fails := func(budget int) bool { return probeStageSize(msgs, budget, stage) > budget }
+	if !fails(lo) {
+		return lo
+	}
+	if fails(hi) {
+		return -1
+	}
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if fails(mid) {
+			lo = mid + 1 // still escalating at mid: the boundary is above it
+		} else {
+			hi = mid // fits at mid: the boundary is at or below it
+		}
+	}
+	return lo
+}
+
+// probeStageSize mirrors the resolver's rendering of stage `stage` (1=A, 2=B,
+// 3=C) at `budget`, including the per-row megacave budget the resolver derives
+// from it.
+//
+// For B and C it measures the FLOOR variant (the smallest allowed one), because
+// that is the variant deciding escalation: the resolver escalates past a stage
+// exactly when even its floor misses the budget. Measuring every variant makes
+// the probe O(N^2) in characters — the same cost the production binary search
+// exists to avoid (a 500-turn fixture spent 147 s in stage D).
+func probeStageSize(msgs []utils.Message, budget, stage int) int {
+	pairEnd := checkpointPairEnd(msgs)
+	tailStart := startOfLastTurn(msgs)
+	if tailStart >= 0 && tailStart <= pairEnd {
+		tailStart = pairEnd + 1
+	}
+	if tailStart < 0 {
+		tailStart = 0
+	}
+	tail := TruncateOversizedMessages(msgs[tailStart:])
+	folded := foldableRange(msgs, pairEnd, tailStart)
+	room := (budget - approxTokens(tail) - megacaveArtifactOverheadTokens) * 3
+	size := func(set []utils.Message, drop int) int {
+		art := megacaveArtifactWithDropMarker(set, "megacave_probe", "", drop,
+			MegacaveRowBudget(room, len(set)))
+		return approxTokens(append(append([]utils.Message{}, art...), tail...))
+	}
+	if stage == 1 {
+		return size(folded, 0)
+	}
+	floor := folded
+	for {
+		next := dropOldestTurn(floor)
+		if len(next) >= len(floor) {
+			break
+		}
+		if stage == 2 && len(next) == 0 {
+			// allowEmpty: false — the resolver's stage B stops one variant short
+			// of the empty one. Walking to the empty variant measures C's floor and
+			// makes B look like it fits at every budget, so the bisection returns
+			// the boundary of a stage that cannot exist and the fixture reports
+			// "cannot discriminate B/C".
+			break
+		}
+		if stage == 3 {
+			next = userOnlyWithLastAssistant(next)
+			if len(next) >= len(floor) {
+				break
+			}
+		}
+		floor = next
+	}
+	if stage == 2 && len(floor) == len(folded) {
+		// allowEmpty: false with a single-turn set: the floor equals A.
+		return size(folded, 0)
+	}
+	return size(floor, len(folded)-len(floor))
 }
 
 // TestResolver_OverflowStageA: when content exceeds the budget, stage A keeps
@@ -327,8 +441,27 @@ func TestResolver_OverflowStageC(t *testing.T) {
 	if foldFrom > lastUser {
 		t.Fatalf("foldFrom %d must never fold the newest user turn (idx %d)", foldFrom, lastUser)
 	}
-	if foldFrom <= 0 {
-		t.Fatalf("stage C must fold at least one row, foldFrom=%d", foldFrom)
+	// CONTRACT AMENDED (owner-authorized, brief step "amend the destructive
+	// contracts"): the old assert was `foldFrom > 0` — stage C must durably
+	// fold. Stage C reduces the summary to user/assistant rows, so its summary
+	// represents a strict SUBSET of the fold set (measured: 13 of 597 rows).
+	// The authorization gate refuses to persist a fold whose rows the shipped
+	// summary does not represent, because the stored summary is the only
+	// representation of a compacted row: folding 597 rows from a 13-row summary
+	// is the annihilation (live: conv 9658ae45a32388ed1dafaac1, 232 rows marked
+	// from a ~1384-token summary).
+	//
+	// So the durable half of this contract is gone by design, and what replaces
+	// it is the part that protects the user: the view that ships FITS the
+	// budget, and the durable state is untouched (foldFrom == 0 = ephemeral,
+	// every row returns next request). Durability lives in stage A, which
+	// represents the whole fold set losslessly (see
+	// TestResolver_LosslessStageAFoldsDurably and the closed-loop test).
+	if foldFrom != 0 {
+		t.Fatalf("a lossy stage must NOT persist a fold: gate should force foldFrom = 0, got %d", foldFrom)
+	}
+	if got := approxTokens(out); got > budget {
+		t.Fatalf("stage C must still ship within budget: ~%d tokens / budget %d", got, budget)
 	}
 }
 
@@ -389,8 +522,16 @@ func TestResolver_OverflowStageDDropsOldestTurns(t *testing.T) {
 	if a <= 0 || b <= 0 {
 		t.Errorf("stage sizes unmeasured: A=%d B=%d", a, b)
 	}
-	if foldFrom <= 0 {
-		t.Errorf("stage D must fold at least one row, foldFrom=%d", foldFrom)
+	// CONTRACT AMENDED (owner-authorized, brief step "amend the destructive
+	// contracts"): the old assert was `foldFrom > 0`. Stage D fits by shipping
+	// the SMALLEST artifact — measured "represents 0 of 597 fold-set rows" — so
+	// the authorization gate refuses to persist it: a fold from a summary that
+	// represents nothing is deletion, not compaction. Stage D ships EPHEMERAL
+	// (the request gets its budget; every row comes back next turn), and
+	// durability is stage A's job. The shrink/loss-marker asserts above are the
+	// parts of this contract that survive.
+	if foldFrom != 0 {
+		t.Errorf("a lossy stage must NOT persist a fold: gate should force foldFrom = 0, got %d", foldFrom)
 	}
 }
 
