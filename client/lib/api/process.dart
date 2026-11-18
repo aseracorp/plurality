@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:flutter/foundation.dart';
-import 'package:path/path.dart' as path;
 import 'package:uuid/uuid.dart';
+
+import 'shell_run.dart';
 
 class ProcessManager {
   final String command;
@@ -19,6 +21,34 @@ class ProcessManager {
 
   Stream<String> get outputStream => _processOutput.stream;
   bool get isRunning => _isRunning;
+
+  /// Bounds on starting the MCP child process.
+  ///
+  /// `start()` is awaited from the UI isolate: `initMCP()` runs it for every
+  /// configured server at app startup, and `_getConversationServer()` runs it
+  /// on the tool-dispatch path for stateful servers. Two calls there were
+  /// unbounded on Windows:
+  ///
+  ///  * `Process.run('where', [cmd])` — spawns `where.exe` and waits for it.
+  ///    Held by endpoint security / group policy it never returns.
+  ///  * `Process.start` itself — a binary on a Tailscale/SMB/OneDrive path
+  ///    blocks while Windows renegotiates the share.
+  ///
+  /// When either parks, the UI isolate parks with it: no frames, no SSE reads,
+  /// no tool dispatch, so EVERY device tool call — including ones that spawn
+  /// nothing — times out server-side with "Client did not respond within 90s".
+  /// That is the "the client froze" report, and it is why the app has to be
+  /// killed by hand. #178 bounded the shell and filesystem tools; the MCP
+  /// process path was the remaining unbounded spawn on the UI isolate.
+  ///
+  /// Both stages are bounded now, and a wedged server degrades to "this MCP
+  /// server did not start" through `outputStream` instead of taking the app.
+  static const Duration spawnTimeout = Duration(seconds: 10);
+  static const Duration resolveTimeout = Duration(seconds: 8);
+
+  /// Bound on the JSON-RPC round trip. Kept below the server's client-tool
+  /// stall watchdog so the model gets this error, not a stall.
+  static const Duration requestTimeout = Duration(seconds: 30);
 
   ProcessManager({
     required this.command,
@@ -49,7 +79,7 @@ class ProcessManager {
         executablePath,
         args,
         mode: ProcessStartMode.normal,
-      );
+      ).timeout(spawnTimeout);
 
       _isRunning = true;
 
@@ -89,6 +119,14 @@ class ProcessManager {
       });
 
       return true;
+    } on TimeoutException {
+      _processOutput.add(
+        "Error: starting '$command' timed out after ${spawnTimeout.inSeconds}s "
+        "(endpoint security, group policy, or a binary on a sleeping network "
+        "share). This MCP server was not started.",
+      );
+      print("Starting '$command' timed out after ${spawnTimeout.inSeconds}s");
+      return false;
     } catch (e) {
       print("Failed to start process $name: $e");
       _processOutput.add("Failed to start process: $e");
@@ -120,7 +158,7 @@ class ProcessManager {
 
       // Set a timeout for the request
       return await completer.future.timeout(
-        const Duration(seconds: 30),
+        requestTimeout,
         onTimeout: () {
           _responseCompleters.remove(id);
           throw TimeoutException('Request timed out: $method');
@@ -161,12 +199,27 @@ class ProcessManager {
     }
   }
 
-  /// Resolves the full path to a Windows executable
+  /// Resolves the full path to a Windows executable.
+  ///
+  /// Bounded via `runCommandBounded` (see shell_run.dart): `where.exe` can be
+  /// held by endpoint security, and an unbounded `Process.run` here used to
+  /// park the UI isolate inside `initMCP()`, freezing the app at startup.
   Future<String> _resolveWindowsPath(String cmd) async {
     try {
-      final result = await Process.run('where', [cmd]);
+      final result = await runCommandBounded(
+        'where',
+        [cmd],
+        timeout: resolveTimeout,
+      );
+      if (result.timedOut || result.spawnFailed) {
+        debugPrint(
+          'Path lookup for "$cmd" did not finish within ${resolveTimeout.inSeconds}s',
+        );
+        // Best effort: hand back the bare name and let the bounded spawn decide.
+        return cmd;
+      }
       if (result.exitCode == 0) {
-        final paths = (result.stdout as String).trim().split('\n');
+        final paths = result.stdout.trim().split('\n');
         if (paths.isNotEmpty) {
           // Find the longest path
           return paths.reduce(
@@ -182,19 +235,35 @@ class ProcessManager {
     }
   }
 
-  /// Stops the process
+  /// Stops the process.
+  ///
+  /// `kill()` is SIGTERM; a child that traps it outlives the shutdown, and
+  /// `stop()` is awaited on the tool-dispatch path (`stopConversation`), so a
+  /// graceful-ignoring MCP server would park the UI isolate. Escalate to
+  /// SIGKILL after a bounded grace, and never await the exit code on Windows
+  /// where the kill is not observable.
   Future<void> stop() async {
     _isRunning = false;
     _isClosed = true;
 
-    if (_process != null) {
+    final proc = _process;
+    if (proc != null) {
       try {
-        _process!.kill();
+        proc.kill();
+        if (!Platform.isWindows) {
+          final exited = await proc.exitCode
+              .timeout(const Duration(seconds: 3), onTimeout: () => -1);
+          if (exited == -1) {
+            proc.kill(ProcessSignal.sigkill);
+          }
+        }
       } catch (e) {
-        debugPrint('Error killing process: $e');
+        debugPrint('Error killing process $name: $e');
       }
     }
 
-    await _processOutput.close();
+    if (!_processOutput.isClosed) {
+      await _processOutput.close();
+    }
   }
 }
