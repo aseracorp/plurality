@@ -1,11 +1,12 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show compute, kIsWeb;
 import 'package:path/path.dart' as path;
 
 import 'shell_background_process.dart';
 import 'shell_run.dart';
+import 'shell_worker.dart';
 import '../utils/textsafe.dart';
 
 /// Singleton that exposes a namespaced device-side shell tool to the LLM and
@@ -37,6 +38,12 @@ class ShellService {
   static const int _defaultStatusTailBytes = 4096;
   static const int _stdoutResponseCap = 50000;
   static const int _stderrResponseCap = 10000;
+
+  /// Serialises shell work: one spawn at a time, each caller seeing its own
+  /// result. See SingleFlight (shell_worker.dart) for why this is load-bearing
+  /// and not a nicety — a wedged spawn eats an io-worker thread, and Dart's IO
+  /// pool is small enough that a handful of them starves the app's own sockets.
+  final SingleFlight _shellGate = SingleFlight();
 
   static final ShellService _instance = ShellService._internal();
   factory ShellService() => _instance;
@@ -257,28 +264,32 @@ class ShellService {
   /// observed so a full pipe cannot deadlock the child. Returns null when the
   /// spawn fails or [_probeTimeout] overruns — a git probe against an attached
   /// folder on a sleeping Tailscale/SMB peer can otherwise hang forever.
+  ///
+  /// Runs on a worker isolate behind the same single-flight gate as foreground
+  /// commands. These probes are called from `getToolDefinition`, which runs
+  /// before EVERY `postChat` and every tool batch: an unbounded `Process.start`
+  /// here ate an io-worker thread and starved the app's own sockets, so sending
+  /// a message hung with no frames and no SSE reads.
   Future<(int, String)?> _runCapture(
     String executable,
     List<String> args,
   ) async {
+    final req = ShellWorkerRequest(
+      executable: executable,
+      args: args,
+      timeout: _probeTimeout,
+      spawnTimeout: _probeTimeout,
+      drainGrace: const Duration(seconds: 1),
+    );
     try {
-      final pr = await Process.start(executable, args);
-      final stdoutFut = pr.stdout
-          .transform(const SystemEncoding().decoder)
-          .join();
-      final stderrFut = pr.stderr
-          .transform(const SystemEncoding().decoder)
-          .join();
-      final code = await pr.exitCode.timeout(
-        _probeTimeout,
-        onTimeout: () {
-          pr.kill(ProcessSignal.sigterm);
-          return -1;
-        },
+      final res = await _shellGate.run(
+        () => compute(runShellOnWorker, req).timeout(shellHandoffBound(req)),
       );
-      final out = await stdoutFut.timeout(_probeTimeout, onTimeout: () => '');
-      await stderrFut.timeout(_probeTimeout, onTimeout: () => '');
-      return (code, out.trim());
+      if (res.spawnFailed) return null;
+      // SystemEncoding matches what the callers expect on each platform
+      // (UTF-16/ANSI on Windows); the worker returns the raw bytes decoded as
+      // UTF-8, which is what these tools emit.
+      return (res.exitCode, res.stdout.trim());
     } catch (_) {
       return null;
     }
@@ -349,17 +360,41 @@ class ShellService {
     final shell = _shellCommand(command);
     final started = DateTime.now();
 
-    // Bounded on every stage: spawn, exit, pipe drains. See shell_run.dart —
-    // an unbounded `Process.start` / `exitCode` / drain here parks the UI
-    // isolate, which is what makes the client look frozen and makes the
-    // server report "Client did not respond within 90s" for this call and
-    // every device call after it.
-    final res = await runCommandBounded(
-      shell.executable,
-      shell.args,
+    // Runs on a WORKER isolate (see shell_worker.dart) behind a single-flight
+    // gate. Two reasons, both from the production freeze:
+    //
+    //  * A wedged spawn used to park the await chain on the UI isolate: no
+    //    frames, no SSE reads, no tool dispatch — the app is unresponsive to
+    //    everything, and every later device call times out as well. On a
+    //    worker the UI isolate keeps running and the call answers in bounded
+    //    time.
+    //  * Dart runs file/process IO on a small shared io-worker pool. A spawn
+    //    into a sleeping network share never returns and eats one of those
+    //    threads; issue several and the pool is exhausted, so the app's own
+    //    sockets and file IO stall — which is why even `operation: list`
+    //    (in-memory only) timed out: its batch's tool_results POST could not
+    //    get a thread. One run at a time leaves the pool intact.
+    final req = ShellWorkerRequest(
+      executable: shell.executable,
+      args: shell.args,
       workingDirectory: pwd,
       timeout: Duration(seconds: _foregroundTimeoutSeconds),
     );
+
+    final res = await _shellGate.run(() async {
+      try {
+        return await compute(
+          runShellOnWorker,
+          req,
+        ).timeout(shellHandoffBound(req));
+      } on TimeoutException {
+        return ShellRunResult(
+          spawnFailed: true,
+          spawnError: shellHandoffTimeoutMessage(shell.executable, shellHandoffBound(req))
+              .replaceFirst('Error: ', ''),
+        );
+      }
+    });
     final duration = DateTime.now().difference(started);
 
     final out = StringBuffer();
@@ -403,15 +438,17 @@ class ShellService {
     }
     final pwd = _resolvePwd(args['pwd'] as String?, sandboxRoot);
     final shell = _shellCommand(command);
-    // Bounded spawn: see shell_run.dart. An unbounded Process.start here parks
-    // the UI isolate (blocked binary, or a working directory on a sleeping
-    // network share) and the client answers no tool call at all.
-    final startFuture = Process.start(
-      shell.executable,
-      shell.args,
-      workingDirectory: pwd.isEmpty ? null : pwd,
-      runInShell: false,
-      mode: ProcessStartMode.normal,
+    // Bounded spawn, behind the single-flight gate (see _shellGate): a spawn
+    // into a sleeping network share eats an io-worker thread, and the gate
+    // keeps that to one at a time so the app's own sockets keep working.
+    final startFuture = _shellGate.run(
+      () => Process.start(
+        shell.executable,
+        shell.args,
+        workingDirectory: pwd.isEmpty ? null : pwd,
+        runInShell: false,
+        mode: ProcessStartMode.normal,
+      ),
     );
     Process proc;
     try {
