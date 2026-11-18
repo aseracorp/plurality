@@ -300,9 +300,65 @@ var (
 // capping the excerpt there is what produced the "folded everything, still
 // oversized, shipped an empty history" shape.
 
-// maxMegacaveToolShowChars is the head+tail budget shown for a single large
-// tool result (split ~60/40 head/tail around an elision banner).
+// maxMegacaveToolShowChars is the DEFAULT head+tail budget shown for a single
+// large tool result (split ~60/40 head/tail around an elision banner).
+//
+// It is a FALLBACK, not the operative number. A fixed cap cannot bound the
+// output of a whole conversation: measured on realistic prose+tool content the
+// megacave transform runs at ratio ~1.045 (it ADDS labels and newlines), and at
+// ~0.81 on the live event — not the 0.107 quoted below, which came from a
+// 10.5M-char JSON-heavy conversation where compactJSON does the work. The cause
+// is that this constant sits just BELOW the average tool row there (~6.8K
+// chars): rows just above the cap lose a few hundred chars, every row below it
+// is untouched, and the labels added on top outweigh that. Consequence: stages
+// A and B can NEVER fit an agentic conversation, so the lossy stages C/D become
+// the DEFAULT path above the trigger instead of the fringe case the spec
+// intends.
+//
+// MachineExcerptMegacaveBudget replaces it with a per-row budget DERIVED from
+// the caller's token budget, which is the only way to make the ratio < 1 a
+// property of the transform rather than a hope about the content.
 const maxMegacaveToolShowChars = 6_000
+
+// megacaveLabelOverheadChars bounds the per-row cost the transform ADDS (the
+// "USER:" / "ASSISTANT:" / "TOOL_RESULT name:" line, the elision banner, blank
+// separators). Subtracted from the derived per-row budget so the sum of the
+// rendered rows stays inside the caller's budget, not just the text.
+const megacaveLabelOverheadChars = 192
+
+// minMegacaveRowShowChars is the floor of the derived per-row budget. Below this
+// an excerpt stops being an excerpt: the caller's budget is so small relative to
+// the row count that no meaningful content fits, and the right answer is to fold
+// FEWER rows (the ladder), not to render every row as 200 chars of noise.
+const minMegacaveRowShowChars = 256
+
+// MegacaveRowBudget derives the per-row head+tail show budget for one machine
+// excerpt: `maxChars` is what the WHOLE excerpt may cost in characters, `rows`
+// is how many rows it has to cover.
+//
+// maxChars / rows is the exact uniform split, so the rendered total is at most
+// maxChars: the transform is then GUARANTEED not to exceed the budget it was
+// given, on any content shape. Rows smaller than the budget are rendered
+// verbatim (the common case: most rows are small), so the compression is
+// concentrated in the few rows that are large — which is exactly the intent of
+// the head+tail elision, and it is why this shrinks where the fixed constant
+// did not.
+//
+// Returns 0 (meaning "uncapped") when there is nothing to bound: zero rows, or a
+// budget so generous that every row already fits under the default constant.
+func MegacaveRowBudget(maxChars, rows int) int {
+	if rows <= 0 || maxChars <= 0 {
+		return 0
+	}
+	per := (maxChars - megacaveLabelOverheadChars*rows) / rows
+	if per >= maxMegacaveToolShowChars {
+		return 0 // the fixed default is already tighter than the budget asks
+	}
+	if per < minMegacaveRowShowChars {
+		return minMegacaveRowShowChars
+	}
+	return per
+}
 
 // MachineExcerptMegacave renders a deterministic, UNCAPPED "megacave" machine
 // excerpt of the folded message history: facts/code/paths/IDs verbatim,
@@ -314,8 +370,23 @@ const maxMegacaveToolShowChars = 6_000
 // Measured on a real 10.5M-char conversation: the transform compresses to
 // ~1.13M chars (ratio 0.107), i.e. folding history always shrinks the request
 // (total = W - 0.893 x folded) — the property the fold loop in
-// resolveEcoContextCompaction relies on.
+// resolveEcoContextCompaction relies on. That ratio is JSON-dominated and does
+// NOT generalise: on realistic prose+tool content it is ~1.045. Use
+// MachineExcerptMegacaveBudget when the caller has a budget to respect.
 func MachineExcerptMegacave(messages []utils.Message) string {
+	return MachineExcerptMegacaveBudget(messages, 0)
+}
+
+// MachineExcerptMegacaveBudget is MachineExcerptMegacave with a per-row
+// head+tail budget (showChars <= 0 = uncapped, identical output to
+// MachineExcerptMegacave).
+//
+// This is the lever that makes the compaction ratio a GUARANTEE instead of a
+// content lottery: pass MegacaveRowBudget(budgetChars, len(messages)) and the
+// excerpt cannot exceed the budget the request is being fitted to, so stage A
+// can actually reach "fits" on an agentic conversation and stay lossless for
+// every row under the cap.
+func MachineExcerptMegacaveBudget(messages []utils.Message, showChars int) string {
 	var b strings.Builder
 
 	writeLine := func(s string) {
@@ -330,11 +401,11 @@ func MachineExcerptMegacave(messages []utils.Message) string {
 		switch m.Role {
 		case "user":
 			writeLine("USER:")
-			writeMegacaveContent(&b, m, writeLine)
+			writeMegacaveContent(&b, m, writeLine, showChars)
 			writeLine("")
 		case "assistant":
 			writeLine("ASSISTANT:")
-			writeMegacaveContent(&b, m, writeLine)
+			writeMegacaveContent(&b, m, writeLine, showChars)
 			for _, tc := range m.ToolCalls {
 				args := compactJSON(tc.Function.Arguments)
 				writeLine("[tool_call " + tc.Function.Name + "] args=" + args)
@@ -342,7 +413,7 @@ func MachineExcerptMegacave(messages []utils.Message) string {
 			writeLine("")
 		case "tool":
 			writeLine("TOOL_RESULT " + m.Name + ":")
-			writeMegacaveContent(&b, m, writeLine)
+			writeMegacaveContent(&b, m, writeLine, showChars)
 			writeLine("")
 		}
 	}
@@ -351,7 +422,11 @@ func MachineExcerptMegacave(messages []utils.Message) string {
 
 // writeMegacaveContent writes a message's text parts through the megacave
 // transforms: code/markdown fences verbatim, JSON/long text compressed.
-func writeMegacaveContent(b *strings.Builder, m utils.Message, writeLine func(string)) {
+// showChars <= 0 means the default constant cap.
+func writeMegacaveContent(b *strings.Builder, m utils.Message, writeLine func(string), showChars int) {
+	if showChars <= 0 {
+		showChars = maxMegacaveToolShowChars
+	}
 	parts := m.ContentParts()
 	for _, p := range parts {
 		if p.Type != "text" && p.Type != "snippet" {
@@ -363,14 +438,15 @@ func writeMegacaveContent(b *strings.Builder, m utils.Message, writeLine func(st
 		if p.Filename != "" {
 			writeLine("[attachment: " + p.Filename + "]")
 		}
-		writeMegacaveText(b, p.Text, writeLine)
+		writeMegacaveText(b, p.Text, writeLine, showChars)
 	}
 }
 
 // writeMegacaveText applies the per-text megacave transform: keep fenced code
 // blocks verbatim; compress JSON to single line with whitespace stripped;
-// otherwise trim prose to head+tail if oversized.
-func writeMegacaveText(b *strings.Builder, text string, writeLine func(string)) {
+// otherwise trim prose to head+tail if oversized. `showChars` is the per-row
+// head+tail budget (MegacaveRowBudget; <= 0 means the default constant).
+func writeMegacaveText(b *strings.Builder, text string, writeLine func(string), showChars int) {
 	if strings.Contains(text, "```") || strings.Contains(text, "~~~") {
 		// Markdown-fenced code: preserve every line verbatim (fenced regions are
 		// the "code blocks" the /caveman-compress contract keeps intact).
@@ -392,9 +468,9 @@ func writeMegacaveText(b *strings.Builder, text string, writeLine func(string)) 
 		return
 	}
 	// Long prose/tool dump: head+tail with elision banner.
-	if len(trimmed) > maxMegacaveToolShowChars {
-		head := textsafe.HeadBytes(trimmed, maxMegacaveToolShowChars*3/5)
-		tailStart := len(trimmed) - maxMegacaveToolShowChars*2/5
+	if len(trimmed) > showChars {
+		head := textsafe.HeadBytes(trimmed, showChars*3/5)
+		tailStart := len(trimmed) - showChars*2/5
 		if tailStart < len(head) {
 			tailStart = len(head)
 		}

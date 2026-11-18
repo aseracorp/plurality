@@ -160,12 +160,28 @@ func approxTokens(messages []utils.Message) int {
 // megacaveArtifact returns a [assistant, tool] checkpoint pair carrying the
 // megacave machine excerpt of the given messages, so the excerpt is rendered
 // as a normal message the model can read.
-func megacaveArtifact(folded []utils.Message, toolCallID string, prior string) []utils.Message {
-	excerpt := carryForward(prior, MachineExcerptMegacave(folded))
+func megacaveArtifact(folded []utils.Message, toolCallID string, prior string, showChars ...int) []utils.Message {
+	excerpt := carryForward(prior, MachineExcerptMegacaveBudget(folded, firstShowChar(showChars)))
 	if excerpt == "" {
 		return nil
 	}
 	return checkpointArtifactMessages(folded, toolCallID, excerpt)
+}
+
+// megacaveArtifactOverheadTokens is the room the artifact pair itself costs on
+// top of the excerpt text: the assistant tool_call row, the tool wrapper, the
+// banners carryForward/megacaveArtifact add around the excerpt, and (in B/C/D)
+// the drop marker. Reserved so the per-row budget the resolver derives is the
+// room for CONTENT, not for the container.
+const megacaveArtifactOverheadTokens = 200
+
+// firstShowChar reads the optional per-row budget passed to the megacave
+// artifact builders. Absent / <= 0 means "uncapped" (the default constant).
+func firstShowChar(v []int) int {
+	if len(v) > 0 {
+		return v[0]
+	}
+	return 0
 }
 
 // checkpointPairEnd returns the index of the LAST message of the eco
@@ -297,8 +313,8 @@ func oldestDroppedMarker(droppedRows int) string {
 // the first content of the prompt after the system block, and a drop count that
 // changes every round at the HEAD moves the prompt prefix and invalidates the
 // backend KV cache exactly like the nested "PRIOR CHECKPOINT:" banners did.
-func megacaveArtifactWithDropMarker(folded []utils.Message, toolCallID string, prior string, droppedRows int) []utils.Message {
-	newExcerpt := MachineExcerptMegacave(folded)
+func megacaveArtifactWithDropMarker(folded []utils.Message, toolCallID string, prior string, droppedRows int, showChars ...int) []utils.Message {
+	newExcerpt := MachineExcerptMegacaveBudget(folded, firstShowChar(showChars))
 	carried := strings.TrimSpace(carryForward(prior, newExcerpt))
 	if droppedRows > 0 {
 		marker := strings.TrimSpace(oldestDroppedMarker(droppedRows))
@@ -454,6 +470,31 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 	tailTokens := approxTokens(tail)
 	foldedAll := foldableRange(all, pairEnd, tailStart)
 
+	// THE MEGACAVE BUDGET (step 4 of the owner's plan).
+	//
+	// The machine excerpt is the object stage A has to fit, so its size must be
+	// DERIVED from the room the request has left, not fixed at a constant. The
+	// fixed 6000-char per-row cap leaves realistic content essentially untouched
+	// (rows average ~6.8K chars there, so almost nothing is shaved, while the
+	// labels the transform ADDS are pure overhead): measured ratio ~1.045 on
+	// prose+tool content, ~0.81 on the live event, against the spec's >70 %
+	// compaction for stage A. On that shape stage A can never reach `fits`, so
+	// every trigger-crossing request falls through to the lossy stages C/D, and
+	// the authorization gate then refuses to persist them — so compaction ships
+	// ephemeral forever and the conversation only grows.
+	//
+	// Room = budget - live tail - the carried-forward roll-up (it ships verbatim
+	// in every variant) - the artifact pair's own overhead. MegacaveRowBudget
+	// splits it per row, so the excerpt cannot exceed the room on ANY content
+	// shape: ratio < 1 becomes a property of the transform.
+	//
+	// The budget is RECOMPUTED per variant: the ladder gives up whole oldest
+	// TURNS, so as rows leave, the rows that remain get MORE room each and stay
+	// as complete as possible. That is the spec's B ("drop the oldest, keep the
+	// rest"), not "shave every row harder".
+	megacaveRoomChars := (budgetTokens-tailTokens-len(prior)/3-megacaveArtifactOverheadTokens)*3
+	megacaveShow := MegacaveRowBudget(megacaveRoomChars, len(foldedAll))
+
 	// THE FOLD TARGET — and the wedge this closes.
 	//
 	// tailStart is only a LEGAL durable boundary when something actually sits
@@ -494,7 +535,7 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 	// STAGE A — newest user turn verbatim + UNCAPPED megacave of everything
 	// between the pair and that turn, carried forward on the prior roll-up.
 	{
-		art := megacaveArtifact(foldedAll, "megacave_A", prior)
+		art := megacaveArtifact(foldedAll, "megacave_A", prior, megacaveShow)
 		candidate = append(append([]utils.Message{}, art...), tail...)
 		id = 1
 		foldFrom = foldTarget
@@ -573,7 +614,11 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		// compares this against len(foldedAll): a summary that renders a strict
 		// subset of the fold set is not authorised to fold the rows it left out.
 		candOf := func(k int, record *int) []utils.Message {
-			art := megacaveArtifactWithDropMarker(variants[k], tag, prior, len(folded)-len(variants[k]))
+			// Per-variant budget: fewer rows in the excerpt, so each remaining row
+			// gets a bigger share of the room. The ladder degrades by GIVING UP
+			// whole oldest turns, never by shaving every row to noise.
+			show := MegacaveRowBudget(megacaveRoomChars, len(variants[k]))
+			art := megacaveArtifactWithDropMarker(variants[k], tag, prior, len(folded)-len(variants[k]), show)
 			if record != nil {
 				*record = len(variants[k])
 			}
