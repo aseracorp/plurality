@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/azukaar/plurality/src/ai_tools"
-	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/memory"
 	"github.com/azukaar/plurality/src/miniapps"
@@ -156,10 +155,8 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// older than it. When eco is off: drop the checkpoint pair entirely
 	// and send the raw history.
 	windowTokens := Models.MaxContextTokensForPrefixed(model.Name)
-	// Unified path: build the full history (system + conversation). The staged
-	// resolver below returns it UNCHANGED when it fits (byte-stable prefix =>
-	// KV caching) and collapses deterministically via megacave when it doesn't.
-	allMessages := append([]utils.Message{systemMsg}, conv.Messages...)
+	visibleMessages := filterCheckpointsForRequest(conv.Messages, conv.ModelSelected.EcoMode)
+	allMessages := append([]utils.Message{systemMsg}, visibleMessages...)
 	optimizedMessages, hasAttachments, hasDocAttachments := PrepareMessagesForAI(allMessages, model)
 
 	// A non-vision action model must NEVER receive base64 image payloads:
@@ -181,181 +178,13 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		StreamOptions: &StreamOptions{IncludeUsage: true},
 	}
 
-	// Build the tool set BEFORE marshalling so we can measure its real
-	// schema tax against the model's context window. A wide MCP toolset
-	// (github-api + playwright + wordpress + searxng + bundled tools) costs
-	// ~25-30k tokens of schemas on every request; on a 65k-window model
-	// that crowds the tail out and produces the observed litellm 500
-	// "request exceeds the context window" (prompt 65933 tokens vs 65536)
-	// which kills the conversation. The eco tail budget must therefore be
-	// computed from the ACTUAL remaining room.
-	var toolsTaxBytes int
 	if isActionModel {
 		ait := ai_tools.GetRequests(conv.UserID, model, payload.ClientSideTools, hasAttachments, hasDocAttachments, payload.ModelSelected.ClientFolderPath != "")
 		if len(ait) > 0 {
 			requestData.Tools = ait
-			if b, err := json.Marshal(ait); err == nil {
-				toolsTaxBytes = len(b)
-			}
 		}
 	}
 
-	// Eco resolution: estimate the FULL request size (history + system + tool
-	// schemas + images) and compare against the eco trigger
-	// (effectiveEcoTrigger = min(configured 100K, window)). While the content
-	// is BELOW the trigger we send it UNCHANGED — a byte-stable prefix every
-	// turn is what keeps strata/llama.cpp KV prompt caching working. Only when
-	// content EXCEEDS the trigger do we collapse history through the staged
-	// deterministic megacave resolver (latest turn + megacave, then no-tail,
-	// then user-only, then drop-oldest) — a single, stable historical collapse
-	// per trigger-firing, NOT a per-turn re-shaping. This replaces the old
-	// per-request trim/shrink/overhead machinery (#84/#95/#101/#135) which
-	// re-shaped the messages every tool-loop iteration and broke caching.
-	sysChars := systemMsg.TextContent()
-	// note: attachment bytes are deliberately NOT counted toward the trigger /
-	// content budget (images are stripped before the action-model request).
-
-	// Trigger + content-budget sizing both exclude attachments (they are not
-	// sent on an action-model request). System prompt + tool schemas + a small
-	// wrapper margin are the only non-text overhead that should count.
-	totalOverhead := toolsTaxBytes/3 + len(sysChars)/4 + 512
-
-	// Room we reserve for the system prompt, tool schemas, and the model's
-	// reply; the rest of the window is the content budget the staged resolver
-	// must fit within.
-	// replyReserve is ALSO sent as `max_tokens` (see requestData.MaxTokens), so the
-	// prompt ceiling computed here is the ceiling the backend enforces. Leaving
-	// MaxTokens nil makes llama.cpp-style backends default the output budget to
-	// "everything left in the slot": measured live at prompt_tokens 80621 with
-	// max_tokens 181515, i.e. 262144 - 181515 = 80629 - eight tokens of headroom
-	// over the 262144 window. The prompt is then free to inflate to the cap, and a
-	// few extra prompt tokens tip the request into "request exceeds the context
-	// window". A dynamic, window-aware reserve (per-model `max_tokens` honoured)
-	// sent as max_tokens makes compaction schedulable BEFORE the window.
-	replyReserve := ecoReplyReserve(model)
-	contentBudget := windowTokens - totalOverhead - replyReserve
-
-	// The eco trigger is the SECOND ceiling, and the resolver has to aim at
-	// whichever of the two is TIGHTER. Compaction is meant to fire when the
-	// content crosses the trigger OR no longer fits the window, but
-	// the resolver only ever sees `contentBudget`. On a large-window model the
-	// window budget is looser than the trigger (observed live on strata:
-	// budget 221834 vs trigger 64000), so every request past the trigger
-	// reached the resolver, got the answer "full history fits - unchanged,
-	// stable prefix", folded 0 messages and sent the full history: the gate
-	// fired on every turn and compaction never happened. Clamping the target
-	// to the trigger makes crossing the threshold actually compact.
-	//
-	// Units: the trigger is compared against convText + totalOverhead (the
-	// estTotalTokens gate below), while the resolver's fits() measures
-	// conversation content only, so the overhead is subtracted here to keep
-	// both sides on the same basis.
-	trigger := effectiveEcoTrigger(model.Name)
-	if triggerBudget := trigger - totalOverhead; triggerBudget < contentBudget {
-		contentBudget = triggerBudget
-	}
-	if contentBudget <= 0 {
-		contentBudget = 8192
-	}
-
-	// Estimate the ACTUAL request size that will be SENT, to gate compaction
-	// on the eco trigger. Images/attachments are STRIPPED before the action
-	// model request (`stripImagesForNonVisionModel` + attachment indexing), so
-	// they must NOT count toward the trigger — otherwise the trigger fires
-	// spuriously on attachment byte volume (observed live: estTotalTokens
-	// ≈608k when the sent text is only ~156k, because `attachTokens` /
-	// overheadTokens was inflated by ~450k of attachment base64), which
-	// re-collapsed history / re-ran dynamic reconfig and invalidated the KV
-	// cache despite content being far below the trigger at 128k tokens.
-	// Count the FULL wire payload: text, image/document parts and assistant
-	// tool_call arguments. Counting text parts only is what let one request read
-	// ~52k tokens to the trigger while measuring ~438k on the wire: the trigger
-	// stayed under threshold, shipped the history UNCHANGED, and the conversation
-	// died on "request exceeds the context window" with compaction folding 0 rows
-	// on every retry.
-	//
-	// Images are subtracted right here for a NON-VISION action model, because
-	// stripImagesForNonVisionModel removes them from the request: counting them
-	// for such a model fires the trigger on base64 volume that never reaches the
-	// provider. For a VISION model the image bytes ARE sent and MUST count — one
-	// screenshot is 10-50k tokens, exactly the payload the text-only estimate was
-	// blind to.
-	estTotalTokens := SentViewTokens(conv.Messages) + totalOverhead
-	if isActionModel && !Models.IsVisionModel(model.Name) {
-		estTotalTokens -= sentViewImageTokens(conv.Messages)
-	}
-	if estTotalTokens < 0 {
-		estTotalTokens = 0
-	}
-
-	if estTotalTokens <= trigger {
-		// Content is within the trigger: send the (already-checkpoint-collapsed)
-		// conversation UNCHANGED. Byte-stable prefix across turns keeps the
-		// backend KV cache hot. No megacave re-collapse.
-		utils.Log("[Eco] content ≈%d tokens ≤ trigger %d — sending unchanged (stable prefix for caching)", estTotalTokens, trigger)
-	} else {
-		// Content exceeded the trigger. We make the collapse DURABLE — this is
-		// what the checkpoint is for: fold the older history into a megacave
-		// machine-excerpt checkpoint and mark those messages compacted in the
-		// DB, so THIS and every later request load (system + checkpoint summary
-		// + tail up to the checkpoint) — small, context-preserving, and
-		// byte-stable across turns (KV cache stays hot). Without the durable
-		// write, every turn re-loaded the full history and re-megacaved it
-		// in-memory: context kept being collapsed and the prefix kept changing
-		// (cache busted + context loss).
-		utils.Log("[Eco] content ≈%d tokens > trigger %d — staged megacave compaction", estTotalTokens, trigger)
-		// The staged resolver (A -> D) is the single decision point: it builds
-		// the view to SEND, and tells us how much history that view dropped.
-		// The context window is the target — there is no separate "target
-		// tokens" knob and no window multiplicator. In the common case only
-		// stage A runs: fold everything older than the current turn, keep the
-		// live turn verbatim.
-		convTail, foldFrom := resolveEcoContextCompaction(conv.Messages, windowTokens, contentBudget)
-		if len(convTail) > 0 {
-			allMessages = append([]utils.Message{systemMsg}, convTail...)
-			optimizedMessages, _, _ = PrepareMessagesForAI(allMessages, model)
-			if isActionModel && !Models.IsVisionModel(model.Name) {
-				optimizedMessages = stripImagesForNonVisionModel(optimizedMessages)
-			}
-		}
-		// Make the SAME fold durable, so the next turn loads a conversation
-		// that already fits and keeps a byte-stable prefix (KV cache hot).
-		// Folding exactly what the resolver dropped is the point: less leaves
-		// the next request oversized, more loses context the model needs.
-		folded := 0
-		if foldFrom > 0 {
-			var dErr error
-			folded, dErr = db.CompactConversationDurableWithSummary(
-				ctx, conv.ID, conv.Messages, foldFrom,
-				func(msgs []utils.Message) string { return MachineExcerptMegacave(msgs) },
-				shippedSummary(convTail),
-			)
-			if dErr != nil {
-				utils.Error("[Eco] durable compaction failed (this request still sent the staged view)", dErr)
-			}
-			utils.Log("[Eco] durable compaction folded %d messages at boundary %d", folded, foldFrom)
-		}
-		// Change (ii): the fold moved nothing, so stage D's shrink of the
-		// roll-up has to be persisted where it was computed — in place on the
-		// pair row — or the next turn re-shrinks the full stored summary and
-		// moves the prompt head again. Advisory: never affects this request.
-		persistRolledUpShrinkIfNoProgress(ctx, conv.ID, convTail, foldFrom, folded)
-	}
-
-	// THE SEND CAP, enforced once for every branch. TruncateOversizedMessages
-	// bounds each outgoing message to maxCompactMessageChars; the eco trigger
-	// estimator counts the SAME bound (ecoSentMessageCapChars). Applying it here
-	// — after the eco gate, so both the "sending unchanged" and the staged
-	// branch are covered — is what makes the estimate honest AND the request
-	// sendable at the same time.
-	//
-	// Applying it only in the overflow-retry path (the old shape) made the two
-	// estimates disagree on the first attempt: the trigger measured the bounded
-	// view, the preemptive context guard measured the raw marshalled bytes of
-	// an unbounded 991440-char pasted logfile, and the loop settled into
-	// guard -> compact (folds 0, the oversized row is the protected newest user
-	// turn) -> retry -> send on EVERY message.
-	optimizedMessages = TruncateOversizedMessages(optimizedMessages)
 
 	msgReqList, _ := convertMessagesToOpenAI(optimizedMessages, model)
 
@@ -407,17 +236,6 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	nk := -1 // keep all prefix tokens (dynamic, grows with context)
 	requestData.NKeep = &nk
 
-	// Reserve the model's answer budget EXPLICITLY. Leaving MaxTokens nil makes
-	// llama.cpp-style backends default the output budget to "everything left in
-	// the slot": measured live at prompt_tokens 80621 with max_tokens 181515,
-	// i.e. 262144 - 181515 = 80629 — 8 tokens of headroom over the 262144 window.
-	// The prompt is then free to inflate to the cap, and the next few tokens tip
-	// the request into "request exceeds the context window". Sending the SAME
-	// reservation the eco budget already deducted makes prompt + output fit and
-	// makes the ceiling this guard enforces match what we asked the backend for.
-	mt := replyReserve
-	requestData.MaxTokens = &mt
-
 	utils.Debug("A new chat request is being made with the following model: %s", model.Name)
 
 	// Marshal WITHOUT HTML escaping. The default json.Marshal escapes &, <,
@@ -449,6 +267,8 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// estTokens is hoisted above the guard so it can be returned to the
 	// caller for compression-ratio accounting after a successful request.
 	estTokens := 0
+	// Keep room for the model's answer: max_tokens + safety.
+	const replyReserve = 4096 + 2048
 	if windowTokens > 0 {
 		// ~3 chars per token for JSON: tool results and shell/file dumps are
 		// far denser than prose (~2.5-3.5 chars/token), and the marshalled
@@ -913,4 +733,86 @@ func GenerateTitleForMessage(message, model string) (string, error) {
 	title := strings.TrimSpace(result.Choices[0].Message.Content)
 
 	return title, nil
+}
+
+// GenerateCheckpointSummary asks the configured fast model to produce a
+// dense summary of a slice of conversation history, used by the eco mode
+// rolling checkpoint. The input may include a previously-stored summary
+// prefixed with "PRIOR CHECKPOINT:" — the system prompt instructs the
+// model to fold it in rather than repeat it verbatim.
+func GenerateCheckpointSummary(text, model string) (string, error) {
+	if !LiteLLMReady() {
+		return "", fmt.Errorf("AI proxy is not ready")
+	}
+
+	msgReqList := []StandardMessageReq{
+		{
+			Role: "system",
+			Content: "You are summarising older conversation history that the live LLM will no longer see directly. " +
+				"Your summary REPLACES those messages in the live context, so any detail you drop is lost to the model. " +
+				"Rules:\n" +
+				"1. Preserve verbatim: code blocks, file paths, identifiers, IDs, error messages, command outputs, URLs, numeric values, exact quoted user requests.\n" +
+				"2. Preserve the FULL text content of any inline pasted snippet or text attachment shown to you under '[attachment: ...]' headers — copy them into a clearly-labeled section, do not paraphrase code or text the user pasted.\n" +
+				"3. Preserve tool_call → TOOL_RESULT outcomes: which tool was called, the key arguments, and the substantive result (paths created, errors returned, data retrieved). Drop only obviously verbose framing.\n" +
+				"4. For image / document / binary attachments noted as '[image attachment omitted]' or '[document attachment: ...]', just record that the attachment existed (filename and any context the user gave).\n" +
+				"5. Preserve user goals, decisions, plans, and rejected options chronologically so the live LLM understands where the conversation stands.\n" +
+				"6. The optional 'PRIOR CHECKPOINT' section at the start is a summary you produced earlier — fold its facts into your new summary in-place, do not repeat it verbatim and do not lose information from it.\n" +
+				"7. Be dense and structured (sections / bullets), but do NOT be brief at the cost of dropping concrete content. Length should match the input's information density.\n" +
+				"Respond with the summary text only — no preamble, no closing remarks.",
+		},
+		{
+			Role:    "user",
+			Content: text,
+		},
+	}
+
+	maxTokens := 8192
+	requestData := StandardChatRequest{
+		Model:       model,
+		Messages:    msgReqList,
+		MaxTokens:   &maxTokens,
+		Stream:      false,
+	}
+
+	jsonData, err := json.Marshal(requestData)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest("POST", LiteLLMBaseURL+"/v1/chat/completions", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := utils.HTTPClient
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		utils.Error("[EcoSummary] API request failed", nil, strconv.Itoa(resp.StatusCode), string(body))
+		return "", fmt.Errorf("API request failed with status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("failed to parse summary response: %w", err)
+	}
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("no choices in summary response")
+	}
+	return strings.TrimSpace(result.Choices[0].Message.Content), nil
 }

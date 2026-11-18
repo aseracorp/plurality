@@ -94,23 +94,13 @@ type NotificationsConfig struct {
 }
 
 // EcoConfig controls the server-side "eco mode" rolling-checkpoint
-// compaction. TriggerTokens is in tokens (as reported by LiteLLM in the last
-// assistant message's prompt_tokens).
-//
-// Compaction fires on EITHER condition, whichever is reached first:
-//   - the conversation content crosses TriggerTokens, or
-//   - it no longer fits the model's context window.
-//
-// There is deliberately no "target" and no window multiplicator. Once the
-// trigger fires, the staged resolver (stages A -> D) shrinks the history
-// until it fits the context size and nothing more, so the context window
-// itself is the target. In the common case that is stage A alone: fold the
-// turns older than the current one into the checkpoint and keep the live
-// turn verbatim. A separate target made the fold smaller than needed, and a
-// multiplicator (0.8 * window) was a knob whose documented contract had no
-// code behind it while the real ceiling (the window) was already right there.
+// compaction. Both values are in tokens (as reported by LiteLLM in the last
+// assistant message's prompt_tokens). When the previous prompt crosses
+// TriggerTokens, the oldest turns are summarised into a single checkpoint so
+// the remaining live tail is roughly TargetTokens wide.
 type EcoConfig struct {
 	TriggerTokens int `json:"trigger_tokens"`
+	TargetTokens  int `json:"target_tokens"`
 }
 
 type Config struct {
@@ -126,6 +116,7 @@ const (
 	defaultPerClientPerMinute  = 200
 	defaultPerWebhookPerMinute = 10
 	defaultEcoTriggerTokens    = 100000
+	defaultEcoTargetTokens     = 50000
 )
 
 // ReservedShortcutNames are the picker-visible shortcut names, in display order.
@@ -174,6 +165,7 @@ func LoadConfig() error {
 			},
 			Eco: EcoConfig{
 				TriggerTokens: defaultEcoTriggerTokens,
+				TargetTokens:  defaultEcoTargetTokens,
 			},
 		}
 		validateShortcuts(&cfg)
@@ -205,6 +197,10 @@ func LoadConfig() error {
 		}
 		if loaded.Eco.TriggerTokens <= 0 {
 			loaded.Eco.TriggerTokens = defaultEcoTriggerTokens
+			needsWrite = true
+		}
+		if loaded.Eco.TargetTokens <= 0 {
+			loaded.Eco.TargetTokens = defaultEcoTargetTokens
 			needsWrite = true
 		}
 		cfg = loaded
