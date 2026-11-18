@@ -21,6 +21,23 @@ class ShellRunResult {
   });
 }
 
+/// Kill a spawn that completed after its caller stopped waiting on it.
+///
+/// `Future.timeout` abandons the future, not the OS-level spawn: the child can
+/// still appear. Unowned, it inherits our stdio handles and keeps them open,
+/// so the NEXT bounded run in the same dispatch chain drains forever on its
+/// own pipes — the cascade that turns one hung call into "the whole client is
+/// dead". This reuses the original future, so the command is launched at most
+/// once. Errors are swallowed: a spawn that never completed has nothing to
+/// clean up.
+void killLateSpawn(Future<Process> startFuture) {
+  () async {
+    try {
+      (await startFuture).kill(ProcessSignal.sigkill);
+    } catch (_) {}
+  }();
+}
+
 /// Spawn [executable] with [args], collect both streams, and return the
 /// outcome — every stage bounded, so the caller's isolate is never parked.
 ///
@@ -60,16 +77,24 @@ Future<ShellRunResult> runCommandBounded(
   Duration drainGrace = const Duration(seconds: 2),
 }) async {
   Process proc;
+  final startFuture = Process.start(
+    executable,
+    args,
+    workingDirectory: workingDirectory == null || workingDirectory.isEmpty
+        ? null
+        : workingDirectory,
+    runInShell: false,
+  );
   try {
-    proc = await Process.start(
-      executable,
-      args,
-      workingDirectory: workingDirectory == null || workingDirectory.isEmpty
-          ? null
-          : workingDirectory,
-      runInShell: false,
-    ).timeout(spawnTimeout);
+    proc = await startFuture.timeout(spawnTimeout);
   } on TimeoutException {
+    // `.timeout` abandons the future; the OS-level spawn can still complete
+    // afterwards. An unowned child that inherits our stdio handles keeps them
+    // open, so the NEXT bounded run in the same dispatch chain drains forever
+    // on its own pipes — the cascade that turns one hung call into "the whole
+    // client is dead". Kill the late spawn. The command is launched at most
+    // once (this reuses the original future, it does not re-spawn).
+    killLateSpawn(startFuture);
     return ShellRunResult(
       spawnFailed: true,
       spawnError:
@@ -78,6 +103,7 @@ Future<ShellRunResult> runCommandBounded(
           'directory such as a sleeping network share)',
     );
   } catch (e) {
+    killLateSpawn(startFuture);
     return ShellRunResult(spawnFailed: true, spawnError: e.toString());
   }
 

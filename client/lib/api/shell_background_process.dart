@@ -152,6 +152,13 @@ class BgProcessRegistry {
 
   /// Mark as killed and signal the process. Waits up to [settleTimeout] for
   /// the exit goroutine to settle exit code.
+  ///
+  /// SIGTERM alone is not enough: a child that traps it (the common case for
+  /// MCP servers and scripts with signal handlers) keeps running, so the task
+  /// would report "killed" while the process — and the output it keeps
+  /// producing — stay alive. The server tool escalates to a process-group kill
+  /// (server/src/ai_tools/shellExec.go, `killProcessTree`); mirror that here
+  /// with a bounded grace and SIGKILL, on every platform.
   Future<bool> kill(String taskId, Duration settleTimeout) async {
     final bp = _tasks[taskId];
     if (bp == null) return false;
@@ -162,6 +169,12 @@ class BgProcessRegistry {
         bp.process.kill(ProcessSignal.sigterm);
       } catch (_) {}
       await bp.done.future.timeout(settleTimeout, onTimeout: () {});
+      if (!bp.done.isCompleted) {
+        // SIGTERM was ignored — hard-kill so the child cannot outlive the task.
+        try {
+          bp.process.kill(ProcessSignal.sigkill);
+        } catch (_) {}
+      }
     }
     return true;
   }

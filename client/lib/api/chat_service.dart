@@ -8,6 +8,7 @@ import 'package:plurality/api/filesystem_service.dart';
 import 'package:plurality/api/shell_service.dart';
 import 'package:plurality/api/client_identity.dart';
 import 'package:plurality/api/client_tool_ownership.dart';
+import 'package:plurality/api/client_tool_timeout.dart';
 
 import '../auth/auth-service.dart';
 import '../utils/types.dart';
@@ -1065,9 +1066,15 @@ class ChatService {
                 ? '{}'
                 : toolCall.function.arguments,
           );
-          final content = await _skills.executeRetrieveSkill(
-            args['skill_name'] as String? ?? '',
-            args['file_name'] as String?,
+          // Bounded: getSkillsPath() (path_provider) and File.readAsString()
+          // have no bound of their own, and on a sleeping share they park —
+          // which strands this whole batch (see client_tool_timeout.dart).
+          final content = await runClientToolBounded(
+            toolCall.function.name,
+            () => _skills.executeRetrieveSkill(
+              args['skill_name'] as String? ?? '',
+              args['file_name'] as String?,
+            ),
           );
           results.add(Message.toolResult(
             toolCallId: toolCall.id,
@@ -1085,9 +1092,17 @@ class ChatService {
                 : toolCall.function.arguments,
           ) as Map<String, dynamic>;
           final root = _folderFromModel(modelSelected);
-          final result = toolCall.function.name == FilesystemService.readToolName
-              ? await _filesystem.executeFsRead(root, args)
-              : await _filesystem.executeFsWrite(root, args);
+          // Bounded: _resolveRoot's probe is time-boxed and fs ops run on a
+          // worker isolate with a bound, but this outer bound is what keeps
+          // the batch answerable — a stranded call blocks every tool result
+          // in it, not just its own (see client_tool_timeout.dart).
+          final result = await runClientToolBounded(
+            toolCall.function.name,
+            () => toolCall.function.name ==
+                    FilesystemService.readToolName
+                ? _filesystem.executeFsRead(root, args)
+                : _filesystem.executeFsWrite(root, args),
+          );
           results.add(Message.toolResult(
             toolCallId: toolCall.id,
             name: toolCall.function.name,
@@ -1103,7 +1118,10 @@ class ChatService {
                 : toolCall.function.arguments,
           ) as Map<String, dynamic>;
           final root = _folderFromModel(modelSelected);
-          final result = await _shell.executeShellExec(root, args);
+          final result = await runClientToolBounded(
+            toolCall.function.name,
+            () => _shell.executeShellExec(root, args),
+          );
           results.add(Message.toolResult(
             toolCallId: toolCall.id,
             name: toolCall.function.name,
@@ -1127,17 +1145,24 @@ class ChatService {
               ? '{}'
               : toolCall.function.arguments,
         );
-        final response = await _mcp.serverManager.sendRequest(
-          serverName,
-          'tools/call',
-          {'name': MCPService.bareToolName(toolCall.function.name), 'arguments': args},
-          conversationId,
+        // Bounded: start() for a stateful MCP server spawns its child, and on
+        // Windows that spawn has no bound on master — a binary on a sleeping
+        // share wedges it and strands the batch (see client_tool_timeout.dart
+        // and the process.dart bounds in PR #185).
+        final response = await runClientToolBoundedJson(
+          toolCall.function.name,
+          () => _mcp.serverManager.sendRequest(
+            serverName,
+            'tools/call',
+            {'name': MCPService.bareToolName(toolCall.function.name), 'arguments': args},
+            conversationId,
+          ),
         );
 
         results.add(Message.toolResult(
           toolCallId: toolCall.id,
           name: toolCall.function.name,
-          result: jsonEncode(response),
+          result: response,
         ));
       } catch (e) {
         results.add(Message.toolResult(
@@ -1229,9 +1254,12 @@ class ChatService {
             final args = jsonDecode(
               toolCall.function.arguments.isEmpty ? '{}' : toolCall.function.arguments,
             );
-            final content = await _skills.executeRetrieveSkill(
-              args['skill_name'] as String? ?? '',
-              args['file_name'] as String?,
+            final content = await runClientToolBounded(
+              toolCall.function.name,
+              () => _skills.executeRetrieveSkill(
+                args['skill_name'] as String? ?? '',
+                args['file_name'] as String?,
+              ),
             );
             clientResults.add(Message.toolResult(
               toolCallId: toolCall.id, name: toolCall.function.name, result: content,
@@ -1242,9 +1270,12 @@ class ChatService {
               toolCall.function.arguments.isEmpty ? '{}' : toolCall.function.arguments,
             ) as Map<String, dynamic>;
             final root = _folderFromModel(modelSelected);
-            final result = toolCall.function.name == FilesystemService.readToolName
-                ? await _filesystem.executeFsRead(root, args)
-                : await _filesystem.executeFsWrite(root, args);
+            final result = await runClientToolBounded(
+              toolCall.function.name,
+              () => toolCall.function.name == FilesystemService.readToolName
+                  ? _filesystem.executeFsRead(root, args)
+                  : _filesystem.executeFsWrite(root, args),
+            );
             clientResults.add(Message.toolResult(
               toolCallId: toolCall.id, name: toolCall.function.name, result: result,
             ));
@@ -1253,7 +1284,10 @@ class ChatService {
               toolCall.function.arguments.isEmpty ? '{}' : toolCall.function.arguments,
             ) as Map<String, dynamic>;
             final root = _folderFromModel(modelSelected);
-            final result = await _shell.executeShellExec(root, args);
+            final result = await runClientToolBounded(
+              toolCall.function.name,
+              () => _shell.executeShellExec(root, args),
+            );
             clientResults.add(Message.toolResult(
               toolCallId: toolCall.id, name: toolCall.function.name, result: result,
             ));
@@ -1262,13 +1296,16 @@ class ChatService {
             final args = jsonDecode(
               toolCall.function.arguments.isEmpty ? '{}' : toolCall.function.arguments,
             );
-            final response = await _mcp.serverManager.sendRequest(
-              serverName, 'tools/call',
-              {'name': MCPService.bareToolName(toolCall.function.name), 'arguments': args},
-              conversationId,
+            final response = await runClientToolBoundedJson(
+              toolCall.function.name,
+              () => _mcp.serverManager.sendRequest(
+                serverName, 'tools/call',
+                {'name': MCPService.bareToolName(toolCall.function.name), 'arguments': args},
+                conversationId,
+              ),
             );
             clientResults.add(Message.toolResult(
-              toolCallId: toolCall.id, name: toolCall.function.name, result: jsonEncode(response),
+              toolCallId: toolCall.id, name: toolCall.function.name, result: response,
             ));
           }
         } catch (e) {
