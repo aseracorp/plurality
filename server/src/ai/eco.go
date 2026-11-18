@@ -160,12 +160,28 @@ func approxTokens(messages []utils.Message) int {
 // megacaveArtifact returns a [assistant, tool] checkpoint pair carrying the
 // megacave machine excerpt of the given messages, so the excerpt is rendered
 // as a normal message the model can read.
-func megacaveArtifact(folded []utils.Message, toolCallID string, prior string) []utils.Message {
-	excerpt := carryForward(prior, MachineExcerptMegacave(folded))
+func megacaveArtifact(folded []utils.Message, toolCallID string, prior string, showChars ...int) []utils.Message {
+	excerpt := carryForward(prior, MachineExcerptMegacaveBudget(folded, firstShowChar(showChars)))
 	if excerpt == "" {
 		return nil
 	}
 	return checkpointArtifactMessages(folded, toolCallID, excerpt)
+}
+
+// megacaveArtifactOverheadTokens is the room the artifact pair itself costs on
+// top of the excerpt text: the assistant tool_call row, the tool wrapper, the
+// banners carryForward/megacaveArtifact add around the excerpt, and (in B/C/D)
+// the drop marker. Reserved so the per-row budget the resolver derives is the
+// room for CONTENT, not for the container.
+const megacaveArtifactOverheadTokens = 200
+
+// firstShowChar reads the optional per-row budget passed to the megacave
+// artifact builders. Absent / <= 0 means "uncapped" (the default constant).
+func firstShowChar(v []int) int {
+	if len(v) > 0 {
+		return v[0]
+	}
+	return 0
 }
 
 // checkpointPairEnd returns the index of the LAST message of the eco
@@ -297,8 +313,8 @@ func oldestDroppedMarker(droppedRows int) string {
 // the first content of the prompt after the system block, and a drop count that
 // changes every round at the HEAD moves the prompt prefix and invalidates the
 // backend KV cache exactly like the nested "PRIOR CHECKPOINT:" banners did.
-func megacaveArtifactWithDropMarker(folded []utils.Message, toolCallID string, prior string, droppedRows int) []utils.Message {
-	newExcerpt := MachineExcerptMegacave(folded)
+func megacaveArtifactWithDropMarker(folded []utils.Message, toolCallID string, prior string, droppedRows int, showChars ...int) []utils.Message {
+	newExcerpt := MachineExcerptMegacaveBudget(folded, firstShowChar(showChars))
 	carried := strings.TrimSpace(carryForward(prior, newExcerpt))
 	if droppedRows > 0 {
 		marker := strings.TrimSpace(oldestDroppedMarker(droppedRows))
@@ -454,6 +470,31 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 	tailTokens := approxTokens(tail)
 	foldedAll := foldableRange(all, pairEnd, tailStart)
 
+	// THE MEGACAVE BUDGET (step 4 of the owner's plan).
+	//
+	// The machine excerpt is the object stage A has to fit, so its size must be
+	// DERIVED from the room the request has left, not fixed at a constant. The
+	// fixed 6000-char per-row cap leaves realistic content essentially untouched
+	// (rows average ~6.8K chars there, so almost nothing is shaved, while the
+	// labels the transform ADDS are pure overhead): measured ratio ~1.045 on
+	// prose+tool content, ~0.81 on the live event, against the spec's >70 %
+	// compaction for stage A. On that shape stage A can never reach `fits`, so
+	// every trigger-crossing request falls through to the lossy stages C/D, and
+	// the authorization gate then refuses to persist them — so compaction ships
+	// ephemeral forever and the conversation only grows.
+	//
+	// Room = budget - live tail - the carried-forward roll-up (it ships verbatim
+	// in every variant) - the artifact pair's own overhead. MegacaveRowBudget
+	// splits it per row, so the excerpt cannot exceed the room on ANY content
+	// shape: ratio < 1 becomes a property of the transform.
+	//
+	// The budget is RECOMPUTED per variant: the ladder gives up whole oldest
+	// TURNS, so as rows leave, the rows that remain get MORE room each and stay
+	// as complete as possible. That is the spec's B ("drop the oldest, keep the
+	// rest"), not "shave every row harder".
+	megacaveRoomChars := (budgetTokens-tailTokens-len(prior)/3-megacaveArtifactOverheadTokens)*3
+	megacaveShow := MegacaveRowBudget(megacaveRoomChars, len(foldedAll))
+
 	// THE FOLD TARGET — and the wedge this closes.
 	//
 	// tailStart is only a LEGAL durable boundary when something actually sits
@@ -485,14 +526,21 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 	var candidate []utils.Message
 	id := 0
 	foldFrom = 0
+	// represented = how many rows of the FOLD SET the shipped summary renders.
+	// Stage A renders all of them; every later stage renders a subset, and a
+	// summary that renders a strict subset is NOT authorised to fold the rows it
+	// left out (see the gate at the end of the resolver).
+	represented := 0
 
 	// STAGE A — newest user turn verbatim + UNCAPPED megacave of everything
 	// between the pair and that turn, carried forward on the prior roll-up.
 	{
-		art := megacaveArtifact(foldedAll, "megacave_A", prior)
+		art := megacaveArtifact(foldedAll, "megacave_A", prior, megacaveShow)
 		candidate = append(append([]utils.Message{}, art...), tail...)
 		id = 1
 		foldFrom = foldTarget
+		// Stage A renders the WHOLE fold set — the fully-represented shape.
+		represented = len(foldedAll)
 		utils.Log("[Eco/stageA] folded %d rows -> view %d msgs ~%d tokens (budget %d, tail %d rows ~%d tokens, fits=%v)",
 			len(foldedAll), len(candidate), approxTokens(candidate), budgetTokens, len(tail), tailTokens, fits(candidate))
 	}
@@ -530,7 +578,7 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 	// foldFrom = tailStart, so the durable fold would mark every folded row
 	// compacted = 1 with NOTHING representing them: the context-loss bug wearing
 	// a fallback costume.
-	searchVariants := func(folded []utils.Message, tag string, allowEmpty bool, reduce func([]utils.Message) []utils.Message) ([]utils.Message, bool) {
+	searchVariants := func(folded []utils.Message, tag string, allowEmpty bool, reduce func([]utils.Message) []utils.Message) ([]utils.Message, bool, int) {
 		variants := [][]utils.Message{folded}
 		for {
 			prev := variants[len(variants)-1]
@@ -560,28 +608,51 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 				variants = reduced
 			}
 		}
-		candOf := func(k int) []utils.Message {
-			art := megacaveArtifactWithDropMarker(variants[k], tag, prior, len(folded)-len(variants[k]))
+		// candOf renders variant k and RECORDS how many fold-set rows that
+		// variant's summary represents (the rows it renders, on the same basis as
+		// the variant ladder). The authorization gate at the end of the resolver
+		// compares this against len(foldedAll): a summary that renders a strict
+		// subset of the fold set is not authorised to fold the rows it left out.
+		candOf := func(k int, record *int) []utils.Message {
+			// Per-variant budget: fewer rows in the excerpt, so each remaining row
+			// gets a bigger share of the room. The ladder degrades by GIVING UP
+			// whole oldest turns, never by shaving every row to noise.
+			show := MegacaveRowBudget(megacaveRoomChars, len(variants[k]))
+			art := megacaveArtifactWithDropMarker(variants[k], tag, prior, len(folded)-len(variants[k]), show)
+			if record != nil {
+				*record = len(variants[k])
+			}
 			return append(append([]utils.Message{}, art...), tail...)
 		}
 		hi := len(variants) - 1
 		if !allowEmpty && hi > 0 {
 			hi-- // keep at least one folded turn represented
 		}
+		// fullRender is what the FULL fold set renders — the representation the
+		// fold is authorised to persist. Every variant renders the same prior
+		// roll-up, so comparing a chosen variant's excerpt length against it is a
+		// direct measure of how much of the fold set the shipped summary covers.
+		var fullRender int
+		candOf(0, &fullRender)
 		lo, found := 0, -1
 		for lo <= hi {
 			mid := (lo + hi) / 2
-			if fits(candOf(mid)) {
+			if fits(candOf(mid, nil)) {
 				found = mid
 				hi = mid - 1
 			} else {
 				lo = mid + 1
 			}
 		}
+		chosen := found
 		if found < 0 {
-			return candOf(hi), false // floor: smallest allowed variant, no fit
+			chosen = hi // floor: smallest allowed variant, no fit
 		}
-		return candOf(found), true
+		view := candOf(chosen, &represented)
+		if found < 0 {
+			return view, false, represented
+		}
+		return view, true, represented
 	}
 
 	if !fits(candidate) {
@@ -591,8 +662,9 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		// destroyed the context, and it never rescued the budget either: on the
 		// agentic shape the fold range is empty and the summary is the only
 		// large object left.
-		cand, fitB := searchVariants(foldedAll, "megacave_B", false, nil)
+		cand, fitB, repB := searchVariants(foldedAll, "megacave_B", false, nil)
 		candidate = cand
+		represented = repB
 		_ = fitB
 		id = 2
 		foldFrom = foldTarget
@@ -610,8 +682,9 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		// stage C alone was an outright request failure — the stage-C unit tests
 		// passed because they only asserted an artifact exists. See
 		// TestResolver_EveryStageIsSendable.
-		candC, _ := searchVariants(foldedAll, "megacave_C", true, userOnlyWithLastAssistant)
+		candC, _, repC := searchVariants(foldedAll, "megacave_C", true, userOnlyWithLastAssistant)
 		candidate = candC
+		represented = repC
 		id = 3
 		foldFrom = foldTarget
 		utils.Log("[Eco/stageC] summary reduced to user/assistant rows -> view %d msgs ~%d tokens (budget %d, fits=%v)",
@@ -653,8 +726,9 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		var droppedTailRows int
 		var keptTail []utils.Message
 		var keptPrior = prior
-		if cand, fitD := searchVariants(foldedAll, "megacave_D", true, nil); fitD {
+		if cand, fitD, repD := searchVariants(foldedAll, "megacave_D", true, nil); fitD {
 			candidate = cand
+			represented = repD
 		} else {
 			// Step 2: fit the view. On the agentic shape the fold range between the
 			// pair and the newest user row is EMPTY, so the only two objects left
@@ -794,6 +868,43 @@ func resolveEcoContextCompaction(all []utils.Message, windowTokens int, budgetTo
 		foldFrom = foldTarget
 		utils.Log("[Eco/stageD] view %d msgs ~%d tokens (budget %d, tail %d rows ~%d tokens, summary -%d chars, tail -%d rows, fits=%v)",
 			len(candidate), approxTokens(candidate), budgetTokens, len(tail), tailTokens, droppedChars, droppedTailRows, fits(candidate))
+	}
+
+	// THE AUTHORIZATION GATE — the constraint the design was missing.
+	//
+	// A stage's shape may be PERSISTED only when the summary it ships
+	// represents every row the durable fold is about to mark compacted. The
+	// stored summary is the ONLY representation of a compacted row: the client
+	// still sees the full history, GetConversationByIdInternal does not. So a
+	// fold that marks rows the shipped summary does not render is not
+	// compaction, it is deletion from every future request.
+	//
+	// Live proof (conversation 9658ae45a32388ed1dafaac1, 2026-11-17 19:41:30):
+	//
+	//	stageA folded 232 rows -> ~174088 tokens (fits=false)
+	//	stageB folded set 232 rows -> ~174088 tokens (fits=false)
+	//	stageC summary reduced to user/assistant rows -> ~1384 tokens (fits=true)
+	//	resolved staged compaction (stage 3, folding 232 of 233)
+	//	durable compaction folded 232 messages
+	//
+	// Stage C's reduction is sanctioned by the spec for the REQUEST (95 %). It is
+	// not sanctioned as a DURABLE state: the fold marked 232 rows compacted from
+	// a ~1384-token summary, i.e. 230 rows removed with no representation
+	// anywhere. That is the reported annihilation, and it is legal under every
+	// rule the resolver had — which is exactly why the rule has to be here.
+	//
+	// So: when the shipped summary renders a strict subset of the fold set, the
+	// fold is NOT authorised. foldFrom goes to 0, the caller ships the staged
+	// view EPHEMERALLY (this request only, the rows stay compacted = 0 and come
+	// back next turn) and the durable state is left exactly as it was. The
+	// request still gets its budget; the history is not destroyed to buy it.
+	//
+	// This makes the destructive path a deliberate choice instead of a side
+	// effect, and it is the safety net that lets stages A-D be built out freely.
+	if foldFrom > 0 && represented < len(foldedAll) {
+		utils.Log("[Eco] authorization gate: shipped summary represents %d of %d fold-set rows (stage %d) — shipping EPHEMERAL, NOT folding (folding %d rows would delete %d unrepresented rows)",
+			represented, len(foldedAll), id, len(foldedAll), len(foldedAll)-represented)
+		foldFrom = 0
 	}
 
 	// Bound the view we are about to send, in EVERY stage, with the same
@@ -1154,6 +1265,19 @@ func lastUserIdxSafe(all []utils.Message) int {
 
 // dropOldestTurn removes the oldest user turn (user message plus any
 // assistant/tool messages belonging to it) and returns the remaining slice.
+//
+// A set with NO user row is returned UNCHANGED. It used to return msgs[:0],
+// which made the variant ladder collapse in ONE step: measured on the agentic
+// shape (all user rows live in the newest user turn, so the foldable set is
+// assistant/tool + the prior summary only), a 4-row set became a 0-row set, and
+// stages C/D pass allowEmpty=true, so they landed on that empty variant, shipped
+// a drop-marker-only summary (~1384 tokens), reported fits=true, and the durable
+// fold marked all 232 rows compacted. That is the annihilation, and it came from
+// this one line.
+//
+// "Nothing left to give up on this axis" is the caller's signal to stop (the
+// ladder loop breaks when a variant is not strictly smaller), so it must be
+// expressed as an unchanged slice, never as an empty one.
 func dropOldestTurn(msgs []utils.Message) []utils.Message {
 	firstUser := -1
 	for i := range msgs {
@@ -1163,7 +1287,7 @@ func dropOldestTurn(msgs []utils.Message) []utils.Message {
 		}
 	}
 	if firstUser < 0 {
-		return msgs[:0]
+		return msgs
 	}
 	// drop from start through the assistant message that closes this turn (the
 	// next user message, or end). Keep only messages after that turn + any

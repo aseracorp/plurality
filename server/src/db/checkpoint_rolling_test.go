@@ -160,6 +160,18 @@ func TestCompactConversationDurable_RollingViaLLMView(t *testing.T) {
 		t.Fatalf("pass 1: LLM view did not shrink: %d -> %d", before1, len(after1))
 	}
 	seq1 := checkpointSeq()
+	// "The checkpoint pair moves up to the boundary", AMENDED (owner-approved).
+	// The fold no longer re-seqs the pair: it rewrites the summary on the pair
+	// row it already has, so the pair's seq is STABLE for the life of the
+	// conversation. What has to advance is the set the pair STANDS FOR — that is
+	// the invariant the wedge broke (a pair that "moves" while folding 0 rows is
+	// pure cache damage, and the seq of the pair is not observable by the model;
+	// the rows it represents are). Measured by: rows compacted strictly
+	// increasing, the LLM view strictly shrinking, and the stored roll-up
+	// strictly growing (append-only, so a longer text means the fold added the
+	// rows it rendered).
+	rows1 := compactedCount()
+	sum1 := len(liveToolSummary(t, ctx, convID))
 
 	// ---- new history arrives: compaction must fire AGAIN -------------------
 	addTurns(10)
@@ -173,8 +185,16 @@ func TestCompactConversationDurable_RollingViaLLMView(t *testing.T) {
 		t.Fatalf("pass 2: compaction folded 0 rows (boundary=%d sliceLen=%d) — rolling fold wedged", idx2, len(slice2))
 	}
 	seq2 := checkpointSeq()
-	if seq2 <= seq1 {
-		t.Fatalf("checkpoint did not move up: seq %d -> %d", seq1, seq2)
+	rows2 := compactedCount()
+	if rows2 <= rows1 {
+		t.Fatalf("checkpoint did not advance: it stands for %d rows before the fold and %d after", rows1, rows2)
+	}
+	sum2 := len(liveToolSummary(t, ctx, convID))
+	if sum2 <= sum1 {
+		t.Fatalf("the roll-up did not grow: %d -> %d chars — the fold marked rows the summary does not represent", sum1, sum2)
+	}
+	if seq2 != seq1 {
+		t.Fatalf("the fold re-seq'd the pair (%d -> %d) instead of rewriting it in place", seq1, seq2)
 	}
 	after2 := liveSlice()
 	if len(after2) >= len(slice2) {
@@ -193,8 +213,21 @@ func TestCompactConversationDurable_RollingViaLLMView(t *testing.T) {
 		t.Fatalf("pass 3: compaction folded 0 rows (boundary=%d sliceLen=%d)", idx3, len(slice3))
 	}
 	seq3 := checkpointSeq()
-	if seq3 <= seq2 {
-		t.Fatalf("checkpoint did not advance on pass 3: %d -> %d", seq2, seq3)
+	rows3 := compactedCount()
+	if rows3 <= rows2 {
+		t.Fatalf("checkpoint did not advance on pass 3: %d -> %d rows", rows2, rows3)
+	}
+	if sum3 := len(liveToolSummary(t, ctx, convID)); sum3 <= sum2 {
+		t.Fatalf("the roll-up did not grow on pass 3: %d -> %d chars", sum2, sum3)
+	}
+	if seq3 != seq2 {
+		t.Fatalf("the fold re-seq'd the pair on pass 3 (%d -> %d)", seq2, seq3)
+	}
+	// THREE folds, still exactly one pair row: the old shape superseded the pair
+	// every pass (6 rows after 3 folds) and the live conversation ended up with
+	// 16 accumulated pairs of 61-68 KB.
+	if n := checkpointRowCount(t, ctx, convID); n != 2 {
+		t.Fatalf("after 3 folds the conversation holds %d checkpoint rows, want 2 (one pair, rewritten in place)", n)
 	}
 
 	// Non-destructive: the client view must contain the ENTIRE history.

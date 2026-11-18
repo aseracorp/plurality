@@ -571,21 +571,14 @@ func CompactConversationDurableWithSummary(
 		}
 	}
 	rows.Close()
-	var pairIDs []int64
 	if foundAsstID != 0 {
-		pairIDs = append(pairIDs, foundAsstID)
 		var tcContent *string
 		err := d.QueryRowContext(ctx,
 			`SELECT id, content FROM messages
 			 WHERE conversation_id = ? AND role = 'tool' AND tool_call_id = ? LIMIT 1`,
 			conversationID, foundToolCallID).Scan(&oldToolID, &tcContent)
-		if err == nil {
-			if oldToolID != 0 {
-				pairIDs = append(pairIDs, oldToolID)
-			}
-			if tcContent != nil {
-				priorSummary = unmarshalMessageContent(tcContent).TextContent()
-			}
+		if err == nil && tcContent != nil {
+			priorSummary = unmarshalMessageContent(tcContent).TextContent()
 		}
 	}
 
@@ -618,16 +611,23 @@ func CompactConversationDurableWithSummary(
 		return 0, nil
 	}
 
-	// Render EVERY message before the boundary into the summary input, in
-	// chronological order. No budget and no skipping: the rows listed here are
-	// exactly the rows this transaction marks `compacted = 1`, so anything left
-	// out of the summary is context that silently disappears from every future
-	// request. Size is bounded by the boundary the CALLER chose, not by a
-	// constant here.
+	// Render EVERY compactable message before the boundary into the summary
+	// input, in chronological order. No budget: the rows listed here are exactly
+	// the rows this transaction can mark `compacted = 1`, so anything left out of
+	// the summary is context that silently disappears from every future request.
+	// Size is bounded by the boundary the CALLER chose, not by a constant here.
+	//
+	// Rows durable compaction has ALREADY folded are excluded: the request path
+	// loads with includeCompacted = true, so the slice carries them, and the
+	// UPDATE below can only mark compacted = 0 rows. Rendering them into the new
+	// summary would duplicate history the prior roll-up already represents (the
+	// summary grows toward the trigger, which is the #177 re-inflation shape),
+	// and it would make the "these are the rows this marks" claim false. Skipping
+	// them makes the render set, the fold set and the UPDATE's reach ONE set.
 	var folded []utils.Message
 	for i := 0; i < firstKeptIdx; i++ {
 		m := messages[i]
-		if IsCheckpointMessage(m) {
+		if m.Compacted || IsCheckpointMessage(m) {
 			continue
 		}
 		folded = append(folded, m)
@@ -656,37 +656,35 @@ func CompactConversationDurableWithSummary(
 		summary = strings.TrimSpace(summary) + "\n\n" + representExtraRows(machineSummary, extra)
 	}
 
-	// Resolve DB seq of the first kept row so we can delete everything before
-	// it. The `messages` slice is seq-ordered; the first kept message is at
-	// the turn-anchored firstKeptIdx computed above. Skip any checkpoint
-	// messages (the slice includes the pair), then look up its seq.
+	// ROW-EXACT FOLD SET. The fold marks compacted EXACTLY the rows listed in
+	// `folded` — the rows the shipped summary renders — and nothing else.
+	//
+	// The boundary used to be a SEQ, and the write was
+	//   UPDATE messages SET compacted = 1 WHERE conversation_id = ? AND seq < ?
+	// That marks EVERY row below the boundary, including rows the summary never
+	// covered, and it re-marks rows earlier folds already compacted. Measured on
+	// the live annihilation (conversation 9658ae45a32388ed1dafaac1,
+	// 2026-11-17 19:41:30): the shipped summary was ~1384 tokens and the fold
+	// marked 232 rows — 230 rows removed from every future request with no
+	// representation anywhere. The summary is the only representation of a
+	// compacted row, so "summary covers X, fold marks everything below N" is the
+	// annihilation. A seq can express a range; it cannot express a SET.
+	//
+	// The slice is the LLM-facing view (GetConversationByIdInternal), which
+	// carries the DB row id in msg.ID for every row, so the set resolves by
+	// STABLE IDENTITY. Rows with no DB id (the synthetic pair the view injects,
+	// legacy rows) are skipped: they are not fold targets here (the pair is
+	// handled by the summary rewrite below) and a positional OFFSET fallback is
+	// exactly what diverged from the slice after prior compactions — the
+	// observed `durable removed 0`. Skipping is safe: a fold set with no real
+	// rows folds nothing and the caller leaves the pair untouched.
 	for firstKeptIdx < len(messages) && IsCheckpointMessage(messages[firstKeptIdx]) {
 		firstKeptIdx++
 	}
-	if firstKeptIdx >= len(messages) {
-		return 0, nil
+	if firstKeptIdx > len(messages) {
+		firstKeptIdx = len(messages)
 	}
-	// Resolve the boundary by STABLE IDENTITY first. The slice here comes from
-	// the LLM-facing view (GetConversationByIdInternal), which omits compacted
-	// rows and carries the injected checkpoint pair, so a positional OFFSET
-	// lookup into the FULL history indexes a different row set and diverges
-	// after every compaction — the observed `durable removed 0`.
-	boundarySeq, err := MessageSeqByID(ctx, conversationID, messages[firstKeptIdx].ID)
-	if err != nil {
-		return 0, err
-	}
-	if boundarySeq == 0 {
-		// Legacy rows / synthetic pair with no DB id: fall back to positional.
-		boundarySeq, err = MessageSeqAt(ctx, conversationID, firstKeptIdx)
-		if err != nil {
-			return 0, err
-		}
-	}
-	if boundarySeq == 0 {
-		utils.Log("[DurableCompact] cannot resolve fold boundary: id=%q sliceIdx=%d sliceLen=%d conv=%s — NOT compacting",
-			messages[firstKeptIdx].ID, firstKeptIdx, len(messages), conversationID)
-		return 0, fmt.Errorf("durable compaction: unresolved fold boundary at slice index %d", firstKeptIdx)
-	}
+	foldIDs := foldSetRowIDs(messages, folded)
 
 	tx, err := d.Begin()
 	if err != nil {
@@ -694,25 +692,32 @@ func CompactConversationDurableWithSummary(
 	}
 	defer tx.Rollback()
 
-	// NON-DESTRUCTIVE compaction: mark folded rows with compacted=1 instead
-	// of deleting them. The full history stays in the DB and is served to
-	// the client (GetConversationById); only the LLM-facing view
+	// NON-DESTRUCTIVE compaction: mark folded rows with compacted=1 instead of
+	// deleting them. The full history stays in the DB and is served to the
+	// client (GetConversationById); only the LLM-facing view
 	// (GetConversationByIdInternal) skips these rows, with the checkpoint
 	// summary standing in for them. This is the fix for "conversations lose
 	// messages": compaction shapes requests to the LLM, it never destroys
 	// stored conversation data.
-	args := []interface{}{conversationID, boundarySeq}
-	excludeSQL := ""
-	if len(pairIDs) > 0 {
-		ph := strings.Repeat("?,", len(pairIDs))
-		ph = ph[:len(ph)-1]
-		excludeSQL = " AND id NOT IN (" + ph + ")"
-		for _, id := range pairIDs {
-			args = append(args, id)
-		}
+	//
+	// The set is written by ROW ID, so it is exactly the rows the summary
+	// renders — no range, no overreach, no re-marking of rows earlier folds
+	// compacted (they are compacted = 0 in the slice by construction, so they
+	// cannot be in the set).
+	if len(foldIDs) == 0 {
+		utils.Log("[DurableCompact] fold set resolves to 0 DB rows (sliceIdx=%d sliceLen=%d foldSet=%d conv=%s) — leaving the checkpoint pair untouched (history NOT shrinking)",
+			firstKeptIdx, len(messages), len(folded), conversationID)
+		return 0, nil
+	}
+	ph := strings.Repeat("?,", len(foldIDs))
+	ph = ph[:len(ph)-1]
+	args := make([]interface{}, 0, len(foldIDs)+1)
+	args = append(args, conversationID)
+	for _, id := range foldIDs {
+		args = append(args, id)
 	}
 	res, err := tx.ExecContext(ctx,
-		`UPDATE messages SET compacted = 1 WHERE conversation_id = ? AND seq < ? AND compacted = 0`+excludeSQL, args...)
+		`UPDATE messages SET compacted = 1 WHERE conversation_id = ? AND compacted = 0 AND id IN (`+ph+`)`, args...)
 	if err != nil {
 		return 0, err
 	}
@@ -732,50 +737,77 @@ func CompactConversationDurableWithSummary(
 		// ("durable compaction folded 0 messages at boundary 2"), rewriting the
 		// prompt head each turn while shrinking nothing. Roll the transaction
 		// back instead of churning the head.
-		utils.Log("[DurableCompact] boundary seq=%d (sliceIdx=%d sliceLen=%d conv=%s) folded 0 rows — leaving the checkpoint pair untouched (history NOT shrinking)",
-			boundarySeq, firstKeptIdx, len(messages), conversationID)
+		utils.Log("[DurableCompact] fold set of %d ids matched 0 compactable rows (sliceIdx=%d sliceLen=%d conv=%s) — leaving the checkpoint pair untouched (history NOT shrinking)",
+			len(foldIDs), firstKeptIdx, len(messages), conversationID)
 		return 0, nil
 	}
 
-	// Persist the new summary by MOVING the checkpoint forward: delete the
-	// old pair (if any) and insert a fresh pair at the boundary, mirroring
-	// ReplaceCheckpoint. The previous behaviour updated the existing tool row
-	// IN PLACE, which froze the checkpoint at its original seq while the live
-	// tail grew behind it — after a restart the tail had no user anchor and
-	// the rolling summary never advanced (observed: conversation
-	// e1c3b48c63eb077f0985b83a, checkpoint stuck at seq 119/120 while 100+
-	// pure tool/assistant messages piled up behind it, so every turn
-	// re-compacted the same stuck boundary and the model lost the thread).
-	if len(pairIDs) > 0 {
-		// Mark the old pair as compacted too (non-destructive) — it is
-		// superseded by the fresh pair inserted below.
-		placeholders := strings.Repeat("?,", len(pairIDs))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := make([]interface{}, 0, len(pairIDs)+1)
-		args = append(args, conversationID)
-		for _, id := range pairIDs {
-			args = append(args, id)
+	// PERSIST THE SUMMARY BY REWRITING THE EXISTING PAIR IN PLACE (option B).
+	//
+	// The old shape minted a NEW pair at the boundary: mark the old pair
+	// compacted, shift EVERY live row at or after the boundary by +2 to open two
+	// seq slots, insert a fresh [assistant, tool] pair. Three separate costs:
+	//   - the +2 shift touches the seq of every live message on every fold;
+	//   - each fold leaves a superseded pair behind (the live conversation had
+	//     16 accumulated pairs, 61-68 KB each, every one of them a row in the
+	//     client view and a write in the WAL);
+	//   - a brand-new pair row is brand-new bytes at offset 0 of the prompt
+	//     (new tool_call_id, new timestamp, content moved), so backend KV prefix
+	//     reuse collapses to the system block.
+	//
+	// Rewriting the summary text on the EXISTING tool row keeps the row id, the
+	// seq, the tool_call_id and the assistant half, and touches the one column
+	// that actually changed. #183 already proved this is the cheap shape for a
+	// summary change (UpdateCheckpointSummaryShrink does exactly this for the
+	// stage-D shrink); a fold is the same write with a longer text.
+	//
+	// "Moves the checkpoint forward" is preserved where it matters: the pair
+	// stays the FIRST live row of the view, and the rows it stands for advance
+	// every fold, because the fold set is the rows this summary renders. The
+	// seq of the pair does not need to track the boundary — every row below the
+	// boundary is compacted = 1, so the pair is at the frontier by definition.
+	// The e1c3b48c63eb077f0985b83a wedge ("stuck at seq 119/120 with 100+ rows
+	// behind and no user anchor") is a boundary-choice bug, fixed by the
+	// turn-anchored clamp above, not by where the pair row physically sits.
+	if oldToolID == 0 {
+		// No pair to rewrite: create the first pair. The slot is MIN(seq) - 2
+		// over EVERY row of the conversation (compacted included): rows are never
+		// renumbered, so the two seqs immediately below the current minimum are
+		// free by definition, and they put the pair FIRST in the seq-ordered LLM
+		// view — the invariant every consumer of the pair relies on. This path
+		// runs at most once per conversation: once the pair exists, folds
+		// rewrite it in place.
+		headSeq := int64(1)
+		var minSeq sql.NullInt64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT MIN(seq) FROM messages WHERE conversation_id = ?`,
+			conversationID).Scan(&minSeq); err == nil && minSeq.Valid {
+			headSeq = minSeq.Int64 - 2
 		}
-		if _, err := tx.ExecContext(ctx,
-			fmt.Sprintf(`UPDATE messages SET compacted = 1 WHERE conversation_id = ? AND id IN (%s)`, placeholders),
-			args...); err != nil {
+		if err := insertCheckpointPairInTx(ctx, tx, conversationID, headSeq, summary); err != nil {
 			return 0, err
 		}
-	}
-	// Shift rows >= boundarySeq by +2 and insert a fresh pair at the
-	// boundary, mirroring ReplaceCheckpoint. Done in two passes via negation
-	// so the (conversation_id, seq) UNIQUE constraint is never transiently
-	// violated mid-update.
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE messages SET seq = -(seq + 2) WHERE conversation_id = ? AND seq >= ?`,
-		conversationID, boundarySeq); err != nil {
-		return 0, err
+		if err := tx.Commit(); err != nil {
+			return 0, err
+		}
+		return int(removed), nil
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE messages SET seq = -seq WHERE conversation_id = ? AND seq < 0`,
-		conversationID); err != nil {
+		`UPDATE messages SET content = ? WHERE conversation_id = ? AND id = ?`,
+		marshalMessageContent(utils.NewTextContent(summary)), conversationID, oldToolID); err != nil {
 		return 0, err
 	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(removed), nil
+}
+
+// insertCheckpointPairInTx writes a fresh [assistant, tool] checkpoint pair at
+// seq/seq+1 inside the fold transaction. Used ONLY when the conversation has
+// no pair yet; folds after that rewrite the existing pair in place.
+func insertCheckpointPairInTx(ctx context.Context, tx *sql.Tx, conversationID string, seq int64, summary string) error {
 	toolCallID := "eco_" + GenerateID()
 	now := time.Now().Format(time.RFC3339)
 	assistantMsg := utils.Message{
@@ -784,11 +816,8 @@ func CompactConversationDurableWithSummary(
 		Timestamp: now,
 		ToolCalls: []utils.ToolCall{{
 			ID:   toolCallID,
-			Type: "function",
-			Function: utils.FunctionCall{
-				Name:      EcoCheckpointToolName,
-				Arguments: "{}",
-			},
+			Type:  "function",
+			Function: utils.FunctionCall{Name: EcoCheckpointToolName, Arguments: "{}"},
 		}},
 	}
 	toolMsg := utils.Message{
@@ -798,17 +827,64 @@ func CompactConversationDurableWithSummary(
 		Name:       EcoCheckpointToolName,
 		Timestamp:  now,
 	}
-	if _, err := insertMessage(tx, conversationID, boundarySeq, assistantMsg); err != nil {
-		return 0, err
+	if _, err := insertMessage(tx, conversationID, seq, assistantMsg); err != nil {
+		return err
 	}
-	if _, err := insertMessage(tx, conversationID, boundarySeq+1, toolMsg); err != nil {
-		return 0, err
-	}
+	_, err := insertMessage(tx, conversationID, seq+1, toolMsg)
+	return err
+}
 
-	if err := tx.Commit(); err != nil {
-		return 0, err
+// foldSetRowIDs maps the fold set (the messages the shipped summary renders) to
+// their DB row ids, in the slice's chronological order. Rows without a DB id
+// are skipped — see CompactConversationDurableWithSummary.
+//
+// The two slices are matched by IDENTITY, not by position: `messages` is the
+// LLM view, `folded` is the subset the resolver selected (it excludes the pair
+// and any already-compacted row). A positional zip would drift the moment those
+// two views differ, which is the class of bug this whole function exists to
+// kill.
+func foldSetRowIDs(messages, folded []utils.Message) []int64 {
+	byContent := make(map[string][]int64, len(messages))
+	for _, m := range messages {
+		id := dbRowID(m.ID)
+		if id == 0 {
+			continue
+		}
+		key := m.Role + "\x00" + m.Name + "\x00" + m.ToolCallID + "\x00" + m.Content.TextContent()
+		byContent[key] = append(byContent[key], id)
 	}
-	return int(removed), nil
+	out := make([]int64, 0, len(folded))
+	used := map[int64]bool{}
+	for _, m := range folded {
+		if id := dbRowID(m.ID); id != 0 {
+			if !used[id] {
+				used[id] = true
+				out = append(out, id)
+			}
+			continue
+		}
+		// No stable id (legacy / synthetic): match the earliest unconsumed row
+		// with identical identity fields, so the fold set stays exact.
+		key := m.Role + "\x00" + m.Name + "\x00" + m.ToolCallID + "\x00" + m.Content.TextContent()
+		for _, id := range byContent[key] {
+			if !used[id] {
+				used[id] = true
+				out = append(out, id)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// dbRowID parses the DB row id the view exposes in msg.ID ("" / a
+// tool_call_id fallback -> 0).
+func dbRowID(id string) int64 {
+	var n int64
+	if _, err := fmt.Sscanf(id, "%d", &n); err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
 
 // UpdateCheckpointSummaryShrink rewrites ONLY the summary text carried by the

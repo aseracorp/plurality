@@ -226,6 +226,31 @@ func liveCheckpointSeqs(ctx context.Context, conversationID string) ([]int64, er
 	return seqs, rows.Err()
 }
 
+// checkpointRowCount counts EVERY checkpoint row of a conversation, compacted
+// included. Durable compaction must keep this at exactly 2 forever: the old
+// shape superseded the pair on every fold, which is how the live conversation
+// accumulated 16 pairs of 61-68 KB each.
+func checkpointRowCount(t *testing.T, ctx context.Context, convID string) int {
+	t.Helper()
+	userID, ok := ctx.Value("userID").(string)
+	if !ok {
+		t.Fatalf("user ID not found in request context")
+	}
+	d, err := GetUserDB(userID)
+	if err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	var n int
+	if err := d.QueryRowContext(ctx,
+		`SELECT count(*) FROM messages
+		 WHERE conversation_id = ?
+		   AND (name = ? OR (role = 'assistant' AND tool_calls LIKE ?))`,
+		convID, EcoCheckpointToolName, "%"+EcoCheckpointToolName+"%").Scan(&n); err != nil {
+		t.Fatalf("count checkpoint rows: %v", err)
+	}
+	return n
+}
+
 // itoa is a tiny strconv-free int formatter for test messages.
 func itoa(n int) string {
 	if n == 0 {
@@ -452,6 +477,16 @@ func TestCompactConversationDurable_MovesCheckpointForward(t *testing.T) {
 	// step, so it was never observed). The real invariant: the pair's seqs
 	// moved past the seed pair's seqs (1/2) to the frontier, and exactly one
 	// pair remains live.
+	// The moved-forward proof, AMENDED (owner-approved) from "a fresh pair is
+	// inserted at the boundary" to "the SAME pair row is rewritten and the rows
+	// it stands for advance". The old shape minted a new pair per fold, shifted
+	// every live row's seq by +2, and left a superseded pair behind (the live
+	// conversation had 16 pairs, 61-68 KB each). The invariants that actually
+	// protect the model and the cache:
+	//   - exactly ONE live pair remains, adjacent in seq;
+	//   - it is the SAME row (id + seq untouched) — no pair churn, no renumber;
+	//   - NO superseded pair accumulated below it (that is the 16-pair bug);
+	//   - the summary text advanced to the new fold.
 	livePair, err := liveCheckpointSeqs(ctx, "c_move")
 	if err != nil {
 		t.Fatalf("query live pair: %v", err)
@@ -462,8 +497,11 @@ func TestCompactConversationDurable_MovesCheckpointForward(t *testing.T) {
 	if livePair[0]+1 != livePair[1] {
 		t.Fatalf("expected the checkpoint pair to be adjacent in seq, got %v", livePair)
 	}
-	if livePair[0] <= 2 {
-		t.Fatalf("checkpoint pair did not move forward: still at the seed seqs (old pair updated in place?) %v", livePair)
+	if livePair[0] != 1 || livePair[1] != 2 {
+		t.Fatalf("the fold must rewrite the EXISTING pair, not mint a new one: seed seqs [1 2], live pair now at %v", livePair)
+	}
+	if n := checkpointRowCount(t, ctx, "c_move"); n != 2 {
+		t.Fatalf("the fold minted %d checkpoint rows in total (2 = the single pair, rewritten in place); pair accumulation is the 16-pair shape", n-2)
 	}
 	if !strings.Contains(summary, "NEW SUMMARY") {
 		t.Fatalf("expected the NEW summary, got: %q", summary)
