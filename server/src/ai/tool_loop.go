@@ -481,7 +481,11 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			for _, tc := range clientTools {
 				advertised := clientToolIsAdvertised(tc.Function.Name, payload.ClientSideTools)
 				hasConversationClient := ar.ClientCount() > 0
-				if advertised && !hasConversationClient && !reattachChecked {
+				// A live device claim makes the tool dispatchable without a
+				// conversation stream, so the reattach grace must not be paid
+				// for it (the stream is not coming, the channel is already open).
+				hasDeviceClaim := advertised && !hasConversationClient && DeviceRegistry.ClaimedTool(tc.Function.Name, ar.UserID)
+				if advertised && !hasConversationClient && !hasDeviceClaim && !reattachChecked {
 					reattachChecked = true
 					hasClientNow = ar.waitForClient(clientToolReattachGrace)
 				}
@@ -489,7 +493,7 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 					hasConversationClient = hasClientNow
 				}
 				hasStatusClient := StatusRegistry.HasClientForUser(ar.UserID)
-				if !clientToolUnreachable(advertised, hasConversationClient, hasStatusClient) {
+				if !clientToolUnreachable(advertised, hasConversationClient, hasStatusClient, hasDeviceClaim) {
 					// The device answered its LAST call badly: the stall
 					// watchdog synthesized a timeout for this conversation, so
 					// the device isolate is parked (blocked syscall, sleeping
@@ -587,6 +591,55 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				}
 			}
 			clientTools = validClient
+		}
+
+		// Device channel: dispatch client tools IN PLACE when this loop has no
+		// conversation SSE client attached (docs/device-channel.md).
+		//
+		// This is the whole point of the feature. A background run has no
+		// stream to deliver a tool_use event to, so parking in
+		// waiting_for_tool — the chat path's behaviour — is what made every
+		// cron/webhook/sub-agent device call stall 90s and then synthesize a
+		// timeout. With a live claim the app is reachable on the app-wide
+		// status stream, so the loop blocks here, the device executes, the
+		// result is persisted, and the loop continues to the LLM exactly as it
+		// does for a batch of server-side tools.
+		//
+		// Gated on ar.ClientCount() == 0: the chat path (broadcast tool_use,
+		// park, stall watchdog) is untouched and stays byte-identical.
+		//
+		// Sequential on purpose: the device serialises shell work, and two
+		// concurrent device calls racing on the same app (e.g. two fs_write of
+		// the same file) is a data race on the user's disk.
+		if len(clientTools) > 0 && ar.ClientCount() == 0 {
+			var parkable []utils.ToolCall
+			for _, tc := range clientTools {
+				// Only a LIVE CLAIM makes a call dispatchable: an unclaimed
+				// client tool keeps the pre-existing path (park + stall
+				// watchdog) untouched, byte-for-byte.
+				if !DeviceRegistry.ClaimedTool(tc.Function.Name, ar.UserID) {
+					parkable = append(parkable, tc)
+					continue
+				}
+				// "ask" needs an interactive human. A background run has nobody
+				// to approve it, and parking in waiting_for_approval would sit
+				// until the watchdog times the turn out. Synthesize an
+				// explanatory result instead of executing: auto-approving an
+				// ask-mode tool would defeat the user's consent setting.
+				if clientToolModeIsAsk(payload, tc.Function.Name) {
+					utils.Log("[LLMLoop] device tool %s skipped for %s: mode is 'ask' and this run has no interactive client to approve it", tc.Function.Name, ar.ConversationID)
+					synthesizeClientToolResult(ctx, ar, &conversation, tc, deviceToolAskModeError(tc.Function.Name))
+					continue
+				}
+				// Blocks in place. Whether the device answers, times out, or the
+				// request is cancelled, a tool row is persisted — the model sees
+				// an answer for this call and the loop continues to the LLM with
+				// all results in place, like a batch of server-side tools.
+				if _, ok := ar.dispatchDeviceTool(ctx, &conversation, tc, payload, deviceToolTimeout); !ok {
+					utils.Log("[LLMLoop] device tool %s not completed for %s", tc.Function.Name, ar.ConversationID)
+				}
+			}
+			clientTools = parkable
 		}
 
 		// Split server tools into auto-execute vs needs-approval
@@ -840,14 +893,26 @@ const clientToolReattachGrace = 5 * time.Second
 //   - unadvertised: the client did not advertise this tool in the request that
 //     started this loop, so no device handler exists (the model invented the
 //     name). Always fail fast, whatever the connection state.
-//   - no conversation client AND no status-stream client for this user: nobody
-//     can run it. Fail fast (cron / background runs / a resumed loop that
-//     nobody re-attached).
+//   - no conversation client AND no status-stream client AND no live device
+//     claim for this user: nobody can run it. Fail fast (cron / background
+//     runs / a resumed loop that nobody re-attached).
+//   - advertised + live claim: dispatchable over the device channel, no
+//     conversation stream needed.
 //   - otherwise: dispatch. A live app for this user exists, so give its
 //     stream time to attach.
-func clientToolUnreachable(advertised, hasConversationClient, hasStatusClient bool) bool {
+//
+// hasDeviceClaim is the app-wide device channel (docs/device-channel.md): the
+// user's live claim advertises device tools even with no conversation stream,
+// so a background run (cron, webhook, sub-agent) can dispatch them. When a
+// claim exists the reattach grace is not paid — the channel works without a
+// conversation stream, so waiting for one that will never arrive only burns
+// clientToolReattachGrace per batch.
+func clientToolUnreachable(advertised, hasConversationClient, hasStatusClient, hasDeviceClaim bool) bool {
 	if !advertised {
 		return true
+	}
+	if hasDeviceClaim {
+		return false
 	}
 	return !hasConversationClient && !hasStatusClient
 }
@@ -982,6 +1047,198 @@ func synthesizeClientToolResult(ctx context.Context, ar *ActiveRequest, conversa
 	} else {
 		*conversation = updatedConv
 	}
+}
+
+// DeviceToolRequestType is the StatusEvent.Type of a device-channel frame.
+// Legacy status events use "" and are serialized byte-identically to before.
+const DeviceToolRequestType = "device_tool_request"
+
+// clientToolModeIsAsk reports whether this request's model selection puts the
+// named tool in "ask" mode — i.e. a human has to approve the call.
+func clientToolModeIsAsk(payload ChatPayload, name string) bool {
+	if payload.ModelSelected.Text == nil {
+		return false
+	}
+	return payload.ModelSelected.Text.Tools[name] == "ask"
+}
+
+// deviceToolSource labels a dispatch for the app's UI: "background" for runs
+// triggered without a user in front of the screen (cron, webhook, sub-agent),
+// "chat" otherwise. The app uses it for the "background run used your device"
+// indicator, so an unattended device call is never invisible.
+//
+// TriggerType is the stored provenance of the conversation (see
+// db.SetConversationTrigger), so the label survives a watchdog resume, which
+// loses the payload it was launched with.
+func deviceToolSource(conversation *utils.Conversation) string {
+	if conversation == nil {
+		return "chat"
+	}
+	switch conversation.TriggerType {
+	case "cron", "webhook", "sub_agent", "conversation":
+		return "background"
+	default:
+		return "chat"
+	}
+}
+
+// dispatchDeviceTool routes one client-side tool call to the user's app over
+// the device channel and blocks until the device answers, the dispatch times
+// out, or the request is cancelled. The server NEVER executes the tool — it
+// sends the frame, waits, and persists the answer.
+//
+// Returns the tool result and true when the device answered. Every non-ok path
+// (no reachable socket, timeout, cancellation) persists an explanatory tool
+// row so the model sees an answer for this call and the loop can continue
+// instead of parking forever.
+//
+// All writes go through StatusClient.Send (bounded queue) and the existing
+// setSSEWriteDeadline machinery, so a stalled status client can never freeze
+// this loop: Send returns false and the client is dropped, which is exactly
+// the incident that wedged workflows on 2026-11-16 (a blocking Flush inside
+// the loop froze the conversation for minutes).
+func (ar *ActiveRequest) dispatchDeviceTool(ctx context.Context, conversation *utils.Conversation, tc utils.ToolCall, payload ChatPayload, timeout time.Duration) (string, bool) {
+	claim := DeviceRegistry.ClaimForUser(ar.UserID)
+	if claim == nil || claim.ClientID == "" {
+		// Caller checked; a claim can lapse between the check and here (lazy
+		// expiry). Fail fast, do not dispatch into nothing.
+		synthesizeClientToolResult(ctx, ar, conversation, tc, deviceToolNoChannelError(tc.Function.Name))
+		return "", false
+	}
+
+	requestID := utils.GenerateRandomString(16)
+	results, cleanup := DeviceRegistry.RegisterPending(requestID, ar.UserID, ar.ConversationID, tc.ID, tc.Function.Name, timeout)
+	defer cleanup() // the pending entry must not outlive this wait
+
+	enrichToolCallMetadata(&tc)
+	msSnap := conversation.ModelSelected
+	// tool_use for any viewer / reconnect (is_server: false — the device runs
+	// it), and the compact status event so the sidebar shows the activity.
+	ar.Broadcast(SSEEvent{
+		Type:           "tool_use",
+		ToolCall:       &tc,
+		IsServer:       false,
+		ConversationID: ar.ConversationID,
+		ModelSelected:  &msSnap,
+	})
+	ar.BroadcastStatus("tool_use", tc.Function.Name)
+
+	args := tc.Function.Arguments
+	if args == "" {
+		args = "{}"
+	}
+	sent := StatusRegistry.BroadcastToClient(ar.UserID, claim.ClientID, StatusEvent{
+		ConversationID: ar.ConversationID,
+		State:          string(ar.State),
+		Type:           DeviceToolRequestType,
+		RequestID:      requestID,
+		DeviceTool: &DeviceToolRequest{
+			ConversationID: ar.ConversationID,
+			ToolCallID:     tc.ID,
+			Name:           tc.Function.Name,
+			Arguments:      args,
+			TimeoutSeconds: int(timeout / time.Second),
+			Source:         deviceToolSource(conversation),
+		},
+	})
+	if !sent {
+		// The claim's socket is gone (stalled client dropped by Send, or the
+		// app disconnected between the claim and this dispatch). No point
+		// waiting: nobody can answer, and a 180s wait is pure dead time.
+		synthesizeClientToolResult(ctx, ar, conversation, tc, deviceToolUnreachableSocketError(tc.Function.Name, claim.ClientID))
+		return "", false
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case res := <-results:
+		text := combineDeviceToolResult(res.Result, res.Err)
+		// An answered call proves the device isolate is not parked: drop the
+		// unresponsive memo so the next call is dispatched normally (same
+		// semantics as HandleChat clearing it on a chat tool result).
+		clientToolTimeouts.clear(ar.ConversationID)
+		ar.persistDeviceToolResult(ctx, conversation, tc, text)
+		return text, true
+
+	case <-timer.C:
+		// Same semantics as the stall watchdog: record the miss so the loop
+		// does not burn the whole dispatch budget again on the next call, and
+		// tell the model exactly why so it stops re-issuing device calls.
+		clientToolTimeouts.note(ar.ConversationID)
+		utils.Log("[LLMLoop] device channel: %s unanswered for %v on %s — synthesizing timeout result", tc.Function.Name, timeout, ar.ConversationID)
+		synthesizeClientToolResult(ctx, ar, conversation, tc, deviceToolTimeoutError(tc.Function.Name, timeout))
+		return "", false
+
+	case <-ar.Ctx.Done():
+		// Cancelled (user stop, superseded loop). Fill the call in so the
+		// history has no dangling tool call, mirroring the loop's cancel path.
+		synthesizeClientToolResult(ctx, ar, conversation, tc, "Cancelled by user")
+		return "", false
+	}
+}
+
+// persistDeviceToolResult stores the device's answer as a tool message and
+// broadcasts tool_result, exactly as a chat device call does — so a viewer
+// reconnecting later sees the same turn shape.
+func (ar *ActiveRequest) persistDeviceToolResult(ctx context.Context, conversation *utils.Conversation, tc utils.ToolCall, text string) {
+	toolMessage := utils.Message{
+		Role:       "tool",
+		Content:    utils.NewTextContent(text),
+		ToolCallID: tc.ID,
+		Name:       tc.Function.Name,
+		Timestamp:  time.Now().Format(time.RFC3339),
+	}
+	userID := ar.UserID
+	if userID == "" && conversation != nil {
+		userID = conversation.UserID
+	}
+	if userID != "" {
+		if err := storage.ExtractBlobsFromMessage(userID, &toolMessage); err != nil {
+			utils.Error("[LLMLoop] Error extracting blobs from device tool result", err)
+		}
+	}
+	ar.Broadcast(SSEEvent{
+		Type:           "tool_result",
+		ToolCallID:     tc.ID,
+		ToolName:       tc.Function.Name,
+		ToolResult:     toolMessage.TextContent(),
+		IsServer:       false,
+		ConversationID: ar.ConversationID,
+	})
+	if conversation == nil {
+		return
+	}
+	updatedConv, _, pushErr := db.PushMessage(ctx, *conversation, toolMessage)
+	if pushErr != nil {
+		utils.Error("[LLMLoop] Error saving device tool result to DB", pushErr)
+	} else {
+		*conversation = updatedConv
+	}
+}
+
+// deviceToolTimeoutError is the device-channel timeout result. It mirrors the
+// stall watchdog's wording (the model already knows how to react to it) and
+// states the device-channel cost, not the chat-path one.
+func deviceToolTimeoutError(toolName string, timeout time.Duration) string {
+	return "Error: tool '" + toolName + "' was sent to the user's device over the device channel and the device did not answer within " + timeout.String() + ". The device is asleep, offline, its app is not connected, or the command itself is blocked. Do not retry it from here: use a server-side tool (e.g. system_tools__shell_exec, filesystem_server__fs_read) or hand the work to a conversation the user opens in the app."
+}
+
+// deviceToolAskModeError explains that an ask-mode tool cannot run unattended.
+func deviceToolAskModeError(toolName string) string {
+	return "Error: tool '" + toolName + "' requires user approval ('ask' mode) and this run has no interactive client to approve it. Use a server-side tool instead (e.g. system_tools__shell_exec, filesystem_server__fs_read), or hand this to a conversation the user opens in the app so they can approve it."
+}
+
+// deviceToolNoChannelError covers a claim that lapsed mid-dispatch.
+func deviceToolNoChannelError(toolName string) string {
+	return "Error: tool '" + toolName + "' was not dispatched: the device claim expired (the app stopped refreshing its device channel, so its device is unreachable). Use a server-side tool (e.g. system_tools__shell_exec, filesystem_server__fs_read) or hand the work to a conversation the user opens in the app."
+}
+
+// deviceToolUnreachableSocketError covers a claim whose connection cannot
+// receive the frame (socket gone / stalled client dropped).
+func deviceToolUnreachableSocketError(toolName, clientID string) string {
+	return "Error: tool '" + toolName + "' was not dispatched: the app connection for client_id '" + clientID + "' is not writable (closed or stalled), so the device cannot receive the call. Use a server-side tool (e.g. system_tools__shell_exec, filesystem_server__fs_read) or hand the work to a conversation the user opens in the app."
 }
 
 // tailIsUserMessage reports whether the conversation ends with a user

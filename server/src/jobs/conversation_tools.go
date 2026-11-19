@@ -286,6 +286,10 @@ func parallelSubAgentExec(ctx context.Context, args string, conv utils.Conversat
 		Title:         title,
 		ParentID:      conv.ID,
 		ModelSelected: subMS,
+		// The parent's live payload is the authority on what device tools the
+		// spawning conversation could run; fall back to the user's claim when
+		// the loop is not (or no longer) registered.
+		ParentClientSideTools: parentClientSideTools(conv),
 	})
 	if err != nil {
 		return utils.NewTextContent(fmt.Sprintf("Error spawning sub-agent: %v", err))
@@ -474,6 +478,19 @@ func verifyChildOwnership(parent utils.Conversation, subID string) error {
 }
 
 // --- helpers ---
+
+// parentClientSideTools returns the device tools the spawning conversation
+// may pass on to a child. The loop's own advertised set lives in its
+// ChatPayload, which is not readable from outside the loop, so the user's live
+// device claim is the authority: a sub-agent of a chat whose app is connected
+// gets exactly what that app advertises, and RunSubAgent intersects it with
+// whatever the caller passes as ParentClientSideTools. Consent is enforced one
+// layer down — ai_tools.GetRequests filters client tools against
+// model.Tools by the namespaced key, so a tool the parent's tool set does not
+// enable never reaches the child's LLM.
+func parentClientSideTools(conv utils.Conversation) []utils.FunctionToolsRequest {
+	return backgroundDeviceTools(conv.UserID)
+}
 
 func parseToolsArg(raw interface{}) []string {
 	switch v := raw.(type) {
