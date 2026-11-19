@@ -43,6 +43,20 @@ type SSEClient struct {
 	writeMu       sync.Mutex // serializes direct writer access (start/stop)
 	heartbeatStop chan struct{}
 	heartbeatOnce sync.Once
+
+	// reqCtx is the HTTP request's context, watched by the writer goroutine.
+	// When the transport dies underneath a write, net/http finalizes the
+	// ResponseWriter (nilling its internal buffer) and the NEXT write panics
+	// on a nil pointer. The writer's recover() catches the panic, but before
+	// this field existed the goroutine then exited WITHOUT closing Done: the
+	// client stayed registered, Send() kept accepting events into a queue
+	// with no reader, and the stream EOF that makes the app reconnect never
+	// arrived. Production signature (2026-11-19): "writer goroutine recovered
+	// from panic" logged at the exact tool_use broadcast, "1 connected
+	// clients" ever after, every device call stalling 90s, no recovery
+	// without a server restart. Watching reqCtx detects the dead transport at
+	// its source — the handler's own select unblocks on the same ctx.
+	reqCtx context.Context
 }
 
 // NewSSEClient creates an SSEClient from an HTTP response writer.
@@ -53,10 +67,13 @@ type SSEClient struct {
 // detected and dropped within a few hundred KB of queued bytes.
 const sseOutQueueDepth = 512
 
-func NewSSEClient(w http.ResponseWriter) *SSEClient {
+func NewSSEClient(w http.ResponseWriter, reqCtx context.Context) *SSEClient {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return nil
+	}
+	if reqCtx == nil {
+		reqCtx = context.Background()
 	}
 	return &SSEClient{
 		writer:        w,
@@ -64,6 +81,7 @@ func NewSSEClient(w http.ResponseWriter) *SSEClient {
 		Done:          make(chan struct{}),
 		outQ:          make(chan SSEEvent, sseOutQueueDepth),
 		heartbeatStop: make(chan struct{}),
+		reqCtx:        reqCtx,
 	}
 }
 
@@ -113,11 +131,24 @@ func (c *SSEClient) startWriter() {
 		}()
 		ticker := time.NewTicker(sseHeartbeatInterval)
 		defer ticker.Stop()
+		// Close Done on EVERY exit path, including panic recovery. Done is
+		// what the handler selects on, what Send() checks, and what Broadcast
+		// uses to drop the client; an exit that leaves it open registers a
+		// client on a socket nobody writes to again — events go into a queue
+		// with no reader, the app never sees EOF, never reconnects, and the
+		// conversation wedges (see SSEClient.reqCtx for the production
+		// signature). Idempotent, so it coexists with Broadcast/CloseAllClients.
+		defer c.markDone()
 		for {
 			select {
 			case <-c.Done:
 				return
 			case <-c.heartbeatStop:
+				return
+			case <-c.reqCtx.Done():
+				// Transport died underneath us. Exit quietly: the handler
+				// unblocks on the same ctx and deregisters the client.
+				utils.Debug("[SSEClient] request context cancelled for a client")
 				return
 			case ev := <-c.outQ:
 				// A healthy client drains as fast as we enqueue, so the
@@ -129,17 +160,25 @@ func (c *SSEClient) startWriter() {
 				clearSSEWriteDeadline(c.writer)
 				c.writeMu.Unlock()
 				if err != nil {
-					close(c.Done)
 					return
 				}
 			case <-ticker.C:
 				if !c.writeHeartbeat() {
-					close(c.Done)
 					return
 				}
 			}
 		}
 	}()
+}
+
+// markDone closes Done exactly once, from any goroutine. Safe alongside
+// Broadcast/CloseAllClients, which close it with a select/default guard.
+func (c *SSEClient) markDone() {
+	select {
+	case <-c.Done:
+	default:
+		close(c.Done)
+	}
 }
 
 // writeHeartbeat writes a single keepalive comment. Only called from the
@@ -471,10 +510,19 @@ type StatusClient struct {
 	writeMu       sync.Mutex
 	heartbeatStop chan struct{}
 	heartbeatOnce sync.Once
+
+	// reqCtx: the HTTP request's context, watched by the writer goroutine.
+	// Same rationale as SSEClient.reqCtx: a writer that exits on a panic
+	// without closing Done leaves the status client registered forever, and
+	// StatusRegistry keeps broadcasting into a queue with no reader.
+	reqCtx context.Context
 }
 
 // NewStatusClient creates a StatusClient.
-func NewStatusClient(w http.ResponseWriter, flusher http.Flusher, userID string) *StatusClient {
+func NewStatusClient(w http.ResponseWriter, flusher http.Flusher, userID string, reqCtx context.Context) *StatusClient {
+	if reqCtx == nil {
+		reqCtx = context.Background()
+	}
 	return &StatusClient{
 		writer:        w,
 		flusher:       flusher,
@@ -482,6 +530,7 @@ func NewStatusClient(w http.ResponseWriter, flusher http.Flusher, userID string)
 		Done:          make(chan struct{}),
 		outQ:          make(chan StatusEvent, sseOutQueueDepth),
 		heartbeatStop: make(chan struct{}),
+		reqCtx:        reqCtx,
 	}
 }
 
@@ -541,11 +590,17 @@ func (c *StatusClient) startWriter() {
 		}()
 		ticker := time.NewTicker(sseHeartbeatInterval)
 		defer ticker.Stop()
+		// Close Done on every exit path, including panic recovery — see the
+		// SSEClient writer for why an exit that leaves Done open wedges the
+		// registry with a client that can never be written to again.
+		defer c.markDone()
 		for {
 			select {
 			case <-c.Done:
 				return
 			case <-c.heartbeatStop:
+				return
+			case <-c.reqCtx.Done():
 				return
 			case ev := <-c.outQ:
 				c.writeMu.Lock()
@@ -554,17 +609,24 @@ func (c *StatusClient) startWriter() {
 				clearSSEWriteDeadline(c.writer)
 				c.writeMu.Unlock()
 				if err != nil {
-					close(c.Done)
 					return
 				}
 			case <-ticker.C:
 				if !c.writeHeartbeat() {
-					close(c.Done)
 					return
 				}
 			}
 		}
 	}()
+}
+
+// markDone closes Done exactly once, from any goroutine.
+func (c *StatusClient) markDone() {
+	select {
+	case <-c.Done:
+	default:
+		close(c.Done)
+	}
 }
 
 // stopWriter idempotently stops the writer goroutine.

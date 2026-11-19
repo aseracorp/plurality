@@ -30,7 +30,7 @@ func TestSSEClientSendBoundedOnStalledClient(t *testing.T) {
 	var worstSend time.Duration
 
 	h := func(w http.ResponseWriter, r *http.Request) {
-		client := NewSSEClient(w)
+		client := NewSSEClient(w, r.Context())
 		if client == nil {
 			t.Errorf("NewSSEClient returned nil")
 			handlerDone <- struct{}{}

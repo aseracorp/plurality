@@ -133,7 +133,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	// Connect this HTTP client as SSE listener. Built before any registry
 	// decision so the adoption path can hand it straight to the live loop.
 	SetSSEHeaders(w)
-	sseClient := NewSSEClient(w)
+	sseClient := NewSSEClient(w, r.Context())
 	if sseClient == nil {
 		utils.SendHTTPError(w, "Streaming not supported", http.StatusInternalServerError)
 		return
@@ -246,7 +246,7 @@ func HandleStreamReconnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	SetSSEHeaders(w)
-	sseClient := NewSSEClient(w)
+	sseClient := NewSSEClient(w, r.Context())
 	if sseClient == nil {
 		utils.SendHTTPError(w, "Streaming not supported", http.StatusInternalServerError)
 		return
@@ -401,7 +401,7 @@ func HandleApprove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	SetSSEHeaders(w)
-	sseClient := NewSSEClient(w)
+	sseClient := NewSSEClient(w, r.Context())
 	if sseClient == nil {
 		utils.SendHTTPError(w, "Streaming not supported", http.StatusInternalServerError)
 		return
@@ -445,7 +445,7 @@ func HandleStatusStream(w http.ResponseWriter, r *http.Request) {
 	// "close of nil channel" — and when that panic fires inside the LLM loop
 	// goroutine (via StatusRegistry.BroadcastToUser → stopWriter) it kills
 	// the conversation's loop mid-turn, wedging it in "processing" forever.
-	client := NewStatusClient(w, flusher, userID)
+	client := NewStatusClient(w, flusher, userID, r.Context())
 	StatusRegistry.Add(client)
 	defer StatusRegistry.Remove(client)
 
