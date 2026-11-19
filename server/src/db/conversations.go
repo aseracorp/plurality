@@ -493,11 +493,11 @@ func insertMessage(tx *sql.Tx, conversationID string, seq int64, msg utils.Messa
 		// ai_tools.ShouldStripResponse) because ai_tools imports db.
 		raw := msg.TextContent()
 		if !strings.HasPrefix(raw, "base64,") {
-			if proj := caveman.ToolProjection(raw); proj != "" {
+			if proj := caveman.ProjectionFor(msg.Name, raw); proj != "" {
 				// Store banner + projection as ONE string so the request
 				// builder is a pure substitution — no formatting at read time,
 				// and nothing that can vary per request.
-				compressed = caveman.Banner(len(raw), len(proj), msg.ToolCallID) + "\n" + proj
+				compressed = caveman.BannerFor(msg.Name, len(raw), len(proj), msg.ToolCallID) + "\n" + proj
 			}
 		}
 	}

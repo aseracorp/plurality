@@ -85,6 +85,20 @@ func Banner(origChars, projChars int, toolCallID string) string {
 	)
 }
 
+// BannerFor is Banner with the stone named, so a compressed web snapshot reads
+// as browse and a compressed log reads as read_less. Same stability contract:
+// pure function of (tool name, sizes, call id).
+func BannerFor(toolName string, origChars, projChars int, toolCallID string) string {
+	stone := "read_less"
+	if WebToolIsBrowsed(toolName) {
+		stone = "browse"
+	}
+	return fmt.Sprintf(
+		"[caveman/%s: compressed tool result, %d chars → %d. Full original: call caveman_retrieve with tool_call_id=%q.]",
+		stone, origChars, projChars, toolCallID,
+	)
+}
+
 // ---- JSON ----
 
 // looksLikeJSON: first non-space char opens an object/array and the last char

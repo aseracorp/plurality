@@ -11,12 +11,12 @@ import (
 // seedCavemanModel registers a model entry with the caveman stones set as
 // requested, and removes it when the test ends. Mirrors the direct-map seeding
 // used by model_registry_parse_test.go.
-func seedCavemanModel(t *testing.T, name string, enabled, readLess bool) {
+func seedCavemanModel(t *testing.T, name string, enabled, readLess, browse, sayLess bool) {
 	t.Helper()
 	Models.byName[name] = ModelEntry{
 		Name:    name,
 		Mode:    "chat",
-		Caveman: CavemanSettings{Enabled: enabled, Stones: CavemanStones{ReadLess: readLess}},
+		Caveman: CavemanSettings{Enabled: enabled, Stones: CavemanStones{ReadLess: readLess, Browse: browse, SayLess: sayLess}},
 	}
 	t.Cleanup(func() { delete(Models.byName, name) })
 }
@@ -45,7 +45,7 @@ func contentKey(t *testing.T, m StandardMessageReq) string {
 
 // The gate: with read_less on, the request ships the projection.
 func TestCavemanReadLessShipsProjectionWhenEnabled(t *testing.T) {
-	seedCavemanModel(t, "cav-on", true, true)
+	seedCavemanModel(t, "cav-on", true, true, true, false)
 
 	out, _ := convertMessagesToOpenAI(toolMessages(), utils.Model{Name: "cav-on"})
 	tool := findToolMessage(t, out)
@@ -60,8 +60,8 @@ func TestCavemanReadLessShipsProjectionWhenEnabled(t *testing.T) {
 
 // The gate: with read_less off (or caveman disabled), the model sees raw body.
 func TestCavemanReadLessOffShipsRawBody(t *testing.T) {
-	seedCavemanModel(t, "cav-off", true, false)
-	seedCavemanModel(t, "cav-disabled", false, true)
+	seedCavemanModel(t, "cav-off", true, false, false, false)
+	seedCavemanModel(t, "cav-disabled", false, true, false, false)
 
 	for _, name := range []string{"cav-off", "cav-disabled"} {
 		out, _ := convertMessagesToOpenAI(toolMessages(), utils.Model{Name: name})
@@ -87,7 +87,7 @@ func TestCavemanUnknownModelIsVerbatim(t *testing.T) {
 // prefix reusable: rendering stored messages at turn N and at turn N+1 (after
 // new messages are appended) must agree byte-for-byte on the shared prefix.
 func TestReadLessRenderingIsStableAcrossTurns(t *testing.T) {
-	seedCavemanModel(t, "cav-stable", true, true)
+	seedCavemanModel(t, "cav-stable", true, true, true, false)
 	msgs := toolMessages()
 	model := utils.Model{Name: "cav-stable"}
 
