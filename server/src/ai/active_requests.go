@@ -191,7 +191,7 @@ func (c *SSEClient) writeHeartbeat() bool {
 	default:
 	}
 	setSSEWriteDeadline(c.writer)
-	_, err := c.writer.Write([]byte(": ping\n\n"))
+	err := safeWrite(c.writer, []byte(": ping\n\n"))
 	clearSSEWriteDeadline(c.writer)
 	if err != nil {
 		return false
@@ -566,7 +566,7 @@ func (c *StatusClient) writeHeartbeat() bool {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	setSSEWriteDeadline(c.writer)
-	_, err := c.writer.Write([]byte(": ping\n\n"))
+	err := safeWrite(c.writer, []byte(": ping\n\n"))
 	clearSSEWriteDeadline(c.writer)
 	if err != nil {
 		return false

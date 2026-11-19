@@ -3,6 +3,7 @@ package ai
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/azukaar/plurality/src/utils"
@@ -54,14 +55,34 @@ func safeFlush(flusher http.Flusher) (err error) {
 	return nil
 }
 
+// safeWrite writes bytes to an http.ResponseWriter and converts a panic into
+// an error. safeFlush covers Flush(); the write itself needs the same
+// protection. When net/http finalizes a ResponseWriter underneath a
+// late/asynchronous writer goroutine — the handler returned, the transport
+// died, the connection was hijacked, the client went away mid-flush — the
+// next write panics on the nilled internal buffer ("invalid memory address or
+// nil pointer dereference") rather than returning an error. fmt.Fprintf has
+// no recover of its own, so without this the panic is only caught by the SSE
+// writer goroutine's blanket recover, which logs a scary line and drops the
+// event. Covering the write turns the same event into a plain write error the
+// caller already handles: exit the writer, close Done, deregister.
+func safeWrite(w io.Writer, p []byte) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("write panicked: %v", r)
+		}
+	}()
+	_, err = w.Write(p)
+	return err
+}
+
 // WriteSSEEvent serializes an SSEEvent and writes it to an HTTP response writer.
 func WriteSSEEvent(w http.ResponseWriter, event SSEEvent) error {
 	data, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(w, "data: %s\n\n", data)
-	if err != nil {
+	if err := safeWrite(w, []byte("data: "+string(data)+"\n\n")); err != nil {
 		return err
 	}
 	if flusher, ok := w.(http.Flusher); ok {
@@ -96,8 +117,7 @@ func WriteStatusEvent(w http.ResponseWriter, event StatusEvent) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(w, "data: %s\n\n", data)
-	if err != nil {
+	if err := safeWrite(w, []byte("data: "+string(data)+"\n\n")); err != nil {
 		return err
 	}
 	if flusher, ok := w.(http.Flusher); ok {
