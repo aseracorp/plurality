@@ -186,9 +186,10 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		ar.ResetBuffer()
 		ar.BroadcastStatus("typing", "")
 		utils.Log("[LLMLoop] Calling LLM with model %s", model.Name)
-		response, estTokens, err := SendChatCompletion(ar.Ctx, model, conversation, payload)
-		if estTokens > 0 {
-			ar.CompressEstimate = estTokens
+		response, metrics, err := SendChatCompletion(ar.Ctx, model, conversation, payload)
+		if metrics != nil {
+			ar.CompressBefore = metrics.HrBefore
+			ar.CompressAfter = metrics.HrAfter
 		}
 		if err != nil {
 			if ar.Ctx.Err() != nil {

@@ -400,17 +400,15 @@ func (sp *StreamProcessor) buildAssistantMessage() utils.Message {
 func (sp *StreamProcessor) finalizeStream(ctx context.Context) utils.Message {
 	sp.request.TokenUsage = sp.request.PromptTokens + sp.request.CompletionTokens
 
-	// Compute this turn's real compression ratio: pre-proxy estimated prompt
-	// tokens (SendChatCompletion) vs the provider's post-compression
-	// prompt_tokens. This is what Headroom/Caveman actually saved over the
-	// wire for this request. Feed it into the rolling per-model factor used
-	// by the eco guard, and persist it on the message for the UI.
-	if est := sp.request.CompressEstimate; est > 0 && sp.request.PromptTokens > 0 {
-		ratio := float64(est) / float64(sp.request.PromptTokens)
-		if ratio > 1.0 {
-			sp.request.CompressionRatio = ratio
-			RecordCompression(sp.model.Name, est, sp.request.PromptTokens)
-		}
+	// This turn's compression ratio, measured from the proxy's own paired
+	// counts. 0 (no headers on this path) leaves the field at zero, so the UI
+	// shows no badge: "not measured" is not the same as "1.0x", and the old
+	// estimate/provider quotient that lived here manufactured savings on
+	// models whose path has no proxy at all. Feeds the rolling per-model
+	// factor the eco guard relaxes with, and persists for the UI.
+	if ratio := measuredCompressionRatio(sp.request.CompressBefore, sp.request.CompressAfter); ratio > 1.0 {
+		sp.request.CompressionRatio = ratio
+		RecordCompression(sp.model.Name, sp.request.CompressBefore, sp.request.CompressAfter)
 	}
 
 	message := sp.buildAssistantMessage()
