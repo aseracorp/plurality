@@ -103,11 +103,12 @@ func main() {
 	}
 	defer ai.ShutdownHeadroom()
 
-	// Initialize the in-container Caveman compression proxy. Models that opt
-	// in (model_info.caveman: true) route their chat completions through it,
-	// and may chain Caveman -> Headroom -> LiteLLM when both are set (see
-	// ai.ChatCompletionURL). Non-fatal by design: a Caveman failure only
-	// falls back to the direct path.
+	// Initialize the in-container Caveman proxy. The caveman STONES
+	// (say_less / read_less / browse) run in Go and need no request hop; the
+	// proxy serves a model only when that model sets model_info.caveman.proxy:
+	// true (see ai.ChatCompletionURLForName). It is started unconditionally so
+	// flipping that stone takes effect without a restart. Non-fatal by design:
+	// a Caveman failure only means opted-in models use direct LiteLLM.
 	if err := ai.InitCaveman(); err != nil {
 		log.Printf("[main] WARNING: Caveman proxy not available (opted-in models will use direct LiteLLM): %v", err)
 	}

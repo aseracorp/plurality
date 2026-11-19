@@ -125,6 +125,10 @@ model_list:
   #           auto: false         # needs a Caveman account
   #           blocks: false       # pre-release
   #           waste_fixes: false
+  #         proxy: false          # say_less/read_less/browse run in Go, so no
+  #                               # hop is needed; true puts the caveman binary
+  #                               # in the path (0 tokens saved, ~10x latency
+  #                               # measured) for auto/blocks/waste_fixes
   #
   # Deduplication: only ONE proxy owns content compression per model —
   # caveman read_less wins when on, else headroom — so a payload is never

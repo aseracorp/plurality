@@ -110,12 +110,13 @@ func CavemanReady() bool {
 // the per-model model_info.headroom / model_info.caveman flags from
 // litellm_config.yaml.
 //
-// Ordering when both are enabled routes plurality -> Caveman (compress) ->
-// Headroom (cache) -> LiteLLM. Caveman's compat mounts are wired in its
-// caveman.yaml: "headroom" upstreams Headroom (chained, so its frozen
-// compressed prefix keeps the KV cache hot), "litellm" upstreams LiteLLM
-// directly. A proxy that is unhealthy is skipped, degrading stepwise to
-// direct LiteLLM.
+// Only one proxy hop runs per request: the content owner (see
+// optimizationOwners). A caveman-owned model needs NO hop at all, because
+// say_less / read_less / browse are implemented in Go; it reaches the caveman
+// binary only with the explicit `caveman.proxy: true` sub-setting, where it
+// routes plurality -> Caveman -> LiteLLM via the /compat/litellm mount. A
+// headroom-owned model routes plurality -> Headroom -> LiteLLM. A proxy that
+// is unhealthy is skipped, degrading to direct LiteLLM.
 func ChatCompletionURL(model utils.Model) string {
 	return ChatCompletionURLForName(model.Name)
 }
@@ -131,23 +132,39 @@ func ChatCompletionURL(model utils.Model) string {
 // category is never optimized twice. (Headroom's cache mode freezes prior
 // turns; Caveman's PrefixStabilizer keeps the KV prefix stable in its place.)
 //
-// NOTE ON read_less: the Go server ALSO compresses tool results at write time
-// (see src/caveman, db.insertMessage), and that projection is substituted into
-// requests when the read_less stone is on. The shipped proxy runs
-// recovery-unbound, so per its middleware contract its compress mode forwards
-// input UNCHANGED — measured on this instance: provider prompt_tokens are
-// identical through the proxy and direct LiteLLM (736==736 at 5KB,
-// 12896==12896 at 100KB, 196842==196842 at 469KB) with zero middleware_plans
-// written. So there is no double-compression of input today, and the proxy
-// stays in the path for the stones the Go path does not implement (notably
-// say_less, which compresses model OUTPUT and was not measured here). If a
-// future proxy binds recovery and begins compressing input, set
-// CAVEMAN_GO_READLESS=0 to hand input back to it and keep the no-double rule.
+// NOTE ON THE PROXY HOP — measured, not assumed. The caveman binary's
+// compress mode forwards input UNCHANGED unless it can bind a recovery tool,
+// and Plurality's adapter cannot bind one: our recovery tool
+// (ai_tools/cavemanRetrieve, `caveman_retrieve`) is a Plurality tool backed by
+// the conversation DB, not a middleware-adapter registration, so the proxy
+// records `recovery_unbound` and passes content through. Measured on this
+// instance: provider prompt_tokens identical through the proxy and direct
+// LiteLLM (651==651, 951==951; 736==736 at 5KB, 196842==196842 at 469KB per
+// PR #191) with zero middleware_plans in the proxy ledger, at 10.6x the
+// latency (3367ms vs 318ms). Direct LiteLLM also gets the backend's NATIVE KV
+// prompt cache (measured cached_tokens 946/951 on strata-swift), so the hop
+// buys nothing that the direct path lacks.
+//
+// So routing no longer implies the hop: a caveman-owned model runs entirely in
+// Go by default, and `caveman.proxy: true` puts the binary in the path for
+// stones Go does not implement. If a future proxy binds recovery and starts
+// compressing input, set CAVEMAN_GO_READLESS=0 to hand input back to it and
+// keep the no-double-compression rule.
+//
+// Deduplication is unchanged: caveman owns content whenever read_less is on, so
+// a model with BOTH flags sends its content through the Go compressor and
+// never through headroom's kompress. headroom owns content only when
+// caveman.read_less is off. One content owner per model, always.
 func ChatCompletionURLForName(name string) string {
 	contentOwner, e := optimizationOwners(name)
 	switch contentOwner {
 	case ownerCaveman:
-		if e.Caveman.Enabled && cavemanReady.Load() {
+		// caveman owns content, and in this build it owns it IN GO: say_less
+		// injects the voice, read_less compresses tool results at write time,
+		// browse projects web snapshots. None of the three needs a request
+		// hop. The binary is only in the path when the operator asks for it
+		// (caveman.proxy: true) for a stone Go does not implement.
+		if e.Caveman.Proxy && cavemanReady.Load() {
 			return CavemanBaseURL + "/compat/litellm"
 		}
 	case ownerHeadroom:

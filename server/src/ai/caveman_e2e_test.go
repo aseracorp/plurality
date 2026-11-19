@@ -408,3 +408,51 @@ func e2eLive(t *testing.T, key, model string, msgs []StandardMessageReq) e2eUsag
 	}
 	return u
 }
+
+// Routing: a caveman-owned model must NOT hop through the proxy by default.
+// Measured on this deployment: the binary's compress mode forwards input
+// unchanged (no bound recovery tool) at 10.6x latency, so the hop is pure
+// cost. The Go stones (say_less/read_less/browse) need no hop.
+func TestE2ECavemanOwnedModelDoesNotHopByDefault(t *testing.T) {
+	// These are package-level atomics shared by every test in the package:
+	// save and restore, or this test leaks routing state into its siblings.
+	prevCaveman, prevHeadroom := cavemanReady.Load(), headroomReady.Load()
+	t.Cleanup(func() {
+		cavemanReady.Store(prevCaveman)
+		headroomReady.Store(prevHeadroom)
+	})
+
+	// seedCavemanModel writes whole entries, so headroom is set by mutating a
+	// copy and writing it back — map values are not addressable.
+	seedCavemanModel(t, "e2e-hop-off", true, true, true, true)
+	seedCavemanModel(t, "e2e-hop-headroom", true, false, false, false)
+	hr := Models.byName["e2e-hop-headroom"]
+	hr.Headroom = HeadroomSettings{Enabled: true}
+	Models.byName["e2e-hop-headroom"] = hr
+
+	// read_less owns content in Go, so the request goes straight to LiteLLM.
+	cavemanReady.Store(true)
+	headroomReady.Store(true)
+	if got := ChatCompletionURLForName("e2e-hop-off"); got != LiteLLMBaseURL {
+		t.Fatalf("caveman-owned model must talk to LiteLLM directly, got %q", got)
+	}
+
+	// Explicit opt-in puts the binary in the path.
+	e := Models.byName["e2e-hop-off"]
+	e.Caveman.Proxy = true
+	Models.byName["e2e-hop-off"] = e
+	if got := ChatCompletionURLForName("e2e-hop-off"); !strings.HasPrefix(got, CavemanBaseURL) {
+		t.Fatalf("caveman.proxy: true must route through the proxy, got %q", got)
+	}
+
+	// An unhealthy proxy degrades to direct — never to a doubled hop.
+	cavemanReady.Store(false)
+	if got := ChatCompletionURLForName("e2e-hop-off"); got != LiteLLMBaseURL {
+		t.Fatalf("unhealthy proxy must fall back to direct LiteLLM, got %q", got)
+	}
+
+	// headroom ownership is untouched by the caveman change.
+	if got := ChatCompletionURLForName("e2e-hop-headroom"); got != HeadroomBaseURL {
+		t.Fatalf("headroom-owned model must keep its hop, got %q", got)
+	}
+}

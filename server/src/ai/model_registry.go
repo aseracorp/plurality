@@ -131,6 +131,16 @@ type CavemanStones struct {
 type CavemanSettings struct {
 	Enabled bool
 	Stones  CavemanStones
+	// Proxy routes this model's chat completions THROUGH the caveman binary
+	// (plurality -> caveman -> LiteLLM). Off by default: the stones that
+	// Plurality implements (say_less, read_less, browse) all run in Go, and
+	// the binary's compress mode forwards input unchanged when it has no
+	// recovery tool bound — measured on this deployment at identical provider
+	// prompt_tokens through the proxy and direct LiteLLM (651==651, 951==951)
+	// at 10.6x the latency (3367ms vs 318ms). Turning this on is for the
+	// stones Go does not implement (auto, blocks, waste_fixes), which need
+	// the binary in the request path.
+	Proxy bool
 }
 
 type litellmModelList struct {
@@ -387,6 +397,7 @@ func parseHeadroomSettings(raw json.RawMessage) HeadroomSettings {
 type cavemanFlag struct {
 	Enabled *bool          `json:"enabled"`
 	Stones  *cavemanStones `json:"stones"`
+	Proxy   *bool          `json:"proxy"`
 }
 
 type cavemanStones struct {
@@ -441,6 +452,9 @@ func parseCavemanSettings(raw json.RawMessage) CavemanSettings {
 		// PR #127 fixed).
 		out.Stones = defaultCavemanStones()
 		return out
+	}
+	if f.Proxy != nil {
+		out.Proxy = *f.Proxy
 	}
 	if f.Stones != nil {
 		st := CavemanStones{}

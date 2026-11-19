@@ -147,6 +147,26 @@ class TestCavemanDefaults(unittest.TestCase):
         info = load("headroom:\n  enabled: true\n  keep_last_turns: 3\n")
         self.assertEqual(info["headroom"], {"enabled": True, "keep_last_turns": 3})
 
+    def test_proxy_hop_is_opt_in_and_absent_by_default(self):
+        """The caveman HOP is opt-in, not implied by `caveman: true`.
+
+        Routing through the binary costs ~10x latency and saves 0 input tokens
+        (measured identical provider prompt_tokens via proxy and direct),
+        because compress mode forwards content when it cannot bind a recovery
+        tool. So a bare `caveman: true` publishes NO `proxy` key (Go reads
+        absent as false = direct LiteLLM), and only an explicit dict with
+        `proxy: true` puts the binary in the request path.
+        """
+        info = load("caveman: true")
+        self.assertNotIn("proxy", info["caveman"],
+                         "bare true must not opt into the proxy hop")
+
+        info = load("caveman:\n  enabled: true\n  proxy: true\n")
+        self.assertTrue(info["caveman"]["proxy"])
+
+        info = load("caveman:\n  enabled: true\n  proxy: false\n")
+        self.assertFalse(info["caveman"]["proxy"])
+
     def test_typo_fails_closed(self):
         """An unusable value disables the proxy rather than enabling it."""
         info = load('caveman: "yes please"')
