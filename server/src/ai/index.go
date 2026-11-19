@@ -57,7 +57,7 @@ func portExtSuffix() string {
 
 // SendChatCompletion sends a chat completion request to the LiteLLM proxy,
 // which handles routing to the correct provider (OpenAI, Claude, Gemini, Fireworks).
-func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conversation, payload ChatPayload) (io.ReadCloser, int, error) {
+func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conversation, payload ChatPayload) (io.ReadCloser, *chatMetrics, error) {
 	systemPrompt := baseSystemPrompt()
 
 	miniAppID := payload.MiniApp.ID
@@ -73,7 +73,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		username, _ := ctx.Value("userID").(string)
 		miniApp, err := miniapps.Get(username, miniAppID)
 		if err != nil {
-			return nil, 0, err
+			return nil, nil, err
 		}
 
 		if miniApp.Prompt["en"] != "" {
@@ -121,7 +121,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	}
 
 	if !LiteLLMReady() {
-		return nil, 0, fmt.Errorf("AI proxy is not ready, please try again in a moment")
+		return nil, nil, fmt.Errorf("AI proxy is not ready, please try again in a moment")
 	}
 
 	// Append the per-user important_memory snippet. It is always present so the
@@ -254,7 +254,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	enc := json.NewEncoder(&jsonBuf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(requestData); err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 	jsonData := jsonBuf.Bytes()
 
@@ -267,8 +267,11 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// would exceed the model's window minus the reply reservation, return
 	// an error the loop's context-length path recognizes so it compacts
 	// the history and retries instead of shipping an oversized request.
-	// estTokens is hoisted above the guard so it can be returned to the
-	// caller for compression-ratio accounting after a successful request.
+	// estTokens is hoisted above the guard because the guard needs it on both
+	// sides of the compression-factor discount below. It stays local to this
+	// function: it is a heuristic, and the turn's compression ratio is now
+	// measured from the proxy's own paired counts (compression_measured.go)
+	// rather than derived from it.
 	estTokens := 0
 	// Keep room for the model's answer: max_tokens + safety.
 	const replyReserve = 4096 + 2048
@@ -299,7 +302,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		// max_tokens, so this guard and the backend agree on the prompt ceiling.
 		if postCompressionTokens > windowTokens-replyReserve {
 			utils.Log("[Eco] preemptive context guard: estimated %d tokens vs window %d — returning context-length error so the loop compacts and retries", estTokens, windowTokens)
-			return nil, 0, fmt.Errorf("request estimated to exceed the context window: ~%d tokens vs %d (max %d) — compacting history and retrying", estTokens, windowTokens, windowTokens-replyReserve)
+			return nil, nil, fmt.Errorf("request estimated to exceed the context window: ~%d tokens vs %d (max %d) — compacting history and retrying", estTokens, windowTokens, windowTokens-replyReserve)
 		}
 	}
 
@@ -310,7 +313,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 
 	req, err := http.NewRequest("POST", chatURL+"/v1/chat/completions", bytes.NewBuffer(jsonData))
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -344,26 +347,27 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		resp, err := utils.DoLLMHTTPWithRetryHeld(ctx, req)
 		if err != nil {
 			NoteCavemanResult(routedViaCaveman, 0)
-			return nil, 0, err
+			return nil, nil, err
 		}
 		if resp.StatusCode != http.StatusOK {
 			NoteCavemanResult(routedViaCaveman, resp.StatusCode)
 			respBody, _ := io.ReadAll(resp.Body)
 			strStatus := strconv.Itoa(resp.StatusCode)
 			utils.Error("LiteLLM API request failed with status", nil, strStatus, ":", string(respBody))
-			return nil, 0, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(respBody))
+			return nil, nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(respBody))
 		}
 		NoteCavemanResult(routedViaCaveman, resp.StatusCode)
-		// The integer return carries the pre-proxy estimated prompt tokens so
-		// the loop can compute this turn's real compression ratio against the
-		// provider's post-compression prompt_tokens (see RecordCompression).
-		return resp.Body, estTokens, nil
+		// chatMetricsFrom reads the proxy's paired token counts off the
+		// response headers now, at response start: the body is a stream the
+		// caller consumes after this returns, and the headers are gone by
+		// then (see compression_measured.go).
+		return resp.Body, chatMetricsFrom(resp), nil
 	}
 
 	resp, err := utils.DoLLMHTTPWithRetry(ctx, req)
 	if err != nil {
 		NoteCavemanResult(routedViaCaveman, 0)
-		return nil, 0, err
+		return nil, nil, err
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -371,11 +375,11 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		respBody, _ := io.ReadAll(resp.Body)
 		strStatus := strconv.Itoa(resp.StatusCode)
 		utils.Error("LiteLLM API request failed with status", nil, strStatus, ":", string(respBody))
-		return nil, 0, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(respBody))
+		return nil, nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(respBody))
 	}
 	NoteCavemanResult(routedViaCaveman, resp.StatusCode)
 
-	return resp.Body, estTokens, nil
+	return resp.Body, chatMetricsFrom(resp), nil
 }
 
 // convertMessagesToOpenAI converts internal utils.Message slices into

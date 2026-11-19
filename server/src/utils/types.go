@@ -168,9 +168,19 @@ type Message struct {
 	PromptTokens     int     `json:"prompt_tokens,omitempty"`
 	CompletionTokens int     `json:"completion_tokens,omitempty"`
 	ResponseCost     float64 `json:"response_cost,omitempty"`
-	// CompressionRatio is how many times the pre-proxy prompt estimate was
-	// reduced before the provider saw it (est. uncompressed tokens / provider
-	// prompt_tokens). 0 = no compression proxy active for the model / unknown.
+	// CompressionRatio is the compression proxy's measured prompt shrink
+	// factor for this message: its own token count before compression divided
+	// by its own count after, read from paired x-headroom-tokens-before /
+	// -after response headers (one tokenizer, one measurement point).
+	//
+	// 0 means NOT MEASURED - the request path has no compression proxy, or
+	// the proxy publishes no counts (LiteLLM publishes none). 0 is not 1.0:
+	// the UI shows no badge, and must not render "0% saved" as a result.
+	//
+	// It used to be (chars/3 estimate of the marshalled request) / provider
+	// prompt_tokens. Those two numbers came from different places, so the
+	// quotient measured the divisor heuristic: models with no proxy at all
+	// displayed 29-39% saved. Do not reconstruct that ratio.
 	CompressionRatio float64 `json:"compression_ratio,omitempty"`
 
 	// CompressedContent is the caveman "read less" projection of a tool

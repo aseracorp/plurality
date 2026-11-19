@@ -243,13 +243,25 @@ type ActiveRequest struct {
 	PromptTokens     int
 	CompletionTokens int
 	ResponseCost     float64
-	// CompressEstimate is the pre-proxy estimated prompt token count for the
-	// current turn (est. from the marshalled request before Headroom/Caveman
-	// compress it). Compared against the provider's post-compression
-	// prompt_tokens it yields the real compression ratio for this model.
-	CompressEstimate int
-	// CompressionRatio is this turn's prompt compression ratio
-	// (est. uncompressed / provider post-compression prompt tokens).
+	// CompressBefore / CompressAfter are the compression proxy's own paired
+	// token counts for the current turn, read from
+	// x-headroom-tokens-before / -after on the response (see
+	// compression_measured.go). One tokenizer, one measurement point. Zero
+	// means the path reported nothing (direct LiteLLM, proxy off), which
+	// renders as "no compression observed", never as a ratio.
+	//
+	// This replaces a chars/3 estimate of the marshalled request that used to
+	// be divided by the provider's prompt_tokens to build the UI's saved-%
+	// badge. That quotient measured estimator bias, not compression: models
+	// with no proxy in their path reported 29-39% saved, and the display gate
+	// (ratio > 1.01) sat inside the divisor's own ~4-8% inflation, so the
+	// badge fired on every turn for every model. The estimate survives only
+	// where it has a real job - the preemptive context-window guard, which
+	// computes and consumes it in place inside SendChatCompletion.
+	CompressBefore int
+	CompressAfter  int
+	// CompressionRatio is this turn's measured prompt compression ratio.
+	// 0 = not measured / nothing compressed.
 	CompressionRatio float64
 }
 

@@ -440,15 +440,21 @@ var (
 	compressFactorByMod = map[string]float64{} // model name -> rolling ratio
 )
 
-// RecordCompression feeds one observed turn's ratio (estUncompressed /
-// providerPromptTokens) into the rolling per-model factor. Ignored unless
-// the ratio is meaningfully >1 (a proxy is actually compressing) and bounded
-// to a sane range (1.0..50.0) so a single bad sample can't skew the guard.
-func RecordCompression(modelName string, estUncompressed, providerPromptTokens int) {
-	if modelName == "" || estUncompressed <= 0 || providerPromptTokens <= 0 {
+// RecordCompression feeds one observed turn's ratio into the rolling
+// per-model factor. beforeCompression / afterCompression are the compression
+// proxy's OWN paired token counts (x-headroom-tokens-before / -after, see
+// compression_measured.go) — one tokenizer, one measurement point. It is NOT
+// fed a chars/3 estimate over provider prompt_tokens: that mixed two
+// incompatible measurement points and produced ratios that tracked the
+// divisor heuristic, which then relaxed the eco guard by a fictional factor.
+// Ignored unless the ratio is meaningfully >1 (a proxy is actually
+// compressing) and bounded to a sane range (1.0..50.0) so a single bad sample
+// can't skew the guard.
+func RecordCompression(modelName string, beforeCompression, afterCompression int) {
+	if modelName == "" || beforeCompression <= 0 || afterCompression <= 0 {
 		return
 	}
-	ratio := float64(estUncompressed) / float64(providerPromptTokens)
+	ratio := float64(beforeCompression) / float64(afterCompression)
 	if ratio < 1.01 || ratio > 50 {
 		return
 	}
