@@ -84,6 +84,11 @@ func main() {
 		if err := ai.InitModels(context.Background()); err != nil {
 			log.Printf("[main] WARNING: failed to load models from litellm: %v", err)
 		}
+		// Keep the registry in step with litellm_config.yaml so per-model
+		// settings (the caveman/headroom stone toggles) apply without a
+		// server restart. The proxy hot-reloads its side on mtime change;
+		// this polls the result.
+		ai.StartRegistryRefresh(context.Background(), time.Minute)
 	}
 	defer ai.ShutdownLiteLLM()
 

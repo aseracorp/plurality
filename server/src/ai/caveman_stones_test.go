@@ -99,9 +99,10 @@ func TestCavemanNeverCompressesUserOrSystemMessages(t *testing.T) {
 	}
 }
 
-// say_less injects an instruction; it must never rewrite user text, and it is
-// a constant so the prompt-cache prefix cannot churn.
-func TestSayLessInjectsVoiceAndNeverTouchesUserText(t *testing.T) {
+// say_less injects an instruction about the model's OWN output, is a constant
+// so the prompt-cache prefix cannot churn, and says nothing about user
+// messages.
+func TestSayLessInjectsVoiceIsOutputOnly(t *testing.T) {
 	seedCavemanModel(t, "cav-say", true, false, false, true)
 	seedCavemanModel(t, "cav-nosay", true, false, false, false)
 
@@ -109,9 +110,22 @@ func TestSayLessInjectsVoiceAndNeverTouchesUserText(t *testing.T) {
 	if !strings.Contains(voice, "say less") {
 		t.Fatal("voice text missing")
 	}
-	// The voice must itself forbid touching user prompts.
-	if !strings.Contains(voice, "NEVER rewrite the user's messages") {
-		t.Fatal("voice must explicitly protect user messages")
+	// The voice must NOT instruct the model about user messages. The model
+	// receives context and answers — it cannot rewrite stored user text, only
+	// the server can. An instruction aimed at a capability the model lacks is
+	// dead weight in every request and invites editorializing about the user's
+	// own words. The guarantee lives in code + tests, not the prompt.
+	for _, banned := range []string{
+		"NEVER rewrite the user's messages",
+		"never rewrite user",
+		"your prompts stay yours",
+	} {
+		if strings.Contains(strings.ToLower(voice), strings.ToLower(banned)) {
+			t.Fatalf("voice must not address user-message handling (dead instruction, invites meta-commentary): %q", banned)
+		}
+	}
+	if n := strings.Count(voice, "user"); n > 2 {
+		t.Fatalf("voice over-mentions the user (%d) — it should describe the model's output style", n)
 	}
 	for _, neg := range []string{"not", "never", "only"} {
 		if !strings.Contains(voice, neg) {

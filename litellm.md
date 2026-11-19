@@ -114,13 +114,15 @@ model_info:
     stones:                    # caveman's six "rocks"
       say_less: true           # agent answers short, code stays exact
       read_less: true          # compress logs / JSON / CSV / YAML / test output before the model reads them
+      browse: true             # compress web pages / Playwright snapshots
       auto: false              # pick model + effort per ask (needs a Caveman account)
       blocks: false            # keep scripts the agent wrote and re-run them
       waste_fixes: false       # keep the prompt cache warm while you pause
-      browse: false            # compress web pages
 ```
 
-Bare `headroom: true` / `caveman: true` still work and mean "enabled with defaults" (for caveman, all six stones on — its default posture).
+Bare `headroom: true` / `caveman: true` still work and mean "enabled with defaults". For caveman the default is **`say_less` + `read_less` + `browse` on, `auto` + `blocks` + `waste_fixes` off** — the three on-by-default stones need nothing external and can only shrink payloads (`browse` is gain-guarded, so it ships raw rather than growing a tool result), while `auto` requires a Caveman account and swaps the model mid-conversation, `blocks` is pre-release and re-executes shell code, and `waste_fixes` holds the KV cache open past the end of a request. Turn any of them on by name.
+
+The default lives in exactly two places and they must agree: `DEFAULT_CAVEMAN_STONES` in `litellm_proxy.py` and `defaultCavemanStones()` in `src/ai/model_registry.go`. The proxy and the Go registry parse the same config from opposite ends (the proxy normalizes the YAML and publishes `/v1/models`; the registry parses that, and also has to cope with older images that publish a bare `{"enabled": true}`), so if the two sets differ, which stones are live depends on which side normalized the value last. Naming a subset of `stones` fills the rest from the same default on both sides. There is a test on each side pinning the set down (`test_litellm_proxy.py`, `model_registry_parse_test.go`).
 
 **Deduplication — no double optimization.** The two proxies never compress the same content category in sequence. For each model the routing resolver picks a SINGLE content owner:
 

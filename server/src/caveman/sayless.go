@@ -8,11 +8,17 @@ package caveman
 // ~35%; Adobe's CAVEWOMAN study (8 models, 5 datasets) measured 1.4–2.4× lower
 // cost per model from caveman-style output.
 //
-// The critical boundary, taken from the same research: cavemanning the USER's
-// prompt makes answers longer and worse, so caveman never touches user text.
-// This is a prompt INSTRUCTION appended to the system prompt, and it explicitly
-// orders the model to leave user messages, code, paths and numbers verbatim.
-// Nothing here compresses, rewrites, or re-voices any user message.
+// The voice says nothing about user messages, on purpose. The model receives
+// context and answers; it has no ability to rewrite user text — only the server
+// touches stored messages, and the write path compresses exactly one role
+// (`msg.Role == "tool"`). An instruction addressed to a capability the model
+// does not have is dead weight in every request, and it is worse than neutral:
+// it implies editorial authority over the user's own words and invites
+// commentary on them.
+//
+// So the "never compress user messages" guarantee lives in code and in tests
+// (db.TestInsertMessageDoesNotCompressNonToolRoles,
+// ai.TestCavemanNeverCompressesUserOrSystemMessages), NOT in the prompt.
 //
 // Byte-stability: Voice() returns a constant string, so appending it to the
 // system prompt costs the KV prompt-cache prefix nothing across turns.
@@ -24,7 +30,7 @@ func Voice() string {
 // one idea per sentence, meaning never dropped, payload verbatim, no theater,
 // knows when to stop) in the compressed form they describe. Negations, numbers
 // and code are protected explicitly, since dropping those is the known failure
-// mode of terse output.
+// mode of terse output. Everything below is about the model's OWN output.
 const sayLessVoice = "\n\n## Caveman mode (say less)\n\n" +
 	"Answer short. Brain stay big.\n\n" +
 	"- Answer first: `[thing] [action] [reason]. [next step].` No greeting, no \"let me\", no recap, no \"hope this helps\".\n" +
@@ -34,5 +40,4 @@ const sayLessVoice = "\n\n## Caveman mode (say less)\n\n" +
 	"- Quiet tool runs: no chatter between tool calls. One line per phase, one line for the result.\n" +
 	"- Know when to stop: security warnings, irreversible actions, step-by-step orders, questions back to the user, and confused users get FULL sentences. Then grunt resumes.\n" +
 	"- No theater: never write \"me think\", never prefix a reply with caveman. If caveman phrasing is not shorter, plain wins.\n" +
-	"- NEVER rewrite the user's messages, and never answer in the voice for user-authored text. Their words stay theirs.\n" +
 	"- Before sending, check: plan-announcing opener deleted, recapping closer deleted, every negation, number and path still present."

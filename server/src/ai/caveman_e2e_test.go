@@ -283,8 +283,8 @@ func TestE2ECavemanVoiceIsAppendOnly(t *testing.T) {
 	if !strings.Contains(with, "Caveman mode (say less)") {
 		t.Fatal("voice not injected")
 	}
-	if !strings.Contains(with, "NEVER rewrite the user's messages") {
-		t.Fatal("voice must instruct the model to leave user text alone")
+	if strings.Contains(with, "rewrite the user's messages") {
+		t.Fatal("voice must not instruct on user-message handling — the model cannot rewrite context")
 	}
 	if without := applyCavemanVoice(base, utils.Model{Name: "e2e-say"}, true); without != base {
 		t.Fatal("voice must be skipped on calls")

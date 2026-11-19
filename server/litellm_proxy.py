@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse, JSONResponse, Response
 import uvicorn
 import yaml
 import os
+import threading
 import httpx
 
 logger = logging.getLogger("litellm_proxy")
@@ -56,6 +57,80 @@ model_to_info = {}
 model_to_api_key = {}
 
 
+# Config hot-reload. The LiteLLM Router and the model maps are built once at
+# startup from litellm_config.yaml, so any per-model setting — including the
+# caveman/headroom stone toggles the Go registry reads from /v1/models — was
+# frozen until the container restarted. The Go side has the same freeze
+# (Models.Refresh runs once at startup), so an operator editing the YAML saw no
+# effect for the life of the process. Both sides now re-read on mtime change:
+# cheap (one stat per request) and fail-safe (a broken edit keeps the last good
+# config running, it never drops the models that are serving traffic).
+# Default stone set for a bare `caveman: true`. MUST stay identical to
+# defaultCavemanStones() in src/ai/model_registry.go and to the table in
+# litellm.md: the LiteLLM proxy and the Go registry parse the same config from
+# opposite ends, and a disagreement makes the effective stones depend on which
+# side normalized the value.
+DEFAULT_CAVEMAN_STONES = {
+    "say_less": True,   # output-side voice: answers shorter, code verbatim
+    "read_less": True,  # compress tool output; grants caveman content ownership
+    "browse": True,     # web/Playwright snapshots; gain-guarded, never larger
+    "auto": False,      # needs a Caveman account, swaps the model per ask
+    "blocks": False,    # pre-release; re-executes shell code the agent wrote
+    "waste_fixes": False,  # holds the KV cache open past request end
+}
+
+_config_path = None
+_config_mtime = None
+_config_lock = threading.Lock()
+
+
+def stat_config_mtime():
+    try:
+        return os.stat(_config_path).st_mtime
+    except OSError:
+        return None
+
+
+def reload_config_if_changed():
+    """Rebuild router + model maps if litellm_config.yaml changed. No-op
+    otherwise. Never raises: on any failure the previous config stays live."""
+    global router, _config_mtime
+    if _config_path is None:
+        return False
+    mtime = stat_config_mtime()
+    if mtime is None or mtime == _config_mtime:
+        return False
+    with _config_lock:
+        # Re-check under the lock; another caller may have loaded it already.
+        if mtime == _config_mtime:
+            return False
+        # Build-then-swap. load_config writes into the module maps, so the
+        # reload points them at FRESH dicts and only keeps them if the whole
+        # load succeeds. Clearing the live maps first (the obvious approach)
+        # is a bug: a YAML typo then raises mid-load and leaves the gateway
+        # serving zero models, which is strictly worse than the stale config
+        # it replaced.
+        global model_to_litellm, model_to_info, model_to_api_key
+        prev = (model_to_litellm, model_to_info, model_to_api_key)
+        model_to_litellm, model_to_info, model_to_api_key = {}, {}, {}
+        try:
+            model_list = load_config(_config_path)
+            new_router = Router(model_list=model_list)
+            router = new_router
+            _config_mtime = mtime
+            logger.info("litellm_config.yaml changed (mtime %s) -> reloaded %d model(s)",
+                        mtime, len(model_list))
+            return True
+        except Exception as e:
+            # Discard the partial load and restore the live maps untouched.
+            model_to_litellm, model_to_info, model_to_api_key = prev
+            # Consume the mtime so a broken file does not re-load (and re-log)
+            # on every single request.
+            _config_mtime = mtime
+            logger.error("config reload failed, keeping previous config: %s", e)
+            return False
+
+
 def load_config(config_path):
     with open(config_path) as f:
         config = yaml.safe_load(f)
@@ -89,14 +164,7 @@ def load_config(config_path):
                 if opt_key == "caveman":
                     info[opt_key] = {
                         "enabled": True,
-                        "stones": {
-                            "say_less": True,
-                            "read_less": True,
-                            "auto": False,
-                            "blocks": False,
-                            "waste_fixes": False,
-                            "browse": False,
-                        },
+                        "stones": dict(DEFAULT_CAVEMAN_STONES),
                     }
                 else:
                     info[opt_key] = {"enabled": True}
@@ -105,6 +173,16 @@ def load_config(config_path):
             elif isinstance(val, dict):
                 info[opt_key] = dict(val)
                 info[opt_key].setdefault("enabled", True)
+                if opt_key == "caveman":
+                    # Partial stones: the Go side treats an explicit `stones`
+                    # block as authoritative, so a dict naming only some stones
+                    # must be completed from the same default the bare-true
+                    # branch uses. Otherwise the unlisted ones read as "off"
+                    # here and "default" there, and the effective set depends
+                    # on which side normalized last.
+                    stones = dict(DEFAULT_CAVEMAN_STONES)
+                    stones.update(val.get("stones") or {})
+                    info[opt_key]["stones"] = stones
             else:
                 # Typo / unknown type -> fail closed to disabled.
                 info[opt_key] = {"enabled": False}
@@ -146,6 +224,7 @@ async def health():
 
 @app.get("/v1/models")
 async def list_models():
+    reload_config_if_changed()
     models = []
     for deployment in router.model_list:
         name = deployment["model_name"]
@@ -194,6 +273,7 @@ def existing_extra_body(body: dict) -> dict:
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
+    reload_config_if_changed()
     body = await request.json()
     model = body.get("model", "")
     stream = body.get("stream", False)
@@ -497,9 +577,11 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
 
-    global router
-    model_list = load_config(args.config)
+    global router, _config_path, _config_mtime
+    _config_path = args.config
+    model_list = load_config(_config_path)
     router = Router(model_list=model_list)
+    _config_mtime = stat_config_mtime()
 
     # Drop unsupported params silently for cloud providers (OpenRouter etc.) so
     # a request with a param one provider doesn't support doesn't 400. This is
