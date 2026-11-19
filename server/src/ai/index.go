@@ -155,9 +155,15 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	}
 
 	// Apply eco-mode checkpoint filtering before assembling the request.
-	// When eco is on: keep the rolling checkpoint pair and drop everything
-	// older than it. When eco is off: drop the checkpoint pair entirely
-	// and send the raw history.
+	// When eco is on: keep the ONE rolling checkpoint pair and every live row
+	// after it — FROZEN, i.e. no sliding char window, so the sent history
+	// starts at the same row every turn and the KV prompt-cache prefix keeps
+	// growing (see filterCheckpointsForRequest). Durable compaction is what
+	// bounds the view; the preemptive guard below is what converts "this view
+	// no longer fits" into a DURABLE fold, and only as a last resort does the
+	// loop's recovery trim in memory.
+	// When eco is off: drop the checkpoint pair entirely and send the raw
+	// history.
 	windowTokens := Models.MaxContextTokensForPrefixed(model.Name)
 	visibleMessages := filterCheckpointsForRequest(conv.Messages, conv.ModelSelected.EcoMode)
 	allMessages := append([]utils.Message{systemMsg}, visibleMessages...)
@@ -275,6 +281,14 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	estTokens := 0
 	// Keep room for the model's answer: max_tokens + safety.
 	const replyReserve = 4096 + 2048
+	// viewTokens is the eco view's own size (folded rows skipped, per-message
+	// cap applied) — the same measure the eco trigger gate uses, so the two
+	// agree about what is being sent. Logged alongside the marshalled estimate
+	// because the pair is the diagnostic for frozen compaction: viewTokens
+	// must be FLAT turn over turn between folds, and must step DOWN at a
+	// fold. jsonData above is the stricter bound (it carries the tool schemas
+	// and re-inflated attachments too), so the guard keeps using it.
+	viewTokens := SentViewTokens(visibleMessages)
 	if windowTokens > 0 {
 		// ~3 chars per token for JSON: tool results and shell/file dumps are
 		// far denser than prose (~2.5-3.5 chars/token), and the marshalled
@@ -301,7 +315,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		// Room for the model's answer — the SAME reservation we send as
 		// max_tokens, so this guard and the backend agree on the prompt ceiling.
 		if postCompressionTokens > windowTokens-replyReserve {
-			utils.Log("[Eco] preemptive context guard: estimated %d tokens vs window %d — returning context-length error so the loop compacts and retries", estTokens, windowTokens)
+			utils.Log("[Eco] preemptive context guard: estimated %d tokens vs window %d (eco view %d tokens, %d live rows) — returning context-length error so the loop compacts and retries", estTokens, windowTokens, viewTokens, len(visibleMessages))
 			return nil, nil, fmt.Errorf("request estimated to exceed the context window: ~%d tokens vs %d (max %d) — compacting history and retrying", estTokens, windowTokens, windowTokens-replyReserve)
 		}
 	}
@@ -862,10 +876,10 @@ func GenerateCheckpointSummary(text, model string) (string, error) {
 
 	maxTokens := 8192
 	requestData := StandardChatRequest{
-		Model:       model,
-		Messages:    msgReqList,
-		MaxTokens:   &maxTokens,
-		Stream:      false,
+		Model:     model,
+		Messages:  msgReqList,
+		MaxTokens: &maxTokens,
+		Stream:    false,
 	}
 
 	jsonData, err := json.Marshal(requestData)

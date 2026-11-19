@@ -12,8 +12,8 @@ import (
 	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/docsupport"
-	"github.com/azukaar/plurality/src/utils"
 	"github.com/azukaar/plurality/src/textsafe"
+	"github.com/azukaar/plurality/src/utils"
 )
 
 // summaryInFlight is the global single-flight gate for eco-mode summary
@@ -34,9 +34,26 @@ func userContextFor(userID string) context.Context {
 //   - ecoOn=false: drop every checkpoint pair entirely; the LLM sees the
 //     full pre-summary history. Use when the user has explicitly disabled
 //     eco for this conversation.
-//   - ecoOn=true: keep the checkpoint pair and drop every message before
-//     it. The LLM sees a system prompt, the checkpoint summary, and the
-//     live tail. There is at most one checkpoint per conversation.
+//   - ecoOn=true (the frozen-prefix path): keep the ONE checkpoint pair
+//     verbatim and append every live row after it. NO sliding char cap on
+//     this path — durable compaction is what bounds the view now.
+//
+// Why the sliding cap had to go: capTail walked backwards from the newest
+// row, accumulated ~100k chars and then backed up to a user row, so the
+// START index of the sent history moved on (almost) every turn. KV prompt
+// caching (llama.cpp/avalon/strata, and the cloud providers' prefix caches)
+// matches the longest common PREFIX of the previous request's token stream,
+// so a head that starts one message later every turn invalidates the whole
+// cached prefix: cache reuse collapsed to the system block and each agent
+// turn re-prefilled tens of thousands of tokens. The pair is the first
+// content after the system block, so keeping it + everything after it,
+// unbounded, is what makes the prefix stable: rows are only ever APPENDED
+// between folds, and a fold is a durable, infrequent, machine-written event.
+//
+// The only transform left on the normal path is truncateOversizedTail's
+// PER-MESSAGE bound: each row is bounded as a pure function of that stored
+// row (its own length + its own truncation banner), never of the slice
+// total or a window position, so it is byte-stable across turns.
 //
 // The system prompt is prepended elsewhere (in SendChatCompletion) and is
 // not part of `messages` here.
@@ -53,30 +70,40 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool) []utils.M
 			lastCheckpointIdx = i
 		}
 	}
-	// No checkpoint yet (eco never successfully compacted this conversation):
-	// a giant raw history must NOT be shipped whole — that is exactly how
+	// No checkpoint yet: this conversation has never been compacted, so
+	// there is no frozen head to protect and NOTHING bounds the history.
+	// A giant raw history must not be shipped whole — that is exactly how
 	// "WordPress Security Review" (1866 msgs, ~770k tokens) kept dying with
-	// context_length_exceeded. Fall through to the same budget-capped tail
-	// so even a never-compacted conversation is bounded on every request.
+	// context_length_exceeded. So the BOOTSTRAP case keeps the budget-capped
+	// tail: bounded on every request, at the cost of a moving head, until
+	// the first durable fold mints the pair (after which the frozen path
+	// below takes over). The overflow path in tool_loop.go is what forces
+	// that first fold for a conversation that never crossed the eco trigger.
 	if lastCheckpointIdx < 0 {
 		return capTail(messages)
 	}
-	tail := messages[lastCheckpointIdx:]
 
-	// Safety net: even with eco on, the live tail after the last checkpoint
-	// can grow unbounded. Never ship a context-busting tail to the provider.
-	// Message-count caps are not enough: observed a 600-message tail that was
-	// ~400k tokens because every tool result is huge (this conversation: avg
-	// 2.5k chars/tool msg). Cap by BUDGET (sum of content length) instead,
-	// always starting on a user message so the model still has a complete turn
-	// boundary to respond to. The checkpoint summary before the cap keeps the
-	// dropped middle coherent.
-	return capTail(tail)
+	// Frozen prefix: the pair, then every live row after it. No window, no
+	// total-size-dependent cap — see the doc comment. The tradeoff is
+	// explicit: an unbounded tail CAN exceed the model's window. That is not
+	// recovered per-request by sliding the head (which would destroy the
+	// cache); it is recovered by a DURABLE fold from the context-length error
+	// path (tool_loop.go), and only as a last resort by the in-memory trim
+	// there. The preemptive guard in index.go (SentViewTokens / estTokens)
+	// turns "about to exceed" into that durable fold before shipping.
+	tail := messages[lastCheckpointIdx:]
+	return truncateOversizedTail(tail)
 }
 
 // maxTailChars is the character budget for the live tail that is sent to
-// the provider (after any checkpoint summary). ~100k chars ≈ 25-30k tokens,
-// safe for any 128k-context model, leaving room for system + output.
+// the provider. ~100k chars ≈ 25-30k tokens, safe for any 128k-context
+// model, leaving room for system + output.
+//
+// It is NO LONGER the per-request bound of an eco-compacted conversation:
+// the frozen-prefix path in filterCheckpointsForRequest applies no window at
+// all, and durable compaction is what bounds the view. maxTailChars now only
+// bounds the BOOTSTRAP case (a conversation that has never been compacted,
+// so it has no frozen head whose stability is worth protecting).
 const maxTailChars = 100_000
 
 // capTail bounds a message slice to the live-tail budget so a conversation
@@ -543,8 +570,22 @@ func writeContentParts(b *strings.Builder, parts []utils.ContentPart) {
 //   - last prompt_tokens is below the configured trigger
 //   - no satisfying cutoff (conversation isn't long enough yet)
 //
-// When all gates pass, it summarises the oldest turns into a new checkpoint
-// pair and atomically swaps out any prior pair via db.ReplaceCheckpoint.
+// When all gates pass it folds the oldest turns into the conversation's ONE
+// checkpoint pair via db.CompactConversationDurable: the rows are FLAGGED
+// (never deleted, never renumbered) and the roll-up is a deterministic
+// MACHINE excerpt.
+//
+// Compaction NEVER calls an LLM. GenerateCheckpointSummary (the fast-model
+// summariser) is no longer on this path: a model call costs minutes on a
+// self-hosted summariser, its output is non-deterministic, and a
+// non-deterministic summary rewrites the head of every prompt, which is the
+// exact opposite of frozen compaction. The function is left defined for any
+// other call site.
+//
+// The prior roll-up is carried forward VERBATIM by the storage layer
+// (composeDurableSummary concatenates prior + the new excerpt); the caller
+// must NOT prepend it.
+//
 // Errors are logged and swallowed — the next user turn will retry.
 func runEcoSummary(ctx context.Context, conversationID string) {
 	utils.Log("[Eco] tick for conv %s", conversationID)
@@ -558,9 +599,9 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	// (SetMaxOpenConns(1)) is shared with live reads/writes (message pushes,
 	// the embed worker, conversation loads); if the pool is wedged we must
 	// fail fast and release the global single-flight slot so normal traffic
-	// and future compactions are not starved. The summary LLM call
-	// (GenerateCheckpointSummary) runs on its own HTTP client and is not
-	// affected by this deadline.
+	// and future compactions are not starved. Compaction is machine-only, so
+	// this deadline bounds pure DB work: there is no LLM round-trip left on
+	// the path.
 	dbCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
@@ -594,23 +635,24 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	// Locate the existing checkpoint (if any) and compute where the new
 	// cutoff must land.
 	existingCheckpointEndIdx := -1
-	var oldPairIDs []int64
 	var priorSummary string
-	if pair, err := db.GetCheckpoint(dbCtx, conversationID); err == nil && pair != nil {
-		priorSummary = pair.Summary
-		oldPairIDs = []int64{pair.AssistantID}
-		if pair.ToolID != 0 {
-			oldPairIDs = append(oldPairIDs, pair.ToolID)
+	// Read the CURRENT checkpoint pair straight out of the loaded LLM view
+	// (it carries the pair) instead of db.GetCheckpoint: that helper issues
+	// its second query while the first result set is still open, which
+	// wedges the single-connection SQLite pool (SetMaxOpenConns(1)) forever
+	// as soon as a pair exists. Reading the slice is also cheaper, and it is
+	// the exact view the fold will be computed from, so the pair index and
+	// the roll-up text cannot disagree with the slice being folded.
+	for i, m := range conv.Messages {
+		if !db.IsCheckpointMessage(m) {
+			continue
 		}
-		// existingCheckpointEndIdx is the index in conv.Messages of the
-		// tool half of the pair. We find the assistant half by tool-call
-		// name match, then add 1 for the tool half.
-		for i, m := range conv.Messages {
-			if m.Role == "assistant" && db.IsCheckpointMessage(m) {
-				existingCheckpointEndIdx = i + 1 // assume tool half follows immediately
-				break
-			}
+		if m.Role == "tool" {
+			priorSummary = m.TextContent()
+			continue
 		}
+		// assistant half: the tool half follows immediately.
+		existingCheckpointEndIdx = i + 1
 	}
 
 	cutoff := findCutoffIndex(conv.Messages, lastPT, cfg.TargetTokens, existingCheckpointEndIdx)
@@ -620,73 +662,287 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	}
 	utils.Log("[Eco] conv %s cutoff=%d (of %d messages), prior checkpoint end=%d", conversationID, cutoff, len(conv.Messages), existingCheckpointEndIdx)
 
-	// Slice of messages to fold into the new summary: everything strictly
-	// between the existing checkpoint and the cutoff.
+	// Rows this fold renders: everything strictly between the existing
+	// checkpoint pair and the cutoff. The storage layer re-derives the fold
+	// set from the slice and clamps the boundary itself; this range is the
+	// caller-side budget arithmetic only.
 	startIdx := 0
 	if existingCheckpointEndIdx >= 0 {
 		startIdx = existingCheckpointEndIdx + 1
 	}
 	if startIdx >= cutoff {
+		utils.Log("[Eco] conv %s fold range is empty (start=%d cutoff=%d) — skip", conversationID, startIdx, cutoff)
 		return
 	}
 
-	excerpt := renderMessagesForSummary(conv.Messages[startIdx:cutoff])
-	var input string
-	if priorSummary != "" {
-		input = "PRIOR CHECKPOINT:\n" + priorSummary + "\n\nNEW MESSAGES:\n" + excerpt
-	} else {
-		input = excerpt
-	}
-
-	textModel, _ := fastShortcutModels()
-	summary, err := GenerateCheckpointSummary(input, textModel)
+	// Machine-only fold. `foldFrom = cutoff` — findCutoffIndex's arithmetic
+	// (targetDrop = lastPromptTokens - targetTokens, land on a clean turn
+	// boundary past the existing pair) is unchanged; only its RESULT is used
+	// as a fold boundary now, and it feeds a durable fold instead of an
+	// LLM-written checkpoint replacement.
+	before := SentViewTokens(conv.Messages)
+	folded, err := durableFold(dbCtx, conversationID, conv.Messages, cutoff, priorSummary)
 	if err != nil {
-		utils.Error("[Eco] checkpoint summary generation failed", err)
+		utils.Error("[Eco] durable fold failed", err)
 		return
 	}
-	summary = strings.TrimSpace(summary)
-	if summary == "" {
-		utils.Error("[Eco] checkpoint summary returned empty", nil)
+	if folded == 0 {
+		utils.Log("[Eco] conv %s durable fold removed 0 rows (cutoff=%d of %d) — the view is NOT shrinking; leaving the checkpoint pair byte-identical", conversationID, cutoff, len(conv.Messages))
 		return
 	}
+	// Reload the LLM-facing view so the logged size is the size the NEXT
+	// request will actually carry (folded rows skipped, pair kept), not an
+	// estimate from the pre-fold slice.
+	logFoldResult(dbCtx, conversationID, folded, before, lastPT, cfg.TargetTokens)
+}
 
-	// Build the assistant + tool pair. Look up the actual DB seq for the
-	// message at the cutoff slice position — gaps can exist after prior
-	// checkpoint replacements, so slice index != seq in general.
-	insertSeq, err := db.MessageSeqAt(dbCtx, conversationID, cutoff)
-	if err != nil {
-		utils.Error("[Eco] could not resolve insert seq", err)
+// logFoldResult reports, in one line, exactly what a fold did: rows folded
+// and the resulting LLM-view size. The view is re-read from the DB so the
+// number is the one the next request ships.
+func logFoldResult(dbCtx context.Context, conversationID string, folded, beforeTokens, lastPT, targetTokens int) {
+	if conv, err := db.GetConversationByIdInternal(dbCtx, conversationID); err == nil {
+		after := SentViewTokens(conv.Messages)
+		utils.Log("[Eco] conv %s compacted: folded %d rows, LLM view %d -> %d tokens (lastPT=%d, target=%d, view rows %d)",
+			conversationID, folded, beforeTokens, after, lastPT, targetTokens, len(conv.Messages))
 		return
 	}
-	toolCallID := "eco_" + randomHex(8)
-	now := time.Now().Format(time.RFC3339)
+	utils.Log("[Eco] conv %s compacted: folded %d rows (view re-read failed, size not measured)", conversationID, folded)
+}
 
-	assistantMsg := utils.Message{
-		Role:      "assistant",
-		Content:   utils.MessageContent{},
-		Timestamp: now,
-		ToolCalls: []utils.ToolCall{{
-			ID:   toolCallID,
-			Type: "function",
-			Function: utils.FunctionCall{
-				Name:      db.EcoCheckpointToolName,
-				Arguments: "{}",
-			},
-		}},
+// SentViewTokens estimates the prompt size of the history that is ACTUALLY
+// SENT to the provider for this conversation: rows durable compaction has
+// folded (m.Compacted) are skipped, every other row is counted at its wire
+// char length / 3, each row clamped at the per-message cap the sender itself
+// applies.
+//
+// Why the trigger must count the SENT view and not every stored row:
+// db.GetConversationByIdInternal already excludes folded rows, so a folded
+// row is not in the slice at all — but the older in-memory slices (and the
+// eco gate's own history) do carry them. If the estimator counted folded
+// rows, lastAssistantPromptTokens (the provider's own count, which never
+// includes them) plus the raw slice size would stay ABOVE the trigger
+// FOREVER after the first fold: every user turn would fire compaction again,
+// each pass folding a few more rows and rewriting the checkpoint summary,
+// i.e. the head of the prompt would change on every turn — exactly the
+// cache-killer this subsystem exists to prevent. Folding converges only if
+// the measure shrinks by what was folded.
+//
+// The per-message clamp matters for the same reason: it must match what
+// truncateOversizedTail / TruncateOversizedMessages will do to that row, so
+// the estimate never over-counts a blob the sender is going to bound anyway
+// (which would fire the guard on a conversation that fits).
+func SentViewTokens(messages []utils.Message) int {
+	chars := 0
+	for i := range messages {
+		if messages[i].Compacted {
+			continue
+		}
+		chars += SentViewRowChars(messages[i])
 	}
-	toolMsg := utils.Message{
-		Role:       "tool",
-		Content:    utils.NewTextContent(summary),
-		ToolCallID: toolCallID,
-		Name:       db.EcoCheckpointToolName,
-		Timestamp:  now,
-	}
+	return chars / 3
+}
 
-	if err := db.ReplaceCheckpoint(dbCtx, conversationID, oldPairIDs, assistantMsg, toolMsg, insertSeq); err != nil {
-		utils.Error("[Eco] persisting checkpoint failed", err)
-		return
+// sentViewRowChars is the per-row char count SentViewTokens sums.
+//
+//   - The body is the TOTAL across all text parts (TextContent() sees only
+//     the first part and hid a 4.9MB blob behind a short preamble).
+//   - A row over the per-message cap is counted AT the cap, because that is
+//     what the sender ships: the cap is maxCompactMessageChars, the bound
+//     TruncateOversizedMessages applies, and eco's tail bound
+//     (maxKeepTailChars) is the same number. A test pins that equality.
+//
+// It deliberately does NOT subtract the stored caveman projection.
+// convertMessagesToOpenAI ships that projection only for caveman-enabled
+// models (cavemanCompressApplies), so subtracting it would make the trigger
+// measure model-dependent, and the eco trigger is evaluated per conversation
+// (whose next turn may use any model). Counting the raw body is the
+// conservative direction: a compressed model folds marginally early, and the
+// estimator can never under-count and let an oversized request ship.
+//
+// It is a pure function of the stored row: no clock, no slice position, no
+// total-size dependence. Same row in, same number out, every turn.
+func SentViewRowChars(m utils.Message) int {
+	chars := m.Content.TotalContentChars()
+	if chars > maxCompactMessageChars {
+		chars = maxCompactMessageChars
 	}
-	utils.Log("[Eco] checkpoint written for conv %s (cutoff=%d, lastPT=%d → kept tail ≈%d tokens)", conversationID, cutoff, lastPT, lastPT-tokensBeforeCutoff(conv.Messages, cutoff))
+	return chars
+}
+
+// PriorSummaryFromView returns the roll-up text the conversation's LIVE
+// checkpoint pair carries, read straight out of a loaded LLM-facing view
+// (that view includes the pair), and "" when there is no pair.
+//
+// Deliberately NOT db.GetCheckpoint: that helper runs its second query while
+// the first result set is still open, which wedges the single-connection
+// SQLite pool (SetMaxOpenConns(1)) indefinitely as soon as a pair exists
+// (observed in the ultracave tests: the fold hung forever at the second
+// prior-summary lookup). Reading the slice is also cheaper, and it is the
+// exact slice the fold is computed from, so the roll-up text cannot disagree
+// with the rows being folded.
+//
+// The text feeds the excerpt BUDGET only. The storage layer carries it
+// forward VERBATIM and does the concatenation — callers must not re-prepend
+// it, and must not re-render it (it is the only representation of every row
+// an earlier fold marked compacted).
+func PriorSummaryFromView(messages []utils.Message) string {
+	for _, m := range messages {
+		if m.Role == "tool" && db.IsCheckpointMessage(m) {
+			return m.TextContent()
+		}
+	}
+	return ""
+}
+
+// durableFold is the single machine-only fold entry point, shared by the eco
+// trigger and the context-length recovery path in tool_loop.go.
+//
+// The budget arithmetic (per the renderer's own doc comments): the excerpt
+// may cost at most `cfg.TargetTokens` minus the live tail it has to leave
+// room for, minus the prior roll-up it has to carry, minus the artifact
+// overhead. MegacaveRowBudget then splits THAT over the rows of the fold set,
+// which is the only way the megacave ratio stays < 1 as a property of the
+// transform: on realistic prose+tool content the renderer runs at ratio
+// ~1.045 against the FIXED cap (it adds labels/newlines), so a fixed cap
+// makes the "compaction" ADD bytes to the prompt.
+//
+// No LLM, no clock, no randomness: MachineExcerptMegacaveBudget is
+// deterministic, so the same fold set always renders the same summary.
+func durableFold(ctx context.Context, conversationID string, messages []utils.Message, foldFrom int, priorSummary string) (int, error) {
+	target := ecoTargetTokens()
+	// Live tail this fold leaves in place, and the roll-up it carries
+	// forward, both in chars — the budget is what is LEFT for the new
+	// excerpt after both are paid for.
+	tailTokens := SentViewTokens(messages[foldFrom:])
+	priorChars := len(priorSummary)
+	overhead := megacaveLabelOverheadChars
+	room := (target-tailTokens)*3 - priorChars - 2*overhead
+
+	foldable := messages[:foldFrom]
+	// The room is a CEILING, not a licence. A fold that renders the folded
+	// rows at their own size is not a compaction: the megacave transform
+	// runs at ratio ~1.045 on prose+tool content (it ADDS labels and the
+	// elision banner), so whenever the caller's room is bigger than the
+	// folded content — a conversation below the eco target, an overflow fold
+	// asked to keep a fat live tail — an unconstrained budget makes the
+	// "compaction" ADD bytes to the prompt (measured: 20589 -> 21762 view
+	// tokens with 81 rows folded). So the excerpt is also capped at HALF the
+	// wire size of the rows it replaces: every fold then provably shrinks the
+	// representation, on any content shape, and the per-row budget lands
+	// near the average row size so large rows are the ones elided.
+	foldedChars := 0
+	for i := range foldable {
+		foldedChars += SentViewRowChars(foldable[i])
+	}
+	chars := room
+	if half := foldedChars / 2; half < chars {
+		chars = half
+	}
+	if chars < 0 {
+		// No room: MegacaveRowBudget renders at its floor so the fold is at
+		// least the smallest honest size (see its doc comment).
+		chars = 0
+	}
+	show := MegacaveRowBudget(chars, len(foldable))
+	utils.Log("[Eco] machine fold: %d rows, room=%d chars, folded=%d chars, budget=%d chars, per-row show=%d",
+		len(foldable), room, foldedChars, chars, show)
+	return db.CompactConversationDurable(ctx, conversationID, messages, foldFrom,
+		func(m []utils.Message) string { return MachineExcerptMegacaveBudget(m, show) })
+}
+
+// ecoTargetTokens is the eco target window (chars budget denominator) with a
+// sane fallback when config is unavailable/uninitialised.
+func ecoTargetTokens() int {
+	cfg := auth.GetConfig().Eco
+	if cfg.TargetTokens > 0 {
+		return cfg.TargetTokens
+	}
+	return defaultEcoTargetTokensFallback
+}
+
+// defaultEcoTargetTokensFallback mirrors auth's default target so a fold
+// before the config is loaded cannot compute a negative excerpt budget.
+const defaultEcoTargetTokensFallback = 50_000
+
+// CompactConversationMachineOnly is the machine-only compaction entry
+// point: pick the fold boundary with the SAME arithmetic the eco trigger
+// uses, then fold durably. NO LLM anywhere on the path. Used by the
+// context-length recovery path in tool_loop.go and by the ultracave tests.
+//
+// `priorSummary` is the CURRENT stored roll-up text; it only feeds the
+// budget arithmetic. The storage layer carries it forward VERBATIM and does
+// the concatenation itself - passing it in twice would double the roll-up,
+// and re-rendering it through the megacave transform would destroy the one
+// representation of every row an earlier fold marked compacted.
+func CompactConversationMachineOnly(ctx context.Context, conversationID string, messages []utils.Message, priorSummary string, keep int) (int, error) {
+	foldFrom := UltracaveOverflowFoldFrom(messages, keep)
+	if foldFrom <= 0 {
+		return 0, nil
+	}
+	return durableFold(ctx, conversationID, messages, foldFrom, priorSummary)
+}
+
+// UltracaveOverflowFoldFrom picks the durable fold boundary for the
+// context-length overflow path (tool_loop.go), using the SAME arithmetic the
+// eco trigger uses: findCutoffIndex walks PromptTokens toward
+// cfg.TargetTokens and lands on a clean turn boundary.
+//
+// Returns the fold boundary (>0), or -1 when nothing safe can be folded:
+//   - the newest user turn is the FLOOR (the fold never crosses it, so the
+//     user's live ask is never summarized away);
+//   - the boundary may never sit on a `tool` row (its parent assistant call
+//     would be folded, orphaning the result at the head of the request);
+//   - folding from 0 would fold the whole conversation.
+//
+// When the token arithmetic yields no usable cutoff (e.g. a conversation
+// with no prompt_tokens yet, which is exactly the case right after a
+// provider 500), it falls back to keeping the newest `keep` messages,
+// snapped to the same legal boundaries.
+func UltracaveOverflowFoldFrom(messages []utils.Message, keep int) int {
+	if len(messages) == 0 {
+		return -1
+	}
+	lu := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" && !db.IsCheckpointMessage(messages[i]) {
+			lu = i
+			break
+		}
+	}
+	if lu <= 0 {
+		// No user row (or the only user row is the first): nothing safe to fold.
+		return -1
+	}
+	if keep <= 0 {
+		keep = 24
+	}
+	cand := -1
+	if lastPT := lastAssistantPromptTokens(messages); lastPT > 0 {
+		ckptEnd := -1
+		for i, m := range messages {
+			if m.Role == "assistant" && db.IsCheckpointMessage(m) {
+				ckptEnd = i + 1
+				break
+			}
+		}
+		cand = findCutoffIndex(messages, lastPT, ecoTargetTokens(), ckptEnd)
+	}
+	if cand <= 0 {
+		// Token arithmetic gave nothing: keep the newest `keep` rows.
+		cand = len(messages) - keep
+	}
+	// Never fold past the newest user turn, and never start the live window
+	// on an orphan tool row / the checkpoint pair.
+	if cand > lu {
+		cand = lu
+	}
+	for cand > 0 && cand < len(messages) && (messages[cand].Role == "tool" || db.IsCheckpointMessage(messages[cand])) {
+		cand--
+	}
+	if cand <= 0 || cand >= len(messages) {
+		return -1
+	}
+	return cand
 }
 
 // tokensBeforeCutoff is a logging helper — it returns the prompt_tokens
