@@ -110,13 +110,14 @@ func CavemanReady() bool {
 // the per-model model_info.headroom / model_info.caveman flags from
 // litellm_config.yaml.
 //
-// Only one proxy hop runs per request: the content owner (see
-// optimizationOwners). A caveman-owned model needs NO hop at all, because
-// say_less / read_less / browse are implemented in Go; it reaches the caveman
-// binary only with the explicit `caveman.proxy: true` sub-setting, where it
-// routes plurality -> Caveman -> LiteLLM via the /compat/litellm mount. A
-// headroom-owned model routes plurality -> Headroom -> LiteLLM. A proxy that
-// is unhealthy is skipped, degrading to direct LiteLLM.
+// Transport is decided by the proxy flags, not by content ownership:
+// `headroom: true` routes plurality -> Headroom -> LiteLLM for every model
+// that sets it, including models that also enable caveman. Caveman's stones
+// run in Go before the request leaves, so they need no hop of their own; the
+// caveman binary is in the path only behind `caveman.proxy: true`
+// (plurality -> Caveman -> LiteLLM via /compat/litellm), and only when
+// headroom is not in play. An unhealthy proxy is skipped, degrading stepwise:
+// headroom down -> caveman proxy if opted in -> direct LiteLLM.
 func ChatCompletionURL(model utils.Model) string {
 	return ChatCompletionURLForName(model.Name)
 }
@@ -156,23 +157,28 @@ func ChatCompletionURL(model utils.Model) string {
 // never through headroom's kompress. headroom owns content only when
 // caveman.read_less is off. One content owner per model, always.
 func ChatCompletionURLForName(name string) string {
-	contentOwner, e := optimizationOwners(name)
-	switch contentOwner {
-	case ownerCaveman:
-		// caveman owns content, and in this build it owns it IN GO: say_less
-		// injects the voice, read_less compresses tool results at write time,
-		// browse projects web snapshots. None of the three needs a request
-		// hop. The binary is only in the path when the operator asks for it
-		// (caveman.proxy: true) for a stone Go does not implement.
-		if e.Caveman.Proxy && cavemanReady.Load() {
-			return CavemanBaseURL + "/compat/litellm"
-		}
-	case ownerHeadroom:
-		if e.Headroom.Enabled && headroomReady.Load() {
-			return HeadroomBaseURL
-		}
-	default:
-		// no content owner -> direct LiteLLM, byte-for-byte untouched
+	e, _ := Models.Get(name)
+	return chatURLFrom(e)
+}
+
+// chatURLFrom is the routing decision for a resolved entry. Transport is
+// INDEPENDENT of content ownership: headroom is in the loop for every model
+// that sets `headroom: true`, regardless of caveman, because the stones
+// Plurality implements (say_less / read_less / browse) run in Go BEFORE the
+// request is sent and need no hop of their own. So the effective chain for a
+// model with both flags is plurality -> [caveman stones in Go] -> headroom
+// -> LiteLLM, which is what "headroom in the loop at all times" means here.
+func chatURLFrom(e ModelEntry) string {
+	if e.Headroom.Enabled && headroomReady.Load() {
+		return HeadroomBaseURL
+	}
+	// Headroom is not in play. The caveman BINARY joins the path only behind
+	// an explicit caveman.proxy: true, for the stones Go does not implement
+	// (auto, blocks, waste_fixes). Measured cost of that hop: ~10x latency
+	// and 0 input tokens saved (identical provider prompt_tokens via the
+	// proxy and direct LiteLLM), so it stays opt-in.
+	if e.Caveman.Enabled && e.Caveman.Proxy && cavemanReady.Load() {
+		return CavemanBaseURL + "/compat/litellm"
 	}
 	return LiteLLMBaseURL
 }
@@ -187,11 +193,20 @@ const (
 	ownerHeadroom
 )
 
-// optimizationOwners resolves the deduplicated per-model optimization plan.
-// Caveman wins content ownership whenever it is enabled with the read_less
-// stone on (caveman's structured-content compressor measurably beats headroom
-// on JSON/log/CSV/YAML/test output per its own benchmarks); Headroom owns
-// content for models that enable headroom without caveman read_less.
+// optimizationOwners resolves which proxy owns INPUT-CONTENT compression for
+// a model. Caveman wins whenever it is enabled with the read_less stone on
+// (its structured-content compressor measurably beats headroom on
+// JSON/log/CSV/YAML/test output per its own benchmarks); Headroom owns content
+// for models that enable headroom without caveman read_less.
+//
+// This governs CONTENT only, never transport: routing is decided solely by
+// chatURLFrom, so a headroom-enabled model keeps its headroom hop no matter
+// who owns content. Measured on this deployment, headroom's own input
+// compression saves 0 tokens (34585 == 34585 on realistic JSON+log+CSV, and
+// 1508 == 1508 across three unique payloads), so running the Go compressor
+// ahead of it does not double-compress in practice. If a future headroom
+// begins compressing input, set CAVEMAN_GO_READLESS=0 to hand input back to
+// it and restore the strict no-double rule.
 func optimizationOwners(name string) (contentOwner, ModelEntry) {
 	entry, _ := Models.Get(name)
 
@@ -212,12 +227,14 @@ func optimizationOwners(name string) (contentOwner, ModelEntry) {
 //   - Headroom: `x-headroom-keep-last-turns` (trims history before optimizing)
 //     when the model sets headroom.keep_last_turns; 0 = keep everything.
 func ApplyChatOptimizationHeaders(name string, req *http.Request) {
-	owner, e := optimizationOwners(name)
-	if owner == ownerHeadroom && e.Headroom.KeepLastTurns > 0 {
+	e, _ := Models.Get(name)
+	// Gate on the hop actually in use, so the header never rides to a LiteLLM
+	// or caveman-proxy endpoint that would ignore it.
+	if e.Headroom.Enabled && headroomReady.Load() && e.Headroom.KeepLastTurns > 0 {
 		req.Header.Set("x-headroom-keep-last-turns", strconv.Itoa(e.Headroom.KeepLastTurns))
 	}
-	// Caveman's per-stone toggles are honored via its own caveman.yaml /
-	// engine (read_less = compress mode). Nothing to add per request today.
+	// Caveman stones are applied in Go before the request is built (voice
+	// injection, tool-result projection), so nothing is added per request.
 }
 
 func startCavemanProcess() error {

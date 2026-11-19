@@ -397,11 +397,16 @@ func activeCavemanStones(model utils.Model) cavemanStoneSet {
 		return cavemanStoneSet{}
 	}
 	st := entry.Caveman.Stones
+	// read_less compression runs here ONLY while caveman owns content, so the
+	// no-double-compression rule has a single source: optimizationOwners. A
+	// headroom-enabled model keeps its hop (transport is decided by flags) and
+	// headroom does not also compress this content, because caveman owns it.
+	owner, _ := optimizationOwners(model.Name)
 	return cavemanStoneSet{
 		// CAVEMAN_GO_READLESS=0 / CAVEMAN_GO_BROWSE=0 hand input compression
 		// back to the proxy (e.g. if a future build binds recovery and starts
 		// compressing input, keeping the no-double-optimization rule).
-		readLess: st.ReadLess && !envDisabled("CAVEMAN_GO_READLESS"),
+		readLess: owner == ownerCaveman && !envDisabled("CAVEMAN_GO_READLESS"),
 		browse:   st.Browse && !envDisabled("CAVEMAN_GO_BROWSE"),
 		sayLess:  st.SayLess,
 	}

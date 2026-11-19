@@ -102,6 +102,7 @@ model_info:
   caveman:
     enabled: true
     proxy: true     # opt INTO the plurality -> caveman -> LiteLLM hop
+                    # (headroom, when enabled, takes the hop first)
 ```
 
 Caveman makes the model "say less and read less": `say_less` shrinks what the agent answers, `read_less` compresses tool output / logs / verbose turns, `browse` compresses web pages. Those three are implemented natively in Go (`src/caveman`), applied at message-write time and on the outbound request — no proxy involved.
@@ -133,17 +134,20 @@ Bare `headroom: true` / `caveman: true` still work and mean "enabled with defaul
 
 The default lives in exactly two places and they must agree: `DEFAULT_CAVEMAN_STONES` in `litellm_proxy.py` and `defaultCavemanStones()` in `src/ai/model_registry.go`. The proxy and the Go registry parse the same config from opposite ends (the proxy normalizes the YAML and publishes `/v1/models`; the registry parses that, and also has to cope with older images that publish a bare `{"enabled": true}`), so if the two sets differ, which stones are live depends on which side normalized the value last. Naming a subset of `stones` fills the rest from the same default on both sides. There is a test on each side pinning the set down (`test_litellm_proxy.py`, `model_registry_parse_test.go`).
 
-**Deduplication — no double optimization.** The two proxies never compress the same content category in sequence. For each model the routing resolver picks a SINGLE content owner:
+**Two independent decisions.** Routing (transport) and content ownership are decided separately, by different rules:
 
-- **Caveman owns content compression** when it is enabled with the `read_less` stone on (its structured-content compressor handles JSON/log/CSV/YAML/test output, which headroom would otherwise also compress). That compression runs **in Go**, so requests route `plurality -> LiteLLM` with the compressed content already substituted — no hop. Only with `caveman.proxy: true` does it become `plurality -> Caveman (compress) -> LiteLLM`.
-- **Headroom owns content** when enabled without caveman `read_less`. Requests route `plurality -> Headroom (cache) -> LiteLLM`.
-- Enabling "both" therefore does not chain two content compressors; it keeps the model on the more effective one (caveman `read_less` wins for structured content). Features that are not overlapping content compression stay composable per model (e.g. headroom `keep_last_turns` applies on headroom-owned models; caveman's other stones apply on caveman-owned models).
+* **Transport** comes from the proxy flags alone. `headroom: true` puts headroom in the loop for that model, **always** — including models that also enable caveman. `caveman.proxy: true` puts the caveman binary in the loop, and yields to headroom when both are set.
+* **Content ownership** picks a single input compressor, to keep any payload category from being compressed twice. This is a decision about *who compresses*, never about *which hop runs*.
 
-The chosen owner is the only optimization hop, so a payload is never compressed twice, and **KV prompt-cache stability is preserved** by whichever owner runs: caveman's `PrefixStabilizer` keeps the compressed prefix byte-stable, and headroom's `cache` mode freezes prior turns — both forward `cache_prompt`/`n_keep` verbatim.
+- **Caveman owns content** when it is enabled with the `read_less` stone on (its structured-content compressor handles JSON/log/CSV/YAML/test output, which headroom would otherwise also compress). That compression runs **in Go**, at message-write time and on the outbound request, so it adds no hop of its own. A model with `headroom: true` and caveman `read_less` therefore runs `plurality -> [caveman stones in Go] -> Headroom -> LiteLLM`.
+- **Headroom owns content** when enabled without caveman `read_less`. Requests route `plurality -> Headroom -> LiteLLM`.
+- Enabling "both" therefore does not chain two content compressors — caveman `read_less` wins the content, headroom keeps its hop — and the non-overlapping features compose on the same model: caveman's stones shrink the content in Go, and headroom's cache/`keep_last_turns`/output-savings apply on the request that results. `headroom.keep_last_turns` rides whenever headroom is the hop, not only when headroom owns content.
 
-Routing / fail-closed: if a proxy hop is in use and unhealthy, the model falls back to **direct LiteLLM** (headroom → direct; caveman-with-`proxy` → direct), never to a doubled optimization. A caveman-owned model with the default `proxy: false` has no hop to fail: it talks to LiteLLM directly, so prompt caching and routing survive any caveman outage.
+Measured on this deployment, headroom's own input compression saves **0 tokens** (`34585 == 34585` on a realistic JSON+build-log+CSV payload, `1508 == 1508` across three unique payloads), so a caveman-owned model reaching headroom does not in practice double-compress. Its value on this box is the cache and the output side. If a future headroom begins compressing input, `CAVEMAN_GO_READLESS=0` hands input back to headroom and restores the strict no-double rule. **KV prompt-cache stability is preserved** on both paths: caveman's `PrefixStabilizer` keeps Go-compressed prefixes byte-stable, headroom's `cache` mode freezes prior turns, and both forward `cache_prompt`/`n_keep` verbatim.
 
-Note that caveman's `/compat/headroom` mount is written into `caveman.yaml` at boot but **no routing path uses it** — a caveman-owned model goes to `/compat/litellm`, skipping headroom. The chain `plurality -> Caveman -> Headroom -> LiteLLM` that earlier docs described has never existed in the routing code; `optimizationOwners` picks exactly one owner. It is stated here so the next reader does not have to rediscover that from the source.
+Routing / fail-closed: an unhealthy proxy is skipped and the request degrades stepwise — headroom down → the caveman binary if that model opted into `proxy` → **direct LiteLLM**. A caveman-owned model with the default `proxy: false` has no caveman hop to fail at all, so prompt caching and routing survive any caveman outage. `x-headroom-keep-last-turns` is only sent on a request that is actually going to headroom.
+
+Note that caveman's `/compat/headroom` mount is written into `caveman.yaml` at boot (and answers `200` when probed), but **no routing path uses it**: plurality talks to headroom directly, so a chain through caveman's mount is never built. The `plurality -> Caveman -> Headroom -> LiteLLM` chain that earlier docs described has never existed in the routing code. Stated here so the next reader does not have to rediscover it from source.
 
 Operational notes:
 

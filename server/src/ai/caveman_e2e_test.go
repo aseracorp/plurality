@@ -413,46 +413,92 @@ func e2eLive(t *testing.T, key, model string, msgs []StandardMessageReq) e2eUsag
 // Measured on this deployment: the binary's compress mode forwards input
 // unchanged (no bound recovery tool) at 10.6x latency, so the hop is pure
 // cost. The Go stones (say_less/read_less/browse) need no hop.
-func TestE2ECavemanOwnedModelDoesNotHopByDefault(t *testing.T) {
-	// These are package-level atomics shared by every test in the package:
-	// save and restore, or this test leaks routing state into its siblings.
+// Routing: transport is driven by the proxy FLAGS, independent of who owns
+// content. `headroom: true` means headroom is in the loop, always — including
+// for models that also enable caveman with read_less on (the shape this
+// deployment ships: strata-swift and deepseek both set both flags). Caveman's
+// stones run in Go before the request leaves, so they need no hop of their
+// own; the caveman BINARY is opt-in via caveman.proxy and yields to headroom.
+func TestE2EHeadroomHopIsIndependentOfCaveman(t *testing.T) {
+	// Package-level atomics shared by every test here: save and restore.
 	prevCaveman, prevHeadroom := cavemanReady.Load(), headroomReady.Load()
 	t.Cleanup(func() {
 		cavemanReady.Store(prevCaveman)
 		headroomReady.Store(prevHeadroom)
 	})
-
-	// seedCavemanModel writes whole entries, so headroom is set by mutating a
-	// copy and writing it back — map values are not addressable.
-	seedCavemanModel(t, "e2e-hop-off", true, true, true, true)
-	seedCavemanModel(t, "e2e-hop-headroom", true, false, false, false)
-	hr := Models.byName["e2e-hop-headroom"]
-	hr.Headroom = HeadroomSettings{Enabled: true}
-	Models.byName["e2e-hop-headroom"] = hr
-
-	// read_less owns content in Go, so the request goes straight to LiteLLM.
 	cavemanReady.Store(true)
 	headroomReady.Store(true)
-	if got := ChatCompletionURLForName("e2e-hop-off"); got != LiteLLMBaseURL {
-		t.Fatalf("caveman-owned model must talk to LiteLLM directly, got %q", got)
+
+	// seedCavemanModel writes whole entries; map values are not addressable,
+	// so headroom is set by copying, mutating and writing back.
+	seed := func(name string, caveman, readLess, headroom bool) {
+		t.Helper()
+		seedCavemanModel(t, name, caveman, readLess, caveman, caveman)
+		if headroom {
+			e := Models.byName[name]
+			e.Headroom = HeadroomSettings{Enabled: true}
+			Models.byName[name] = e
+		}
 	}
 
-	// Explicit opt-in puts the binary in the path.
-	e := Models.byName["e2e-hop-off"]
+	// THE CONTRACT: headroom: true wins the hop even when caveman owns content.
+	seed("e2e-both", true, true, true)
+	if got := ChatCompletionURLForName("e2e-both"); got != HeadroomBaseURL {
+		t.Fatalf(`headroom:true must keep its hop with caveman on, got %q`, got)
+	}
+	if owner, _ := optimizationOwners("e2e-both"); owner != ownerCaveman {
+		t.Fatalf("caveman must still own CONTENT (no double compression), got %d", owner)
+	}
+
+	// The header for that model must ride too, since headroom is the hop:
+	// keep_last_turns used to be gated on headroom owning CONTENT, which
+	// silently dropped it for exactly the models described above.
+	e := Models.byName["e2e-both"]
+	e.Headroom.KeepLastTurns = 3
+	Models.byName["e2e-both"] = e
+	req, err := http.NewRequest("POST", "http://x/y", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ApplyChatOptimizationHeaders("e2e-both", req)
+	if got := req.Header.Get("x-headroom-keep-last-turns"); got != "3" {
+		t.Fatalf("keep_last_turns must ride whenever headroom is the hop, got %q", got)
+	}
+
+	// headroom alone, naturally, also hops.
+	seed("e2e-hr-only", false, false, true)
+	if got := ChatCompletionURLForName("e2e-hr-only"); got != HeadroomBaseURL {
+		t.Fatalf("headroom:true alone must hop, got %q", got)
+	}
+
+	// caveman with no headroom needs no hop: its stones run in Go.
+	seed("e2e-cav-only", true, true, false)
+	if got := ChatCompletionURLForName("e2e-cav-only"); got != LiteLLMBaseURL {
+		t.Fatalf("caveman-only model must talk to LiteLLM directly, got %q", got)
+	}
+
+	// The binary hop is opt-in, and headroom still outranks it.
+	e = Models.byName["e2e-cav-only"]
 	e.Caveman.Proxy = true
-	Models.byName["e2e-hop-off"] = e
-	if got := ChatCompletionURLForName("e2e-hop-off"); !strings.HasPrefix(got, CavemanBaseURL) {
-		t.Fatalf("caveman.proxy: true must route through the proxy, got %q", got)
+	Models.byName["e2e-cav-only"] = e
+	if got := ChatCompletionURLForName("e2e-cav-only"); !strings.HasPrefix(got, CavemanBaseURL) {
+		t.Fatalf("caveman.proxy: true must route through the binary, got %q", got)
+	}
+	seed("e2e-hr-plus-proxy", true, true, true)
+	e = Models.byName["e2e-hr-plus-proxy"]
+	e.Caveman.Proxy = true
+	Models.byName["e2e-hr-plus-proxy"] = e
+	if got := ChatCompletionURLForName("e2e-hr-plus-proxy"); got != HeadroomBaseURL {
+		t.Fatalf("headroom must outrank an opted-in caveman proxy, got %q", got)
 	}
 
-	// An unhealthy proxy degrades to direct — never to a doubled hop.
-	cavemanReady.Store(false)
-	if got := ChatCompletionURLForName("e2e-hop-off"); got != LiteLLMBaseURL {
-		t.Fatalf("unhealthy proxy must fall back to direct LiteLLM, got %q", got)
+	// Fail-open degradation: headroom down falls to the caveman proxy when one
+	// is opted in, and to direct LiteLLM when it is not.
+	headroomReady.Store(false)
+	if got := ChatCompletionURLForName("e2e-hr-plus-proxy"); !strings.HasPrefix(got, CavemanBaseURL) {
+		t.Fatalf("headroom down must fall back to the opted-in proxy, got %q", got)
 	}
-
-	// headroom ownership is untouched by the caveman change.
-	if got := ChatCompletionURLForName("e2e-hop-headroom"); got != HeadroomBaseURL {
-		t.Fatalf("headroom-owned model must keep its hop, got %q", got)
+	if got := ChatCompletionURLForName("e2e-both"); got != LiteLLMBaseURL {
+		t.Fatalf("headroom down with no proxy opt-in must go direct, got %q", got)
 	}
 }
