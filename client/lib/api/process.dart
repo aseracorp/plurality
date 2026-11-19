@@ -50,6 +50,11 @@ class ProcessManager {
   /// stall watchdog so the model gets this error, not a stall.
   static const Duration requestTimeout = Duration(seconds: 30);
 
+  /// Bound on the request WRITE. Short on purpose: a full pipe means the child
+  /// is not reading, and waiting longer cannot fix that - it only parks the
+  /// dispatch chain that awaits this.
+  static const Duration _stdinFlushTimeout = Duration(seconds: 10);
+
   ProcessManager({
     required this.command,
     required this.name,
@@ -154,7 +159,27 @@ class ProcessManager {
     try {
       final requestJson = jsonEncode(request);
       _process!.stdin.writeln(requestJson);
-      await _process!.stdin.flush();
+      // Bounded. `stdin` is a pipe: when the MCP server stops reading it (a
+      // blocking COM call, a wedged share, an EDR-held binary, a killed child)
+      // the buffer fills and flush() never completes. sendRequest sits on the
+      // stateful-MCP tool-dispatch path in ChatService, whose loop is
+      // sequential, so the batch's tool_results POST is never sent - and every
+      // later device call in the conversation times out with it. The completer
+      // below is what proves the round trip, so a stalled flush is reported
+      // rather than waited on forever.
+      await _process!.stdin.flush().timeout(
+        _stdinFlushTimeout,
+        onTimeout: () {
+          throw TimeoutException(
+            'The MCP server "$name" is not reading its stdin: the write buffer '
+            'is full and the flush did not complete within '
+            '${_stdinFlushTimeout.inSeconds}s. Its child process is blocked '
+            '(COM call, sleeping network share, endpoint security) - the '
+            'request was not delivered. Do not retry it in this conversation; '
+            'restart the app to respawn this server.',
+          );
+        },
+      );
 
       // Set a timeout for the request
       return await completer.future.timeout(
