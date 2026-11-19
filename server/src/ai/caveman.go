@@ -130,6 +130,19 @@ func ChatCompletionURL(model utils.Model) string {
 // owns content. The losing proxy is NOT chained for that model, so a payload
 // category is never optimized twice. (Headroom's cache mode freezes prior
 // turns; Caveman's PrefixStabilizer keeps the KV prefix stable in its place.)
+//
+// NOTE ON read_less: the Go server ALSO compresses tool results at write time
+// (see src/caveman, db.insertMessage), and that projection is substituted into
+// requests when the read_less stone is on. The shipped proxy runs
+// recovery-unbound, so per its middleware contract its compress mode forwards
+// input UNCHANGED — measured on this instance: provider prompt_tokens are
+// identical through the proxy and direct LiteLLM (736==736 at 5KB,
+// 12896==12896 at 100KB, 196842==196842 at 469KB) with zero middleware_plans
+// written. So there is no double-compression of input today, and the proxy
+// stays in the path for the stones the Go path does not implement (notably
+// say_less, which compresses model OUTPUT and was not measured here). If a
+// future proxy binds recovery and begins compressing input, set
+// CAVEMAN_GO_READLESS=0 to hand input back to it and keep the no-double rule.
 func ChatCompletionURLForName(name string) string {
 	contentOwner, e := optimizationOwners(name)
 	switch contentOwner {

@@ -34,6 +34,9 @@ var Registry = map[string]utils.AITool{
 	NotifyTool.ToolID:                  NotifyTool,
 	UpdateImportantMemoryTool.ToolID:   UpdateImportantMemoryTool,
 	ShellClientExecTool.ToolID:         ShellClientExecTool,
+	// Caveman recovery. Hidden from the picker (PickerDefault ""), force
+	// -included by GetRequests only when the model has the read_less stone on.
+	CavemanRetrieveTool.ToolID: CavemanRetrieveTool,
 }
 
 // RegisterRetrieveServerSkill adds retrieve_server_skill to the registry.
@@ -73,7 +76,7 @@ func ShouldStripResponse(content string) bool {
 	return strings.HasPrefix(content, "base64,")
 }
 
-func GetRequests(userID string, model utils.Model, ClientSideTools []utils.FunctionToolsRequest, hasAttachments bool, hasDocumentAttachments bool, hasClientFolder bool) []utils.ToolsRequest {
+func GetRequests(userID string, model utils.Model, ClientSideTools []utils.FunctionToolsRequest, hasAttachments bool, hasDocumentAttachments bool, hasClientFolder bool, cavemanReadLess bool) []utils.ToolsRequest {
 	var requests []utils.ToolsRequest
 	var selected = model.Tools
 
@@ -112,6 +115,9 @@ func GetRequests(userID string, model utils.Model, ClientSideTools []utils.Funct
 		}
 		if tool.ToolID == NotifyTool.ToolID {
 			continue // force-included below only when NTFY is configured
+		}
+		if tool.ToolID == CavemanRetrieveTool.ToolID {
+			continue // force-included below only when read_less is on
 		}
 
 		// Build the selection key: namespaced for bundled tools, bare for standalone.
@@ -232,6 +238,16 @@ func GetRequests(userID string, model utils.Model, ClientSideTools []utils.Funct
 	if hasClientFolder {
 		requests = append(requests, FsClientReadToolRequest)
 		requests = append(requests, FsClientWriteToolRequest)
+	}
+
+	// Force-include caveman_retrieve iff the model has the caveman "read less"
+	// stone on. When tool results are shipped as projections, recovery must be
+	// available unconditionally — the model has no way to ask for the original
+	// any other way, and compression is only safe to enable at all because the
+	// full body is retrievable. ai_tools cannot import ai (ai imports
+	// ai_tools), so the caller resolves the model setting and passes it in.
+	if cavemanReadLess {
+		requests = append(requests, CavemanRetrieveTool.ToolRequest)
 	}
 
 	return requests
