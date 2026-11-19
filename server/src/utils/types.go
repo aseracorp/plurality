@@ -172,6 +172,18 @@ type Message struct {
 	// reduced before the provider saw it (est. uncompressed tokens / provider
 	// prompt_tokens). 0 = no compression proxy active for the model / unknown.
 	CompressionRatio float64 `json:"compression_ratio,omitempty"`
+
+	// CompressedContent is the caveman "read less" projection of a tool
+	// result: a deterministic, byte-stable rendering shipped to the LLM in
+	// place of the raw body. It is computed ONCE at write time (see
+	// db.insertMessage) and stored, so a stored message renders identically
+	// on every turn — the KV prompt-cache prefix never churns.
+	//
+	// The full original stays in Content: chat display, audit, and
+	// caveman_retrieve all read that. Compression is non-destructive.
+	//
+	// Empty means "no projection; ship Content verbatim".
+	CompressedContent string `json:"compressed_content,omitempty"`
 	Model     Model `json:"model,omitempty"`
 }
 

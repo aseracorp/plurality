@@ -179,7 +179,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	}
 
 	if isActionModel {
-		ait := ai_tools.GetRequests(conv.UserID, model, payload.ClientSideTools, hasAttachments, hasDocAttachments, payload.ModelSelected.ClientFolderPath != "")
+		ait := ai_tools.GetRequests(conv.UserID, model, payload.ClientSideTools, hasAttachments, hasDocAttachments, payload.ModelSelected.ClientFolderPath != "", cavemanReadLess(model))
 		if len(ait) > 0 {
 			requestData.Tools = ait
 		}
@@ -378,7 +378,34 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 // convertMessagesToOpenAI converts internal utils.Message slices into
 // StandardMessageReq for sending to the LiteLLM proxy (OpenAI-compatible format).
 // Returns the converted messages and the concatenated input text (for debugging/logging).
-func convertMessagesToOpenAI(messages []utils.Message, _ utils.Model) ([]StandardMessageReq, string) {
+// cavemanReadLess reports whether the model opts into the caveman "read less"
+// stone. When true, tool results in the request are rendered from their stored
+// projection (Message.CompressedContent) instead of the raw body.
+//
+// The projection was computed once at write time (db.insertMessage) and stored
+// beside the untouched original, so this substitution is byte-identical on
+// every turn — the KV prompt-cache prefix stays stable. It costs no latency
+// (unlike the caveman proxy, which added 3.9-108s per request and, being
+// recovery-unbound, forwarded every payload uncompressed).
+//
+// Callers must also handle the model-not-found case as false: an unknown model
+// gets verbatim tool results, never a partial optimization.
+func cavemanReadLess(model utils.Model) bool {
+	// Operator kill-switch: CAVEMAN_GO_READLESS=0 disables Go-side read_less
+	// (e.g. if a future proxy binds recovery and starts compressing input, so
+	// the no-double-optimization rule wants input handed back to it).
+	if v := strings.TrimSpace(os.Getenv("CAVEMAN_GO_READLESS")); v == "0" || strings.EqualFold(v, "false") {
+		return false
+	}
+	entry, ok := Models.Get(model.Name)
+	if !ok {
+		return false
+	}
+	return entry.Caveman.Enabled && entry.Caveman.Stones.ReadLess
+}
+
+func convertMessagesToOpenAI(messages []utils.Message, model utils.Model) ([]StandardMessageReq, string) {
+	readLess := cavemanReadLess(model)
 	result := make([]StandardMessageReq, 0, len(messages))
 	inputText := ""
 
@@ -475,7 +502,6 @@ func convertMessagesToOpenAI(messages []utils.Message, _ utils.Model) ([]Standar
 		case "tool":
 			parts := msg.ContentParts()
 			hasImages := msg.HasImages()
-
 			if hasImages {
 				contentParts := make([]StandardContentReq, 0, len(parts))
 				for _, part := range parts {
@@ -509,6 +535,12 @@ func convertMessagesToOpenAI(messages []utils.Message, _ utils.Model) ([]Standar
 				text := msg.TextContent()
 				if msg.Name != "conversation_attachments" && ai_tools.ShouldStripResponse(text) {
 					text = "Tool result displayed to user."
+				}
+				// Caveman "read less": ship the stored projection instead of
+				// the raw body. The full original stays in the DB (chat
+				// display, audit, caveman_retrieve).
+				if readLess && msg.CompressedContent != "" {
+					text = msg.CompressedContent
 				}
 				if text == "" {
 					continue

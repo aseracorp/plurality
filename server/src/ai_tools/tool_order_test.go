@@ -23,7 +23,7 @@ func selectionKeys() map[string]string {
 }
 
 func requestNames(model utils.Model) []string {
-	reqs := GetRequests("order-test-user", model, nil, false, false, false)
+	reqs := GetRequests("order-test-user", model, nil, false, false, false, false)
 	names := make([]string, len(reqs))
 	for i, r := range reqs {
 		names[i] = r.Function.Name

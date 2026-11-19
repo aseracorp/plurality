@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS messages (
 	completion_tokens INTEGER DEFAULT 0,
 	response_cost     REAL    DEFAULT 0,
 	compression_ratio REAL    DEFAULT 0,
+	compressed_content TEXT,
 	model             TEXT,
 	compacted         INTEGER NOT NULL DEFAULT 0,
 	UNIQUE(conversation_id, seq)
@@ -158,6 +159,13 @@ func GetUserDB(userID string) (*sql.DB, error) {
 	}
 	if err := ensureColumn(db, "messages", "compression_ratio", "REAL DEFAULT 0"); err != nil {
 		utils.Error("[SQLite] migration compression_ratio failed", err)
+	}
+	// Caveman "read less": the deterministic projection of a tool result that
+	// is shipped to the LLM, stored next to the untouched original so the
+	// projection is computed exactly ONCE (write time) and can never drift
+	// between turns — the KV prompt-cache prefix stays byte-stable.
+	if err := ensureColumn(db, "messages", "compressed_content", "TEXT"); err != nil {
+		utils.Error("[SQLite] migration compressed_content failed", err)
 	}
 
 	// Best-effort storage maintenance: truncate oversized stored message

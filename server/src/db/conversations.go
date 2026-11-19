@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/azukaar/plurality/src/caveman"
 	"github.com/azukaar/plurality/src/search"
 	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/utils"
@@ -473,9 +475,36 @@ func DeleteAllConversations(ctx context.Context, userID string) (int64, error) {
 // and populates the FTS index for user/assistant messages with plain text.
 // Returns the auto-incremented message ID.
 func insertMessage(tx *sql.Tx, conversationID string, seq int64, msg utils.Message) (int64, error) {
+	// Caveman "read less": compute the LLM projection ONCE, at write time, and
+	// persist it beside the untouched original. This is the single choke point
+	// through which every message in the system flows (PushMessage, the tool
+	// loop, the watchdog, checkpoint replacement), so all eleven tool-result
+	// persist sites get compression without touching any of them.
+	//
+	// Computing here rather than per-request is what makes the request
+	// byte-stable by construction: the projection is a pure function of stored
+	// content, evaluated once, never recomputed — so the KV prompt-cache prefix
+	// cannot churn. It also costs zero per-request latency (the caveman proxy
+	// added 3.9-108s per turn and compressed nothing).
+	compressed := msg.CompressedContent
+	if compressed == "" && msg.Role == "tool" && msg.Name != EcoCheckpointToolName && !msg.HasImages() {
+		// Base64 blobs are replaced wholesale at request time, so a
+		// projection would be wasted work. Inlined (rather than calling
+		// ai_tools.ShouldStripResponse) because ai_tools imports db.
+		raw := msg.TextContent()
+		if !strings.HasPrefix(raw, "base64,") {
+			if proj := caveman.ToolProjection(raw); proj != "" {
+				// Store banner + projection as ONE string so the request
+				// builder is a pure substitution — no formatting at read time,
+				// and nothing that can vary per request.
+				compressed = caveman.Banner(len(raw), len(proj), msg.ToolCallID) + "\n" + proj
+			}
+		}
+	}
+
 	res, err := tx.Exec(
-		`INSERT INTO messages (conversation_id, seq, role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, prompt_tokens, completion_tokens, response_cost, compression_ratio, model)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages (conversation_id, seq, role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, prompt_tokens, completion_tokens, response_cost, compression_ratio, compressed_content, model)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		conversationID,
 		seq,
 		msg.Role,
@@ -489,6 +518,7 @@ func insertMessage(tx *sql.Tx, conversationID string, seq int64, msg utils.Messa
 		msg.CompletionTokens,
 		msg.ResponseCost,
 		msg.CompressionRatio,
+		nullString(compressed),
 		marshalModel(msg.Model),
 	)
 	if err != nil {
@@ -590,7 +620,7 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 
 	// Load messages
 	msgRows, err := db.Query(
-		`SELECT id, role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, prompt_tokens, completion_tokens, response_cost, compression_ratio, model
+		`SELECT id, role, content, tool_calls, tool_call_id, name, timestamp, total_tokens, prompt_tokens, completion_tokens, response_cost, compression_ratio, compressed_content, model
 		 FROM messages WHERE conversation_id = ? ORDER BY seq`, id,
 	)
 	if err != nil {
@@ -607,6 +637,7 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 		var name *string
 		var timestamp *string
 		var modelJSON *string
+		var compressedContent *string
 
 		err := msgRows.Scan(
 			&msgID,
@@ -621,6 +652,7 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 			&msg.CompletionTokens,
 			&msg.ResponseCost,
 			&msg.CompressionRatio,
+			&compressedContent,
 			&modelJSON,
 		)
 		if err != nil {
@@ -637,6 +669,9 @@ func getConversationFromDB(db *sql.DB, id string) (*utils.Conversation, error) {
 		}
 		if timestamp != nil {
 			msg.Timestamp = *timestamp
+		}
+		if compressedContent != nil {
+			msg.CompressedContent = *compressedContent
 		}
 		msg.Model = unmarshalModel(modelJSON)
 

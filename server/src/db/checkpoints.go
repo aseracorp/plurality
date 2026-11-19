@@ -158,6 +158,49 @@ func GetCheckpoint(ctx context.Context, conversationID string) (*CheckpointPair,
 	return pair, nil
 }
 
+// ToolResultByCallID returns the FULL, uncompressed body of the tool result
+// identified by its tool_call_id — the recovery path for caveman "read less".
+//
+// Keyed on tool_call_id rather than seq on purpose: inserting an eco checkpoint
+// shifts existing rows by +2, so a seq baked into a stored banner would point
+// at the wrong message after compaction. tool_call_id is immutable.
+//
+// Compression is non-destructive: the projection lives in compressed_content
+// and the tool's original output stays in `content`, so the model can always
+// pull back exactly what the tool printed. found=false when no tool row has
+// that call id in this conversation.
+func ToolResultByCallID(ctx context.Context, conversationID, toolCallID string) (body string, name string, found bool, err error) {
+	userID, ok := ctx.Value("userID").(string)
+	if !ok {
+		return "", "", false, errors.New("user ID not found in request context")
+	}
+	d, err := GetUserDB(userID)
+	if err != nil {
+		return "", "", false, err
+	}
+	if toolCallID == "" {
+		return "", "", false, nil
+	}
+	var contentJSON *string
+	var namePtr *string
+	scanErr := d.QueryRowContext(ctx,
+		`SELECT content, name FROM messages
+		  WHERE conversation_id = ? AND tool_call_id = ? AND role = 'tool'
+		  ORDER BY seq DESC LIMIT 1`,
+		conversationID, toolCallID,
+	).Scan(&contentJSON, &namePtr)
+	if scanErr == sql.ErrNoRows {
+		return "", "", false, nil
+	}
+	if scanErr != nil {
+		return "", "", false, scanErr
+	}
+	if namePtr != nil {
+		name = *namePtr
+	}
+	return unmarshalMessageContent(contentJSON).TextContent(), name, true, nil
+}
+
 // MessageSeqAt returns the seq value of the (sliceOffset)-th message of a
 // conversation in seq-ascending order. Used by the eco summary code to
 // resolve a slice index (from an in-memory load) back to the actual DB
