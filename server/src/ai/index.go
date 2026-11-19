@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/azukaar/plurality/src/ai_tools"
+	"github.com/azukaar/plurality/src/caveman"
 	"github.com/azukaar/plurality/src/mcp"
 	"github.com/azukaar/plurality/src/memory"
 	"github.com/azukaar/plurality/src/miniapps"
@@ -143,6 +144,9 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// (see below), so the stable prefix (system prompt + full conversation
 	// history) is reused across turns and only a handful of tail tokens are
 	// (re-)processed.
+	// Caveman "say less" (the voice).
+	systemPrompt = applyCavemanVoice(systemPrompt, model, isCall)
+
 	systemMsg := utils.Message{
 		Role: "system",
 		Content: utils.NewTextContent(systemPrompt +
@@ -184,7 +188,6 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 			requestData.Tools = ait
 		}
 	}
-
 
 	msgReqList, _ := convertMessagesToOpenAI(optimizedMessages, model)
 
@@ -378,34 +381,87 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 // convertMessagesToOpenAI converts internal utils.Message slices into
 // StandardMessageReq for sending to the LiteLLM proxy (OpenAI-compatible format).
 // Returns the converted messages and the concatenated input text (for debugging/logging).
-// cavemanReadLess reports whether the model opts into the caveman "read less"
-// stone. When true, tool results in the request are rendered from their stored
-// projection (Message.CompressedContent) instead of the raw body.
-//
-// The projection was computed once at write time (db.insertMessage) and stored
-// beside the untouched original, so this substitution is byte-identical on
-// every turn — the KV prompt-cache prefix stays stable. It costs no latency
-// (unlike the caveman proxy, which added 3.9-108s per request and, being
-// recovery-unbound, forwarded every payload uncompressed).
-//
-// Callers must also handle the model-not-found case as false: an unknown model
-// gets verbatim tool results, never a partial optimization.
-func cavemanReadLess(model utils.Model) bool {
-	// Operator kill-switch: CAVEMAN_GO_READLESS=0 disables Go-side read_less
-	// (e.g. if a future proxy binds recovery and starts compressing input, so
-	// the no-double-optimization rule wants input handed back to it).
-	if v := strings.TrimSpace(os.Getenv("CAVEMAN_GO_READLESS")); v == "0" || strings.EqualFold(v, "false") {
-		return false
-	}
+// cavemanStones resolves which caveman stones are active for a model, applying
+// the operator kill-switches. Unknown models get all-false: an unrecognized
+// model receives verbatim tool results and its own system prompt, never a
+// partial optimization.
+type cavemanStoneSet struct {
+	readLess bool
+	browse   bool
+	sayLess  bool
+}
+
+func activeCavemanStones(model utils.Model) cavemanStoneSet {
 	entry, ok := Models.Get(model.Name)
-	if !ok {
-		return false
+	if !ok || !entry.Caveman.Enabled {
+		return cavemanStoneSet{}
 	}
-	return entry.Caveman.Enabled && entry.Caveman.Stones.ReadLess
+	st := entry.Caveman.Stones
+	// read_less compression runs here ONLY while caveman owns content, so the
+	// no-double-compression rule has a single source: optimizationOwners. A
+	// headroom-enabled model keeps its hop (transport is decided by flags) and
+	// headroom does not also compress this content, because caveman owns it.
+	owner, _ := optimizationOwners(model.Name)
+	return cavemanStoneSet{
+		// CAVEMAN_GO_READLESS=0 / CAVEMAN_GO_BROWSE=0 hand input compression
+		// back to the proxy (e.g. if a future build binds recovery and starts
+		// compressing input, keeping the no-double-optimization rule).
+		readLess: owner == ownerCaveman && !envDisabled("CAVEMAN_GO_READLESS"),
+		browse:   st.Browse && !envDisabled("CAVEMAN_GO_BROWSE"),
+		sayLess:  st.SayLess,
+	}
+}
+
+func envDisabled(key string) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	return v == "0" || strings.EqualFold(v, "false")
+}
+
+// cavemanReadLess keeps its name for the tool-registry call site: recovery is
+// needed whenever ANY input compressor is active.
+func cavemanReadLess(model utils.Model) bool {
+	s := activeCavemanStones(model)
+	return s.readLess || s.browse
+}
+
+// applyCavemanVoice appends the caveman voice to the system prompt when the
+// say_less stone is on.
+//
+// It is the ONLY Go-side use of a caveman stone that touches the prompt, and
+// it only ever APPENDS a fixed instruction: it does not compress, rewrite,
+// shorten or re-voice any user message. Caveman's own research (Adobe
+// CAVEWOMAN) is explicit that cavemanning the user's prompt makes answers
+// longer and worse, and the upstream docs say it plainly — "Your prompts stay
+// yours. Never rewritten. Research says that backfires". Compressing user text
+// here would also break tool_call/tool_result pairing and inflate every later
+// turn, which is exactly the loop caveman itself warns about.
+//
+// Voice() is a constant string, so the KV prompt-cache prefix stays byte-stable
+// across turns. Voice is skipped on calls (isCall): spoken answers need full
+// sentences, and the voice's terser output would fight the call prompt.
+func applyCavemanVoice(systemPrompt string, model utils.Model, isCall bool) string {
+	if isCall || !activeCavemanStones(model).sayLess {
+		return systemPrompt
+	}
+	return systemPrompt + caveman.Voice()
+}
+
+// cavemanCompressApplies decides, per tool message, whether its stored
+// projection may replace the raw body for this model.
+//
+// Write time is deliberately stone-blind (a message is written once and then
+// read by many models across the conversation's life), so the request path —
+// which knows the model — re-derives which stone owns the row from the tool
+// name via the same pure function the write path used.
+func cavemanCompressApplies(st cavemanStoneSet, toolName string) bool {
+	if caveman.WebToolIsBrowsed(toolName) {
+		return st.browse
+	}
+	return st.readLess
 }
 
 func convertMessagesToOpenAI(messages []utils.Message, model utils.Model) ([]StandardMessageReq, string) {
-	readLess := cavemanReadLess(model)
+	stones := activeCavemanStones(model)
 	result := make([]StandardMessageReq, 0, len(messages))
 	inputText := ""
 
@@ -536,10 +592,12 @@ func convertMessagesToOpenAI(messages []utils.Message, model utils.Model) ([]Sta
 				if msg.Name != "conversation_attachments" && ai_tools.ShouldStripResponse(text) {
 					text = "Tool result displayed to user."
 				}
-				// Caveman "read less": ship the stored projection instead of
-				// the raw body. The full original stays in the DB (chat
-				// display, audit, caveman_retrieve).
-				if readLess && msg.CompressedContent != "" {
+				// Caveman input compression: ship the stored projection
+				// instead of the raw body, gated by the stone that owns this
+				// payload (read_less for logs/JSON/test output, browse for web
+				// pages). The full original stays in the DB (chat display,
+				// audit, caveman_retrieve).
+				if msg.CompressedContent != "" && cavemanCompressApplies(stones, msg.Name) {
 					text = msg.CompressedContent
 				}
 				if text == "" {

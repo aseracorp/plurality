@@ -131,6 +131,16 @@ type CavemanStones struct {
 type CavemanSettings struct {
 	Enabled bool
 	Stones  CavemanStones
+	// Proxy routes this model's chat completions THROUGH the caveman binary
+	// (plurality -> caveman -> LiteLLM). Off by default: the stones that
+	// Plurality implements (say_less, read_less, browse) all run in Go, and
+	// the binary's compress mode forwards input unchanged when it has no
+	// recovery tool bound — measured on this deployment at identical provider
+	// prompt_tokens through the proxy and direct LiteLLM (651==651, 951==951)
+	// at 10.6x the latency (3367ms vs 318ms). Turning this on is for the
+	// stones Go does not implement (auto, blocks, waste_fixes), which need
+	// the binary in the request path.
+	Proxy bool
 }
 
 type litellmModelList struct {
@@ -185,11 +195,17 @@ func (r *ModelRegistry) Refresh(ctx context.Context) error {
 	}
 
 	r.mu.Lock()
+	changed := !registryEqual(r.list, list)
 	r.byName = byName
 	r.list = list
 	r.mu.Unlock()
 
-	utils.Log("[Models] Loaded %d models from litellm proxy", len(list))
+	// The registry is polled (see StartRegistryRefresh), so this must stay
+	// quiet while nothing changes: an unconditional log here is one line per
+	// poll, forever.
+	if changed {
+		utils.Log("[Models] Loaded %d models from litellm proxy", len(list))
+	}
 	return nil
 }
 
@@ -381,6 +397,7 @@ func parseHeadroomSettings(raw json.RawMessage) HeadroomSettings {
 type cavemanFlag struct {
 	Enabled *bool          `json:"enabled"`
 	Stones  *cavemanStones `json:"stones"`
+	Proxy   *bool          `json:"proxy"`
 }
 
 type cavemanStones struct {
@@ -392,13 +409,31 @@ type cavemanStones struct {
 	Browse     *bool `json:"browse"`
 }
 
+// defaultCavemanStones is the stone set a bare `caveman: true` means. Keep it
+// byte-identical to the proxy's default in litellm_proxy.py — the two layers
+// parse the same config from opposite ends, and if they disagree then which
+// stones are on depends on which side normalized the value last. litellm.md
+// documents this set; all three must say the same thing.
+//
+// On: the stones that are pure wins and need nothing external — say_less
+// (output-side voice), read_less (content compression, and the stone that
+// grants content ownership), browse (web/Playwright snapshots, gain-guarded so
+// it can only shrink a payload).
+// Off: auto (routes by "ask type", requires a Caveman account, and
+// undeterministically swaps the model mid-conversation), blocks (pre-release,
+// re-executes shell code), waste_fixes (holds the KV cache open past request
+// end). An operator who wants them turns them on by name.
+func defaultCavemanStones() CavemanStones {
+	return CavemanStones{SayLess: true, ReadLess: true, Browse: true}
+}
+
 func parseCavemanSettings(raw json.RawMessage) CavemanSettings {
 	if len(raw) == 0 || string(raw) == "null" {
 		return CavemanSettings{}
 	}
 	if string(raw) == "true" {
-		// Bare `caveman: true` -> all stones on (caveman's default posture).
-		return CavemanSettings{Enabled: true, Stones: CavemanStones{SayLess: true, ReadLess: true, Auto: true, Blocks: true, WasteFixes: true, Browse: true}}
+		// Bare `caveman: true` -> enabled with the default stone set.
+		return CavemanSettings{Enabled: true, Stones: defaultCavemanStones()}
 	}
 	var f cavemanFlag
 	if err := json.Unmarshal(raw, &f); err != nil {
@@ -410,13 +445,16 @@ func parseCavemanSettings(raw json.RawMessage) CavemanSettings {
 	}
 	if f.Stones == nil && out.Enabled {
 		// Backwards compatible: a bare `caveman: true` (or any enabled dict
-		// without a stones block) means "enabled with DEFAULT settings", i.e.
-		// all stones that are safe-by-default on. Without this the enabled
-		// flag alone yields an all-false stone set, so optimizationOwners
-		// never hands caveman content ownership and the proxy is bypassed
-		// even though the operator enabled it (the live bug this fixes).
-		out.Stones = CavemanStones{SayLess: true, ReadLess: true, Auto: true, Blocks: true, WasteFixes: true, Browse: true}
+		// without a stones block) means "enabled with DEFAULT settings".
+		// Without this the enabled flag alone yields an all-false stone set,
+		// so optimizationOwners never hands caveman content ownership and the
+		// proxy is bypassed even though the operator enabled it (the live bug
+		// PR #127 fixed).
+		out.Stones = defaultCavemanStones()
 		return out
+	}
+	if f.Proxy != nil {
+		out.Proxy = *f.Proxy
 	}
 	if f.Stones != nil {
 		st := CavemanStones{}
@@ -441,4 +479,57 @@ func parseCavemanSettings(raw json.RawMessage) CavemanSettings {
 		out.Stones = st
 	}
 	return out
+}
+
+// registryEqual compares two model lists for the fields callers act on, so a
+// periodic refresh can tell "nothing changed" from a real edit. Caveman and
+// Headroom settings are compared by value: they are the per-stone toggles
+// operators flip in litellm_config.yaml, and a refresh that ignored them would
+// make the toggles invisible.
+func registryEqual(a, b []ModelEntry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		x, y := a[i], b[i]
+		if x.Name != y.Name || x.Mode != y.Mode ||
+			x.SupportsVision != y.SupportsVision ||
+			x.SupportsFunctionCalling != y.SupportsFunctionCalling ||
+			x.MaxContextTokens != y.MaxContextTokens ||
+			x.Headroom != y.Headroom ||
+			x.Caveman != y.Caveman {
+			return false
+		}
+	}
+	return true
+}
+
+// StartRegistryRefresh polls the litellm proxy so per-model settings — the
+// caveman/headroom stone toggles in particular — take effect without a server
+// restart.
+//
+// The registry is a cache of /v1/models, and the proxy builds its Router from
+// litellm_config.yaml. Before this, both sides were frozen at startup: editing
+// a stone in the YAML changed nothing for the life of the process, so a
+// per-stone toggle was not a working feature, it was a restart ritual. The
+// proxy hot-reloads its own config on mtime change; this is the matching half.
+//
+// Safe by construction: Refresh swaps the maps under a mutex and keeps the
+// previous cache on any error, so a proxy restart mid-poll or a broken YAML
+// leaves the last good registry serving requests.
+func StartRegistryRefresh(ctx context.Context, interval time.Duration) {
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := Models.Refresh(ctx); err != nil {
+					utils.Debug("[Models] refresh skipped: %v", err)
+				}
+			}
+		}
+	}()
 }

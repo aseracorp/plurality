@@ -101,7 +101,8 @@ model_list:
   #       headroom: true
 
   # Per-model Caveman opt-in (see litellm.md -> "Caveman"):
-  # add `caveman: true` (all six stones on) or a dict with sub-settings.
+  # add `caveman: true` (defaults: say_less + read_less + browse on) or a dict
+  # with sub-settings.
   # Bare booleans and dict forms are both accepted for headroom and caveman.
   # Operators enable this in their runtime litellm_config.yaml, e.g.:
   #
@@ -117,13 +118,18 @@ model_list:
   #         keep_last_turns: 0
   #       caveman:
   #         enabled: true
-  #         stones:
+  #         stones:               # omitted stones fall back to these defaults
   #           say_less: true
   #           read_less: true     # wins content-ownership over headroom
-  #           auto: false
-  #           blocks: false
+  #           browse: true        # web pages / Playwright snapshots
+  #           auto: false         # needs a Caveman account
+  #           blocks: false       # pre-release
   #           waste_fixes: false
-  #           browse: false
+  #         proxy: false          # say_less/read_less/browse run in Go, so no
+  #                               # hop is needed; true puts the caveman binary
+  #                               # in the path (0 tokens saved, ~10x latency
+  #                               # measured) for auto/blocks/waste_fixes.
+  #                               # `headroom: true` below takes the hop first.
   #
   # Deduplication: only ONE proxy owns content compression per model —
   # caveman read_less wins when on, else headroom — so a payload is never
