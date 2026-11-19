@@ -843,11 +843,33 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 		// least the smallest honest size (see its doc comment).
 		chars = 0
 	}
+	// THE CEILING. The per-row split (MegacaveRowBudget) bounds each row's
+	// CONTENT, but it cannot bound the FINISHED excerpt: the floor
+	// minMegacaveRowShowChars x rows saturates the total, so on a 1467-row
+	// conversation MegacaveRowBudget(90000, 1467) -> show=64 rendered
+	// 1,458,172 chars, 16x over the budget. The caller knows the total, so the
+	// total is passed explicitly: MachineExcerptMegacaveCapped truncates at
+	// `chars` and appends one marker naming the original size. `chars` is
+	// clamped to the storage bound (db.MaxDurableSummaryChars) so the ai layer
+	// and the storage layer agree on ONE number — the renderer's ceiling is the
+	// number that gets applied, not the storage backstop slicing the text after
+	// the fact.
+	if chars > db.MaxDurableSummaryChars {
+		chars = db.MaxDurableSummaryChars
+	}
+	// The ceiling is passed EXPLICITLY, so "no ceiling" (0 = unlimited in the
+	// renderer) must never reach it: a fold with no room renders at the smallest
+	// honest size — the floor the row budget uses — so the fit test FAILS and the
+	// resolver escalates, and the excerpt stays bounded either way.
+	ceiling := chars
+	if ceiling <= 0 {
+		ceiling = (minMegacaveRowShowChars + megacaveLabelOverheadChars) * len(foldable)
+	}
 	show := MegacaveRowBudget(chars, len(foldable))
 	utils.Log("[Eco] machine fold: %d rows, room=%d chars, folded=%d chars, budget=%d chars, per-row show=%d",
 		len(foldable), room, foldedChars, chars, show)
 	return db.CompactConversationDurable(ctx, conversationID, messages, foldFrom,
-		func(m []utils.Message) string { return MachineExcerptMegacaveBudget(m, show) })
+		func(m []utils.Message) string { return MachineExcerptMegacaveCapped(m, show, ceiling) })
 }
 
 // ecoTargetTokens is the eco target window (chars budget denominator) with a

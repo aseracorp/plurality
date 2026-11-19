@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -140,21 +141,44 @@ func TruncateOversizedMessages(messages []utils.Message) []utils.Message {
 // and path intact") and the read_less structured compressor philosophy, but
 // runs entirely on the server with NO LLM call:
 //
-//   - code blocks, file paths, identifiers, IDs, URLs, error strings, exact
-//     numbers and quoted user requests are kept VERBATIM;
+//   - file paths, identifiers, IDs, URLs, error strings, exact numbers and
+//     quoted user requests are kept VERBATIM;
+//   - a CODE BLOCK that fits the row budget is kept verbatim (fences included);
+//     an oversized one costs at most the row show: a bounded head line plus a
+//     "[... fenced <lang> block elided: N lines, M chars ...]" marker. It used
+//     to be written line-by-line verbatim, which is the path that ADDS bytes
+//     (measured ratio 1.107) and the reason a per-row budget saturated;
 //   - JSON / structured tool output is re-serialized with whitespace stripped
 //     (keys + values preserved, so nothing factual is lost);
 //   - prose and obvious framing are compressed hard (filler words removed,
 //     blank lines collapsed);
 //   - very long tool dumps are cut to head+tail with an elision banner.
 //
-// The result is a bounded "megacave" excerpt (<= maxMegacaveExcerptChars) that
-// stands in for the folded history in the roll-back checkpoint. Deterministic
-// and fast (microseconds, no model call) — so durable compaction can no longer
-// stall for minutes on a slow self-hosted summarizer (observed: swift-1.5-iq3_s
-// taking ~3.5 min per summary, during which no compacted request ever reached
-// the backend). The LLM summary (GenerateCheckpointSummary) remains available
-// as the stage-2 fallback for the second context hit.
+// The result is the roll-up of the folded history, written into the checkpoint
+// pair. Deterministic and fast (microseconds, no model call) — so durable
+// compaction can no longer stall for minutes on a slow self-hosted summarizer
+// (observed: swift-1.5-iq3_s taking ~3.5 min per summary, during which no
+// compacted request ever reached the backend). The LLM summary
+// (GenerateCheckpointSummary) remains available as the stage-2 fallback for the
+// second context hit.
+//
+// WHAT THE RENDERER GUARANTEES (measured on a real 1467-row agentic
+// conversation, 2,759,284 wire chars, before this contract was enforced):
+//   - PLAIN PROSE (no fences, no tool_calls) compresses hard: 825 rows,
+//     1,545,874 in -> 181,546 out, ratio 0.117. That transform is unchanged.
+//   - FENCED CODE and tool_call ARGUMENTS used to be reproduced verbatim and
+//     are the ONLY two paths that ADD bytes: fence rows 46 rows 383,866 ->
+//     424,843 (ratio 1.107); compactJSON(args) 754,350 -> 764,533 (ratio
+//     1.013) and 52.4% of the whole excerpt. Both are now BUDGETED: the fence
+//     renders a bounded head + a "N lines, M chars" marker, the call renders
+//     the tool NAME + args within the same budget.
+//   - The per-row budget alone does NOT bound the finished excerpt: at
+//     MegacaveRowBudget(90000, 1467) -> show=64 the renderer returned
+//     1,458,172 chars (ratio 0.528, 16x over the budget) because the
+//     unbudgeted paths above dominate and the floor
+//     minMegacaveRowShowChars x rows saturates it. The ceiling on the finished
+//     excerpt is the explicit maxTotalChars of MachineExcerptMegacaveCapped —
+//     no cap is claimed anywhere the caller does not pass one.
 
 var (
 	// whitespace runs -> single space; blank lines collapse.
@@ -163,16 +187,16 @@ var (
 	reFill = regexp.MustCompile(`(?i)^(the|a|an|and|or|but|so|then|well|ok|okay|right|now|so basically|so in summary|in other words|in conclusion)\\b.*$`)
 )
 
-// The machine excerpt is UNCAPPED. A bounded excerpt is not a summary, it is a
-// truncation: at 60_000 chars the excerpt of a long conversation hit the budget
-// mid-sentence (observed checkpoint: 61_715 bytes ending "Clean fi"), so the
-// model received a mutated transcript with the tail of the folded history
-// silently gone. The excerpt is the roll-up of the history the conversation is
-// giving up, so its size must be decided by what it has to preserve, not by a
-// constant. Fit against the context window is the CALLER's job
-// (ai.resolveEcoContextCompaction folds more history until the request fits);
-// capping the excerpt there is what produced the "folded everything, still
-// oversized, shipped an empty history" shape.
+// A ceiling on the finished excerpt is a TRUNCATION, so it is the caller's
+// decision, never a hidden constant inside the renderer: at 60_000 chars an
+// older hard cap cut the excerpt mid-sentence (observed checkpoint: 61_715
+// bytes ending "Clean fi") and the model received a mutated transcript with the
+// tail of the folded history silently gone. That is why the cap is a PARAMETER
+// (maxTotalChars) the caller passes together with the budget it measured, and
+// why the truncation is ANNOUNCED by a marker line naming the size — the
+// excerpt must never shrink silently. Fit against the context window stays the
+// CALLER's job (eco.durableFold picks the number, the storage layer in
+// db.composeDurableSummary is the outer backstop).
 
 // maxMegacaveToolShowChars is the DEFAULT head+tail budget shown for a single
 // large tool result (split ~60/40 head/tail around an elision banner).
@@ -225,13 +249,22 @@ const minMegacaveRowShowChars = 64
 // excerpt: `maxChars` is what the WHOLE excerpt may cost in characters, `rows`
 // is how many rows it has to cover.
 //
-// maxChars / rows is the exact uniform split, so the rendered total is at most
-// maxChars: the transform is then GUARANTEED not to exceed the budget it was
-// given, on any content shape. Rows smaller than the budget are rendered
-// verbatim (the common case: most rows are small), so the compression is
-// concentrated in the few rows that are large — which is exactly the intent of
-// the head+tail elision, and it is why this shrinks where the fixed constant
-// did not.
+// maxChars / rows is the exact uniform split of the budget over rows: every
+// prose run, every fenced block and every tool_call of a row then costs at most
+// `per`, rows under the budget are rendered verbatim (the common case), and the
+// compression concentrates in the few large rows — the intent of head+tail
+// elision, and why this shrinks where the fixed constant did not. A row with
+// MANY large items costs several times `per`; that is what the total ceiling
+// (MachineExcerptMegacaveCapped) is for, not this split.
+//
+// WHAT THIS DOES NOT DO: it does not bound the finished excerpt. Measured on a
+// real 1467-row conversation, MegacaveRowBudget(90000 chars, 1467 rows) ->
+// show=64 and the render came back 1,458,172 chars (16x over): the floor
+// minMegacaveRowShowChars x rows saturates the total, and any content the
+// per-row split does not govern (fenced code, tool_call args) is reproduced at
+// its own size. Callers that need a bound on the WHOLE excerpt must pass
+// maxTotalChars to MachineExcerptMegacaveCapped; claiming a guarantee from this
+// function alone is the false-doc bug this comment used to carry.
 //
 // Returns 0 (meaning "uncapped") when there is nothing to bound: zero rows, or a
 // budget so generous that every row already fits under the default constant.
@@ -270,7 +303,7 @@ func MegacaveRowBudget(maxChars, rows int) int {
 // NOT generalise: on realistic prose+tool content it is ~1.045. Use
 // MachineExcerptMegacaveBudget when the caller has a budget to respect.
 func MachineExcerptMegacave(messages []utils.Message) string {
-	return MachineExcerptMegacaveBudget(messages, 0)
+	return MachineExcerptMegacaveCapped(messages, 0, 0)
 }
 
 // MachineExcerptMegacaveBudget is MachineExcerptMegacave with a per-row
@@ -283,6 +316,23 @@ func MachineExcerptMegacave(messages []utils.Message) string {
 // can actually reach "fits" on an agentic conversation and stay lossless for
 // every row under the cap.
 func MachineExcerptMegacaveBudget(messages []utils.Message, showChars int) string {
+	return MachineExcerptMegacaveCapped(messages, showChars, 0)
+}
+
+// MachineExcerptMegacaveCapped is the budgeted renderer plus a HARD CEILING on
+// the finished excerpt: `maxTotalChars` (<= 0 = no ceiling) is the caller's
+// total-char budget — the one number the caller knows and the per-row split
+// cannot deliver. The built excerpt is cut at that ceiling on a rune boundary
+// and the truncation is ANNOUNCED by one final marker line naming the size, so
+// the reader of the roll-up can see that history was dropped instead of
+// discovering it by the text ending mid-sentence.
+//
+// The ceiling is a parameter, not a global constant: the caller (eco.durableFold)
+// picks the number from the budget it measured, and the storage layer
+// (db.composeDurableSummary) keeps its own outer bound as a backstop for
+// machineSummary callbacks that ignore it. Both bounds are the same number on
+// the production path.
+func MachineExcerptMegacaveCapped(messages []utils.Message, showChars, maxTotalChars int) string {
 	var b strings.Builder
 
 	writeLine := func(s string) {
@@ -303,8 +353,8 @@ func MachineExcerptMegacaveBudget(messages []utils.Message, showChars int) strin
 			writeLine("ASSISTANT:")
 			writeMegacaveContent(&b, m, writeLine, showChars)
 			for _, tc := range m.ToolCalls {
-				args := compactJSON(tc.Function.Arguments)
-				writeLine("[tool_call " + tc.Function.Name + "] args=" + args)
+				writeLine("[tool_call " + tc.Function.Name + "] args=" +
+					budgetMegacaveArgs(compactJSON(tc.Function.Arguments), showChars))
 			}
 			writeLine("")
 		case "tool":
@@ -313,16 +363,60 @@ func MachineExcerptMegacaveBudget(messages []utils.Message, showChars int) strin
 			writeLine("")
 		}
 	}
-	return strings.TrimSpace(b.String())
+	return capMegacaveExcerpt(strings.TrimSpace(b.String()), maxTotalChars)
+}
+
+// megacaveTruncatedBanner is the single final marker announcing that the
+// finished excerpt hit the caller's total-char ceiling.
+const megacaveTruncatedBanner = "[... megacave excerpt truncated at "
+
+// capMegacaveExcerpt enforces the caller's ceiling on the finished excerpt:
+// at most `maxTotalChars` characters of excerpt, cut on a rune boundary, plus
+// the announcing marker. maxTotalChars <= 0 means "no ceiling" (the caller
+// asked for the full excerpt). The marker costs characters too, so the budget
+// reserves room for it: the function never returns more than maxTotalChars.
+func capMegacaveExcerpt(excerpt string, maxTotalChars int) string {
+	if maxTotalChars <= 0 || len(excerpt) <= maxTotalChars {
+		return excerpt
+	}
+	marker := megacaveTruncatedBanner + strconv.Itoa(len(excerpt)) + " chars ...]"
+	keep := maxTotalChars - len(marker) - 1
+	if keep < 0 {
+		// The ceiling is smaller than the marker: the marker IS the excerpt,
+		// so the caller's bound is honoured and the truncation is still named.
+		return marker
+	}
+	// Keep the TAIL, not the head. The excerpt is CHRONOLOGICAL, so the head
+	// is the OLDEST folded rows. Keeping the head (what this function did)
+	// means a roll-up of a long conversation preserves its first hour and
+	// throws away its most recent work — the opposite of what a compaction
+	// should prioritise, and invisible to the model, which sees a summary that
+	// reads as if the conversation ended early. TailBytes keeps the newest
+	// content; the marker names what was dropped.
+	return marker + "\n" + textsafe.TailBytes(excerpt, keep)
+}
+
+// budgetMegacaveArgs bounds a tool_call's rendered arguments to the row show
+// budget: arguments that fit are emitted verbatim (the common case, and
+// lossless), oversized ones keep a bounded head — the call's SHAPE (tool name
+// is always emitted by the caller; the leading keys are what identify which
+// argument carried the bulk) — plus a marker naming how many chars were
+// dropped. showChars <= 0 falls back to the default tool cap.
+func budgetMegacaveArgs(args string, showChars int) string {
+	if showChars <= 0 {
+		showChars = maxMegacaveToolShowChars
+	}
+	if len(args) <= showChars {
+		return args
+	}
+	head := textsafe.HeadBytes(args, showChars/2)
+	return head + " [... args elided: " + strconv.Itoa(len(args)-len(head)) + " chars ...]"
 }
 
 // writeMegacaveContent writes a message's text parts through the megacave
 // transforms: code/markdown fences verbatim, JSON/long text compressed.
 // showChars <= 0 means the default constant cap.
 func writeMegacaveContent(b *strings.Builder, m utils.Message, writeLine func(string), showChars int) {
-	if showChars <= 0 {
-		showChars = maxMegacaveToolShowChars
-	}
 	parts := m.ContentParts()
 	for _, p := range parts {
 		if p.Type != "text" && p.Type != "snippet" {
@@ -343,12 +437,20 @@ func writeMegacaveContent(b *strings.Builder, m utils.Message, writeLine func(st
 // otherwise trim prose to head+tail if oversized. `showChars` is the per-row
 // head+tail budget (MegacaveRowBudget; <= 0 means the default constant).
 func writeMegacaveText(b *strings.Builder, text string, writeLine func(string), showChars int) {
+	if showChars <= 0 {
+		showChars = maxMegacaveToolShowChars
+	}
 	if strings.Contains(text, "```") || strings.Contains(text, "~~~") {
-		// Markdown-fenced code: preserve every line verbatim (fenced regions are
-		// the "code blocks" the /caveman-compress contract keeps intact).
-		for _, line := range strings.Split(text, "\n") {
-			writeLine(line)
-		}
+		// Markdown-fenced code, bounded by the row budget. Fenced regions used to
+		// be emitted line-by-line VERBATIM, which is the path that ADDS bytes
+		// (measured 46 fence rows: 383,866 in -> 424,843 out, ratio 1.107) and the
+		// reason a per-row budget saturated at ratio 0.528 on a real conversation.
+		// A block that fits the budget stays verbatim (that IS the
+		// /caveman-compress contract); an oversized one costs at most `showChars`:
+		// its first non-empty line, then a marker naming the block's line and char
+		// counts — "a 200-line go block was here, 10K chars" is the fact that
+		// survives, the bulk is what the roll-up is for.
+		writeMegacaveFenced(text, writeLine, showChars)
 		return
 	}
 	trimmed := strings.TrimSpace(text)
@@ -361,6 +463,22 @@ func writeMegacaveText(b *strings.Builder, text string, writeLine func(string), 
 		if len(compacted) > 0 {
 			writeLine(compacted)
 		}
+		return
+	}
+	// Prose / tool dump: the shared transform.
+	writeMegacaveProse(trimmed, writeLine, showChars)
+}
+
+// writeMegacaveProse is the prose half of the megacave transform, and the ONLY
+// prose path: a long run is cut to head+tail with an elision banner naming the
+// dropped char count, a normal run is collapsed (whitespace runs -> single
+// space, blank/filler lines dropped). Measured on the real 1467-row fixture
+// this is the transform that WORKS: 825 plain rows, 1,545,874 in -> 181,546
+// out, ratio 0.117. It is shared with the non-fence runs of a fenced row so a
+// row that merely contains a fence cannot smuggle unbudgeted prose past the
+// per-row show (that was the residual ratio > 1 on the fence population).
+func writeMegacaveProse(trimmed string, writeLine func(string), showChars int) {
+	if trimmed == "" {
 		return
 	}
 	// Long prose/tool dump: head+tail with elision banner.
@@ -386,6 +504,103 @@ func writeMegacaveText(b *strings.Builder, text string, writeLine func(string), 
 			continue
 		}
 		writeLine(reWS.ReplaceAllString(l, " "))
+	}
+}
+
+// writeMegacaveFenced renders text that contains markdown code fences within
+// the row's show budget: runs OUTSIDE a fence are ordinary megacave prose, each
+// fenced block is kept verbatim when it fits the budget and collapsed to a
+// bounded head + a "[... fenced <lang> block elided: N lines, M chars ...]"
+// marker when it does not. Deterministic, line-counting, no LLM.
+func writeMegacaveFenced(text string, writeLine func(string), showChars int) {
+	lines := strings.Split(text, "\n")
+	// Fence spans: [startIdx, endIdx] inclusive, endIdx = index of the closing
+	// fence (or len(lines)-1 when the block is unterminated).
+	type span struct{ start, end int }
+	var spans []span
+	for i := 0; i < len(lines); i++ {
+		t := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(t, "```") && !strings.HasPrefix(t, "~~~") {
+			continue
+		}
+		marker := t[:3]
+		end := len(lines) - 1
+		for j := i + 1; j < len(lines); j++ {
+			if strings.HasPrefix(strings.TrimSpace(lines[j]), marker) {
+				end = j
+				break
+			}
+		}
+		spans = append(spans, span{i, end})
+		i = end
+	}
+	spanAt := func(i int) (span, bool) {
+		for _, sp := range spans {
+			if i >= sp.start && i <= sp.end {
+				return sp, true
+			}
+		}
+		return span{}, false
+	}
+
+	for i := 0; i < len(lines); i++ {
+		sp, isFence := spanAt(i)
+		if !isFence {
+			// Maximal run of non-fence lines, then ONE prose transform over the
+			// whole run: bounding line-by-line would be unbudgeted in total (a row
+			// of 200 short prose lines emitted one per writeLine is exactly the
+			// fence-row residual ratio 1.08 the fixture measured).
+			j := i
+			for j < len(lines) {
+				if _, fenced := spanAt(j); fenced {
+					break
+				}
+				j++
+			}
+			writeMegacaveProse(strings.Join(lines[i:j], "\n"), writeLine, showChars)
+			i = j - 1
+			continue
+		}
+		i = sp.end
+		lang := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(lines[sp.start]), "`~"))
+		body := lines[sp.start+1 : sp.end] // lines strictly between the fences
+		bodyChars := 0
+		for _, bl := range body {
+			bodyChars += len(bl) + 1
+		}
+		if bodyChars <= showChars && len(lang)+len(lines[sp.start]) <= showChars {
+			// Fits the budget: keep the block verbatim, fences included.
+			for j := sp.start; j <= sp.end; j++ {
+				writeLine(lines[j])
+			}
+			continue
+		}
+		// Oversized: the block costs AT MOST showChars in total — marker first
+		// (it is the fact that survives), then a head line bounded by what the
+		// marker left. Reserving the marker's own characters is the whole point:
+		// paying head + marker on top of the budget is how a row of many small
+		// blocks (a tool result full of short fenced snippets, the shape of the
+		// real fixture) rendered each block BIGGER than it is and left the fence
+		// population at ratio 1.08.
+		if lang == "" {
+			lang = "code"
+		}
+		marker := fmt.Sprintf("[... fenced %s block elided: %d lines, %d chars ...]",
+			lang, len(body), bodyChars)
+		headBudget := showChars - len(marker)
+		if headBudget > 0 {
+			head := ""
+			for _, bl := range body {
+				if strings.TrimSpace(bl) != "" {
+					head = strings.TrimSpace(bl)
+					break
+				}
+			}
+			if head != "" {
+				writeLine(textsafe.HeadBytes(head, headBudget))
+			}
+		}
+		writeLine(marker)
 	}
 }
 

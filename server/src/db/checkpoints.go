@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -574,6 +576,19 @@ func lastUserIdx(messages []utils.Message) int {
 // the request that the caller just measured as fitting.
 const maxDurableSummaryChars = 80_000
 
+// minDurableExcerptChars is the floor of the room left for the NEW excerpt
+// after the prior roll-up is paid for. Without a floor, a prior summary near
+// half the budget leaves almost nothing, and the newest folded rows are
+// rendered down to a stub.
+const minDurableExcerptChars = 8_000
+
+// MaxDurableSummaryChars exposes the storage bound so the CALLER side (the ai
+// fold path) caps the excerpt it renders at the SAME number the storage layer
+// truncates at. Two different caps fighting each other is how a fold ends up
+// rendering an excerpt the storage then slices mid-sentence without the
+// renderer's own truncation marker ever appearing.
+const MaxDurableSummaryChars = maxDurableSummaryChars
+
 // priorSummaryBanner is the LEGACY head marker older builds wrote. It is
 // stripped, never written: a stored summary carries exactly ONE banner, so
 // generations of nesting cannot accumulate.
@@ -582,6 +597,12 @@ const priorSummaryBanner = "PRIOR CHECKPOINT:"
 // newerHistoryBanner is the single section marker separating the carried-
 // forward roll-up from the newest folded excerpt.
 const newerHistoryBanner = "[newer history, machine-compacted]"
+
+// truncatedExcerptBanner announces that the stored excerpt was CUT to
+// maxDurableSummaryChars. ONE marker, appended, never nested: the reader of the
+// roll-up must be able to see that history was dropped instead of discovering
+// it by the text ending mid-sentence.
+const truncatedExcerptBanner = "[... durable summary truncated at "
 
 // composeDurableSummary builds the stored summary: the carried-forward prior
 // roll-up VERBATIM, then ONE separator, then this fold's excerpt.
@@ -611,16 +632,63 @@ func composeDurableSummary(machineSummary func([]utils.Message) string, priorSum
 		if excerpt == "" {
 			return ""
 		}
-		if len(excerpt) > maxDurableSummaryChars {
-			excerpt = excerpt[:maxDurableSummaryChars]
-		}
+		excerpt = boundDurableExcerpt(excerpt)
 		excerpt = "[compacted by Plurality — machine excerpt unavailable; raw excerpt follows]\n" + excerpt
+	} else {
+		// THE SUCCESS PATH IS BOUNDED TOO. The fallback path truncated the excerpt
+		// and the success path did not, so one fold stored a 1,444,347-char roll-up
+		// (~481k tokens) measured on a real 1467-row conversation. The stored
+		// roll-up is what re-inflates the NEXT reload: an unbounded roll-up keeps
+		// the view above the eco trigger, so compaction fires again immediately and
+		// rewrites the prompt head every turn — the checkpoint pair is the first
+		// content after the system block, so every rewrite collapses backend KV
+		// prefix reuse to the system block and it never accumulates. The renderer
+		// already honours a caller-supplied ceiling
+		// (ai.MachineExcerptMegacaveCapped via eco.durableFold); this is the outer
+		// backstop that keeps that promise true for ANY machineSummary, at the same
+		// number the caller was asked to respect.
+		excerpt = boundDurableExcerpt(excerpt)
 	}
 	prior := boundPriorSummary(priorSummary, maxDurableSummaryChars/2)
 	if prior == "" {
 		return strings.TrimSpace(excerpt)
 	}
+	// Bound the NEW excerpt to what is left after the prior roll-up, so the
+	// concatenation never needs truncating and the prior roll-up is NEVER the
+	// thing that gets cut. Truncating the concatenation instead would keep the
+	// head (the prior) and silently drop the newest folded rows with no marker
+	// naming them — the exact "history vanished with no trace" shape.
+	room := maxDurableSummaryChars - len(prior) - len(newerHistoryBanner) - 3
+	if room < minDurableExcerptChars {
+		room = minDurableExcerptChars
+	}
+	excerpt = boundDurableExcerpt(excerpt, room)
 	return strings.TrimSpace(prior + "\n\n" + newerHistoryBanner + "\n" + excerpt)
+}
+
+// boundDurableExcerpt caps this fold's excerpt to maxDurableSummaryChars on a
+// rune boundary and appends ONE marker naming the original size, so a truncated
+// roll-up announces itself. Truncating at the END (keeping the head) mirrors the
+// excerpt's own chronological order: the oldest folded rows are what the next
+// reload reads first.
+func boundDurableExcerpt(excerpt string, maxChars ...int) string {
+	limit := maxDurableSummaryChars
+	if len(maxChars) > 0 && maxChars[0] > 0 {
+		limit = maxChars[0]
+	}
+	if len(excerpt) <= limit {
+		return excerpt
+	}
+	marker := truncatedExcerptBanner + strconv.Itoa(len(excerpt)) + " chars ...]"
+	keep := limit - len(marker) - 1
+	if keep < 0 {
+		return marker
+	}
+	// Keep the TAIL: the excerpt is chronological, so the head is the OLDEST
+	// folded rows. Keeping the head preserves a conversation's first hours and
+	// discards its most recent work — invisible to the model, which reads a
+	// summary that appears to end early. The marker names what was dropped.
+	return marker + "\n" + textsafe.TailBytes(excerpt, keep)
 }
 
 // boundPriorSummary caps the carried-forward roll-up, collapsing any banner

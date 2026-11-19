@@ -866,3 +866,62 @@ func TestDurableFrozenFoldNeverFoldsPastTheLastUserRow(t *testing.T) {
 		t.Fatalf("a fold with no legal boundary minted %d checkpoint rows", p.Count)
 	}
 }
+
+// TestDurableFrozenFoldBoundsSuccessPathExcerpt: THE WORST DEFECT. The
+// fallback path truncates the excerpt to maxDurableSummaryChars; the SUCCESS
+// path (machineSummary returns non-empty) does not, so one fold can store a
+// 1.4M-char roll-up (measured on the real 1467-row fixture: 1,444,347 chars =
+// ~481k tokens). The stored roll-up is what re-inflates the NEXT reload: an
+// unbounded roll-up makes the eco trigger fire again immediately, compaction
+// rewrites the prompt head every turn, and KV prefix reuse never accumulates.
+// So the bound applies to the stored roll-up on BOTH paths.
+func TestDurableFrozenFoldBoundsSuccessPathExcerpt(t *testing.T) {
+	const user = "fz_success_bound"
+	db := openFrozenDB(t, user)
+	ctx := frozenCtx(user)
+	convID := "c_success_bound"
+	seedConv(t, db, convID)
+
+	// A machine summary that SUCCEEDS and is far above the storage bound.
+	fat := strings.Repeat("machine excerpt body line\n", 20_000) // ~480k chars
+	if len(fat) <= maxDurableSummaryChars {
+		t.Fatalf("fixture too small to exercise the bound: %d", len(fat))
+	}
+	machine := func([]utils.Message) string { return fat }
+
+	appendRows(t, db, convID,
+		userMsg("U1"), asstMsg("A1", "call_1", "shell_exec"), toolMsg("shell_exec", "T1", "call_1"),
+		userMsg("U2 anchor"),
+	)
+	conv, err := GetConversationByIdInternal(ctx, convID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	folded, err := CompactConversationDurable(ctx, convID, conv.Messages, lastUserIdx(conv.Messages), machine)
+	if err != nil {
+		t.Fatalf("fold: %v", err)
+	}
+	if folded == 0 {
+		t.Fatalf("expected progress")
+	}
+	p := checkpointRows(t, db, convID)
+	if p.Count != 2 {
+		t.Fatalf("pair rows = %d, expected 2", p.Count)
+	}
+	// The stored roll-up must be bounded like the fallback's is.
+	if len(p.Summary) > maxDurableSummaryChars+200 {
+		t.Fatalf("SUCCESS-path stored roll-up is %d chars, unbounded (bound is %d) — the next reload re-inflates and the fold rewrites the prompt head every turn",
+			len(p.Summary), maxDurableSummaryChars)
+	}
+	// The truncation is announced exactly once (no nested banner generations).
+	// Literal marker text: pinning the string (not a constant name) is what
+	// makes this test run against the pre-change code.
+	const marker = "[... durable summary truncated at "
+	if n := strings.Count(p.Summary, marker); n != 1 {
+		t.Fatalf("truncation marker appears %d times, want exactly 1", n)
+	}
+	// The head of the excerpt survives (it is a truncation, not a drop).
+	if !strings.Contains(p.Summary, "machine excerpt body line") {
+		t.Fatalf("truncated roll-up kept no content:\n%s", head(p.Summary, 200))
+	}
+}
