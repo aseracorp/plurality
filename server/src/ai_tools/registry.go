@@ -253,6 +253,25 @@ func GetRequests(userID string, model utils.Model, ClientSideTools []utils.Funct
 	return requests
 }
 
+// IsClientSideToolName reports whether a tool name (bare or namespaced as
+// bundle__toolID) belongs to a Registry tool marked ClientSide — i.e. one that
+// only the user's device app can execute. The tool loop uses this to tell a
+// device tool the loop cannot reach (no app streaming this conversation) apart
+// from a name the model invented, so the error text names the real cause
+// instead of blaming the model.
+func IsClientSideToolName(name string) bool {
+	if tool, ok := Registry[name]; ok {
+		return tool.ClientSide
+	}
+	if i := strings.LastIndex(name, mcp.NamespaceSeparator); i > 0 {
+		bare := name[i+len(mcp.NamespaceSeparator):]
+		if tool, ok := Registry[bare]; ok && tool.BundleName == name[:i] {
+			return tool.ClientSide
+		}
+	}
+	return false
+}
+
 // truncateWords returns the first n words of s, appending "..." if truncated.
 func truncateWords(s string, n int) string {
 	words := strings.Fields(s)

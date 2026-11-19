@@ -519,7 +519,18 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				}
 				msg := "Error: tool '" + tc.Function.Name + "' cannot be executed by this client"
 				if !advertised {
-					msg += ": it was not advertised in this request (the model may have invented the name)."
+					if ai_tools.IsClientSideToolName(tc.Function.Name) {
+						// A REAL device tool, simply not advertised: this loop has no
+						// client attached, and device tools are only advertised by an
+						// app that streams this conversation (jobs.RunPrompt builds a
+						// payload without ClientSideTools, so cron/background runs
+						// never have them). Saying "the model invented the name" here
+						// sent agents down a false "app is offline" diagnosis on
+						// 2026-11-19 while the app was in fact running and logged in.
+						msg += ": device tools need a live app streaming THIS conversation, and this run has none — background/cron runs never advertise them. The app being running and logged in is not enough. Do not retry this tool from here: hand the device work to a conversation the user opens in the app (conversations__create_conversation), or use a server-side tool."
+					} else {
+						msg += ": it was not advertised in this request (the model may have invented the name)."
+					}
 				} else {
 					msg += ": no client is connected to this conversation and no live app of this user can run it."
 				}
