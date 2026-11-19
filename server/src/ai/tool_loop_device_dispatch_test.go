@@ -21,23 +21,31 @@ func TestClientToolUnreachable(t *testing.T) {
 		advertised          bool
 		hasConversationConn bool
 		hasStatusConn       bool
+		hasDeviceClaim      bool
 		want                bool
 	}{
-		{"normal dispatch", true, true, true, false},
-		{"stream attached, no status stream", true, true, false, false},
-		{"live app re-attaching: dispatch, do not fail fast", true, false, true, false},
-		{"headless run: cron / sub-agent / abandoned resume", true, false, false, true},
-		{"hallucinated name with a fully connected client", false, true, true, true},
-		{"hallucinated name, no clients at all", false, false, false, true},
-		{"hallucinated name, live app re-attaching", false, false, true, true},
+		{"normal dispatch", true, true, true, false, false},
+		{"stream attached, no status stream", true, true, false, false, false},
+		{"live app re-attaching: dispatch, do not fail fast", true, false, true, false, false},
+		{"headless run: cron / sub-agent / abandoned resume", true, false, false, false, true},
+		{"hallucinated name with a fully connected client", false, true, true, false, true},
+		{"hallucinated name, no clients at all", false, false, false, false, true},
+		{"hallucinated name, live app re-attaching", false, false, true, false, true},
+		// Device channel (docs/device-channel.md): a live claim makes an
+		// advertised tool dispatchable with NO conversation stream and NO
+		// status client of its own counted — that is the background-run case.
+		{"background run with a live claim: dispatchable", true, false, false, true, false},
+		{"background run, status stream, no claim: still unreachable", true, false, true, false, false},
+		{"claim + chat stream: dispatchable", true, true, true, true, false},
+		{"claim alone never rescues an unadvertised name", false, false, false, true, true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := clientToolUnreachable(tc.advertised, tc.hasConversationConn, tc.hasStatusConn)
+			got := clientToolUnreachable(tc.advertised, tc.hasConversationConn, tc.hasStatusConn, tc.hasDeviceClaim)
 			if got != tc.want {
-				t.Fatalf("clientToolUnreachable(advertised=%v, conv=%v, status=%v) = %v, want %v",
-					tc.advertised, tc.hasConversationConn, tc.hasStatusConn, got, tc.want)
+				t.Fatalf("clientToolUnreachable(advertised=%v, conv=%v, status=%v, claim=%v) = %v, want %v",
+					tc.advertised, tc.hasConversationConn, tc.hasStatusConn, tc.hasDeviceClaim, got, tc.want)
 			}
 		})
 	}

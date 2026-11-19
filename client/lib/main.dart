@@ -6,6 +6,7 @@ import 'package:plurality/api/MCP.dart';
 import 'package:plurality/api/skills_service.dart';
 import 'package:plurality/api/chat_service.dart';
 import 'package:plurality/api/client_identity.dart';
+import 'package:plurality/api/device_channel.dart';
 import 'package:path_provider/path_provider.dart';
 import './auth/auth-service.dart';
 import './auth/account.dart';
@@ -111,6 +112,9 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
       // against a logged-out / signed-out session.
       if (ref.read(authStateProvider).valueOrNull != null) {
         ChatService().reconnectVisible();
+        // A throttled background tab drops long-lived SSE sockets, device
+        // channel included; re-open it so the claim keeps being renewed.
+        unawaited(DeviceChannelService().handleResumed());
       }
     });
   }
@@ -123,6 +127,10 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
       // web this also covers the (less reliable) resume path; the primary
       // web recovery is the visibilitychange listener above.
       ChatService().handleAppResumed();
+      // Same severing kills the device channel's socket, and a channel with a
+      // dead socket stops renewing its claim — the server then treats the claim
+      // as expired (lazy expiry) and background device calls fast-fail again.
+      unawaited(DeviceChannelService().handleResumed());
     }
   }
 
@@ -194,11 +202,19 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
           if (user == null) {
             // Logged out (or token rejected) — tear down any live SSE/status
             // streams so their retry loops stop hammering the server with a
-            // stale token while we sit on the login screen.
+            // stale token while we sit on the login screen. The device channel
+            // too: its claim must be dropped (the server drops a claim with
+            // its status client) so background runs stop routing device work to
+            // a logged-out app.
             ChatService().disconnect();
+            DeviceChannelService().stopAndDispose();
             return LoginScreen();
           }
           ChatService().ensureConnected();
+          // The device channel is app-wide, not per-conversation: it is what
+          // lets cron / webhook / sub-agent runs use this device at all.
+          // Idempotent, and a no-op until a server URL is configured.
+          DeviceChannelService().ensureStarted();
           return ChatScreen(isMobile: isMobile);
         },
         loading: () => LoadingScreen(),

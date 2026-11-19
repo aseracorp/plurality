@@ -94,7 +94,14 @@ func WriteSSEEvent(w http.ResponseWriter, event SSEEvent) error {
 }
 
 // StatusEvent is a lightweight event for the global status stream.
-// No content, no tool args, no results — just enough for UI indicators.
+// No content, no tool results — just enough for UI indicators, plus the
+// device-channel frame (Type == "device_tool_request") addressed to one app.
+//
+// Byte-compatibility contract: every device field is omitempty, so a legacy
+// status event (Type == "") serializes byte-identically to what the app has
+// always read. Pinned by TestLegacyStatusEventJSONIsUnchanged: the sidebar
+// parses these on every conversation of every user, and an added
+// "type": "" key would churn every frame for no reason.
 type StatusEvent struct {
 	ConversationID string `json:"conversation_id"`
 	State          string `json:"state"`               // "processing", "idle", "waiting_for_tool"
@@ -103,12 +110,43 @@ type StatusEvent struct {
 	Title          string `json:"title,omitempty"`     // set when title is generated server-side
 	Icon           string `json:"icon,omitempty"`      // set when icon is generated server-side
 
+	// Type is "" for the legacy status frame above, or "device_tool_request"
+	// for a device tool call addressed to the client whose client_id this
+	// frame was targeted at (see statusRegistry.BroadcastToClient).
+	Type string `json:"type,omitempty"`
+	// RequestID identifies this dispatch; the app posts the result to
+	// POST /chat/device-tool-result/<request_id> and echoes tool_call_id /
+	// name back so the server can verify it is answering the right call.
+	RequestID string `json:"request_id,omitempty"`
+	// DeviceTool is the call payload. Only present with
+	// Type == "device_tool_request".
+	DeviceTool *DeviceToolRequest `json:"device_tool,omitempty"`
+
 	// ModelSelected is the conversation's current per-conversation settings
 	// snapshot, broadcast on the global status stream so any client with the
 	// sidebar open (not necessarily watching this conversation's SSE) stays
 	// in sync — including the client lock holder so the "locked on X" banner
 	// updates everywhere without a full reload.
 	ModelSelected *utils.ModelSelected `json:"model_selected,omitempty"`
+}
+
+// DeviceToolRequest is the device-channel payload of a StatusEvent: one
+// client-side tool call the app is asked to execute unattended, plus what it
+// needs to answer back and to time itself out.
+type DeviceToolRequest struct {
+	ConversationID string `json:"conversation_id"`
+	ToolCallID     string `json:"tool_call_id"`
+	Name           string `json:"name"`
+	// Arguments is the RAW JSON argument string from the model. The app
+	// validates it against the schema it advertised in its claim before
+	// executing, so a malformed call never reaches the shell.
+	Arguments string `json:"arguments"`
+	// TimeoutSeconds is how long the server will wait for the result. The app
+	// must finish (and post) inside it; past it the server synthesizes an
+	// error result and arms the device-unresponsive memo.
+	TimeoutSeconds int `json:"timeout_seconds"`
+	// Source is "background" (cron / webhook / sub-agent run) or "chat".
+	Source string `json:"source"`
 }
 
 // WriteStatusEvent serializes a StatusEvent and writes it as SSE.

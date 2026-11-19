@@ -9,6 +9,7 @@ import 'package:plurality/api/shell_service.dart';
 import 'package:plurality/api/client_identity.dart';
 import 'package:plurality/api/client_tool_ownership.dart';
 import 'package:plurality/api/client_tool_timeout.dart';
+import 'package:plurality/api/client_tool_validation.dart';
 
 import '../auth/auth-service.dart';
 import '../utils/types.dart';
@@ -967,50 +968,17 @@ class ChatService {
 
   /// Strict-validate args for a client-side tool call against its declared
   /// schema. Returns null when valid, or an LLM-facing error string.
+  ///
+  /// Thin delegate onto the shared helper (client_tool_validation.dart), which
+  /// the device channel also uses. Kept as a method so the chat's two dispatch
+  /// sites (stream-driven and the resume-on-open path) stay readable, and so
+  /// chat behaviour is byte-identical: the rules and the error wording did not
+  /// move, only their home, so the model reads the same "unknown parameter(s)
+  /// [...]" string it always did.
   String? _validateClientToolArgs(
     ToolCall toolCall,
     List<Map<String, dynamic>> defs,
-  ) {
-    Map<String, dynamic>? def;
-    for (final d in defs) {
-      if (d['name'] == toolCall.function.name) {
-        def = d;
-        break;
-      }
-    }
-    if (def == null) return null;
-    final params = (def['parameters'] ?? def['input_schema']) as Map?;
-    if (params == null) return null;
-
-    final propsRaw = params['properties'];
-    final allowed = propsRaw is Map ? propsRaw.keys.map((k) => k.toString()).toSet() : <String>{};
-    final requiredRaw = params['required'];
-    final required = requiredRaw is List
-        ? requiredRaw.map((e) => e.toString()).toList()
-        : <String>[];
-
-    final argsStr = toolCall.function.arguments.isEmpty ? '{}' : toolCall.function.arguments;
-    dynamic decoded;
-    try {
-      decoded = jsonDecode(argsStr);
-    } catch (e) {
-      return 'Error: invalid arguments for ${toolCall.function.name}: arguments must be a JSON object ($e)';
-    }
-    if (decoded is! Map) {
-      return 'Error: invalid arguments for ${toolCall.function.name}: arguments must be a JSON object';
-    }
-    final provided = decoded.keys.map((k) => k.toString()).toSet();
-
-    final unknown = provided.difference(allowed).toList()..sort();
-    final missing = required.where((r) => !provided.contains(r)).toList()..sort();
-    if (unknown.isEmpty && missing.isEmpty) return null;
-
-    final allowedSorted = allowed.toList()..sort();
-    final parts = <String>[];
-    if (unknown.isNotEmpty) parts.add('unknown parameter(s) [${unknown.join(', ')}]');
-    if (missing.isNotEmpty) parts.add('missing required parameter(s) [${missing.join(', ')}]');
-    return 'Error: invalid arguments for ${toolCall.function.name}: ${parts.join('; ')}; allowed parameters: [${allowedSorted.join(', ')}]';
-  }
+  ) => validateClientToolArgs(toolCall, defs);
 
   /// Execute client-side (MCP) tools and submit results back to server.
   Future<void> _executeClientTools(

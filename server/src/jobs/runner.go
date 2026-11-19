@@ -135,6 +135,16 @@ func RunPrompt(ctx context.Context, userID string, opts RunOptions) {
 		ConversationID: updated.ID,
 		ModelSelected:  modelSel,
 		Messages:       []utils.Message{msg},
+		// Advertise the user's live device claim (docs/device-channel.md) so a
+		// cron / webhook run can dispatch device tools over the app-wide
+		// channel. nil when the app is not connected, which is exactly the
+		// pre-existing behaviour: no ClientSideTools, and the fast-fail text
+		// stays as it is today.
+		//
+		// Consent is NOT here: ai_tools.GetRequests filters client tools
+		// against model.Tools by the namespaced key, so a tool the preset does
+		// not enable never reaches the LLM no matter what the app claims.
+		ClientSideTools: backgroundDeviceTools(userID),
 	}
 	if preset != nil {
 		payload.MiniApp = *preset
@@ -158,6 +168,12 @@ type SubAgentOptions struct {
 	// ModelSelected drives the LLM and tool gating. The caller is responsible
 	// for building this (e.g. via ai.ShortcutModelSelected + intersected tools).
 	ModelSelected utils.ModelSelected
+
+	// ParentClientSideTools is the spawning conversation's advertised device
+	// tool set. The child's set is intersected with it, so a sub-agent can
+	// never gain a device tool its parent did not have. Empty means the parent
+	// advertised none, so the child advertises none either.
+	ParentClientSideTools []utils.FunctionToolsRequest
 }
 
 // RunSubAgent creates a child conversation linked to ParentID, kicks off the
@@ -220,6 +236,11 @@ func RunSubAgent(ctx context.Context, userID string, opts SubAgentOptions) (stri
 		ConversationID: updated.ID,
 		ModelSelected:  opts.ModelSelected,
 		Messages:       []utils.Message{msg},
+		// A sub-agent gets the intersection of the live claim and the tools the
+		// SPAWNING conversation advertised: a sub-agent can never gain device
+		// tools its parent lacked (the same rule parallelSubAgentExec enforces
+		// for server tools).
+		ClientSideTools: subAgentDeviceTools(userID, opts.ParentClientSideTools),
 	}
 
 	done := make(chan struct{})
@@ -229,6 +250,23 @@ func RunSubAgent(ctx context.Context, userID string, opts SubAgentOptions) (stri
 	}()
 
 	return updated.ID, done, nil
+}
+
+// subAgentDeviceTools resolves the device tools a sub-agent may advertise: the
+// user's live claim restricted to the parent's advertised set. Extracted so the
+// intersection rule (a child never gains a device tool its parent lacked) is
+// testable in isolation, and so RunPrompt / RunSubAgent share one definition.
+func subAgentDeviceTools(userID string, parentTools []utils.FunctionToolsRequest) []utils.FunctionToolsRequest {
+	return ai.IntersectClientSideTools(ai.DeviceRegistry.ToolsForUser(userID), parentTools)
+}
+
+// backgroundDeviceTools resolves the device tools a cron / webhook run may
+// advertise: the user's live claim verbatim, sorted by name (the prompt-cache
+// contract — see ai.DeviceRegistry.Claim). Nil when the app is not connected,
+// which keeps the pre-existing "no device tools in background runs" behaviour
+// byte-identical, including the fast-fail error text.
+func backgroundDeviceTools(userID string) []utils.FunctionToolsRequest {
+	return ai.DeviceRegistry.ToolsForUser(userID)
 }
 
 func truncate(s string, n int) string {

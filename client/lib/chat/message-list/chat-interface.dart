@@ -15,6 +15,7 @@ import '../../api/mini-apps.dart';
 import '../../api/models_service.dart';
 import '../../api/preferences_provider.dart';
 import '../../api/client_identity.dart';
+import '../../api/device_channel.dart';
 import '../../preset/preset-editor.dart';
 import 'AnimatedMessageBox.dart';
 import 'package:image_picker/image_picker.dart';
@@ -34,6 +35,7 @@ import './MiniAppForm.dart';
 import 'middle-click.dart';
 import 'package:super_sliver_list/super_sliver_list.dart';
 import 'toolcall-badge.dart';
+import 'device_activity_banner.dart';
 import 'fs_read_attach.dart' show isFsReadAttachCall;
 import 'fs_write_diff.dart';
 import 'wait_badge.dart' show isHiddenWaitResume;
@@ -1845,6 +1847,36 @@ class _ChatInterfaceState extends ConsumerState<ChatInterface>
               icon: Icon(Icons.close),
             ),
           ),
+
+        // Device-activity banner: a background run (cron / webhook / sub-agent)
+        // that used THIS device over the device channel. The run lives in its
+        // own conversation row, so nothing else in this UI reveals that the
+        // machine just ran a command unattended. Positioned so it works on the
+        // new-chat screen too, where every other Stack child is Positioned and
+        // a non-positioned child would collapse the Stack to 0x0 (see the
+        // client-lock banner). Informational only — the run is already in
+        // flight and the server blocks on the result, so a banner must not
+        // gate it.
+        Builder(builder: (context) {
+          final channel = DeviceChannelService().channel;
+          if (channel == null || channel.isDisposed) {
+            // Zero-size and Positioned: a non-positioned 0x0 child collapses
+            // the whole Stack on the new-chat screen (see the client-lock
+            // banner comment), and a Positioned with no edges trips its assert.
+            return const Positioned(left: 0, top: 0, child: SizedBox.shrink());
+          }
+          return Positioned(
+            left: 0,
+            right: 0,
+            bottom: 96,
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 640),
+                child: DeviceActivityBanner(channel: channel),
+              ),
+            ),
+          );
+        }),
 
         if (!_isNearBottom)
           Positioned(

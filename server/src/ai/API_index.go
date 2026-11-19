@@ -439,13 +439,20 @@ func HandleStatusStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// client_id turns this connection into a DEVICE CHANNEL (docs/
+	// device-channel.md): the app's ClientIdentity().id, recorded on the
+	// StatusClient so device tool frames can be addressed to exactly this app
+	// and so the connection owns a claim. Empty means a legacy client: status
+	// events only, no device channel, and it never sees a device_tool_request.
+	clientID := r.URL.Query().Get("client_id")
+
 	// Build through the constructor: it initializes the heartbeatStop channel
 	// (and its sync.Once) that stopWriter() closes. A raw struct literal
 	// here leaves heartbeatStop nil, so every disconnect panics with
 	// "close of nil channel" — and when that panic fires inside the LLM loop
 	// goroutine (via StatusRegistry.BroadcastToUser → stopWriter) it kills
 	// the conversation's loop mid-turn, wedging it in "processing" forever.
-	client := NewStatusClient(w, flusher, userID, r.Context())
+	client := NewStatusClient(w, flusher, userID, clientID, r.Context())
 	StatusRegistry.Add(client)
 	defer StatusRegistry.Remove(client)
 
@@ -462,6 +469,117 @@ func HandleStatusStream(w http.ResponseWriter, r *http.Request) {
 	case <-client.Done:
 	case <-r.Context().Done():
 	}
+}
+
+// --- Device channel endpoints (docs/device-channel.md) ---
+
+// deviceClaimRequest is the body of POST /client/claim.
+type deviceClaimRequest struct {
+	ClientID         string                       `json:"client_id"`
+	Tools            []utils.FunctionToolsRequest `json:"tools"`
+	ClientFolderPath string                       `json:"client_folder_path"`
+	TTLSeconds       int                          `json:"ttl_seconds"`
+}
+
+// HandleClientClaim stores or refreshes the app's device-tool advertisement for
+// the authenticated user.
+//
+// The claim is what lets a BACKGROUND run (cron, webhook, sub-agent) advertise
+// and dispatch device tools at all: before this existed jobs.RunPrompt built a
+// payload with no ClientSideTools, so every device call fast-failed with
+// "cannot be executed by this client" while the app was running and logged in
+// (2026-11-19, the Outlook bridge cron chain — the agent concluded the Windows
+// app was offline, which was a server-side routing gap, not an offline app).
+//
+// The app re-claims every ~30s while its status stream is open. The TTL is the
+// safety bound: a device that stops refreshing lapses within one TTL (lazy
+// expiry on read), so background runs fail fast on an unreachable device
+// instead of dispatching into a dead socket.
+func HandleClientClaim(w http.ResponseWriter, r *http.Request) {
+	// Plain http.Error (not utils.SendHTTPError) for the client-facing 4xx
+	// paths: SendHTTPError rewrites every message into a 500 with a random
+	// user code, which would make an app-side bug ("I forgot client_id") look
+	// like a server failure and hide the reason from the app's log.
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID, ok := r.Context().Value("userID").(string)
+	if !ok || userID == "" {
+		http.Error(w, "User not authenticated", http.StatusUnauthorized)
+		return
+	}
+
+	var req deviceClaimRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.ClientID == "" {
+		http.Error(w, "client_id is required", http.StatusBadRequest)
+		return
+	}
+
+	expires := DeviceRegistry.Claim(userID, req.ClientID, StatusRegistry.ConnIDForClient(userID, req.ClientID), req.ClientFolderPath, req.Tools, clampDeviceClaimTTL(req.TTLSeconds))
+	if expires.IsZero() {
+		http.Error(w, "Claim rejected", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":         true,
+		"expires_at": expires.UTC().Format(time.RFC3339),
+	})
+}
+
+// deviceToolResultRequest is the body of POST /chat/device-tool-result/{request_id}.
+type deviceToolResultRequest struct {
+	ToolCallID string `json:"tool_call_id"`
+	Name       string `json:"name"`
+	Result     string `json:"result"`
+	Error      string `json:"error"`
+}
+
+// HandleDeviceToolResult resolves a pending device tool call dispatched over
+// the device channel, unblocking the LLM loop waiting in dispatchDeviceTool.
+//
+// Answered 404 when the request is unknown, expired, already answered, or
+// belongs to a different user — the app ignores the response, and an expired
+// request is one the loop already synthesized an error for, so delivering it
+// into a turn that moved on would duplicate a tool row.
+func HandleDeviceToolResult(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID, ok := r.Context().Value("userID").(string)
+	if !ok || userID == "" {
+		http.Error(w, "User not authenticated", http.StatusUnauthorized)
+		return
+	}
+	requestID := mux.Vars(r)["request_id"]
+	if requestID == "" {
+		http.Error(w, "request_id is required", http.StatusBadRequest)
+		return
+	}
+
+	var req deviceToolResultRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if !DeviceRegistry.Resolve(requestID, userID, req.ToolCallID, req.Name, req.Result, req.Error) {
+		// Plain 404: this is normal control flow — a result racing the
+		// dispatch timeout, a replayed frame, a request the app never owned.
+		// The app ignores the response.
+		http.Error(w, "No pending device tool request", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 }
 
 // --- Non-Chat Endpoints (kept from original, adapted to new types) ---

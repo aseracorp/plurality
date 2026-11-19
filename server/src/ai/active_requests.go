@@ -506,6 +506,17 @@ type StatusClient struct {
 	UserID  string
 	Done    chan struct{}
 
+	// ClientID is the app's own identity (ClientIdentity().id), passed as the
+	// `client_id` query param on /status/stream. It is what makes the status
+	// stream a DEVICE CHANNEL and not just a sidebar feed: device tool frames
+	// are targeted (BroadcastToClient) so only the app that advertised the
+	// tool sees them, and a legacy client with an empty ClientID never sees
+	// any device frame at all.
+	ClientID string
+	// ConnID identifies this specific connection. The device claim is tied to
+	// it, so the claim dies with the connection (DeviceRegistry.DropForConn).
+	ConnID string
+
 	outQ          chan StatusEvent
 	writeMu       sync.Mutex
 	heartbeatStop chan struct{}
@@ -518,15 +529,20 @@ type StatusClient struct {
 	reqCtx context.Context
 }
 
-// NewStatusClient creates a StatusClient.
-func NewStatusClient(w http.ResponseWriter, flusher http.Flusher, userID string, reqCtx context.Context) *StatusClient {
+// NewStatusClient creates a StatusClient. clientID may be empty: that is the
+// legacy shape (status events only, no device channel).
+func NewStatusClient(w http.ResponseWriter, flusher http.Flusher, userID string, clientID string, reqCtx context.Context) *StatusClient {
 	if reqCtx == nil {
 		reqCtx = context.Background()
 	}
 	return &StatusClient{
-		writer:        w,
-		flusher:       flusher,
-		UserID:        userID,
+		writer:   w,
+		flusher:  flusher,
+		UserID:   userID,
+		ClientID: clientID,
+		// Every connection gets its own id: the claim is bound to it and a
+		// reconnect must not inherit the previous socket's claim.
+		ConnID:        utils.GenerateRandomString(12),
 		Done:          make(chan struct{}),
 		outQ:          make(chan StatusEvent, sseOutQueueDepth),
 		heartbeatStop: make(chan struct{}),
@@ -655,19 +671,34 @@ type statusRegistry struct {
 	clients map[*StatusClient]bool
 }
 
-// Add registers a status stream client.
+// Add registers a status stream client. A client that carries a client_id also
+// gets a placeholder device claim: the claim lives exactly as long as this
+// connection, and the app fills in the tool list through POST /client/claim.
+//
+// Lock order note: DeviceRegistry is deliberately called while holding
+// r.mu (StatusRegistry.mu -> DeviceRegistry.mu is the documented order); no
+// DeviceRegistry path acquires StatusRegistry.mu while holding its own lock.
 func (r *statusRegistry) Add(client *StatusClient) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.clients[client] = true
+	if client.ClientID != "" {
+		DeviceRegistry.ClaimOnConnect(client.UserID, client.ClientID, client.ConnID)
+	}
 	client.startWriter()
 }
 
-// Remove unregisters a status stream client.
+// Remove unregisters a status stream client and drops the device claim owned
+// by its connection: a device that is gone cannot be handed work, so the
+// background runs of that user fall back to the fast-fail path immediately
+// rather than dispatching into a closed socket.
 func (r *statusRegistry) Remove(client *StatusClient) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.clients, client)
+	if client.ClientID != "" {
+		DeviceRegistry.DropForConn(client.ConnID)
+	}
 	client.stopWriter()
 }
 
@@ -711,6 +742,83 @@ func (r *statusRegistry) BroadcastToUser(userID string, event StatusEvent) {
 			}
 		}
 	}
+}
+
+// BroadcastToClient sends a StatusEvent ONLY to the status clients of this
+// user whose client_id matches. This is the device channel's addressing:
+// device tool frames must reach the one app that advertised the tool, never
+// every window of the user (which would let two devices race to execute the
+// same shell command), and never a legacy client with an empty client_id.
+//
+// Returns true when at least one client accepted the event. Callers use the
+// return value to fail fast: a claim whose connection cannot be written to is
+// dead, and dispatching a 180s device call into it would burn the loop for
+// nothing. Writes go through StatusClient.Send (bounded queue), so a stalled
+// status client can never block the LLM loop — it is dropped instead.
+func (r *statusRegistry) BroadcastToClient(userID string, clientID string, event StatusEvent) bool {
+	if userID == "" || clientID == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	sent := false
+	for client := range r.clients {
+		if client.UserID != userID || client.ClientID != clientID {
+			continue
+		}
+		if !client.Send(event) {
+			delete(r.clients, client)
+			client.stopWriter()
+			select {
+			case <-client.Done:
+				// already closed
+			default:
+				close(client.Done)
+			}
+			continue
+		}
+		sent = true
+	}
+	return sent
+}
+
+// ConnIDForClient returns the connection id of the user's status client with
+// this client_id, "" when no such connection is registered. The claim endpoint
+// uses it to bind a claim to the live socket that carries its frames, so
+// closing that socket drops the claim (Remove -> DropForConn) even when the
+// claim itself was posted through a separate short-lived HTTP request.
+func (r *statusRegistry) ConnIDForClient(userID string, clientID string) string {
+	if userID == "" || clientID == "" {
+		return ""
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for client := range r.clients {
+		if client.UserID == userID && client.ClientID == clientID {
+			return client.ConnID
+		}
+	}
+	return ""
+}
+
+// ClientIDForUser returns the client_id of the user's live device claim, ""
+// when there is none. Falls back to the first status client that carries an
+// id, so a claim registered outside the claim endpoint still routes.
+func (r *statusRegistry) ClientIDForUser(userID string) string {
+	if userID == "" {
+		return ""
+	}
+	if claim := DeviceRegistry.ClaimForUser(userID); claim != nil {
+		return claim.ClientID
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for client := range r.clients {
+		if client.UserID == userID && client.ClientID != "" {
+			return client.ClientID
+		}
+	}
+	return ""
 }
 
 // CopyUserContext creates a context that carries the userID from the original HTTP

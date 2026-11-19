@@ -209,6 +209,14 @@ func main() {
 	r.HandleFunc("/chat/approve/{id}", auth.AuthMiddleware(ai.HandleApprove)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/status/stream", auth.AuthMiddleware(ai.HandleStatusStream)).Methods("GET", "OPTIONS")
 
+	// Device channel (docs/device-channel.md): the app-wide device-tool claim
+	// and the result endpoint that unblocks a background run waiting in
+	// ai.dispatchDeviceTool. Auth'd like the chat routes — the claim and the
+	// result are per-user, and Resolve verifies the pending request belongs to
+	// the authenticated user.
+	r.HandleFunc("/client/claim", auth.AuthMiddleware(ai.HandleClientClaim)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/chat/device-tool-result/{request_id}", auth.AuthMiddleware(ai.HandleDeviceToolResult)).Methods("POST", "OPTIONS")
+
 	// Conversations
 	r.HandleFunc("/conversations", auth.AuthMiddleware(ai.API_ListConversation)).Methods("GET", "OPTIONS")
 	r.HandleFunc("/conversation/{id}", auth.AuthMiddleware(ai.API_HandleConversation)).Methods("GET", "PUT", "DELETE", "OPTIONS")

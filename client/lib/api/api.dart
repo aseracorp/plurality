@@ -277,12 +277,32 @@ class ApiService {
   /// (conversation_id absent) so the consumer can distinguish "socket alive
   /// but quiet" from "socket dead" — the ChatService idle watchdog relies on
   /// this to avoid false reconnects during long silent generations.
-  Future<Stream<Map<String, dynamic>>> connectStatusStream() async {
-    final request = http.Request('GET', Uri.parse('$baseUrl/status/stream'));
+  ///
+  /// [clientId] (docs/device-channel.md) tags this status client with the app's
+  /// ClientIdentity, so the server can record the device claim against it and
+  /// route `device_tool_request` frames to THIS connection only. An empty
+  /// clientId is a legacy connection: status events, no device channel. Omitted
+  /// by ChatService's sidebar subscription, which closes when idle and is
+  /// therefore useless as a device channel — DeviceChannel keeps its own socket.
+  ///
+  /// [httpClient] is an injected transport seam for tests; production passes
+  /// null and uses a default `http` client.
+  Future<Stream<Map<String, dynamic>>> connectStatusStream({
+    http.Client? httpClient,
+    String clientId = '',
+  }) async {
+    final query = clientId.isEmpty
+        ? ''
+        : '?client_id=${Uri.encodeQueryComponent(clientId)}';
+    final request = http.Request(
+      'GET',
+      Uri.parse('$baseUrl/status/stream$query'),
+    );
     request.headers['Authorization'] =
         'Bearer ${await _authService.getCurrentUserToken()}';
 
-    final response = await request.send();
+    final client = httpClient ?? http.Client();
+    final response = await client.send(request);
     if (response.statusCode != 200) {
       throw APIException('Failed to connect status stream', statusCode: response.statusCode);
     }
