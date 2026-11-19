@@ -252,10 +252,29 @@ func truncateWords(s string, n int) string {
 // to minimise token usage.
 func GetDisabledToolsSummary(userID string, model utils.Model, ClientSideTools []utils.FunctionToolsRequest) string {
 	selected := model.Tools
-	var lines []string
+
+	// This summary is appended to the SYSTEM PROMPT (see ai/index.go), so its
+	// byte order is part of the prompt's byte-prefix and the KV prompt cache
+	// depends on it staying byte-identical across turns.
+	//
+	// Registry is a map[string]AITool and Go randomizes map iteration order on
+	// EVERY call, so ranging it here re-shuffled the disabled list on every
+	// request. Observed live on strata: the divergence landed at byte ~2801 of
+	// the system prompt — i.e. ~600 tokens in — which pins prefix-cache reuse
+	// to the 4-checkpoint floor of exactly 16384 tokens and forces 10-30k
+	// tokens of re-prefill (10-20 s) on every single agent turn.
+	//
+	// Collect (emittedName, line) pairs and sort, using the same canonical
+	// ordering as GetRequests: the names as they are emitted, ascending.
+	type disabledLine struct {
+		name string
+		line string
+	}
+	var items []disabledLine
 
 	// Builtin tools
-	for _, tool := range Registry {
+	for id, tool := range Registry {
+		_ = id
 		if tool.ToolID == ConversationAttachmentsTool.ToolID || tool.ToolID == ReadDocumentTool.ToolID || tool.ToolID == SearchDocumentTool.ToolID {
 			continue
 		}
@@ -273,26 +292,54 @@ func GetDisabledToolsSummary(userID string, model utils.Model, ClientSideTools [
 			selKey = tool.BundleName + mcp.NamespaceSeparator + tool.ToolID
 		}
 		if _, ok := selected[selKey]; !ok {
-			lines = append(lines, fmt.Sprintf("- %s: %s", selKey, truncateWords(tool.ToolRequest.Function.Description, 20)))
+			items = append(items, disabledLine{
+				name: selKey,
+				line: fmt.Sprintf("- %s: %s", selKey, truncateWords(tool.ToolRequest.Function.Description, 20)),
+			})
 		}
 	}
 
-	// Server-side MCP tools
+	// Server-side MCP tools (mcp.ToolsRequests already emits sorted).
 	for _, mcpReq := range mcp.ToolsRequests(userID) {
 		if _, ok := selected[mcpReq.Function.Name]; !ok {
-			lines = append(lines, fmt.Sprintf("- %s: %s", mcpReq.Function.Name, truncateWords(mcpReq.Function.Description, 20)))
+			items = append(items, disabledLine{
+				name: mcpReq.Function.Name,
+				line: fmt.Sprintf("- %s: %s", mcpReq.Function.Name, truncateWords(mcpReq.Function.Description, 20)),
+			})
 		}
 	}
 
 	// Client-side tools
 	for _, tool := range ClientSideTools {
 		if _, ok := selected[tool.Name]; !ok {
-			lines = append(lines, fmt.Sprintf("- %s: %s", tool.Name, truncateWords(tool.Description, 20)))
+			items = append(items, disabledLine{
+				name: tool.Name,
+				line: fmt.Sprintf("- %s: %s", tool.Name, truncateWords(tool.Description, 20)),
+			})
 		}
 	}
 
-	if len(lines) == 0 {
+	if len(items) == 0 {
 		return ""
+	}
+
+	// Sort by the emitted name, then de-duplicate by name (the same tool can
+	// appear from both the Registry stub and the client's enriched copy).
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].name != items[j].name {
+			return items[i].name < items[j].name
+		}
+		return items[i].line < items[j].line
+	})
+
+	lines := make([]string, 0, len(items))
+	prev := ""
+	for i, it := range items {
+		if i > 0 && it.name == prev {
+			continue
+		}
+		prev = it.name
+		lines = append(lines, it.line)
 	}
 
 	return "The following tools are available but currently disabled. If you need one, ask the user to enable it:\n" + strings.Join(lines, "\n")
