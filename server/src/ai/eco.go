@@ -120,59 +120,186 @@ const maxTailChars = 100_000
 // huge raw history must still be bounded on every request, or every turn
 // dies with context_length_exceeded (observed: "WordPress Security
 // Review", 1866 msgs / ~770k tokens / no checkpoint, eco on).
+// capTailWindow computes the START index of the live window capTail keeps,
+// and the char total of the rows from that index on.
+//
+// The accounting uses SentViewRowChars — the size the row ACTUALLY ships
+// (per-message bound included, the same clamp truncateOversizedTail applies
+// and the same measure the eco trigger uses) — not TotalContentChars. The
+// old walker summed PRE-truncation sizes, so the log claimed a 100k budget
+// while the window shipped far more (measured live on this very
+// conversation: "kept 13 msgs / 1189684 chars" against maxTailChars=100000),
+// and one 890KB tool result pushed the walker past every older row, evicting
+// 98 rows of context in a single turn (start idx 1509 -> 1607).
+//
+// Rows bounded at maxCompactMessageChars each, budget maxTailChars: when the
+// newest row ALONE exceeds the budget the window is that one row — it ships
+// truncated (truncateOversizedTail bounds it), never an empty window.
+//
+// Returns the start index; 0 when the whole slice fits the budget.
+func capTailWindow(tail []utils.Message) int {
+	chars := 0
+	start := len(tail)
+	for i := len(tail) - 1; i >= 0; i-- {
+		c := SentViewRowChars(tail[i])
+		if chars+c > maxTailChars {
+			if start == len(tail) {
+				// The newest row alone exceeds the budget: keep it (it ships
+				// bounded); an empty window answers nothing.
+				start = i
+			}
+			break
+		}
+		chars += c
+		start = i
+	}
+	if start == len(tail) {
+		// Empty tail.
+		return 0
+	}
+	return start
+}
+
+// capTail bounds a message slice to the live-tail budget so a conversation
+// can never ship a context-busting history to the provider. Applied ONLY to
+// the bootstrap case (no checkpoint pair yet — see
+// filterCheckpointsForRequest): a never-compacted conversation with a huge
+// raw history must be bounded on every request, or every turn dies with
+// context_length_exceeded. Once a durable pair exists the frozen path takes
+// over and this cap must NOT run (it moves the prompt head and kills KV
+// prefix reuse — the contract pinned by ultracave_prefix_test.go).
+//
+// Two rules the implementation must keep:
+//
+//   - BUDGET = WHAT SHIPS: the walker sums SentViewRowChars (post-bound), so
+//     the kept window provably fits maxTailChars and the log line is honest.
+//   - ANCHOR FORWARD: the window must open on a user row so no tool result
+//     is orphaned at the head (its parent call sits in the dropped section).
+//     The old code backed UP to the newest user row, re-adding rows the
+//     walker had just excluded — measured live, a 98-row drag that shipped
+//     1.19M chars on a 100k budget. Walking FORWARD to the first user row
+//     drops the OLD side of the window instead, which costs history the
+//     eviction is about to fold anyway and can never orphan a tool result.
+//     Only when the slice ENDS in a tool/assistant wall (no user row at or
+//     after the walker's start) does the anchor fall back to the newest user
+//     row — bounded by that tool chain, the same floor
+//     CompactConversationDurable uses.
 func capTail(tail []utils.Message) []utils.Message {
 	if len(tail) == 0 {
 		return tail
 	}
-	count := 0
-	chars := 0
-	var start int
-	start = len(tail) - 1
-	for start >= 0 {
-		chars += tail[start].Content.TotalContentChars()
-		count++
-		if chars > maxTailChars {
-			start++
-			break
-		}
-		if start == 0 {
-			break
-		}
-		start--
-	}
-	if start < 0 {
-		start = 0
-	}
-	// The budget walker can break with start == len(tail) (it incremented
-	// past the last in-range index to mark "cap from here"). That is a
-	// VALID slice start — tail[len:] is the empty slice — but it is NOT a
-	// valid index to dereference. Clamp it down to the last element first
-	// so the boundary back-up loop below can never index out of range.
-	// (Observed panic: "index out of range [N] with length N" on this
-	// conversation's ~3500-message tail.)
-	if start > len(tail)-1 {
-		start = len(tail) - 1
-	}
-	// Always back up to a user boundary so we never start mid-turn (which
-	// would orphan tool results whose parent is in the dropped section).
-	for start > 0 && tail[start].Role != "user" {
-		start--
-	}
-	// The budget must also bound INDIVIDUAL oversized messages. A single
-	// huge message (a multi-MB pasted blob, a giant tool result, an inline
-	// attachment dump) cannot be removed by the tail cap above — the walker
-	// breaks at it and then re-includes it via the user-boundary back-up —
-	// so a conversation that contains one keeps shipping it on every turn
-	// and eventually dies with context_length_exceeded (observed: the
-	// "WordPress Security Review" conversation, 1858 msgs, with a ~4.2MB
-	// Cosmos config dump inline; every "continue" resumed into a provider
-	// context error and the workflow dead-ended mid-work). Apply per-message
-	// bounds to whatever tail is actually kept below.
+	start := capTailWindow(tail)
 	if start > 0 {
-		utils.Log("[Eco] capping tail by budget: kept %d msgs / %d chars (start idx %d) for context safety", len(tail)-start, chars, start)
+		anchor := start
+		for anchor < len(tail) && tail[anchor].Role != "user" {
+			anchor++
+		}
+		if anchor < len(tail) {
+			start = anchor
+		} else {
+			for start > 0 && tail[start].Role != "user" {
+				start--
+			}
+		}
+	}
+	if start > 0 {
+		// Re-measure the ANCHORED window for the log (the anchor may have
+		// moved start; the walker's total covers the pre-anchor set). The
+		// log line is the operator's only view of what the cap shipped —
+		// after the bug this printed "100k" while shipping 1.19M chars.
+		kept := 0
+		for i := start; i < len(tail); i++ {
+			kept += SentViewRowChars(tail[i])
+		}
+		utils.Log("[Eco] capping tail by budget: kept %d msgs / %d chars (budget %d, start idx %d) for context safety",
+			len(tail)-start, kept, maxTailChars, start)
 		tail = tail[start:]
 	}
+	// The budget bounds whole rows; a single oversized row that is KEPT
+	// (e.g. the lone newest row over the budget) still needs its per-message
+	// bound applied. truncateOversizedTail is a pure function of each stored
+	// row, so it is byte-stable across turns.
 	return truncateOversizedTail(tail)
+}
+
+// bootstrapCutoff is the char-based fold boundary for a conversation with NO
+// checkpoint pair: the oldest user-anchored boundary whose REMAINING sent
+// view fits the eco target. findCutoffIndex's arithmetic is cumulative
+// prompt_tokens, and a bootstrap conversation's lastPT is capped by the
+// sliding window (~33k tokens), so it can sit BELOW the target even while
+// the stored view is far over it — the cutoff lands at -1 and the bootstrap
+// fold skips, leaving the self-lock intact. The view the frozen path ships
+// is measured in chars (SentViewTokens), so the bootstrap cutoff uses the
+// same measure: fold the oldest rows until the rest fits the target.
+//
+// Returns -1 when the view already fits the target (nothing to fold). The
+// boundary is a user row, and the newest user row is the floor (the same
+// rule CompactConversationDurable enforces), so the live window never
+// empties.
+//
+// The newest user row is the FLOOR, not a guarantee: when the newest turn
+// alone exceeds the target (a single >300k-char tool result), no cutoff can
+// land the view under target. This then folds everything older — strictly
+// better than the pre-fix code, which shipped the over-target window every
+// turn forever. The provider's context window remains the preemptive guard's
+// job (index.go); compaction's job is to stop the churn, which it does at
+// any target.
+func bootstrapCutoff(messages []utils.Message, targetTokens int) int {
+	lu := -1
+	for i, m := range messages {
+		if m.Role == "user" {
+			lu = i
+		}
+	}
+	if lu <= 0 {
+		return -1
+	}
+	// Suffix sum, walked forward: suffix is the char total of messages[i:]
+	// at each step. A prefix sum inside the loop would make this O(n^2) on
+	// the 30k-row conversations this path exists for.
+	suffix := 0
+	for i := range messages {
+		suffix += SentViewRowChars(messages[i])
+	}
+	for i := 0; i <= lu; i++ {
+		if messages[i].Role == "user" {
+			fits := suffix/3 <= targetTokens
+			if i == 0 {
+				if fits {
+					return -1 // the whole view fits; folding 0 rows is a no-op
+				}
+			} else if fits {
+				return i
+			}
+		}
+		suffix -= SentViewRowChars(messages[i])
+	}
+	// Nothing up to the newest user row fits: fold everything older than it.
+	// A fold that leaves only the newest user turn is the floor; the storage
+	// layer clamps the same way.
+	return lu
+}
+
+// bootstrapFoldNeeded reports whether runEcoSummary must fold a conversation
+// that has NOT crossed the prompt-tokens trigger.
+//
+// The trigger measures lastPT = the provider's prompt count of the last
+// turn. For a conversation with NO checkpoint pair, capTail caps that prompt
+// at maxTailChars (~33k tokens) on every turn, so lastPT can NEVER reach a
+// trigger far above the cap — the conversation that most needs compaction
+// is the one the trigger can never see. Self-locking, observed live: 98 rows
+// evicted in one turn at lastPT=85121 < trigger=150000, the eviction storm
+// repeating every turn, no pair ever minted, the sliding window running
+// forever. The sliding window evicting rows IS compaction pressure: hand it
+// to the durable fold, which mints the pair, after which the frozen path
+// takes over and the trigger measures the real (unslid) view.
+//
+// Pure decision (no I/O) so the gate itself is testable.
+func bootstrapFoldNeeded(existingCheckpointEndIdx, lastPT, triggerTokens, sentViewTokens int) bool {
+	if lastPT > triggerTokens {
+		return true
+	}
+	return existingCheckpointEndIdx < 0 && sentViewTokens*3 > maxTailChars
 }
 
 // maxKeepTailChars bounds how many characters of a tail message are kept
@@ -624,21 +751,8 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 		return
 	}
 
-	lastPT := lastAssistantPromptTokens(conv.Messages)
-	if lastPT == 0 {
-		utils.Log("[Eco] conv %s has no assistant prompt_tokens yet — skip", conversationID)
-		return
-	}
-	if lastPT <= cfg.TriggerTokens {
-		utils.Log("[Eco] conv %s lastPT=%d below trigger=%d — skip", conversationID, lastPT, cfg.TriggerTokens)
-		return
-	}
-	utils.Log("[Eco] conv %s lastPT=%d > trigger=%d — compacting toward target=%d", conversationID, lastPT, cfg.TriggerTokens, cfg.TargetTokens)
-
-	// Locate the existing checkpoint (if any) and compute where the new
-	// cutoff must land.
-	existingCheckpointEndIdx := -1
-	var priorSummary string
+	// Locate the existing checkpoint (if any) BEFORE the trigger gate: the
+	// bootstrap case (no pair) has its own gate — see bootstrapFoldNeeded.
 	// Read the CURRENT checkpoint pair straight out of the loaded LLM view
 	// (it carries the pair) instead of db.GetCheckpoint: that helper issues
 	// its second query while the first result set is still open, which
@@ -646,6 +760,8 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	// as soon as a pair exists. Reading the slice is also cheaper, and it is
 	// the exact view the fold will be computed from, so the pair index and
 	// the roll-up text cannot disagree with the slice being folded.
+	existingCheckpointEndIdx := -1
+	var priorSummary string
 	for i, m := range conv.Messages {
 		if !db.IsCheckpointMessage(m) {
 			continue
@@ -658,7 +774,35 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 		existingCheckpointEndIdx = i + 1
 	}
 
+	lastPT := lastAssistantPromptTokens(conv.Messages)
+	if lastPT == 0 {
+		utils.Log("[Eco] conv %s has no assistant prompt_tokens yet — skip", conversationID)
+		return
+	}
+	sentView := SentViewTokens(conv.Messages)
+	if !bootstrapFoldNeeded(existingCheckpointEndIdx, lastPT, cfg.TriggerTokens, sentView) {
+		utils.Log("[Eco] conv %s lastPT=%d below trigger=%d — skip", conversationID, lastPT, cfg.TriggerTokens)
+		return
+	}
+	if lastPT > cfg.TriggerTokens {
+		utils.Log("[Eco] conv %s lastPT=%d > trigger=%d — compacting toward target=%d", conversationID, lastPT, cfg.TriggerTokens, cfg.TargetTokens)
+	} else {
+		// The self-locking trigger, broken: no pair exists, the sliding
+		// capTail window is over budget every turn, and lastPT can never
+		// reach the trigger because the window caps the prompt. The window
+		// evicting rows IS compaction pressure — fold it durably now, which
+		// mints the pair and hands the conversation to the frozen path.
+		utils.Log("[Eco] conv %s BOOTSTRAP compaction: sent view %d tokens over tail budget (%d chars) with no checkpoint pair, lastPT=%d below trigger=%d — compacting toward target=%d",
+			conversationID, sentView, maxTailChars, lastPT, cfg.TriggerTokens, cfg.TargetTokens)
+	}
+
 	cutoff := findCutoffIndex(conv.Messages, lastPT, cfg.TargetTokens, existingCheckpointEndIdx)
+	if cutoff < 0 && existingCheckpointEndIdx < 0 {
+		// Bootstrap: the PT arithmetic cannot cut (lastPT is window-capped,
+		// often below target while the stored view is far over it). Use the
+		// char-based cutoff so the self-lock cannot survive in this shape.
+		cutoff = bootstrapCutoff(conv.Messages, cfg.TargetTokens)
+	}
 	if cutoff < 0 {
 		utils.Log("[Eco] no satisfying cutoff for conv %s (lastPT=%d target=%d, %d messages) — skip", conversationID, lastPT, cfg.TargetTokens, len(conv.Messages))
 		return
