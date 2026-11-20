@@ -884,9 +884,13 @@ class ChatService {
         if (event.toolCall != null) {
           final toolsMap = modelSelected?.text?.tools;
           final isAsk = toolsMap != null && toolsMap[event.toolCall!.function.name] == 'ask';
-          if (isAsk) {
-            session.value = session.value.copyWith(items: items);
-          } else if (event.isServer) {
+          // The device channel owns this call: the server dispatched it to the
+          // app holding the live claim and is blocked on that app's answer.
+          // Queuing it here would make a viewer (a web tab, a phone, a second
+          // window) validate it against ITS tools, fail — a web tab has no
+          // device shell — and POST the refusal back, which resumes the loop
+          // and cancels the dispatch. Render the chip, execute nothing.
+          if (isAsk || event.isServer || event.deviceDispatched) {
             session.value = session.value.copyWith(items: items);
           } else {
             session.value = session.value.copyWith(

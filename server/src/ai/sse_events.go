@@ -11,22 +11,29 @@ import (
 
 // SSEEvent is the unified event type streamed to clients over SSE.
 type SSEEvent struct {
-	Type             string          `json:"type"`                   // "text", "tool_use", "tool_result", "state_change", "done", "error"
-	Content          string          `json:"content,omitempty"`      // text chunk for "text" events
-	ToolCall         *utils.ToolCall `json:"tool_call,omitempty"`    // for "tool_use" events
-	ToolCallID       string          `json:"tool_call_id,omitempty"` // for "tool_result" events
-	ToolName         string          `json:"tool_name,omitempty"`    // for "tool_result" events
-	ToolResult       string          `json:"tool_result,omitempty"`  // for "tool_result" events
-	IsServer         bool            `json:"is_server"`              // true = server-side tool, false = client must execute
-	ConversationID   string          `json:"conversation_id"`
-	State            string          `json:"state,omitempty"` // for "state_change" events
-	Model            *utils.Model    `json:"model,omitempty"`
-	TotalTokens      int             `json:"total_tokens,omitempty"`
-	PromptTokens     int             `json:"prompt_tokens,omitempty"`
-	CompletionTokens int             `json:"completion_tokens,omitempty"`
-	ResponseCost     float64         `json:"response_cost,omitempty"`
-	CompressionRatio float64         `json:"compression_ratio,omitempty"`
-	Title            string          `json:"title,omitempty"`
+	Type       string          `json:"type"`                   // "text", "tool_use", "tool_result", "state_change", "done", "error"
+	Content    string          `json:"content,omitempty"`      // text chunk for "text" events
+	ToolCall   *utils.ToolCall `json:"tool_call,omitempty"`    // for "tool_use" events
+	ToolCallID string          `json:"tool_call_id,omitempty"` // for "tool_result" events
+	ToolName   string          `json:"tool_name,omitempty"`    // for "tool_result" events
+	ToolResult string          `json:"tool_result,omitempty"`  // for "tool_result" events
+	IsServer   bool            `json:"is_server"`              // true = server-side tool, false = client must execute
+	// DeviceDispatched marks a "tool_use" the loop routed to the user's app
+	// over the device channel (docs/device-channel.md). omitempty, so every
+	// existing frame is byte-identical. A viewer that receives it must NOT
+	// queue the call as its own pending client tool: the channel owns the
+	// execution, and echoing a result back cancels the loop awaiting the real
+	// answer.
+	DeviceDispatched bool         `json:"device_dispatched,omitempty"`
+	ConversationID   string       `json:"conversation_id"`
+	State            string       `json:"state,omitempty"` // for "state_change" events
+	Model            *utils.Model `json:"model,omitempty"`
+	TotalTokens      int          `json:"total_tokens,omitempty"`
+	PromptTokens     int          `json:"prompt_tokens,omitempty"`
+	CompletionTokens int          `json:"completion_tokens,omitempty"`
+	ResponseCost     float64      `json:"response_cost,omitempty"`
+	CompressionRatio float64      `json:"compression_ratio,omitempty"`
+	Title            string       `json:"title,omitempty"`
 
 	// ModelSelected is the conversation's current per-conversation settings
 	// snapshot — tools, eco mode, attached folder, and client lock. Populated

@@ -230,6 +230,22 @@ type ActiveRequest struct {
 
 	mu      sync.RWMutex
 	clients map[*SSEClient]bool
+	// deviceDispatched holds the tool-call ids this loop has dispatched to the
+	// user's app over the device channel and is still waiting for. Guarded by
+	// mu.
+	//
+	// Why this exists: a device-channel tool_use is broadcast to every viewer
+	// of the conversation, and a viewer that is NOT the executing app (a
+	// browser tab, a phone, a second desktop window) treats it as its own
+	// work: it validates the call against ITS advertised tools, fails — a web
+	// tab has no shell def at all — and POSTs the refusal back as the tool
+	// result. HandleChat then cancels the live loop to resume on that result,
+	// the pending device request is torn down, and the device's real answer
+	// arrives to a 404. The turn is answered by a refusal nobody typed.
+	// Results for an in-flight device-dispatched call are therefore dropped at
+	// the API boundary; the only legitimate answer for that call is the
+	// device's POST to /chat/device-tool-result/{request_id}.
+	deviceDispatched map[string]bool
 	// closed is set by CloseAllClients (loop exit). It makes AddClient
 	// race-free against cleanup: a client that arrives while the loop is
 	// finishing is refused instead of being registered on a dead request and
@@ -269,14 +285,15 @@ type ActiveRequest struct {
 func NewActiveRequest(conversationID string, userID string, model utils.Model, modelSelected utils.ModelSelected) *ActiveRequest {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ActiveRequest{
-		ConversationID: conversationID,
-		UserID:         userID,
-		Ctx:            ctx,
-		Cancel:         cancel,
-		State:          utils.StateProcessing,
-		Model:          model,
-		ModelSelected:  modelSelected,
-		clients:        make(map[*SSEClient]bool),
+		ConversationID:   conversationID,
+		UserID:           userID,
+		Ctx:              ctx,
+		Cancel:           cancel,
+		State:            utils.StateProcessing,
+		Model:            model,
+		ModelSelected:    modelSelected,
+		clients:          make(map[*SSEClient]bool),
+		deviceDispatched: make(map[string]bool),
 	}
 }
 
@@ -311,6 +328,44 @@ func (ar *ActiveRequest) RemoveClient(client *SSEClient) {
 	defer ar.mu.Unlock()
 	delete(ar.clients, client)
 	client.stopWriter()
+}
+
+// markDeviceDispatched records that this loop is waiting for the device's
+// answer to [toolCallID]. Called just before the device-channel frame goes
+// out, so a viewer's echo of the tool_use cannot race the real result.
+func (ar *ActiveRequest) markDeviceDispatched(toolCallID string) {
+	if toolCallID == "" {
+		return
+	}
+	ar.mu.Lock()
+	defer ar.mu.Unlock()
+	if ar.deviceDispatched == nil {
+		ar.deviceDispatched = make(map[string]bool)
+	}
+	ar.deviceDispatched[toolCallID] = true
+}
+
+// clearDeviceDispatched drops the guard once the loop stops waiting (answered,
+// timed out, or cancelled), so a later genuine result for the same call id —
+// a provider reuses "call_0" across turns — is accepted normally.
+func (ar *ActiveRequest) clearDeviceDispatched(toolCallID string) {
+	if toolCallID == "" {
+		return
+	}
+	ar.mu.Lock()
+	defer ar.mu.Unlock()
+	delete(ar.deviceDispatched, toolCallID)
+}
+
+// isDeviceDispatched reports whether this loop is awaiting the device's answer
+// for [toolCallID].
+func (ar *ActiveRequest) isDeviceDispatched(toolCallID string) bool {
+	if toolCallID == "" {
+		return false
+	}
+	ar.mu.RLock()
+	defer ar.mu.RUnlock()
+	return ar.deviceDispatched[toolCallID]
 }
 
 // ClientCount returns the number of connected SSE clients.

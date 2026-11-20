@@ -95,6 +95,23 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		// recovered isolate would keep being fast-failed for the rest of the
 		// window even though it just answered.
 		clientToolTimeouts.clear(payload.ConversationID)
+
+		// Drop results for a call this conversation's live loop dispatched to
+		// the device channel and is still waiting on. The tool_use for such a
+		// call is broadcast to every viewer, and a viewer that is NOT the
+		// executing app (a browser tab, a phone, a second window) treats it as
+		// its own work: it validates the call against ITS advertised tools,
+		// fails — a web tab has no shell def at all — and POSTs the refusal
+		// back. That POST is "tool_results", so the path below cancels the live
+		// loop to resume on it, the pending device request is torn down, and
+		// the device's real answer lands on a 404: the turn is answered by a
+		// refusal nobody typed. The only legitimate answer for an in-flight
+		// dispatched call is the device's POST to
+		// /chat/device-tool-result/{request_id}.
+		if live := RequestRegistry.Get(payload.ConversationID); live != nil {
+			payload.ToolResults = dropInFlightDeviceResults(payload.ConversationID, live, payload.ToolResults)
+		}
+
 		for i := range payload.ToolResults {
 			payload.ToolResults[i].Timestamp = time.Now().Format(time.RFC3339)
 			if err := storage.ExtractBlobsFromMessage(userID, &payload.ToolResults[i]); err != nil {
@@ -122,6 +139,32 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		conversation = updatedConversation
 	} else {
 		utils.SendHTTPError(w, "Either messages or tool_results must be provided", http.StatusBadRequest)
+		return
+	}
+
+	// Every submitted result belonged to a device-channel call in flight, so
+	// nothing was pushed and there is no turn to resume. Answer 200 (accepted,
+	// ignored) and keep the live loop's stream attached: it is still waiting
+	// for the device, and cancelling/resuming here would be the exact bug the
+	// filter above exists to prevent.
+	if len(payload.ToolResults) == 0 && len(payload.Messages) == 0 {
+		if live := RequestRegistry.Get(payload.ConversationID); live != nil {
+			SetSSEHeaders(w)
+			sseClient := NewSSEClient(w, r.Context())
+			if sseClient == nil {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			if live.AddClientIfOpen(sseClient) {
+				select {
+				case <-sseClient.Done:
+				case <-r.Context().Done():
+					live.RemoveClient(sseClient)
+				}
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
@@ -229,6 +272,29 @@ func attachToLiveLoop(live *ActiveRequest, sseClient *SSEClient, conversationID 
 	utils.Log("[HandleChat] queued message on live loop for %s (%d client(s) attached)", conversationID, live.ClientCount())
 	live.BroadcastStatus("typing", "")
 	return true
+}
+
+// dropInFlightDeviceResults removes tool results a viewer posted for a call
+// this conversation's live loop dispatched to the device channel and is still
+// waiting on. See the call site in HandleChat for the full reason: the refusal
+// a non-executing viewer posts must not resume (and thereby cancel) the loop
+// that is blocked on the device's real answer.
+//
+// Returns the results to keep, in order. Extracted so the rule is
+// unit-testable without an HTTP request, a model registry, or a DB.
+func dropInFlightDeviceResults(conversationID string, live *ActiveRequest, results []utils.Message) []utils.Message {
+	if live == nil || len(results) == 0 {
+		return results
+	}
+	kept := results[:0]
+	for i := range results {
+		if live.isDeviceDispatched(results[i].ToolCallID) {
+			utils.Log("[HandleChat] dropping tool result for %s: call %s is in flight on the device channel", conversationID, results[i].ToolCallID)
+			continue
+		}
+		kept = append(kept, results[i])
+	}
+	return kept
 }
 
 // HandleStreamReconnect allows a client to reconnect to an active conversation's SSE stream.

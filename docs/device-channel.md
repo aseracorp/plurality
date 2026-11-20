@@ -65,22 +65,29 @@ clients whose `client_id` equals the claim's. Legacy clients never see them.
 
 ## Server dispatch (tool loop)
 
-In `RunLLMLoop`, for a client tool call that has **no SSE client attached to
-this conversation** (the background case) the loop consults the device
-registry before fast-failing:
+In `RunLLMLoop`, a client tool call whose tool is advertised by the user's
+**live claim** is dispatched over the channel — with no conversation stream
+attached (the background case, #196) **and** with one attached, when the
+streaming client cannot run that tool:
 
 1. Tool must be advertised in `payload.ClientSideTools` (for background runs
    that means: it came from the live claim).
 2. A live claim for `ar.UserID` must advertise the tool.
-3. Tool mode in `payload.ModelSelected` is not `"ask"` — `"ask"` needs an
-   interactive human, so a background dispatch synthesizes an explanatory
-   error result instead of executing.
+3. `deviceChannelSteersCall` says the attached client is not the executor:
+   no stream → steer; stream attached and the client advertised the tool →
+   the chat path, byte-for-byte; stream attached and the client did NOT
+   advertise the tool → steer (a web tab has no device shell at all, and a
+   desktop window whose picker has the tool off cannot dispatch it either);
+   `"ask"` mode with a stream attached → never steer, the approval prompt
+   lives on the attached client.
 
-If all three hold, dispatch **in place** (the loop does not park and return):
+If those hold, dispatch **in place** (the loop does not park and return):
 
-- broadcast `tool_use` SSE (`is_server: false`) for any viewer/reconnect,
-  and `BroadcastStatus("tool_use", name)` so the sidebar shows it,
-- register a pending request, send the `device_tool_request` status frame,
+- broadcast `tool_use` SSE (`is_server: false`, `device_dispatched: true`)
+  for any viewer/reconnect, and `BroadcastStatus("tool_use", name)` so the
+  sidebar shows it,
+- mark the call in flight (`markDeviceDispatched`), register a pending
+  request, send the `device_tool_request` status frame,
 - wait for: result | timeout (default 180s) | `ar.Ctx.Done()`,
 - persist the tool result message (`db.PushMessage`) and broadcast
   `tool_result` exactly as a chat device call does,
@@ -90,6 +97,34 @@ If all three hold, dispatch **in place** (the loop does not park and return):
 
 Device calls in one batch run **sequentially** (the device serialises shell
 work), then the loop continues to the LLM with all results in place.
+
+### The chat case this fixes (2026-11-20)
+
+Before this, the dispatch block was gated on `ar.ClientCount() == 0`, so a
+chat turn could never use the channel. Production signature (conversation
+`f533e88d`): the user chats in the **web** app, which advertises no device
+shell (web has no `Process.start`); `ai_tools.GetRequests` still advertises
+the Registry stub because the picker has `shell_client__exec: true`, the loop
+parks on a client that can never run it, and every call costs a 90s stall
+plus a watchdog timeout. `server.log` shows both shapes of one conversation:
+`"1 connected clients"` + stall at 08:31/09:31, device-channel dispatch
+answering fine at 08:33 with `"0 connected clients"`.
+
+### Viewer echo guard
+
+The `tool_use` of a dispatched call reaches every viewer of the conversation.
+A viewer that is not the executing app validates it against ITS advertised
+tools, fails, and POSTs the refusal back as a tool result — a `tool_results`
+POST cancels the live loop to resume on it, tearing down the pending request
+so the device's real answer lands on a 404. Two guards:
+
+- the SSE event carries `device_dispatched: true` and ChatService does not
+  queue such a call as its own `pendingClientTools`,
+- `dropInFlightDeviceResults` in `HandleChat` discards a result posted for a
+  call the live loop has marked in flight (`markDeviceDispatched` /
+  `clearDeviceDispatched`), so the loop is never cancelled out from under the
+  device. Cleared on every exit path, so a reused provider call id
+  (`"call_0"`) is accepted again in the next turn.
 
 `clientToolUnreachable` gains a `hasDeviceClaim` term:
 unadvertised → unreachable; advertised + no conversation client + no status
@@ -131,5 +166,11 @@ idle-closing status stream:
 - No claim → the existing fast-fail error text stays exactly as today.
 - The claim is per-user and tied to a live connection; a stale claim cannot
   receive work (lazy expiry), so background runs fail fast, not hang.
-- Chat-path dispatch is untouched. The device channel is only used when the
-  loop has no conversation SSE client.
+- Chat-path dispatch is untouched **for the client that advertises the tool**:
+  it keeps the broadcast/park/watchdog/approval path byte-for-byte. The device
+  channel is used when no conversation SSE client is attached, and additionally
+  when one is attached but cannot run the tool (it did not advertise it) and
+  the tool is not in `"ask"` mode.
+- A viewer must never answer for a call the channel is executing: the
+  `device_dispatched` flag plus `dropInFlightDeviceResults` are the two sides
+  of that rule.

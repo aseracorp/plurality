@@ -183,6 +183,27 @@ func (w *syncWriter) framesUntil(n int) []StatusEvent {
 	return nil
 }
 
+// deviceFrameUntil polls the status writer until a device_tool_request frame
+// has landed, returning nil on timeout. framesUntil(n) is not enough here:
+// dispatchDeviceTool broadcasts a plain status event before the device frame,
+// so a waiter that stops at the first frame can observe the status and miss
+// the request — which made TestDispatchDeviceToolHappyPath time out on the
+// dispatch (~1 in 3 runs at -count=3). Polling for the frame we actually need
+// is what makes the device-channel assertions deterministic.
+func (w *syncWriter) deviceFrameUntil() *StatusEvent {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, f := range w.statusFrames(nil) {
+			if f.Type == DeviceToolRequestType {
+				c := f
+				return &c
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return nil
+}
+
 // fakeApp registers a status-stream client exactly the way
 // HandleStatusStream does (constructor + Add, which also registers the
 // placeholder claim) and returns it. The claim's tool list is then posted
@@ -253,20 +274,13 @@ func TestDispatchDeviceToolHappyPath(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		frames := w.framesUntil(1)
-		if frames == nil {
-			t.Errorf("no status frames written")
+		req := w.deviceFrameUntil()
+		if req == nil {
+			t.Errorf("no device_tool_request frame written")
 			return
 		}
-		var req StatusEvent
-		for _, f := range frames {
-			if f.Type == DeviceToolRequestType {
-				req = f
-				break
-			}
-		}
 		if req.DeviceTool == nil {
-			t.Errorf("frame has no device_tool payload: %+v", req)
+			t.Errorf("frame has no device_tool payload: %+v", *req)
 			return
 		}
 		if req.RequestID == "" {
