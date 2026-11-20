@@ -575,12 +575,15 @@ func writeContentParts(b *strings.Builder, parts []utils.ContentPart) {
 // (never deleted, never renumbered) and the roll-up is a deterministic
 // MACHINE excerpt.
 //
-// Compaction NEVER calls an LLM. GenerateCheckpointSummary (the fast-model
-// summariser) is no longer on this path: a model call costs minutes on a
-// self-hosted summariser, its output is non-deterministic, and a
-// non-deterministic summary rewrites the head of every prompt, which is the
-// exact opposite of frozen compaction. The function is left defined for any
-// other call site.
+// The fold is LLM-FIRST (see durableFold): the chat model that owns the
+// conversation writes the durable checkpoint of the rows it is about to lose,
+// on a request that replays its own cached prefix, and the result is megacaved
+// before it is stored. Its failure CANNOT lose a fold — durableFold falls back
+// to the deterministic machine-only render. What stayed forbidden through all
+// of this: the FAST model (its KV cache is not warm for this conversation and
+// it never saw the history), SendChatCompletion (a fold must never take a
+// chat turn), the clock, db.ReplaceCheckpoint, and anything else that moves
+// the prompt head. The AST guard in ultracave_llm_guard_test.go enforces it.
 //
 // The prior roll-up is carried forward VERBATIM by the storage layer
 // (composeDurableSummary concatenates prior + the new excerpt); the caller
@@ -680,8 +683,17 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	// boundary past the existing pair) is unchanged; only its RESULT is used
 	// as a fold boundary now, and it feeds a durable fold instead of an
 	// LLM-written checkpoint replacement.
+	// The CHAT model of this conversation (conv.ModelSelected, NOT the fast
+	// shortcut) plus the payload shape the loop's requests carried, so the
+	// fold's summary request replays the cached prefix.
+	chatModel := chatModelForConversation(*conv)
+	ecoPayload := chatPayloadForConversation(*conv)
+	if chatModel.Name == "" {
+		utils.Log("[Eco] conv %s has no chat model resolved — the fold will use the machine-only render", conversationID)
+	}
+
 	before := SentViewTokens(conv.Messages)
-	folded, err := durableFold(dbCtx, conversationID, conv.Messages, cutoff, priorSummary)
+	folded, err := durableFold(dbCtx, conversationID, conv.Messages, cutoff, priorSummary, chatModel, ecoPayload)
 	if err != nil {
 		utils.Error("[Eco] durable fold failed", err)
 		return
@@ -794,7 +806,7 @@ func PriorSummaryFromView(messages []utils.Message) string {
 	return ""
 }
 
-// durableFold is the single machine-only fold entry point, shared by the eco
+// durableFold is the single durable fold entry point, shared by the eco
 // trigger and the context-length recovery path in tool_loop.go.
 //
 // The budget arithmetic (per the renderer's own doc comments): the excerpt
@@ -806,9 +818,25 @@ func PriorSummaryFromView(messages []utils.Message) string {
 // ~1.045 against the FIXED cap (it adds labels/newlines), so a fixed cap
 // makes the "compaction" ADD bytes to the prompt.
 //
-// No LLM, no clock, no randomness: MachineExcerptMegacaveBudget is
-// deterministic, so the same fold set always renders the same summary.
-func durableFold(ctx context.Context, conversationID string, messages []utils.Message, foldFrom int, priorSummary string) (int, error) {
+// LLM-FIRST, THEN MEGACAVE. The rows this fold is about to evict are the last
+// thing the chat model will ever see, so they are summarised by the CHAT MODEL
+// itself, on the request that replays the conversation's own cached prefix
+// (buildSummaryRequestFromView) — the cheapest possible use of a model that is
+// about to lose that context. The LLM's text is then megacaved (the same
+// deterministic lossy-compress operation the fallback uses), so the stored
+// roll-up stays a CHAIN of megacaved summaries within the same ceiling.
+//
+// THE LLM CAN NEVER LOSE A FOLD. Any failure — proxy down, non-200, empty
+// answer, budget collapse, context deadline — falls through to the machine-only
+// renderer (machineOnlyFoldRenderer), which is byte-for-byte the render this
+// path produced before the summariser was reintroduced. The machine-only render
+// also stays deterministic: same fold set, same bytes. The clock never enters
+// the stored roll-up (the summary request strips it, see stripCurrentTimeTail).
+//
+// `model` is the conversation's CHAT model (never the fast shortcut) and
+// `payload` the chat payload whose system prompt / tool schemas the last real
+// request carried, so the replayed prefix is the cached one.
+func durableFold(ctx context.Context, conversationID string, messages []utils.Message, foldFrom int, priorSummary string, model utils.Model, payload ChatPayload) (int, error) {
 	target := ecoTargetTokens()
 	// Live tail this fold leaves in place, and the roll-up it carries
 	// forward, both in chars — the budget is what is LEFT for the new
@@ -866,10 +894,49 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 		ceiling = (minMegacaveRowShowChars + megacaveLabelOverheadChars) * len(foldable)
 	}
 	show := MegacaveRowBudget(chars, len(foldable))
-	utils.Log("[Eco] machine fold: %d rows, room=%d chars, folded=%d chars, budget=%d chars, per-row show=%d",
-		len(foldable), room, foldedChars, chars, show)
-	return db.CompactConversationDurable(ctx, conversationID, messages, foldFrom,
-		func(m []utils.Message) string { return MachineExcerptMegacaveCapped(m, show, ceiling) })
+
+	// The durable WRITE gets its own bounded context, detached from the caller's
+	// deadline. The eco goroutine caps its DB work at 45s (the single SQLite
+	// connection must never be held by a wedged compaction), and that cap is
+	// correct for DB work — but the summariser below can legitimately run for
+	// minutes on a self-hosted model. If the write shared that 45s deadline, a
+	// slow LLM would blow it and the fold would fail: the LLM's latency would
+	// LOSE A FOLD, which is the one thing this design forbids. context.WithoutCancel
+	// keeps the user claim, drops the caller's deadline; the fresh 45s keeps the
+	// connection bound intact.
+	dbWriteCtx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), 45*time.Second)
+	defer cancelWrite()
+
+	// ---- LLM FIRST: the last look at the rows about to be evicted ----------
+	//
+	// The evicted rows are rendered for the diagnostic (how much text the
+	// checkpoint is standing in for), then the chat model is asked for the
+	// durable checkpoint on a request that replays the conversation's own
+	// cached prefix. SUCCESS feeds the LLM text into the megacave renderer, so
+	// the stored section is itself megacaved and stays under `ceiling`.
+	rendered := renderEvictedRowsForSummary(foldable)
+	convForSummary := utils.Conversation{
+		ID:            conversationID,
+		Messages:      messages,
+		ModelSelected: payload.ModelSelected,
+	}
+	if uid, ok := ctx.Value("userID").(string); ok {
+		convForSummary.UserID = uid
+	}
+	if llmText, llmErr := attemptFoldSummary(ctx, convForSummary, model, foldable, payload); llmErr == nil && strings.TrimSpace(llmText) != "" {
+		utils.Log("[Eco] LLM fold summary: %d rows, evicted text %d chars, LLM checkpoint %d chars, ceiling %d chars (chat model %s)",
+			len(foldable), len(rendered), len(llmText), ceiling, model.Name)
+		return db.CompactConversationDurable(dbWriteCtx, conversationID, messages, foldFrom,
+			llmFoldSummaryRenderer(llmText, ceiling))
+	} else if llmErr != nil {
+		// The fallback must be LOUD: a fold that silently lost the LLM summary
+		// is indistinguishable from a machine-only build.
+		utils.Log("[Eco] machine-only FALLBACK fold (LLM summariser unavailable: %v): %d rows, room=%d chars, folded=%d chars, budget=%d chars, per-row show=%d",
+			llmErr, len(foldable), room, foldedChars, chars, show)
+	}
+	// ---- FALLBACK: exactly the machine-only render, unchanged --------------
+	return db.CompactConversationDurable(dbWriteCtx, conversationID, messages, foldFrom,
+		machineOnlyFoldRenderer(show, ceiling))
 }
 
 // ecoTargetTokens is the eco target window (chars budget denominator) with a
@@ -886,22 +953,36 @@ func ecoTargetTokens() int {
 // before the config is loaded cannot compute a negative excerpt budget.
 const defaultEcoTargetTokensFallback = 50_000
 
-// CompactConversationMachineOnly is the machine-only compaction entry
-// point: pick the fold boundary with the SAME arithmetic the eco trigger
-// uses, then fold durably. NO LLM anywhere on the path. Used by the
-// context-length recovery path in tool_loop.go and by the ultracave tests.
+// CompactConversationMachineOnly is the durable compaction entry point: pick
+// the fold boundary with the SAME arithmetic the eco trigger uses, then fold
+// durably. Used by the context-length recovery path in tool_loop.go and by the
+// ultracave tests.
 //
 // `priorSummary` is the CURRENT stored roll-up text; it only feeds the
 // budget arithmetic. The storage layer carries it forward VERBATIM and does
 // the concatenation itself - passing it in twice would double the roll-up,
 // and re-rendering it through the megacave transform would destroy the one
 // representation of every row an earlier fold marked compacted.
-func CompactConversationMachineOnly(ctx context.Context, conversationID string, messages []utils.Message, priorSummary string, keep int) (int, error) {
+//
+// The trailing variadic `target` carries the conversation's CHAT model + chat
+// payload for the LLM-first attempt inside durableFold. It is variadic so every
+// existing 5-arg call site keeps compiling: omitted target means "no chat model
+// to replay against", i.e. the summariser is skipped and the fold is the
+// machine-only render (the previous behaviour). Production call sites MUST pass
+// the target.
+func CompactConversationMachineOnly(ctx context.Context, conversationID string, messages []utils.Message, priorSummary string, keep int, target ...foldSummaryTarget) (int, error) {
 	foldFrom := UltracaveOverflowFoldFrom(messages, keep)
 	if foldFrom <= 0 {
 		return 0, nil
 	}
-	return durableFold(ctx, conversationID, messages, foldFrom, priorSummary)
+	chatModel := utils.Model{}
+	payload := ChatPayload{ConversationID: conversationID}
+	if len(target) > 0 {
+		chatModel = target[0].model
+		payload = target[0].payload
+		payload.ConversationID = conversationID
+	}
+	return durableFold(ctx, conversationID, messages, foldFrom, priorSummary, chatModel, payload)
 }
 
 // UltracaveOverflowFoldFrom picks the durable fold boundary for the

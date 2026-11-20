@@ -55,9 +55,34 @@ func portExtSuffix() string {
 	return ""
 }
 
-// SendChatCompletion sends a chat completion request to the LiteLLM proxy,
-// which handles routing to the correct provider (OpenAI, Claude, Gemini, Fireworks).
-func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conversation, payload ChatPayload) (io.ReadCloser, *chatMetrics, error) {
+// chatRequestParts is the assembled chat request plus the intermediates the
+// callers of the request builder need.
+type chatRequestParts struct {
+	request StandardChatRequest
+	// preClock is the rendered message list BEFORE appendCurrentTimeTail ran,
+	// i.e. the pure function of (stored rows, model). The durable-fold
+	// summarisation replay compares against it: that is the byte-identical
+	// KV-cached prefix.
+	preClock []StandardMessageReq
+	// visibleMessages is the eco-filtered history the request carries.
+	visibleMessages []utils.Message
+	windowTokens    int
+}
+
+// buildChatRequestParts assembles the chat request body: the system prompt
+// (base/miniApp/call prompt + skills + MCP descriptions + startup-scripts note
+// + disabled-tools summary + important_memory + caveman voice + webhook/port
+// suffixes), the eco-filtered history, attachment preparation, the
+// non-vision image strip, the tool schemas, the cache knobs, and the clock.
+//
+// It is the ONLY place that assembles a chat request, and the durable-fold
+// summarisation call (ai/eco_summarize.go) replays it verbatim, so the summary
+// request's serialized prefix cannot drift from the real chat request's. That
+// equality is the KV prompt-cache reuse guarantee the summary path is built
+// on; a hand-rolled payload on the summariser side would re-prefill the whole
+// conversation instead of reusing the cached prefix.
+func buildChatRequestParts(ctx context.Context, model utils.Model, conv utils.Conversation, payload ChatPayload) (chatRequestParts, error) {
+
 	systemPrompt := baseSystemPrompt()
 
 	miniAppID := payload.MiniApp.ID
@@ -73,7 +98,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		username, _ := ctx.Value("userID").(string)
 		miniApp, err := miniapps.Get(username, miniAppID)
 		if err != nil {
-			return nil, nil, err
+			return chatRequestParts{}, err
 		}
 
 		if miniApp.Prompt["en"] != "" {
@@ -118,10 +143,6 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		if disabledSummary := ai_tools.GetDisabledToolsSummary(conv.UserID, model, payload.ClientSideTools); disabledSummary != "" {
 			systemPrompt += "\n\n" + disabledSummary
 		}
-	}
-
-	if !LiteLLMReady() {
-		return nil, nil, fmt.Errorf("AI proxy is not ready, please try again in a moment")
 	}
 
 	// Append the per-user important_memory snippet. It is always present so the
@@ -207,6 +228,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// KV/prompt cache is reused; only a handful of tail tokens and the model's
 	// reply are (re-)processed. That is what makes prompt caching work for a
 	// long-lived agent loop.
+	preClock := append([]StandardMessageReq(nil), msgReqList...)
 	requestData.Messages = appendCurrentTimeTail(msgReqList)
 
 	// Prompt caching for self-hosted (llama.cpp/avalon/strata) backends.
@@ -244,6 +266,35 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// to llama.cpp-compatible backends via extra_body).
 	nk := -1 // keep all prefix tokens (dynamic, grows with context)
 	requestData.NKeep = &nk
+	return chatRequestParts{
+		request:         requestData,
+		preClock:        preClock,
+		visibleMessages: visibleMessages,
+		windowTokens:    windowTokens,
+	}, nil
+}
+
+// SendChatCompletion sends a chat completion request to the LiteLLM proxy,
+// which handles routing to the correct provider (OpenAI, Claude, Gemini,
+// Fireworks). The request body itself is assembled by buildChatRequestParts —
+// the single request builder shared with the durable-fold summariser.
+func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conversation, payload ChatPayload) (io.ReadCloser, *chatMetrics, error) {
+	// Fail fast when the proxy is not up: no point preparing attachments and
+	// marshalling a body nobody will accept. The check is HERE, not inside
+	// buildChatRequestParts, because the builder is also the durable-fold
+	// summariser's replay path, which must be constructible with no proxy
+	// running (the fold's request is built offline and posted by
+	// GenerateCheckpointSummaryFromRequest, which gates on LiteLLMReady itself).
+	if !LiteLLMReady() {
+		return nil, nil, fmt.Errorf("AI proxy is not ready, please try again in a moment")
+	}
+	parts, err := buildChatRequestParts(ctx, model, conv, payload)
+	if err != nil {
+		return nil, nil, err
+	}
+	requestData := parts.request
+	visibleMessages := parts.visibleMessages
+	windowTokens := parts.windowTokens
 
 	utils.Debug("A new chat request is being made with the following model: %s", model.Name)
 
@@ -841,86 +892,4 @@ func GenerateTitleForMessage(message, model string) (string, error) {
 	title := strings.TrimSpace(result.Choices[0].Message.Content)
 
 	return title, nil
-}
-
-// GenerateCheckpointSummary asks the configured fast model to produce a
-// dense summary of a slice of conversation history, used by the eco mode
-// rolling checkpoint. The input may include a previously-stored summary
-// prefixed with "PRIOR CHECKPOINT:" — the system prompt instructs the
-// model to fold it in rather than repeat it verbatim.
-func GenerateCheckpointSummary(text, model string) (string, error) {
-	if !LiteLLMReady() {
-		return "", fmt.Errorf("AI proxy is not ready")
-	}
-
-	msgReqList := []StandardMessageReq{
-		{
-			Role: "system",
-			Content: "You are summarising older conversation history that the live LLM will no longer see directly. " +
-				"Your summary REPLACES those messages in the live context, so any detail you drop is lost to the model. " +
-				"Rules:\n" +
-				"1. Preserve verbatim: code blocks, file paths, identifiers, IDs, error messages, command outputs, URLs, numeric values, exact quoted user requests.\n" +
-				"2. Preserve the FULL text content of any inline pasted snippet or text attachment shown to you under '[attachment: ...]' headers — copy them into a clearly-labeled section, do not paraphrase code or text the user pasted.\n" +
-				"3. Preserve tool_call → TOOL_RESULT outcomes: which tool was called, the key arguments, and the substantive result (paths created, errors returned, data retrieved). Drop only obviously verbose framing.\n" +
-				"4. For image / document / binary attachments noted as '[image attachment omitted]' or '[document attachment: ...]', just record that the attachment existed (filename and any context the user gave).\n" +
-				"5. Preserve user goals, decisions, plans, and rejected options chronologically so the live LLM understands where the conversation stands.\n" +
-				"6. The optional 'PRIOR CHECKPOINT' section at the start is a summary you produced earlier — fold its facts into your new summary in-place, do not repeat it verbatim and do not lose information from it.\n" +
-				"7. Be dense and structured (sections / bullets), but do NOT be brief at the cost of dropping concrete content. Length should match the input's information density.\n" +
-				"Respond with the summary text only — no preamble, no closing remarks.",
-		},
-		{
-			Role:    "user",
-			Content: text,
-		},
-	}
-
-	maxTokens := 8192
-	requestData := StandardChatRequest{
-		Model:     model,
-		Messages:  msgReqList,
-		MaxTokens: &maxTokens,
-		Stream:    false,
-	}
-
-	jsonData, err := json.Marshal(requestData)
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequest("POST", LiteLLMBaseURL+"/v1/chat/completions", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := utils.HTTPClient
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		utils.Error("[EcoSummary] API request failed", nil, strconv.Itoa(resp.StatusCode), string(body))
-		return "", fmt.Errorf("API request failed with status %d", resp.StatusCode)
-	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("failed to parse summary response: %w", err)
-	}
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("no choices in summary response")
-	}
-	return strings.TrimSpace(result.Choices[0].Message.Content), nil
 }

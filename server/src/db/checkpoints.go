@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/azukaar/plurality/src/textsafe"
@@ -595,8 +596,53 @@ const MaxDurableSummaryChars = maxDurableSummaryChars
 const priorSummaryBanner = "PRIOR CHECKPOINT:"
 
 // newerHistoryBanner is the single section marker separating the carried-
-// forward roll-up from the newest folded excerpt.
-const newerHistoryBanner = "[newer history, machine-compacted]"
+// forward roll-up from the newest folded excerpt. Exported so the ai layer can
+// reference the SAME marker in the summarisation instruction it sends (the
+// model is told not to re-summarise what that section already covers) — one
+// string, two layers, no drift.
+const NewerHistoryBanner = "[newer history, machine-compacted]"
+
+// newerHistoryBanner is the package-internal spelling of the marker.
+const newerHistoryBanner = NewerHistoryBanner
+
+// chainCompressionMarker announces the escape valve: the prior roll-up did not
+// fit next to the new section, so it was compressed by the registered chain
+// compressor (megacave) rather than dropped. ONE marker, emitted once, and it
+// MUST say what happened, because a roll-up that silently shrank is a
+// "history vanished with no trace" defect the model cannot see.
+const chainCompressionMarker = "[prior roll-up megacaved down to fit the durable summary bound: "
+
+// chainCompressorSlack is the head-room reserved on top of the compressor's
+// room, so the bound holds even when a compressor's announcing marker is longer
+// than the compressor's own estimate of it. 128 chars buys every realistic
+// "compressed N chars -> M chars" marker.
+const chainCompressorSlack = 128
+
+// summaryChainCompressor is the escape valve, injected by the ai layer (ai
+// imports db, so db cannot import the megacave renderer itself). It compresses
+// a roll-up text into at most maxChars chars and MUST announce the compression
+// inside its own output. nil = no compressor registered: the outer backstop
+// (boundDurableExcerpt) keeps the bound, with its own marker, so the bound is
+// never met by dropping content silently.
+var (
+	chainMu           sync.RWMutex
+	chainCompressorFn func(text string, maxChars int) string
+)
+
+// SetSummaryChainCompressor registers the roll-up chain compressor. Called
+// once from the ai package's init; tests inject a deterministic stand-in.
+func SetSummaryChainCompressor(fn func(text string, maxChars int) string) {
+	chainMu.Lock()
+	defer chainMu.Unlock()
+	chainCompressorFn = fn
+}
+
+// summaryChainCompressor returns the registered compressor, or nil.
+func summaryChainCompressor() func(text string, maxChars int) string {
+	chainMu.RLock()
+	defer chainMu.RUnlock()
+	return chainCompressorFn
+}
 
 // truncatedExcerptBanner announces that the stored excerpt was CUT to
 // maxDurableSummaryChars. ONE marker, appended, never nested: the reader of the
@@ -649,21 +695,97 @@ func composeDurableSummary(machineSummary func([]utils.Message) string, priorSum
 		// number the caller was asked to respect.
 		excerpt = boundDurableExcerpt(excerpt)
 	}
-	prior := boundPriorSummary(priorSummary, maxDurableSummaryChars/2)
+	// THE CHAIN: the prior roll-up is the accumulated record of every row
+	// earlier folds marked compacted, carried forward VERBATIM (never
+	// re-summarised — an LLM pass over it would destroy the one representation
+	// those rows have left). Banners are stripped and re-emitted once, so
+	// generations never nest.
+	prior := stripSummaryBanners(priorSummary)
 	if prior == "" {
 		return strings.TrimSpace(excerpt)
 	}
-	// Bound the NEW excerpt to what is left after the prior roll-up, so the
-	// concatenation never needs truncating and the prior roll-up is NEVER the
-	// thing that gets cut. Truncating the concatenation instead would keep the
-	// head (the prior) and silently drop the newest folded rows with no marker
-	// naming them — the exact "history vanished with no trace" shape.
-	room := maxDurableSummaryChars - len(prior) - len(newerHistoryBanner) - 3
-	if room < minDurableExcerptChars {
-		room = minDurableExcerptChars
+
+	// Cost the composition must reserve on top of the two texts.
+	const markerSlack = 64 // digits inside the escape-valve marker
+	overhead := len(newerHistoryBanner) + 4
+	if len(prior)+len(excerpt)+overhead <= maxDurableSummaryChars {
+		// It FITS: carry the prior verbatim, append the new section.
+		return strings.TrimSpace(prior + "\n\n" + newerHistoryBanner + "\n" + excerpt)
 	}
-	excerpt = boundDurableExcerpt(excerpt, room)
-	return strings.TrimSpace(prior + "\n\n" + newerHistoryBanner + "\n" + excerpt)
+
+	// THE ESCAPE VALVE. The total does not fit, and dropping content silently is
+	// not allowed. The PRIOR is what gets compressed (megacaved by the
+	// registered chain compressor — the deterministic lossy-compress operation),
+	// never the newest section: the newest folded rows are the freshest facts the
+	// live model is about to lose, and the prior has already survived one
+	// compaction pass.
+	markerCost := len(chainCompressionMarker) + markerSlack + 2
+	priorRoom := maxDurableSummaryChars - len(excerpt) - overhead - markerCost
+	if priorRoom < minPriorRollupChars {
+		// The new section is fat: give the prior a floor and bound the excerpt
+		// to what is left, announcing the truncation (boundDurableExcerpt keeps
+		// the TAIL, i.e. the newest folded rows, and names the drop).
+		priorRoom = minPriorRollupChars
+		excerpt = boundDurableExcerpt(excerpt, maxDurableSummaryChars-overhead-priorRoom-markerCost)
+	}
+	if compressed := compressPriorRollup(prior, priorRoom); compressed != "" {
+		marker := chainCompressionMarker + strconv.Itoa(len(prior)) + " chars -> " +
+			strconv.Itoa(len(compressed)) + " chars, nothing dropped silently]"
+		combined := strings.TrimSpace(marker + "\n" + compressed + "\n\n" + newerHistoryBanner + "\n" + excerpt)
+		if len(combined) <= maxDurableSummaryChars {
+			return combined
+		}
+		// The compressor overshot its room: re-run it at the exact remainder so
+		// the bound holds with the marker in place. One retry is enough because
+		// the second room is strictly smaller than the first.
+		retry := priorRoom - (len(combined) - maxDurableSummaryChars)
+		if again := compressPriorRollup(prior, retry); again != "" {
+			marker = chainCompressionMarker + strconv.Itoa(len(prior)) + " chars -> " +
+				strconv.Itoa(len(again)) + " chars, nothing dropped silently]"
+			combined = strings.TrimSpace(marker + "\n" + again + "\n\n" + newerHistoryBanner + "\n" + excerpt)
+			if len(combined) <= maxDurableSummaryChars {
+				return combined
+			}
+		}
+	}
+
+	// NO COMPRESSOR REGISTERED (a db-only build/test), or the compressor
+	// produced nothing: keep the bound with the outer backstop, keeping the
+	// prior's TAIL and ANNOUNCING the compression. The newest section is
+	// preserved in full: the prior is the thing that shrinks.
+	room := maxDurableSummaryChars - len(excerpt) - overhead - markerCost
+	if room < minPriorRollupChars {
+		room = minPriorRollupChars
+		excerpt = boundDurableExcerpt(excerpt, maxDurableSummaryChars-overhead-room)
+	}
+	prior = boundDurableExcerpt(prior, room)
+	return strings.TrimSpace(chainCompressionMarker + strconv.Itoa(len(priorSummary)) +
+		" chars -> " + strconv.Itoa(len(prior)) + " chars (no chain compressor registered)]\n" +
+		prior + "\n\n" + newerHistoryBanner + "\n" + excerpt)
+}
+
+// minPriorRollupChars is the floor of the room left for the PRIOR roll-up when
+// the new section is fat. Without a floor, a huge new excerpt squeezes the
+// chain to nothing and every row an earlier fold compacted loses its only
+// representation.
+const minPriorRollupChars = 8_000
+
+// compressPriorRollup runs the prior roll-up through the registered chain
+// compressor at `room` chars. Returns "" when no compressor is registered, the
+// room is unusable, or the compressor produced nothing (the caller then falls
+// back to the truncating backstop, which announces what it did).
+func compressPriorRollup(prior string, room int) string {
+	fn := summaryChainCompressor()
+	if fn == nil || room <= 0 {
+		return ""
+	}
+	out := strings.TrimSpace(fn(prior, room))
+	if out == "" || len(out) > room {
+		// A compressor that ignores its room is not usable for the bound: the
+		// caller's retry math assumes `room` is respected.
+		return ""
+	}
+	return out
 }
 
 // boundDurableExcerpt caps this fold's excerpt to maxDurableSummaryChars on a
@@ -689,20 +811,6 @@ func boundDurableExcerpt(excerpt string, maxChars ...int) string {
 	// discards its most recent work — invisible to the model, which reads a
 	// summary that appears to end early. The marker names what was dropped.
 	return marker + "\n" + textsafe.TailBytes(excerpt, keep)
-}
-
-// boundPriorSummary caps the carried-forward roll-up, collapsing any banner
-// generations (keeping ALL their content) and keeping the newest `maxChars`
-// characters when the roll-up has outgrown the bound.
-func boundPriorSummary(prior string, maxChars int) string {
-	prior = stripSummaryBanners(prior)
-	if maxChars <= 0 {
-		return ""
-	}
-	if len(prior) > maxChars {
-		prior = prior[len(prior)-maxChars:]
-	}
-	return strings.TrimSpace(prior)
 }
 
 // stripSummaryBanners removes every occurrence of the summary banners, keeping

@@ -1,0 +1,457 @@
+package ai
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/azukaar/plurality/src/db"
+	"github.com/azukaar/plurality/src/utils"
+)
+
+// eco_summarize.go — the LLM summarisation call, reintroduced as the LAST
+// THING that touches the context the durable fold is about to evict.
+//
+// Shape of the design (and why):
+//
+//   - The summary request is NOT hand-rolled. It is the chat request, rebuilt
+//     through the production builder (buildChatRequestParts) for the SAME
+//     conversation and the SAME chat model, so the serialized prefix — system
+//     prompt, tool schemas, the eco-filtered history — is byte-for-byte the
+//     prefix the backend already has cached. The backend (llama.cpp/avalon/
+//     strata, and the cloud prefix caches) reuses the longest common prefix, so
+//     the summary call costs the eviction it is summarising and nothing more.
+//     Hand-rolling a payload here would re-prefill the entire conversation.
+//
+//   - The CLOCK is stripped from the replay (stripCurrentTimeTail). It is the
+//     only per-turn mutation of a chat request, so it is the one thing that
+//     would make the replay non-identical, and a model writing a durable
+//     checkpoint of a history that ends on a timestamp narrates that timestamp
+//     into the roll-up that is stored forever.
+//
+//   - The summarisation instruction is appended as a real trailing USER turn,
+//     so the assistant can answer it. It rides at the very END, past the
+//     cached prefix: the prefix stays intact.
+//
+//   - The model is the conversation's CHAT model (SelectModel on the
+//     conversation's own selection) — never the "fast" shortcut. The fast
+//     model's KV cache is not warm for this conversation, so routing the
+//     summary to it would pay a full prefill AND produce a summary from a model
+//     that never saw the conversation.
+//
+//   - The LLM is the FIRST attempt, and its failure can never lose a fold. The
+//     machine-only megacave render is the fallback and the fold proceeds
+//     untouched by the LLM's absence (see durableFold's branch, and the AST
+//     guard in ultracave_llm_guard_test.go).
+//
+//   - The stored roll-up is a CHAIN of megacaved summaries: the LLM text is
+//     itself megacaved before it is stored, the prior roll-up is carried
+//     forward, and when the chain outgrows the bound the PRIOR is re-megacaved
+//     (MegacaveSummaryChain, registered as db's escape valve) — deterministic,
+//     lossy-compress, never a silent drop.
+
+// maxSummaryOutputTokens is the sane ceiling on the summary's output budget:
+// min(window - prefix, this). It replaces the old hardcoded 8192, which cannot
+// hold the durable checkpoint of a whole evicted history (a 100k-char roll-up
+// needs far more than 8192 tokens to be written verbatim-dense).
+const maxSummaryOutputTokens = 32_768
+
+// minSummaryOutputTokens is the floor: a summarisation call that gets less than
+// this is not worth making (the fold falls back to the machine render, which
+// costs no prefill at all).
+const minSummaryOutputTokens = 1_024
+
+// summaryCharsPerToken is the chars->tokens estimate used for the summary
+// budget. It is the SAME 3.0 the preemptive context guard in index.go uses, so
+// the fold and the guard agree about the size of a request.
+const summaryCharsPerToken = 3
+
+// summaryHTTPTimeout bounds the summarisation round-trip. A self-hosted
+// summariser on a big prompt is slow (observed: ~3.5 min per summary on
+// swift-1.5-iq3_s), so this is generous, but it is a HARD bound: the eco
+// single-flight slot must not be held forever by a wedged proxy.
+const summaryHTTPTimeout = 10 * time.Minute
+
+// summaryHTTPClient is the summariser's client. It shares utils.HTTPClient's
+// transport (connection reuse, the proxy's keep-alive) and adds the per-call
+// timeout utils.HTTPClient deliberately does not have (Timeout: 0 for SSE
+// streams). Without a bound, a proxy that accepts and stalls parks the eco
+// goroutine forever and no conversation ever compacts again.
+var summaryHTTPClient = &http.Client{
+	Timeout:   summaryHTTPTimeout,
+	Transport: utils.HTTPClient.Transport,
+}
+
+func init() {
+	// The storage layer's escape valve must be the SAME deterministic
+	// lossy-compress operation the rest of the roll-up uses. db cannot import
+	// ai (ai imports db), so the compressor is injected here.
+	db.SetSummaryChainCompressor(MegacaveSummaryChain)
+}
+
+// MegacaveSummaryChain compresses a roll-up text through the megacave transform
+// into at most `maxChars` characters. Deterministic (no clock, no random, no
+// LLM), so the escape valve in db.composeDurableSummary is byte-stable.
+//
+// It is the ONLY lossy-compress operation allowed on the chain: re-summarising
+// the prior roll-up with an LLM would destroy the one representation every row
+// an earlier fold compacted still has.
+func MegacaveSummaryChain(text string, maxChars int) string {
+	if strings.TrimSpace(text) == "" || maxChars <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	writeLine := func(s string) {
+		if s == "" {
+			return
+		}
+		b.WriteString(s)
+		b.WriteString("\n")
+	}
+	show := maxChars - megacaveLabelOverheadChars
+	if show < minMegacaveRowShowChars {
+		show = minMegacaveRowShowChars
+	}
+	writeMegacaveText(&b, text, writeLine, show)
+	return capMegacaveExcerpt(strings.TrimSpace(b.String()), maxChars)
+}
+
+// chatModelForConversation resolves the CHAT model of a conversation exactly
+// the way the LLM loop does (SelectModel, including the vision swap when the
+// history carries images and the text model cannot see them). The summary is
+// sent to THAT model: it is the model whose KV prefix is warm and that owns the
+// conversation.
+func chatModelForConversation(conv utils.Conversation) utils.Model {
+	return SelectModel(conv.ModelSelected, conv)
+}
+
+// chatPayloadForConversation rebuilds the request-shaping part of the chat
+// payload from PERSISTED conversation state, so a summary request built after
+// the loop ends assembles the same system prompt and the same tool schemas the
+// loop's last request carried.
+//
+// WHAT IT CANNOT REPRODUCE, stated plainly: two payload fields are per-request
+// and never persisted — the client-side tool definitions a Flutter client ships
+// inline (ClientSideTools) and the per-request AvailableSkills list. When the
+// last real chat request carried client-side tools, the replayed prefix differs
+// in the tool-schema section, and the summary call pays a prefill for that
+// section instead of reusing it. Nothing is lost — the summary is complete — it
+// is just not free for that shape of conversation. The fold tests build the
+// chat request from the SAME payload, which is the contract the byte-identity
+// assertion pins.
+func chatPayloadForConversation(conv utils.Conversation) ChatPayload {
+	p := ChatPayload{
+		ConversationID: conv.ID,
+		ModelSelected:  conv.ModelSelected,
+	}
+	if conv.MiniApp != nil {
+		p.MiniApp = *conv.MiniApp
+	}
+	return p
+}
+
+// summaryInstruction is the trailing USER turn of the summary request. It
+// states the eviction, the verbatim-preservation contract, and points at the
+// existing roll-up section so the model does not spend its budget restating
+// what is already covered there.
+func summaryInstruction(priorSummary string, evictedRows int) string {
+	var b strings.Builder
+	b.WriteString("SYSTEM TASK — DURABLE CONTEXT CHECKPOINT (not a reply to the user)\n\n")
+	b.WriteString("The conversation crossed the durable-compaction cap. The OLDEST " + itoaRows(evictedRows) +
+		" of the messages above this instruction are about to be EVICTED from your live context: they are being folded " +
+		"out of every future request. After this fold you will never see them again.\n\n")
+	b.WriteString("Write the durable checkpoint for the EVICTED (oldest) messages. The newest messages stay in your " +
+		"context, so they matter less; the evicted range is what must survive in your text.\n\n")
+
+	b.WriteString("1. Preserve VERBATIM: code, file paths, identifiers, IDs, error messages, exact commands and their output, " +
+		"URLs, numeric values, and the user's requests in their own words.\n")
+	b.WriteString("2. Preserve every tool-call outcome: which tool, the key arguments, and the substantive result " +
+		"(files written, values returned, errors raised). Drop only ceremonial framing.\n")
+	b.WriteString("3. Be DENSE: bullets/sections, no preamble, no closing remarks, no meta-commentary about the task. " +
+		"Length should match the information density of the evicted rows, not a fixed target.\n")
+	b.WriteString("4. Do NOT summarise what the existing roll-up already covers — the section marked \"" +
+		db.NewerHistoryBanner + "\" is already stored verbatim ahead of your output. Your checkpoint ADDS to that chain.\n")
+	b.WriteString("5. Cover the newest evicted rows first (what you are about to lose is the freshest work), then the older ones.\n")
+	if s := strings.TrimSpace(priorSummary); s != "" {
+		b.WriteString("\nThe tail of the existing roll-up, for context only (do not restate it):\n")
+		b.WriteString(s)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// buildSummaryRequestFromView rebuilds the chat request for `conv` through the
+// production builder and appends the summarisation instruction as the final
+// user turn.
+//
+// The leading messages are the CHAT request's messages with the clock stripped,
+// byte-for-byte, and the tool schemas are the chat request's array — that is the
+// KV prompt-cache reuse guarantee (pinned by TestSummaryRequestPrefixIsByte-
+// IdenticalToChatRequest). `evicted` is the fold's row set: it is what the
+// instruction asks the model to checkpoint, and it is the conversation's own
+// sent view, so the model is reading the same bytes it read last turn.
+//
+// ctx carries the per-user claim the builder needs for the important_memory
+// block and the MCP/skill appends — the system prompt must be the same bytes.
+func buildSummaryRequestFromView(ctx context.Context, conv utils.Conversation, model utils.Model, evicted []utils.Message, payload ...ChatPayload) (StandardChatRequest, error) {
+	if model.Name == "" {
+		model = chatModelForConversation(conv)
+	}
+	if model.Name == "" {
+		return StandardChatRequest{}, fmt.Errorf("no chat model resolved for conversation %s — the fold must fall back to the machine-only render", conv.ID)
+	}
+	p := chatPayloadForConversation(conv)
+	if len(payload) > 0 {
+		p = payload[0]
+	}
+	if p.ConversationID == "" {
+		p.ConversationID = conv.ID
+	}
+
+	// Replay the chat request over conv.Messages — the EXACT slice the last real
+	// request carried. It must not be narrowed to `evicted`: PrepareMessagesForAI
+	// decides attachment staleness from the number of USER messages after each
+	// row, so replaying a shorter slice changes a row's rendering and the prefix
+	// stops being byte-identical (measured: an attachment-indexed system prompt
+	// renders as its "[Attachment omitted: ...]" placeholder at one slice length
+	// and verbatim at a shorter one). The evicted rows are inside the replayed
+	// prefix — they are what the model is asked to checkpoint — so narrowing buys
+	// nothing and costs cache reuse.
+	replayConv := conv
+	parts, err := buildChatRequestParts(ctx, model, replayConv, p)
+	if err != nil {
+		return StandardChatRequest{}, fmt.Errorf("cannot replay the chat request for the fold summary: %w", err)
+	}
+
+	// Drop the clock: it is the only per-turn mutation of the prefix, and the
+	// roll-up must not narrate a timestamp.
+	prefix := stripCurrentTimeTail(append([]StandardMessageReq(nil), parts.request.Messages...))
+
+	req := StandardChatRequest{
+		Model:       model.Name, // the CHAT model, never the fast shortcut
+		Messages:    append(prefix, StandardMessageReq{Role: "user", Content: summaryInstruction(PriorSummaryFromView(conv.Messages), len(evicted))}),
+		Stream:      false, // one-shot: the summary is a text answer, not a stream
+		Tools:       parts.request.Tools,
+		CachePrompt: parts.request.CachePrompt,
+		NKeep:       parts.request.NKeep,
+	}
+	maxTokens := summaryOutputTokens(model.Name, req.Messages, req.Tools)
+	req.MaxTokens = &maxTokens
+	return req, nil
+}
+
+// summaryOutputTokens sizes the summary's output budget: the model's window
+// minus the estimated prefix, clamped to [minSummaryOutputTokens,
+// maxSummaryOutputTokens].
+//
+// The prefix estimate is the marshalled wire bytes / 3 — the same measure the
+// preemptive context guard uses — and it includes the tool schemas, because the
+// chat template renders them into the prompt prefix, so they cost window.
+func summaryOutputTokens(modelName string, msgs []StandardMessageReq, tools []utils.ToolsRequest) int {
+	window := Models.MaxContextTokensForPrefixed(modelName)
+	prefixBytes := len(marshalNoEscape(msgs)) + len(marshalNoEscape(tools))
+	prefixTokens := prefixBytes / summaryCharsPerToken
+	budget := window - prefixTokens
+	if budget > maxSummaryOutputTokens {
+		budget = maxSummaryOutputTokens
+	}
+	if budget < minSummaryOutputTokens {
+		// The prefix fills the window: the summary cannot be written in this
+		// shape, so the call is not worth making (the caller falls back).
+		budget = minSummaryOutputTokens
+	}
+	return budget
+}
+
+// marshalNoEscape marshals with HTML escaping OFF, the encoder SendChatCompletion
+// uses: escaped bytes inflate the wire size 3-6x on code-heavy content and would
+// mis-size the budget.
+func marshalNoEscape(v interface{}) []byte {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n")
+}
+
+// attemptFoldSummary is the fold's LLM-first attempt: build the replayed
+// summary request and ask the chat model for the checkpoint. Any error — no
+// proxy, non-200, empty answer, deadline — is returned to the caller, which
+// MUST fall back to the machine-only render. The fold never fails because the
+// LLM failed.
+func attemptFoldSummary(ctx context.Context, conv utils.Conversation, model utils.Model, evicted []utils.Message, payload ...ChatPayload) (string, error) {
+	req, err := buildSummaryRequestFromView(ctx, conv, model, evicted, payload...)
+	if err != nil {
+		return "", err
+	}
+	if req.MaxTokens != nil && *req.MaxTokens <= minSummaryOutputTokens {
+		return "", fmt.Errorf("summary budget collapsed (max_tokens=%d for a %d-token window): the prefix already fills it",
+			*req.MaxTokens, Models.MaxContextTokensForPrefixed(req.Model))
+	}
+	return GenerateCheckpointSummaryFromRequest(ctx, req)
+}
+
+// llmFoldSummaryRenderer is the SUCCESS path of the fold: the LLM's checkpoint
+// text is itself megacaved, so the stored roll-up stays a chain of megacaved
+// summaries and stays inside the same ceiling the machine render respects.
+func llmFoldSummaryRenderer(llmText string, ceiling int) func([]utils.Message) string {
+	return func([]utils.Message) string {
+		text := MegacaveSummaryChain(llmText, ceiling)
+		if text == "" {
+			// Defensive: an empty render must not store an empty section.
+			return ""
+		}
+		return text
+	}
+}
+
+// machineOnlyFoldRenderer is the FALLBACK path of the fold: the deterministic
+// megacave render, byte-identical to what this path stored before the LLM was
+// reintroduced. Named so the AST guard can pin "the summariser call site's
+// failure path calls the machine-only renderer".
+func machineOnlyFoldRenderer(show, ceiling int) func([]utils.Message) string {
+	return func(m []utils.Message) string {
+		return MachineExcerptMegacaveCapped(m, show, ceiling)
+	}
+}
+
+// GenerateCheckpointSummaryFromRequest posts an already-assembled chat request
+// to the model's own chat endpoint and returns choices[0].message.content.
+//
+// The URL is ChatCompletionURLForName(req.Model) — NOT LiteLLMBaseURL — so the
+// summary rides the SAME route the conversation's real requests ride
+// (headroom -> caveman-proxy -> LiteLLM). That is what makes cache reuse
+// possible: a summary posted to a different endpoint is a different cache.
+//
+// Fail fast, never hang: LiteLLMReady() gates the call (a proxy that was never
+// started returns immediately), and summaryHTTPClient bounds the round-trip for
+// a proxy that accepts and stalls. Non-200 is logged and returned as an error —
+// the caller falls back to the machine-only fold, so no fold is ever lost to a
+// model failure.
+//
+// It takes the caller's ctx (the shape in the design sketch omits it): the fold
+// runs on a user-scoped context that a client disconnect does NOT cancel, while
+// a turn the user cancelled must not leave a multi-minute summary running. The
+// ctx is also how a caller's deadline shows up as the design's "ctx deadline"
+// failure mode, which is one of the reasons the fallback exists.
+func GenerateCheckpointSummaryFromRequest(ctx context.Context, req StandardChatRequest) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(req.Model) == "" {
+		return "", fmt.Errorf("summary request has no model")
+	}
+	if !LiteLLMReady() {
+		return "", fmt.Errorf("AI proxy is not ready")
+	}
+	body := marshalNoEscape(req)
+	if len(body) == 0 {
+		return "", fmt.Errorf("cannot marshal the summary request")
+	}
+	url := ChatCompletionURLForName(req.Model) + "/v1/chat/completions"
+	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	ApplyChatOptimizationHeaders(req.Model, httpReq)
+
+	// Honour the caller's context (a cancelled turn or a shutting-down server
+	// must not keep a summary running), and bound the round-trip by the
+	// summariser's own ceiling, whichever comes first.
+	callCtx, cancelCall := context.WithTimeout(ctx, summaryHTTPTimeout)
+	defer cancelCall()
+	resp, err := summaryHTTPClient.Do(httpReq.WithContext(callCtx))
+	if err != nil {
+		utils.Error("[EcoSummary] summary request failed", err)
+		return "", fmt.Errorf("summary request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	out, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return "", fmt.Errorf("summary response unreadable: %w", readErr)
+	}
+	if resp.StatusCode != http.StatusOK {
+		utils.Error("[EcoSummary] summary request rejected", nil, strconv.Itoa(resp.StatusCode), headOf(string(out), 400))
+		return "", fmt.Errorf("summary request failed with status %d", resp.StatusCode)
+	}
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		return "", fmt.Errorf("failed to parse summary response: %w", err)
+	}
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("no choices in summary response")
+	}
+	text := strings.TrimSpace(result.Choices[0].Message.Content)
+	if text == "" {
+		return "", fmt.Errorf("empty summary content")
+	}
+	return text, nil
+}
+
+// GenerateCheckpointSummary keeps its historical signature for any legacy
+// caller: a two-message summarisation prompt on `model`, max_tokens 8192,
+// LiteLLM directly. The fold path does NOT use it — the fold builds a replayed
+// request (buildSummaryRequestFromView) and posts it to the chat model's own
+// route via GenerateCheckpointSummaryFromRequest, which is what reuses the
+// KV-cached prefix.
+func GenerateCheckpointSummary(text, model string) (string, error) {
+	if !LiteLLMReady() {
+		return "", fmt.Errorf("AI proxy is not ready")
+	}
+	maxTokens := 8192
+	return GenerateCheckpointSummaryFromRequest(context.Background(), StandardChatRequest{
+		Model: model,
+		Messages: []StandardMessageReq{
+			{
+				Role: "system",
+				Content: "You are summarising older conversation history that the live LLM will no longer see directly. " +
+					"Your summary REPLACES those messages in the live context, so any detail you drop is lost to the model. " +
+					"Rules:\n" +
+					"1. Preserve verbatim: code blocks, file paths, identifiers, IDs, error messages, command outputs, URLs, numeric values, exact quoted user requests.\n" +
+					"2. Preserve the FULL text content of any inline pasted snippet or text attachment shown to you under '[attachment: ...]' headers — copy them into a clearly-labeled section, do not paraphrase code or text the user pasted.\n" +
+					"3. Preserve tool_call -> TOOL_RESULT outcomes: which tool was called, the key arguments, and the substantive result (paths created, errors returned, data retrieved). Drop only obviously verbose framing.\n" +
+					"4. For image / document / binary attachments noted as '[image attachment omitted]' or '[document attachment: ...]', just record that the attachment existed (filename and any context the user gave).\n" +
+					"5. Preserve user goals, decisions, plans, and rejected options chronologically so the live LLM understands where the conversation stands.\n" +
+					"6. Be dense and structured (sections / bullets), but do NOT be brief at the cost of dropping concrete content. Length should match the input's information density.\n" +
+					"Respond with the summary text only — no preamble, no closing remarks.",
+			},
+			{Role: "user", Content: text},
+		},
+		MaxTokens: &maxTokens,
+		Stream:    false,
+	})
+}
+
+// renderEvictedRowsForSummary is the plain-text dump of the rows the fold is
+// evicting, bounded by the summary input budget. The fold's LLM path is the
+// replayed request (the model reads its own rows), so this dump is the size
+// diagnostic the fold logs — how much text the eviction is standing in for.
+func renderEvictedRowsForSummary(messages []utils.Message) string {
+	return renderMessagesForSummary(messages)
+}
+
+// headOf truncates for a log line.
+// itoaRows keeps the instruction free of strconv noise.
+func itoaRows(n int) string { return strconv.Itoa(n) }
+
+func headOf(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "...[truncated]"
+}

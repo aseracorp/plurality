@@ -128,8 +128,11 @@ func ucSummaryText(t *testing.T, ctx context.Context, convID string) string {
 //     appended, the pair untouched),
 //   - the checkpoint pair is ONE pair, minted once, and its rendered bytes
 //     never move again,
-//   - compaction never touches an LLM (GenerateCheckpointSummary is guarded
-//     and never reached).
+//   - compaction's ONLY model contact is the one chat-model summarisation
+//     entry point the guard allows, and its failure falls back to the machine
+//     render (the old "compaction never touches an LLM" clause is retired: the
+//     summariser is back by design, as the LAST reader of the evicted context.
+//     See ultracave_llm_guard_test.go for what replaced it and why).
 func TestUltracaveFoldShrinksTheViewAndFreezesThePrefix(t *testing.T) {
 	ctx, d, convID := ucDB(t)
 
@@ -153,7 +156,7 @@ func TestUltracaveFoldShrinksTheViewAndFreezesThePrefix(t *testing.T) {
 		t.Fatalf("view rows %d, pushed %d", len(view), len(hist))
 	}
 
-	// ---- the compaction path (machine-only) ----
+	// ---- the compaction path (LLM-first, machine-only fallback) ----
 	installed := installLLMGuard(t)
 	prior := ucSummaryText(t, ctx, convID)
 	folded, err := CompactConversationMachineOnly(ctx, convID, view, prior, 8)
@@ -163,8 +166,16 @@ func TestUltracaveFoldShrinksTheViewAndFreezesThePrefix(t *testing.T) {
 	if folded == 0 {
 		t.Fatal("fold removed 0 rows on a 40-turn conversation — compaction does not converge")
 	}
-	if hits := installed.llmHits(); hits != 0 {
-		t.Fatalf("compaction called an LLM %d times — it must be machine-only", hits)
+	// The fold ATTEMPTS the LLM exactly once through the one allowed entry
+	// point, and LiteLLM is not ready here, so the machine-only render is what
+	// stored the roll-up below. (The old assertion was `hits != 0` = "no LLM at
+	// all"; that invariant is retired — the guard now pins exactly one
+	// summarisation entry and no SendChatCompletion / fastShortcutModels.)
+	if hits := installed.llmHits(); hits != 1 {
+		t.Fatalf("the fold path reaches %d LLM wire entries, want exactly 1 (the chat-model summariser): %v", hits, installed.hits)
+	}
+	if len(installed.forbids) != 0 {
+		t.Fatalf("the fold path reaches a forbidden call: %v", installed.forbids)
 	}
 
 	after := ucLLMView(t, ctx, convID)
@@ -270,8 +281,8 @@ func TestUltracaveFoldShrinksTheViewAndFreezesThePrefix(t *testing.T) {
 	if n := countCheckpointPairs(v2); n != 1 {
 		t.Fatalf("expected exactly ONE checkpoint pair after 2 folds, got %d", n)
 	}
-	if hits := installed.llmHits(); hits != 0 {
-		t.Fatalf("compaction called an LLM %d times across 2 folds", hits)
+	if hits := installed.llmHits(); hits != 1 {
+		t.Fatalf("the fold path reaches %d LLM wire entries across 2 folds, want exactly 1: %v", hits, installed.hits)
 	}
 	// The roll-up carries the earlier generation VERBATIM (the storage layer
 	// concatenates; the caller must not double-prepend).
