@@ -78,8 +78,8 @@ func TestChainCompositionBoundsAndKeepsPrior(t *testing.T) {
 	view = ucLLMView(t, ctx, convID)
 	conv = ucConvOf(t, ctx, convID, view, model)
 	priorText := PriorSummaryFromView(view)
-	if len(priorText) < db.MaxDurableSummaryChars/2 {
-		t.Fatalf("fixture did not produce a fat prior: %d chars — the escape valve cannot be reached", len(priorText))
+	if priorText == "" {
+		t.Fatal("fold 2 saw no prior roll-up to carry forward")
 	}
 	folded2, err := CompactConversationMachineOnly(ctx, convID, view, priorText, 2, ucTarget(conv, model))
 	if err != nil {
@@ -106,10 +106,24 @@ func TestChainCompositionBoundsAndKeepsPrior(t *testing.T) {
 	if !strings.Contains(stored, "chain generation one") {
 		t.Fatal("the prior roll-up's content vanished — it must be megacaved, never dropped")
 	}
-	// 3. THE MARKER NAMES THE COMPRESSION.
-	if !strings.Contains(stored, "megacaved") {
-		t.Fatalf("stored roll-up does not name how much prior was megacaved down:\n%s",
-			headRunes([]byte(stored), 600))
+	// 3. THE PRODUCTION CEILING IS TIGHTER THAN THE STORAGE BOUND.
+	//
+	// The escape valve fires when prior + new section exceed
+	// MaxDurableSummaryChars, and the overflow fold cannot now produce a
+	// prior that fat: UltracaveOverflowFoldFrom bounds the LIVE TAIL at
+	// half the eco target, and durableFold sizes the new excerpt with the
+	// other half, so the stored roll-up is capped near
+	// ecoTargetTokens*3/2 — 75,780 chars at the 50,000-token default,
+	// well under the 100,000 storage bound. Tighter is the point: a
+	// roll-up that reaches the storage bound is what re-inflates the next
+	// reload above the eco trigger and rewrites the prompt head every
+	// turn. The valve itself (prior megacaved down, marker naming the
+	// loss, newest section protected) is pinned at the storage layer, in
+	// checkpoints_chain_test.go, where it is reachable directly.
+	ceiling := ecoTargetTokens() * 3 / 2
+	if len(stored) > ceiling {
+		t.Fatalf("stored roll-up is %d chars, over the %d-char production ceiling — the tail bound leaked",
+			len(stored), ceiling)
 	}
 	// 4. THE NEWEST SECTION IS PRESENT (the prior is the thing that shrinks).
 	if !strings.Contains(stored, "chain generation two") {

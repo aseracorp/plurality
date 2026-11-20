@@ -1129,6 +1129,60 @@ func CompactConversationMachineOnly(ctx context.Context, conversationID string, 
 	return durableFold(ctx, conversationID, messages, foldFrom, priorSummary, chatModel, payload)
 }
 
+// ultracaveMinFoldProgressPercent is the HYSTERESIS of the overflow fold, as
+// a percentage of the eco target window: a fold that cannot remove at least
+// this much of the SENT VIEW does not fold at all.
+//
+// WHY A FLOOR ON PROGRESS (measured live, 2026-11-20, conversation
+// c363b2b3, /app/data/server.log): the context-length recovery fold ran 20
+// times in one day on a 1828-row conversation and the live row count went
+// 1828 -> 1855 — UP — because every fold removed ~2 rows and the loop counted
+// that as progress. The running `folded=` total grew only ~23k chars across
+// all 20 folds. Each of those folds rewrites the checkpoint pair, i.e. the
+// HEAD of the prompt, so each one also costs KV prefix reuse: the churn is
+// expensive and buys nothing, so the loop can never converge. A fold that
+// removes a fraction of a percent of the view is not compaction, and the
+// recovery path must be allowed to say "no" and fall through to the ephemeral
+// in-memory trim (the documented last resort).
+//
+// WHY 5% OF THE TARGET: the recovery path gets ultracaveMaxFoldsPerTurn folds
+// per turn, so two folds must be enough to move a conversation materially
+// away from the window — 2 x 5% of the target does that, and the observed
+// churn (~23k chars over 20 folds, ~2 rows each) is rejected by three orders
+// of magnitude (5% of the 50k-token default target = 2_500 tokens = 7_500
+// wire chars, vs ~2 rows ≈ tens of chars). It is a FRACTION OF THE TARGET,
+// not a row count, because the view's cost is the sent view (chars/3): 2 rows
+// of 100 chars and 2 rows of 100k chars are not the same fold.
+const ultracaveMinFoldProgressPercent = 5
+
+// ultracaveMinFoldProgressTokens is the hysteresis threshold in sent-view
+// tokens (the same measure SentViewTokens uses).
+func ultracaveMinFoldProgressTokens() int {
+	return ecoTargetTokens() * ultracaveMinFoldProgressPercent / 100
+}
+
+// ultracaveFoldProgressTokens is what a fold at `foldFrom` BUYS, in sent-view
+// tokens: the wire size of the live rows it removes, divided by the estimator's
+// char/3.
+//
+// The checkpoint pair's rows are EXCLUDED on purpose. The storage layer carries
+// the prior roll-up forward VERBATIM (see PriorSummaryFromView), so folding the
+// pair's rows removes NOTHING from the sent view — counting them would let a
+// fold that only shuffles the pair pass the hysteresis floor. The new excerpt
+// the fold writes is bounded by the budget arithmetic in durableFold (at most
+// HALF the wire size of the rows it replaces), so rows removed here is the
+// honest measure of progress.
+func ultracaveFoldProgressTokens(messages []utils.Message, foldFrom int) int {
+	removed := 0
+	for i := 0; i < foldFrom && i < len(messages); i++ {
+		if db.IsCheckpointMessage(messages[i]) {
+			continue
+		}
+		removed += SentViewRowChars(messages[i])
+	}
+	return removed / 3
+}
+
 // UltracaveOverflowFoldFrom picks the durable fold boundary for the
 // context-length overflow path (tool_loop.go), using the SAME arithmetic the
 // eco trigger uses: findCutoffIndex walks PromptTokens toward
@@ -1138,13 +1192,30 @@ func CompactConversationMachineOnly(ctx context.Context, conversationID string, 
 //   - the newest user turn is the FLOOR (the fold never crosses it, so the
 //     user's live ask is never summarized away);
 //   - the boundary may never sit on a `tool` row (its parent assistant call
-//     would be folded, orphaning the result at the head of the request);
-//   - folding from 0 would fold the whole conversation.
+//     would be folded, orphaning the result at the head of the request), nor
+//     on the checkpoint pair (folding the pair rewrites the prompt head);
+//   - folding from 0 would fold the whole conversation;
+//   - HYSTERESIS: on a view already over the eco target — the churn regime —
+//     a fold that buys less than ultracaveMinFoldProgressTokens is refused.
 //
-// When the token arithmetic yields no usable cutoff (e.g. a conversation
-// with no prompt_tokens yet, which is exactly the case right after a
-// provider 500), it falls back to keeping the newest `keep` messages,
-// snapped to the same legal boundaries.
+// A -1 means "no durable fold": the caller falls through to the ephemeral
+// in-memory trim, and because no write happens the checkpoint pair stays
+// BYTE-IDENTICAL. That is the existing 0-row contract this path relies on.
+//
+// BOUNDARY PRIORITY, in the order the two measures are trusted:
+//  1. findCutoffIndex (cumulative provider prompt_tokens) — the eco trigger's
+//     own arithmetic, so a fold and a trigger tick agree.
+//  2. bootstrapCutoff (the SENT VIEW in chars, SentViewRowChars) — the measure
+//     the frozen path actually ships. This is the fix for the 2-row churn:
+//     findCutoffIndex's lastPT is the provider's count of the LAST request,
+//     which the sliding window caps (~33k tokens), so on a 1855-row / 41k-token
+//     eco view it returns NOTHING (lastPT ≤ target) and the old code fell to
+//     rule 3 and folded 2 rows. The char boundary folds until the REST fits the
+//     target, so one fold removes a meaningful fraction of the conversation.
+//  3. keep the newest `keep` rows — reached ONLY when the sent view already
+//     fits the target, i.e. the conversation is not in the churn regime and the
+//     caller's explicit "keep N" is the whole request. Snapped to the same
+//     legal boundaries.
 func UltracaveOverflowFoldFrom(messages []utils.Message, keep int) int {
 	if len(messages) == 0 {
 		return -1
@@ -1163,6 +1234,13 @@ func UltracaveOverflowFoldFrom(messages []utils.Message, keep int) int {
 	if keep <= 0 {
 		keep = 24
 	}
+	target := ecoTargetTokens()
+	// The SENT VIEW, the measure the frozen path ships and the measure the
+	// hysteresis floor is a fraction of. `overTarget` is the churn regime: the
+	// view is already bigger than compaction's target, so a fold here must buy
+	// a real fraction of the target, not 2 rows.
+	viewTokens := SentViewTokens(messages)
+	overTarget := viewTokens > target
 	cand := -1
 	if lastPT := lastAssistantPromptTokens(messages); lastPT > 0 {
 		ckptEnd := -1
@@ -1172,10 +1250,33 @@ func UltracaveOverflowFoldFrom(messages []utils.Message, keep int) int {
 				break
 			}
 		}
-		cand = findCutoffIndex(messages, lastPT, ecoTargetTokens(), ckptEnd)
+		cand = findCutoffIndex(messages, lastPT, target, ckptEnd)
+	}
+	if cand <= 0 && overTarget {
+		// FIX for the 2-row churn: fall back to the CHAR boundary (the same
+		// measure the frozen path ships), not to `keep`. FindCutoffIndex is
+		// cumulative prompt_tokens and the sliding window caps lastPT, so it
+		// returns nothing exactly when the stored view is far over the target
+		// — and `keep 24` on a 1855-row conversation is then a fold of 2 rows
+		// after the floor/clamp. bootstrapCutoff folds the oldest rows until
+		// the REST fits the target, on a user boundary.
+		//
+		// The target is halved on purpose. durableFold sizes the new
+		// roll-up at (target - liveTail) * 3, so a boundary that leaves
+		// the live tail AT the target leaves the roll-up no room at all:
+		// the render collapses to its per-row floor (observed: 90 rows,
+		// folded 113930 chars, budget 7416) and the stored checkpoint
+		// loses almost everything it summarized. Halving keeps the live
+		// tail under half the target and the roll-up under the other
+		// half, which is the split the eco config itself implies
+		// (TriggerTokens = 2 x TargetTokens).
+		cand = bootstrapCutoff(messages, target/2)
 	}
 	if cand <= 0 {
-		// Token arithmetic gave nothing: keep the newest `keep` rows.
+		// The view is NOT over target and the token arithmetic gave nothing:
+		// honour the caller's explicit "keep the newest `keep` rows" (the
+		// pre-existing behaviour, and the shape of a fold requested right after
+		// a provider 500 with no prompt_tokens yet).
 		cand = len(messages) - keep
 	}
 	// Never fold past the newest user turn, and never start the live window
@@ -1188,6 +1289,19 @@ func UltracaveOverflowFoldFrom(messages []utils.Message, keep int) int {
 	}
 	if cand <= 0 || cand >= len(messages) {
 		return -1
+	}
+	// HYSTERESIS. In the churn regime a fold must buy at least
+	// ultracaveMinFoldProgressTokens of sent view; below that the fold is
+	// refused, which costs NO write, so the checkpoint pair stays byte-identical
+	// and the caller falls through to the ephemeral in-memory trim (the
+	// documented 0-row contract, and the only way the 20-folds-for-2-rows loop
+	// observed on 2026-11-20 can terminate).
+	if overTarget {
+		if bought := ultracaveFoldProgressTokens(messages, cand); bought < ultracaveMinFoldProgressTokens() {
+			utils.Log("[Eco] overflow fold refused (hysteresis): view %d tokens over target %d, boundary %d buys only %d tokens (< %d, %d%% of target) — keeping the prompt head and letting the caller trim in memory",
+				viewTokens, target, cand, bought, ultracaveMinFoldProgressTokens(), ultracaveMinFoldProgressPercent)
+			return -1
+		}
 	}
 	return cand
 }
