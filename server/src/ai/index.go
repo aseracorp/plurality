@@ -274,6 +274,72 @@ func buildChatRequestParts(ctx context.Context, model utils.Model, conv utils.Co
 	}, nil
 }
 
+// guardReplyReserve is the room the preemptive context guard keeps for the
+// model's answer: max_tokens (4096) + safety (2048). It is the SAME
+// reservation the request sends as max_tokens, so the guard and the backend
+// agree on the prompt ceiling.
+const guardReplyReserve = 4096 + 2048
+
+// preemptiveGuardEstimate is the preemptive context guard's client-side token
+// estimate: the SENT VIEW of the history (folded rows skipped, per-message cap
+// applied — the measure the eco trigger uses) plus the tool-schema allowance
+// (marshalling ONLY the tools array / summaryCharsPerToken, since the chat
+// template renders the schemas into the prompt prefix), then discounted by the
+// model's observed compression factor when a Headroom/Caveman proxy is provably
+// active (factor > 1, see CompressionFactor).
+//
+// The history part is NEVER the whole marshalled body. The body carries
+// re-inflated base64 attachments on top of the history, and base64 image bytes
+// are not ~3 chars/token at the provider (a vision encoder packs an image into
+// a fixed tile count), so bytes/3 over the whole body over-counts grossly —
+// measured ~859818 tokens for a 262144 window against a 41135-token sent view
+// on prod conversation c363b2b3. Worse, it makes compaction unfalsifiable: a
+// fold cannot shrink a number the attachments dominate, so the loop folds
+// forever and rewrites the prompt head on every turn.
+//
+// viewTokens <= 0 means the sender gave us no visible rows: fall back to the
+// whole-body bytes. Deliberately conservative — the fallback can only WIDEN
+// the estimate, never narrow it, so a missing view never lets an oversized
+// request ship.
+func preemptiveGuardEstimate(viewTokens int, tools []utils.ToolsRequest, modelName string, bodyBytes int) int {
+	estTokens := viewTokens + len(marshalNoEscape(tools))/summaryCharsPerToken
+	if viewTokens <= 0 {
+		estTokens = bodyBytes / summaryCharsPerToken
+	}
+	if factor := CompressionFactor(modelName); factor > 1 {
+		utils.Log("[Eco] compression-aware guard: est %d tokens / factor %.2f = %d post-compression", estTokens, factor, int(float64(estTokens)/factor))
+		estTokens = int(float64(estTokens) / factor)
+	}
+	return estTokens
+}
+
+// preemptiveContextGuard applies preemptiveGuardEstimate against the model's
+// window: over window-minus-replyReserve, it returns the error the LLM loop's
+// context-length recovery path recognises (isContextLengthError) so the loop
+// compacts and retries. A window of 0 (unknown) disables the guard.
+//
+// viewTokens (the SENT view) is the history measure, bodyBytes the marshalled
+// request; see preemptiveGuardEstimate for why the guard must not size the
+// history from the body — on prod conversation c363b2b3 the body measure said
+// 859818 tokens for a 262144-token window while the sent view was 41135, a
+// ~20x false positive that fired a context-length error EVERY turn (live rows
+// climbed 1830 -> 1855). Every forced fold rewrites the checkpoint pair at the
+// HEAD of the prompt, pinning cache_read at 16384 (measured).
+func preemptiveContextGuard(modelName string, viewTokens int, tools []utils.ToolsRequest, bodyBytes, windowTokens, liveRows int) error {
+	if windowTokens <= 0 {
+		return nil
+	}
+	schemaTokens := len(marshalNoEscape(tools)) / summaryCharsPerToken
+	estTokens := preemptiveGuardEstimate(viewTokens, tools, modelName, bodyBytes)
+	if estTokens <= windowTokens-guardReplyReserve {
+		return nil
+	}
+	utils.Log("[Eco] preemptive context guard: estimated %d tokens (sent view %d + schemas %d, marshalled body %d) vs window %d, %d live rows — returning context-length error so the loop compacts and retries",
+		estTokens, viewTokens, schemaTokens, bodyBytes/summaryCharsPerToken, windowTokens, liveRows)
+	return fmt.Errorf("request estimated to exceed the context window: ~%d tokens vs %d (max %d) — compacting history and retrying",
+		estTokens, windowTokens, windowTokens-guardReplyReserve)
+}
+
 // SendChatCompletion sends a chat completion request to the LiteLLM proxy,
 // which handles routing to the correct provider (OpenAI, Claude, Gemini,
 // Fireworks). The request body itself is assembled by buildChatRequestParts —
@@ -320,55 +386,19 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// own logs, so isContextLengthError in the LLM loop cannot see it and
 	// the compaction retry never fires (observed: a request at the window
 	// edge → provider 500 with an opaque body → dead turn). Estimate the
-	// token count client-side BEFORE sending; if it
-	// would exceed the model's window minus the reply reservation, return
-	// an error the loop's context-length path recognizes so it compacts
-	// the history and retries instead of shipping an oversized request.
-	// estTokens is hoisted above the guard because the guard needs it on both
-	// sides of the compression-factor discount below. It stays local to this
-	// function: it is a heuristic, and the turn's compression ratio is now
-	// measured from the proxy's own paired counts (compression_measured.go)
-	// rather than derived from it.
-	estTokens := 0
-	// Keep room for the model's answer: max_tokens + safety.
-	const replyReserve = 4096 + 2048
+	// token count client-side BEFORE sending; if it would exceed the model's
+	// window minus the reply reservation, return an error the loop's
+	// context-length path recognizes so it compacts the history and retries
+	// instead of shipping an oversized request. The estimate is
+	// preemptiveGuardEstimate — sent view + schema allowance, compression-factor
+	// discounted — NOT the marshalled body: see that helper for why.
+	//
 	// viewTokens is the eco view's own size (folded rows skipped, per-message
 	// cap applied) — the same measure the eco trigger gate uses, so the two
-	// agree about what is being sent. Logged alongside the marshalled estimate
-	// because the pair is the diagnostic for frozen compaction: viewTokens
-	// must be FLAT turn over turn between folds, and must step DOWN at a
-	// fold. jsonData above is the stricter bound (it carries the tool schemas
-	// and re-inflated attachments too), so the guard keeps using it.
+	// agree about what is being sent.
 	viewTokens := SentViewTokens(visibleMessages)
-	if windowTokens > 0 {
-		// ~3 chars per token for JSON: tool results and shell/file dumps are
-		// far denser than prose (~2.5-3.5 chars/token), and the marshalled
-		// request now carries the true unescaped wire bytes (message content,
-		// tool schemas, re-inflated images). 4 chars/token under-estimated
-		// dense code and over-estimated escaped text; 3.0 sits in the middle
-		// of the observed density band so the guard fires only when the
-		// request genuinely risks the window.
-		estTokens = len(jsonData) / 3
-		// Compression-aware guard: when the model routes through a Headroom /
-		// Caveman compression proxy, the provider actually sees a smaller
-		// prompt than the marshalled bytes above. Without this discount the
-		// guard fires far too early on compressed models and forces durable
-		// compaction it does not need. We keep the estimate conservative:
-		// apply the model's observed compression factor only when it is >1
-		// (i.e. a proxy is provably active) and bounds the discount so the
-		// guard can never under-count dangerously (see CompressionFactor).
-		postCompressionTokens := estTokens
-		if factor := CompressionFactor(model.Name); factor > 1 {
-			postCompressionTokens = int(float64(estTokens) / factor)
-			utils.Log("[Eco] compression-aware guard: est %d tokens / factor %.2f = %d post-compression vs window %d", estTokens, factor, postCompressionTokens, windowTokens)
-		}
-		// Keep room for the model's answer: max_tokens (4096) + safety.
-		// Room for the model's answer — the SAME reservation we send as
-		// max_tokens, so this guard and the backend agree on the prompt ceiling.
-		if postCompressionTokens > windowTokens-replyReserve {
-			utils.Log("[Eco] preemptive context guard: estimated %d tokens vs window %d (eco view %d tokens, %d live rows) — returning context-length error so the loop compacts and retries", estTokens, windowTokens, viewTokens, len(visibleMessages))
-			return nil, nil, fmt.Errorf("request estimated to exceed the context window: ~%d tokens vs %d (max %d) — compacting history and retrying", estTokens, windowTokens, windowTokens-replyReserve)
-		}
+	if err := preemptiveContextGuard(model.Name, viewTokens, requestData.Tools, len(jsonData), windowTokens, len(visibleMessages)); err != nil {
+		return nil, nil, err
 	}
 
 	// Resolve the target once so we know whether this request is routed

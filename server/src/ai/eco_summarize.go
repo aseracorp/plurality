@@ -241,7 +241,12 @@ func buildSummaryRequestFromView(ctx context.Context, conv utils.Conversation, m
 		CachePrompt: parts.request.CachePrompt,
 		NKeep:       parts.request.NKeep,
 	}
-	maxTokens := summaryOutputTokens(model.Name, req.Messages, req.Tools)
+	// Size the budget from the SENT VIEW of the replayed request: the summary
+	// replays the conversation's cached prefix, so the history it ships is
+	// exactly the rows that view counts (folded rows skipped, per-message cap
+	// applied). parts.visibleMessages is what the chat replay renders, so the
+	// fold and the preemptive guard measure the same history.
+	maxTokens := summaryOutputTokens(model.Name, SentViewTokens(parts.visibleMessages), req.Tools)
 	req.MaxTokens = &maxTokens
 	return req, nil
 }
@@ -250,13 +255,27 @@ func buildSummaryRequestFromView(ctx context.Context, conv utils.Conversation, m
 // minus the estimated prefix, clamped to [minSummaryOutputTokens,
 // maxSummaryOutputTokens].
 //
-// The prefix estimate is the marshalled wire bytes / 3 — the same measure the
-// preemptive context guard uses — and it includes the tool schemas, because the
-// chat template renders them into the prompt prefix, so they cost window.
-func summaryOutputTokens(modelName string, msgs []StandardMessageReq, tools []utils.ToolsRequest) int {
+// The history part of the prefix is the SENT VIEW (viewTokens), NOT the
+// marshalled bytes. The summary request replays the conversation's cached
+// prefix, so the history it ships is exactly the rows the view counts.
+// Marshalled bytes / 3 over-count grossly (re-inflated base64 attachments
+// dominate and are not ~3 chars/token at the provider): measured on prod
+// conversation c363b2b3 the whole-body measure said 859818 tokens for a
+// 262144-token window while the sent view was 41135, which collapsed EVERY
+// fold's budget to minSummaryOutputTokens — so every fold went machine-only
+// ("summary budget collapsed (max_tokens=1024 for a 262144-token window)") and
+// the conversation never got an LLM checkpoint of the rows it was losing.
+//
+// The tool schemas DO cost window — the chat template renders them into the
+// prefix — so they keep their own allowance (schemas only, no attachments).
+// The budget-collapsed case stays reachable and is now genuine: it fires only
+// when the sent view + schemas really fill the window, in which case the
+// summary cannot be written in this shape and the fold falls back to the
+// machine-only render, which costs no prefill at all.
+func summaryOutputTokens(modelName string, viewTokens int, tools []utils.ToolsRequest) int {
 	window := Models.MaxContextTokensForPrefixed(modelName)
-	prefixBytes := len(marshalNoEscape(msgs)) + len(marshalNoEscape(tools))
-	prefixTokens := prefixBytes / summaryCharsPerToken
+	schemaTokens := len(marshalNoEscape(tools)) / summaryCharsPerToken
+	prefixTokens := viewTokens + schemaTokens
 	budget := window - prefixTokens
 	if budget > maxSummaryOutputTokens {
 		budget = maxSummaryOutputTokens
