@@ -12,16 +12,178 @@ import (
 
 const kb = 1024
 
-// PrepareMessagesForAI processes conversation messages before sending them to an
-// AI provider. It replaces old/large attachments with lightweight placeholders
-// to save context window tokens, while keeping recent attachments intact.
+// attachmentDelivery is the delivery rule for ONE attachment part: what its
+// row ships in place, and whether its real content is fresh enough to ride in
+// the trailing attachment row.
 //
-// Staleness is size-based: attachments >50KB are replaced after 1 user message,
-// >25KB after 2, and smaller ones after 3.
+// The in-place decision (inline / placeholder) is a PURE function of stored
+// state — part type, the message's role+name, the attachment's size, and the
+// model's capabilities. It deliberately has NO "user messages since" term:
+// that term grows every turn, so a rule that reads it flips a row from real
+// content to placeholder in the MIDDLE of an already-sent prefix, and every
+// byte from that row on diverges from the previous request. KV prompt caching
+// matches the longest common PREFIX, so one mid-history flip discards the
+// whole conversation's cached KV. This is the same defect class as the
+// overflow-fold churn fixed in the fold-hysteresis commit: history rendering
+// must be monotone, and the only safe place for per-turn change is the TAIL.
 //
-// For non-action models (no function calling), stale images are stripped entirely
-// since there is no way for the model to retrieve them. Text-based attachments
-// (snippets, files) are kept inline regardless.
+// The one age term that remains is showWindow, and it gates ONLY the trailing
+// row (append-only tail bytes, expected to change) — never an in-place row.
+type attachmentDelivery struct {
+	// inline: ship the stored part verbatim in its own row.
+	inline bool
+	// placeholder: the in-row text that replaces the part. Empty means
+	// "drop the part entirely" (images for a non-action model, which has no
+	// tool with which to retrieve them).
+	placeholder string
+	// showWindow: how many user messages may follow the attachment's row
+	// before its real content drops out of the trailing row. 0 = never shown.
+	showWindow int
+}
+
+// attachmentPlaceholder is the stable in-row stand-in for an omitted
+// attachment. It is a function of stored metadata only (ID, ext, size), so it
+// renders identically on the first request that sees the attachment and on
+// every later one.
+func attachmentPlaceholder(att utils.AttachmentMeta) string {
+	desc := att.Type
+	if att.Ext != "" {
+		desc = att.Ext
+	}
+	if docsupport.IsDocumentType(att.Type) {
+		return fmt.Sprintf(
+			"[Document omitted: %s (%s, %d bytes). Use the \"read_document\" function to extract and read its text content.]",
+			att.ID, desc, att.Size,
+		)
+	}
+	return fmt.Sprintf(
+		"[Attachment omitted: %s (%s, %d bytes). Use the \"conversation_attachments\" function to retrieve it.]",
+		att.ID, desc, att.Size,
+	)
+}
+
+// attachmentDeliveryFor is the whole delivery decision for one attachment
+// part, as a pure function of stored state.
+func attachmentDeliveryFor(part utils.ContentPart, att utils.AttachmentMeta, isAction bool) attachmentDelivery {
+	if part.Type == "image_url" {
+		// Images are visible while they are FRESH: on the turn that uploaded
+		// them (user role), on the turn that produced them (assistant rows and
+		// tool results, including conversation_attachments recalls). The
+		// window is one user message, and the bytes ride in the trailing row.
+		d := attachmentDelivery{showWindow: 1}
+		if !isAction {
+			// No tools → no way to retrieve a stripped image later, and a
+			// non-vision model cannot read it at all. Strip it; the trailing
+			// row keeps it for the fresh turn (and
+			// stripImagesForNonVisionModel removes it again if the selected
+			// model truly cannot see images).
+			return d
+		}
+		d.placeholder = attachmentPlaceholder(att)
+		return d
+	}
+
+	// Text-based attachment. Documents are stored as a PATH, not as content
+	// (the bytes live in the blob store), so there is nothing to append: the
+	// read_document placeholder is the contract, showWindow stays 0.
+	if docsupport.IsDocumentType(att.Type) {
+		d := attachmentDelivery{showWindow: 0}
+		if isAction {
+			d.placeholder = attachmentPlaceholder(att)
+		} else {
+			d.inline = true // non-action model: keep the snippet/file inline
+		}
+		return d
+	}
+
+	// The "tiny attachments are always cheap to keep inline" guard: pure
+	// (size only), stable, so it stays an in-place rule.
+	if att.Size < 3*kb {
+		return attachmentDelivery{inline: true}
+	}
+
+	// Size-based freshness window, kept from the previous behaviour, but now
+	// applied ONLY to the trailing row.
+	window := 3
+	if att.Size > 50*kb {
+		window = 1
+	} else if att.Size > 25*kb {
+		window = 2
+	}
+	d := attachmentDelivery{showWindow: window}
+	if isAction {
+		d.placeholder = attachmentPlaceholder(att)
+	} else {
+		// Non-action model: snippets/files stay inline forever (no retrieval
+		// tool), so there is nothing to append.
+		d.inline = true
+		d.showWindow = 0
+	}
+	return d
+}
+
+// appendTrailingAttachment copies an attachment's REAL content into the
+// trailing row, labelled with its ID so the model can tie the bytes back to
+// the placeholder in the history and re-fetch them later via
+// conversation_attachments.
+func appendTrailingAttachment(out []utils.ContentPart, part utils.ContentPart, att utils.AttachmentMeta, content string) []utils.ContentPart {
+	desc := att.Ext
+	if desc == "" {
+		desc = att.Type
+	}
+	if att.Filename != "" {
+		desc = att.Filename
+	}
+	if part.Type == "image_url" {
+		out = append(out, utils.ContentPart{
+			Type: "text",
+			Text: fmt.Sprintf("[Attached image: %s (%s, %d bytes)]", att.ID, desc, att.Size),
+		})
+		if content == "" && part.ImageURL != nil {
+			content = part.ImageURL.URL
+		}
+		// Internal URLs are re-inflated to data URIs by reInflateImageURLs on
+		// the way out (see the bottom of PrepareMessagesForAI).
+		out = append(out, utils.ContentPart{
+			Type:     "image_url",
+			ImageURL: &utils.ContentImageURL{URL: content},
+		})
+		return out
+	}
+	out = append(out, utils.ContentPart{
+		Type: "text",
+		Text: fmt.Sprintf("[Attached file: %s (%s, %d bytes)]:\n%s", att.ID, desc, att.Size, content),
+	})
+	return out
+}
+
+// PrepareMessagesForAI processes conversation messages before sending them to
+// an AI provider. Attachments do NOT ship in the row that stored them: every
+// attachment part is replaced IN PLACE by its stable placeholder (or dropped,
+// for a non-action model's images), and the REAL content of the attachments
+// that are fresh enough to show is injected as ONE synthetic user message
+// appended at the END of the outgoing slice.
+//
+// Why the append-only trailing row: the in-place view is the prompt PREFIX,
+// and prefix bytes must be monotone — a row that is real content on turn k and
+// a placeholder on turn k+5 breaks KV prompt-cache reuse for the entire
+// conversation (the defect this fixes: staleness used to be decided by
+// userMessagesSince, i.e. user messages counted FROM THE END, so every old
+// attachment flipped mid-history). With the in-place view a pure function of
+// stored state and the real content confined to the tail, everything from the
+// start of the request up to the trailing row is byte-identical across turns,
+// exactly like the clock tail (see clock_tail.go: everything before the append
+// point stays byte-identical).
+//
+// Ageing is monotone in the only place it is allowed: as turns accumulate an
+// attachment's msgsSince grows past its window and it drops OUT of the
+// trailing row (the trailing region is tail bytes, expected to change). Its
+// in-place placeholder never changes, and its content stays retrievable
+// through conversation_attachments / read_document.
+//
+// Non-action models (no function calling) get no placeholder — they have no
+// tool with which to retrieve anything: images are stripped, text-based
+// attachments stay inline.
 //
 // Returns the processed messages, whether the conversation has any attachments,
 // and whether any of them are document attachments (PDF, etc.).
@@ -45,9 +207,9 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 
 	isAction := Models.IsActionModel(model.Name)
 
-	// Count user messages from the end to determine how many user messages
-	// have been sent since each point in the conversation.
-	// userMessagesSince[i] = number of user messages after message i (exclusive)
+	// Age of each row, measured as the number of user messages that follow it.
+	// Used ONLY for the trailing row's showWindow (see attachmentDelivery: the
+	// in-place bytes must never read this).
 	userMessagesSince := make([]int, len(messages))
 	userCount := 0
 	for i := len(messages) - 1; i >= 0; i-- {
@@ -67,7 +229,11 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 	removedCount := 0
 	savedBytes := 0
 
-	// Deep copy messages and replace stale attachments
+	// Trailing row: real content of the attachments that are fresh enough.
+	var trailing []utils.ContentPart
+	var trailingIDs []string
+
+	// Deep copy messages and replace attachment parts with their placeholders.
 	result := make([]utils.Message, len(messages))
 	for i, msg := range messages {
 		parts := msg.ContentParts()
@@ -76,95 +242,79 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 			continue
 		}
 
-		msgsSince := userMessagesSince[i]
+		isRecallRow := msg.Role == "tool" && msg.Name == "conversation_attachments"
 		newParts := make([]utils.ContentPart, 0, len(parts))
 		changed := false
 
 		for partIdx, part := range parts {
 			att, isAttachment := attByPos[key{i, partIdx}]
 			if !isAttachment {
-				newParts = append(newParts, part)
-				continue
-			}
-
-			// Images use role-based staleness: user-uploaded and explicit
-			// conversation_attachments recalls are visible only on their active
-			// turn (threshold 1); assistant/tool-side images are stripped
-			// immediately (threshold 0) — the LLM must call
-			// conversation_attachments to actually see them.
-			//
-			// Non-image attachments keep size-based thresholds and the
-			// "tiny attachments are always cheap to keep" guard.
-			var threshold int
-			if part.Type == "image_url" {
-				isRecall := msg.Role == "tool" && msg.Name == "conversation_attachments"
-				if msg.Role == "user" || isRecall {
-					threshold = 1
-				} else {
-					threshold = 0
-				}
-			} else {
-				if att.Size < 3*kb {
-					newParts = append(newParts, part)
+				// A conversation_attachments result is an ephemeral retrieval,
+				// so BuildAttachmentIndex skips it (indexing it would duplicate
+				// the original). Its images cannot ride in a tool row —
+				// providers accept images in user rows only — so a FRESH recall
+				// result's images move to the trailing row and the tool row
+				// keeps a stable text pointer.
+				if isRecallRow && part.Type == "image_url" {
+					changed = true
+					if userMessagesSince[i] < 1 {
+						content := ""
+						if part.ImageURL != nil {
+							content = part.ImageURL.URL
+						}
+						trailing = append(trailing,
+							utils.ContentPart{Type: "text", Text: "[Retrieved image attached for this turn]"},
+							utils.ContentPart{Type: "image_url", ImageURL: &utils.ContentImageURL{URL: content}},
+						)
+					}
 					continue
 				}
-				threshold = 3
-				if att.Size > 50*kb {
-					threshold = 1
-				} else if att.Size > 25*kb {
-					threshold = 2
-				}
-			}
-
-			if msgsSince < threshold {
-				// Recent enough — keep intact
 				newParts = append(newParts, part)
 				continue
 			}
 
-			// Attachment is stale
+			d := attachmentDeliveryFor(part, att, isAction)
+			if d.inline {
+				// The 3KB guard, and text parts for non-action models: the
+				// stored bytes ship verbatim, in place, on every turn.
+				newParts = append(newParts, part)
+				continue
+			}
+
 			changed = true
 			removedCount++
 			savedBytes += att.Size
 
-			if isAction {
-				// Replace with placeholder text
-				desc := att.Type
-				if att.Ext != "" {
-					desc = att.Ext
-				}
-				var placeholder string
-				if docsupport.IsDocumentType(att.Type) {
-					placeholder = fmt.Sprintf(
-						"[Document omitted: %s (%s, %d bytes). Use the \"read_document\" function to extract and read its text content.]",
-						att.ID, desc, att.Size,
-					)
-				} else {
-					placeholder = fmt.Sprintf(
-						"[Attachment omitted: %s (%s, %d bytes). Use the \"conversation_attachments\" function to retrieve it.]",
-						att.ID, desc, att.Size,
-					)
-				}
-				newParts = append(newParts, utils.ContentPart{
-					Type: "text",
-					Text: placeholder,
-				})
-			} else {
-				// Non-action model: strip images entirely, keep text-based attachments
-				if part.Type == "image_url" {
-					// Drop it — model can't retrieve it
-					continue
-				}
-				// Keep snippet/file content inline
-				newParts = append(newParts, part)
+			if d.placeholder != "" {
+				newParts = append(newParts, utils.ContentPart{Type: "text", Text: d.placeholder})
+			}
+
+			// Fresh enough → the real content rides the trailing row. The
+			// window is age-relative, so this is the ONLY per-turn decision,
+			// and it lands in append-only tail bytes.
+			if userMessagesSince[i] < d.showWindow {
+				trailing = appendTrailingAttachment(trailing, part, att, index.ContentMap[att.ID])
+				trailingIDs = append(trailingIDs, att.ID)
 			}
 		}
 
 		if !changed {
 			result[i] = msg
+		} else if len(newParts) == 0 {
+			// Every part of the row was dropped (a tool row carrying nothing
+			// but stripped images): keep a stable pointer so the row stays a
+			// coherent turn boundary.
+			result[i] = utils.Message{
+				Role:       msg.Role,
+				Content:    utils.NewTextContent("Tool result content omitted (no images in this result)."),
+				ToolCallID: msg.ToolCallID,
+				Name:       msg.Name,
+				Timestamp:  msg.Timestamp,
+			}
 		} else {
 			result[i] = utils.Message{
 				Role:             msg.Role,
+				Content:          utils.NewPartsContent(newParts),
 				ToolCalls:        msg.ToolCalls,
 				ToolCallID:       msg.ToolCallID,
 				Name:             msg.Name,
@@ -174,9 +324,6 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 				CompletionTokens: msg.CompletionTokens,
 				ResponseCost:     msg.ResponseCost,
 				Model:            msg.Model,
-			}
-			if len(newParts) > 0 {
-				result[i].Content = utils.NewPartsContent(newParts)
 			}
 		}
 	}
@@ -201,43 +348,30 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 		}
 	}
 
-	// Move image parts from tool results into user messages so the AI can see them.
-	// LLM APIs don't support images inside tool results — only in user messages.
-	// This only modifies the ephemeral copy, not the DB.
-	var finalResult []utils.Message
-	for _, msg := range result {
-		if msg.Role == "tool" && msg.HasImages() {
-			var toolParts []utils.ContentPart
-			var imageParts []utils.ContentPart
-			for _, part := range msg.ContentParts() {
-				if part.Type == "image_url" {
-					imageParts = append(imageParts, part)
-				} else {
-					toolParts = append(toolParts, part)
-				}
-			}
-			// Keep tool result with text only, add pointer if no text remains
-			if len(toolParts) == 0 {
-				toolParts = []utils.ContentPart{{Type: "text", Text: "See attached image in next user message."}}
-			}
-			msg.Content = utils.NewPartsContent(toolParts)
-			finalResult = append(finalResult, msg)
-			// Inject user message with images right after
-			finalResult = append(finalResult, utils.Message{
-				Role:    "user",
-				Content: utils.NewPartsContent(imageParts),
-			})
-		} else {
-			finalResult = append(finalResult, msg)
+	// The single synthetic trailing row. Appended at the END, after the
+	// history, so the prefix (system prompt + every history row) is untouched:
+	// that is what keeps the KV prefix warm. Nothing is injected in the middle
+	// of the history — the previous code injected a user row right after each
+	// image-carrying tool result, which inserted bytes mid-history on every
+	// turn (and re-shipped old tool images forever, since the injection had no
+	// staleness gate at all).
+	if len(trailing) > 0 {
+		head := "[Attachments attached for this turn: " + strings.Join(trailingIDs, ", ") +
+			"]. The history rows above show placeholders for them; the full content is here, and can be re-read later with the attachment tools."
+		if len(trailingIDs) == 0 {
+			head = "[Attachments attached for this turn]. The full content is here, and can be re-read later with the attachment tools."
 		}
+		parts := make([]utils.ContentPart, 0, len(trailing)+1)
+		parts = append(parts, utils.ContentPart{Type: "text", Text: head})
+		parts = append(parts, trailing...)
+		result = append(result, utils.Message{Role: "user", Content: utils.NewPartsContent(parts)})
 	}
 
 	utils.Debug("[Attachments] Indexed and removed %d attachment(s) (%d KB saved)", removedCount, savedBytes/kb)
 
 	// Re-inflate internal URLs back to data URIs so LLMs can see the images
-	finalResult = reInflateImageURLs(finalResult)
-
-	return finalResult, true, hasDocumentAttachments
+	// (the trailing row's image parts are the only images in the request).
+	return reInflateImageURLs(result), true, hasDocumentAttachments
 }
 
 // stripImagesForNonVisionModel replaces every image part in the outgoing
