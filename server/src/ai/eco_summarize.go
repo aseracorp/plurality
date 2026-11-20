@@ -216,8 +216,10 @@ func buildSummaryRequestFromView(ctx context.Context, conv utils.Conversation, m
 
 	// Replay the chat request over conv.Messages — the EXACT slice the last real
 	// request carried. It must not be narrowed to `evicted`: PrepareMessagesForAI
-	// decides attachment staleness from the number of USER messages after each
-	// row, so replaying a shorter slice changes a row's rendering and the prefix
+	// numbers attachments by scan order over the slice it is given, and the
+	// attachment-age window that gates the trailing row counts USER messages
+	// after each row, so replaying a shorter slice renames the IDs and changes
+	// which attachments show — and the prefix
 	// stops being byte-identical (measured: an attachment-indexed system prompt
 	// renders as its "[Attachment omitted: ...]" placeholder at one slice length
 	// and verbatim at a shorter one). The evicted rows are inside the replayed
