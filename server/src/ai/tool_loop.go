@@ -127,6 +127,12 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 	maxStreamRetries := 2
 	streamRetries := 0
 
+	// Durable-fold budget for this turn (context-length recovery). Bounded
+	// so a fold that removes nothing cannot spin the loop: after
+	// ultracaveMaxFoldsPerTurn folds the recovery falls through to the
+	// in-memory trim and then to the error path.
+	ultracaveFoldsThisTurn := 0
+
 	// Retry guard for empty completions: the stream ended cleanly (provider
 	// sent [DONE]) but produced no text and no tool calls. finalizeStream
 	// skips persisting those, so a retry needs no cleanup. Bounded like
@@ -197,15 +203,61 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				return
 			}
 			if isContextLengthError(err) {
-				// The conversation outgrew the model's context window. Shrink
-				// the in-memory history and retry ONCE — otherwise a long
-				// conversation (this one hit 381k tokens vs 131k limit)
-				// dead-ends into an error/blank UI at workflow end.
-				utils.Error("[LLMLoop] context length exceeded — compacting history and retrying", err)
+				// The conversation outgrew the model's context window. Compaction
+				// is DURABLE first: the in-memory trim (CompactConversationForContext)
+				// is discarded by the next DB reload, so a long conversation
+				// re-inflated and re-hit the context-length guard on EVERY turn
+				// (observed: 381k tokens vs 131k limit, every "continue" resuming
+				// straight back into the same provider error).
+				//
+				// Order, and why:
+				//   1. DURABLE fold (db.CompactConversationDurable, machine-only,
+				//      no LLM): rows are FLAGGED compacted and the deterministic
+				//      megacave roll-up stands in for them, so the shrink survives
+				//      the reload and every later request. The boundary comes from
+				//      UltracaveOverflowFoldFrom — the same target arithmetic the eco
+				//      trigger uses, clamped so it never folds the newest user turn
+				//      and never starts the live window on an orphan tool row.
+				//   2. Reload via db.GetConversationByIdInternal, which is the
+				//      LLM-facing view (folded rows already excluded).
+				//   3. Only if the durable fold folded 0 rows (boundary refused:
+				//      everything foldable is already folded, or the conversation
+				//      is one giant turn) fall back to the in-memory trim, so a
+				//      single oversized message can still be bounded for the retry.
+				utils.Error("[LLMLoop] context length exceeded — compacting history durably and retrying", err)
 				before := len(conversation.Messages)
+				// The fold's LLM-first summary needs the CONVERSATION'S CHAT MODEL and
+				// the payload shape the loop's requests carried, so the summary
+				// request replays the prefix the backend already has cached.
+				foldTarget := foldSummaryTarget{
+					model:   model,
+					payload: payload,
+				}
+				reloaded, foldedRows, foldErr := ultracaveDurableFoldForLoop(userContextFor(ar.UserID), ar.ConversationID, conversation.Messages, ultracaveFoldsThisTurn, foldTarget)
+				if foldErr != nil {
+					utils.Error("[LLMLoop] durable fold failed", foldErr)
+				}
+				if foldedRows > 0 && reloaded != nil {
+					ultracaveFoldsThisTurn++
+					conversation.Messages = reloaded
+					after := len(conversation.Messages)
+					utils.Log("[LLMLoop] durable fold for %s: %d rows folded, history %d -> %d messages (view ≈%d tokens, fold #%d)",
+						ar.ConversationID, foldedRows, before, after, SentViewTokens(conversation.Messages), ultracaveFoldsThisTurn)
+					ar.Broadcast(SSEEvent{
+						Type:           "text",
+						Content:        fmt.Sprintf("(The conversation was too long for the model's context window — %d older messages were compacted into the rolling summary. Retrying …)", foldedRows),
+						ConversationID: ar.ConversationID,
+					})
+					continue
+				}
+				// Nothing durable could be folded (0 rows): last resort, bound THIS
+				// request in memory. Documented tradeoff — this trim is ephemeral
+				// and moves the head of the sent history, so it costs KV prefix
+				// reuse; that is acceptable exactly because it is the last resort
+				// and not the per-request default.
 				conversation.Messages = CompactConversationForContext(conversation.Messages, 24)
 				after := len(conversation.Messages)
-				utils.Log("[LLMLoop] compacted conversation %s history %d -> %d messages", ar.ConversationID, before, after)
+				utils.Log("[LLMLoop] durable fold removed 0 rows — ephemeral in-memory trim %d -> %d messages (unpersisted, next reload re-inflates)", before, after)
 				if after < before {
 					ar.Broadcast(SSEEvent{
 						Type:           "text",
@@ -1768,4 +1820,71 @@ func progressStallLimitFromEnv() int {
 		return defaultProgressStallLimit
 	}
 	return n
+}
+
+// ultracaveMaxFoldsPerTurn bounds the durable folds one turn may request
+// from the context-length recovery path. A fold that removes rows makes the
+// next request smaller, so 2 is ample headroom; the cap is there for the
+// pathological shape where the view keeps measuring over the window for
+// another reason (a huge tool schema, a giant single message), where an
+// uncapped loop would fold, retry, fail, fold again, forever.
+const ultracaveMaxFoldsPerTurn = 2
+
+// foldSummaryTarget carries the chat model + chat payload the fold's LLM-first
+// summarisation attempt needs. It is optional on the fold entry points: omit it
+// and the summariser is skipped, so the fold is the machine-only render.
+type foldSummaryTarget struct {
+	model   utils.Model
+	payload ChatPayload
+}
+
+// ultracaveDurableFoldForLoop is the context-length recovery fold: it marks
+// the foldable rows compacted in the DB and returns the RELOADED LLM-facing
+// view, so the shrink is what the next request actually carries instead of a
+// local slice the next DB reload throws away.
+//
+// The summary is LLM-first (see durableFold): the conversation's CHAT model
+// writes the checkpoint of the rows it is about to lose, on a replay of its own
+// cached prefix; any failure falls back to the deterministic machine-only
+// render. This is the context-EXCEEDED path, so the summary request itself may
+// be over the window — summaryOutputTokens sizes its max_tokens from the
+// window and attemptFoldSummary refuses the call when the budget collapses, in
+// which case the fold is machine-only, which costs no prefill at all.
+//
+// Returns (view, rowsFolded, err). rowsFolded == 0 with a nil view means
+// "nothing can be folded safely" — the caller then falls back to the
+// in-memory trim. A fold that reports 0 rows leaves the checkpoint pair
+// byte-identical, so a no-progress turn never rewrites the prompt head.
+func ultracaveDurableFoldForLoop(ctx context.Context, conversationID string, messages []utils.Message, foldsSoFar int, target ...foldSummaryTarget) ([]utils.Message, int, error) {
+	if foldsSoFar >= ultracaveMaxFoldsPerTurn {
+		return nil, 0, nil
+	}
+	// Budget the fold against the live tail + the roll-up it carries, and
+	// fold with the SAME arithmetic as the eco trigger. The prior roll-up
+	// comes from the slice we are about to fold (see PriorSummaryFromView:
+	// db.GetCheckpoint wedges the single-connection pool).
+	prior := PriorSummaryFromView(messages)
+	chatModel := utils.Model{}
+	payload := ChatPayload{ConversationID: conversationID}
+	if len(target) > 0 {
+		chatModel = target[0].model
+		payload = target[0].payload
+		payload.ConversationID = conversationID
+	}
+	folded, err := CompactConversationMachineOnly(ctx, conversationID, messages, prior, 24, foldSummaryTarget{model: chatModel, payload: payload})
+	if err != nil {
+		return nil, 0, err
+	}
+	if folded == 0 {
+		return nil, 0, nil
+	}
+	reloaded, err := db.GetConversationByIdInternal(ctx, conversationID)
+	if err != nil {
+		// The rows ARE folded, so the shrink is durable; only the local view
+		// could not be re-read. Report 0 rows so the caller bounds THIS
+		// request in memory rather than resending the pre-fold slice.
+		utils.Error("[LLMLoop] reload after durable fold failed", err)
+		return nil, 0, err
+	}
+	return reloaded.Messages, folded, nil
 }

@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"regexp"
 	"strings"
 	"time"
 
@@ -11,6 +12,73 @@ import (
 // request only (never persisted).
 func clockTailText() string {
 	return "\n\nThe current time is " + time.Now().Format("2006-01-02 15:04")
+}
+
+// clockTailSuffixRE matches the clock line at the END of a string-content
+// message, and clockOnlyRE the standalone form (the synthetic row
+// appendCurrentTimeTail invents when a request has no text-bearing message).
+// The timestamp is pinned to clockTailText's exact layout, so the strip is
+// pattern-exact and cannot eat a user message that merely talks about the time.
+var (
+	clockTailSuffixRE = regexp.MustCompile(`(?s)\n\nThe current time is \d{4}-\d{2}-\d{2} \d{2}:\d{2}$`)
+	clockOnlyRE       = regexp.MustCompile(`^The current time is \d{4}-\d{2}-\d{2} \d{2}:\d{2}$`)
+)
+
+// stripCurrentTimeTail is the INVERSE of appendCurrentTimeTail, used by the
+// durable-fold summarisation replay (ai/eco_summarize.go).
+//
+// Why it exists: the fold's summary request must replay the CHAT request's
+// serialized prefix byte-for-byte so the backend's KV prompt cache is reused
+// for the summary call (one final prefill of the evictable context). The clock
+// is the ONLY per-turn mutation the request path makes, so it is the one thing
+// that must come back off. It also pollutes the roll-up: a model asked to write
+// the durable checkpoint of a history that ends in "The current time is ..."
+// narrates the timestamp into the summary that is stored forever.
+//
+// The rules mirror attachClock exactly, in reverse:
+//   - string content ending in the clock line -> drop the clock line, keep the
+//     message (the string stays a string);
+//   - []StandardContentReq whose LAST part is a text part equal to the clock
+//     line -> drop exactly that part (appendClock appends it as the last part);
+//   - a standalone "system" row whose whole content IS the clock line (the
+//     invented empty-request shape) -> drop the row;
+//   - everything else, verbatim. Nothing is removed from the middle of a
+//     message, and a user message about the current time is left alone: the
+//     pattern is anchored to the exact "The current time is <timestamp>" line.
+//
+// It does NOT mutate the input slice or its messages: rows are copied, parts
+// slices rebuilt. It is idempotent (a second pass finds nothing).
+func stripCurrentTimeTail(msgs []StandardMessageReq) []StandardMessageReq {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	out := make([]StandardMessageReq, 0, len(msgs))
+	for i := range msgs {
+		m := msgs[i]
+		switch content := m.Content.(type) {
+		case string:
+			if m.Role == "system" && clockOnlyRE.MatchString(strings.TrimSpace(content)) {
+				// The invented clock-only row: no message claimed a turn for it,
+				// so it goes away entirely.
+				continue
+			}
+			if stripped := clockTailSuffixRE.ReplaceAllString(content, ""); stripped != content {
+				m.Content = stripped
+			}
+		case []StandardContentReq:
+			if len(content) > 0 {
+				last := content[len(content)-1]
+				if last.Type == "text" && last.ImageURL == nil &&
+					clockOnlyRE.MatchString(strings.TrimSpace(last.Text)) {
+					parts := make([]StandardContentReq, len(content)-1)
+					copy(parts, content[:len(content)-1])
+					m.Content = parts
+				}
+			}
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // appendCurrentTimeTail attaches the current time to the OUTGOING request

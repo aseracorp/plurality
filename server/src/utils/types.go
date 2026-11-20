@@ -194,7 +194,19 @@ type Message struct {
 	//
 	// Empty means "no projection; ship Content verbatim".
 	CompressedContent string `json:"compressed_content,omitempty"`
-	Model     Model `json:"model,omitempty"`
+
+	// Compacted marks a row that durable compaction has FOLDED into the
+	// conversation's rolling checkpoint summary (messages.compacted).
+	//
+	// It is METADATA, stored in DB and never part of the wire message sent to
+	// an LLM: the LLM-facing loader (db.GetConversationByIdInternal) filters
+	// these rows out — the checkpoint summary stands in for them — while the
+	// client loader (db.GetConversationById) keeps serving them, so the user
+	// still sees the full history. Folding is non-destructive: the row is
+	// flagged, never deleted, and its seq is never renumbered.
+	Compacted bool `json:"compacted,omitempty"`
+
+	Model Model `json:"model,omitempty"`
 }
 
 // TextContent returns the text of the first "text" content part.
