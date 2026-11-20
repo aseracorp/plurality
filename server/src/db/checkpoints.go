@@ -574,7 +574,7 @@ func lastUserIdx(messages []utils.Message) int {
 // maxDurableSummaryChars bounds the stored checkpoint summary. The bound is a
 // constant, so the write cannot grow the roll-up without limit and re-inflate
 // the request that the caller just measured as fitting.
-const maxDurableSummaryChars = 80_000
+const maxDurableSummaryChars = 100_000
 
 // minDurableExcerptChars is the floor of the room left for the NEW excerpt
 // after the prior roll-up is paid for. Without a floor, a prior summary near

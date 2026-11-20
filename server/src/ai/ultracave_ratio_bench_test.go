@@ -297,13 +297,14 @@ func TestUltracaveRatioBypassAttribution(t *testing.T) {
 // Per-population table of the CHANGE: each population rendered by the CURRENT
 // renderer at the production show, plus the emitted tool_call args payload.
 // Baselines measured before the change (fixture, show=64):
-//   plain rows      825 rows in=1,545,874 out=181,546  ratio=0.117
-//   fence rows       46 rows in=  383,866 out=424,843  ratio=1.107 (ADDS bytes)
-//   tool_call args       754,350 raw -> 764,533 out    ratio=1.013 (ADDS bytes,
-//                    52.4% of the whole excerpt)
-//   whole excerpt   2,759,284 -> 1,458,172              ratio=0.528 vs a 90,000
-//                    char budget ask = 16x over, SATURATED (50k->10k tokens,
-//                    no change).
+//
+//	plain rows      825 rows in=1,545,874 out=181,546  ratio=0.117
+//	fence rows       46 rows in=  383,866 out=424,843  ratio=1.107 (ADDS bytes)
+//	tool_call args       754,350 raw -> 764,533 out    ratio=1.013 (ADDS bytes,
+//	                 52.4% of the whole excerpt)
+//	whole excerpt   2,759,284 -> 1,458,172              ratio=0.528 vs a 90,000
+//	                 char budget ask = 16x over, SATURATED (50k->10k tokens,
+//	                 no change).
 func TestUltracavePopulationTable(t *testing.T) {
 	msgs := ulLoadFixture(t)
 	show := MegacaveRowBudget(30_000*3, len(msgs))
@@ -369,4 +370,40 @@ func TestUltracavePopulationTable(t *testing.T) {
 	if a, b := MachineExcerptMegacaveCapped(msgs, show, ceiling), MachineExcerptMegacaveCapped(msgs, show, ceiling); a != b {
 		t.Fatal("fixture render is not byte-identical across runs")
 	}
+}
+
+// The owner's design question, measured: megacave FIRST, then the 100k cap —
+// how much MORE history does 100k of prompt buy than 100k of raw tail?
+func TestUltracaveCap100kCoverage(t *testing.T) {
+	msgs := ulLoadFixture(t)
+	const cap100k = 100_000
+
+	// (a) capTail with NO megacave: keep the newest rows that fit 100k chars.
+	chars, start := 0, len(msgs)
+	for i := len(msgs) - 1; i >= 0; i-- {
+		chars += SentViewRowChars(msgs[i])
+		if chars > cap100k {
+			start = i + 1
+			break
+		}
+	}
+	rawRows := len(msgs) - start
+	t.Logf("RAW 100k cap (no megacave): keeps %d/%d rows VERBATIM, DROPS %d rows entirely (%d chars of history unseen)",
+		rawRows, len(msgs), len(msgs)-rawRows, chars)
+
+	// (b) megacave first, THEN the 100k cap.
+	show := MegacaveRowBudget(cap100k, len(msgs))
+	exc := MachineExcerptMegacaveCapped(msgs, show, cap100k)
+	t.Logf("MEGACAVE then 100k cap: excerpt=%d chars (cap honoured=%v), per-row show=%d",
+		len(exc), len(exc) <= cap100k, show)
+
+	// Coverage: the raw cap DROPS rows outright; megacave labels EVERY row and
+	// elides its bulk, so the same 100k chars carries the whole conversation's
+	// shape instead of only its newest slice.
+	t.Logf("COVERAGE: raw cap represents %d of %d rows (~%d tokens); megacave+cap represents ALL %d rows = %.1fx more history inside the SAME %d chars",
+		rawRows, len(msgs), chars/3, len(msgs), float64(len(msgs))/float64(rawRows), cap100k)
+
+	in := ulWireChars(msgs)
+	t.Logf("HISTORY VISIBLE: raw cap sends ~%d chars of %d stored (%.2f%%); megacave+cap sends %d chars covering all rows (%.2f%% of stored, every row named)",
+		chars, in, 100*float64(chars)/float64(in), cap100k, 100*float64(cap100k)/float64(in))
 }
