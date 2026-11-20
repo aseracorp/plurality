@@ -423,12 +423,37 @@ func CompactConversationDurable(
 	}
 
 	// ---- Locate the live checkpoint pair (if any) ------------------------
-	oldToolID, priorSummary := findLiveCheckpoint(ctx, d, conversationID)
+	oldToolID, priorSummary, priorRawContent := findLiveCheckpoint(ctx, d, conversationID)
 
 	// ---- Compose the summary: prior VERBATIM + this fold's excerpt --------
 	summary := composeDurableSummary(machineSummary, priorSummary, folded)
 	if summary == "" {
 		return 0, nil
+	}
+
+	// ---- NO-GROWTH GUARD: a byte-identical roll-up is not a write --------
+	//
+	// The recovery fold recomputes the roll-up on the LLM view the caller just
+	// reloaded, so the same rows can be rendered twice. composeDurableSummary is
+	// a PURE function of (priorSummary, folded) — no clock, no random, no LLM in
+	// the storage layer — so when the composition comes back byte-for-byte equal
+	// to what the pair already stores, there is nothing new to represent, and the
+	// UPDATE below would be pure damage: the pair is the first content of the
+	// prompt after the system block, so rewriting the same bytes still touches the
+	// row and collapses backend KV prefix reuse to the system block (the observed
+	// trace: cache_read 26048 -> 16384, flat for 20 turns).
+	//
+	// Pure byte comparison of the exact column payload the write would put in the
+	// tool half — no hashing, no new column, no clock. Returns 0: callers already
+	// treat 0 rows as "no durable fold" and bound the request in memory, leaving
+	// the pair untouched (see ai/ultracaveDurableFoldForLoop).
+	if oldToolID != 0 {
+		newContent := marshalMessageContent(utils.NewTextContent(summary))
+		if derefContent(newContent) == derefContent(priorRawContent) {
+			utils.Log("[DurableCompact] composed roll-up is byte-identical to the stored checkpoint pair (%d chars, conv=%s) — skipping the write, 0 rows folded (the prompt head stays byte-identical)",
+				len(summary), conversationID)
+			return 0, nil
+		}
 	}
 
 	// ---- Resolve the fold set to DB row ids ------------------------------
@@ -514,16 +539,21 @@ func CompactConversationDurable(
 }
 
 // findLiveCheckpoint returns the row id of the LIVE checkpoint tool half (the
-// row carrying the summary text) and the summary text it stores, or (0, "")
-// when the conversation has no live pair. `compacted = 0` on both halves: a
-// superseded pair must never be revived or rewritten.
-func findLiveCheckpoint(ctx context.Context, d *sql.DB, conversationID string) (toolRowID int64, summary string) {
+// row carrying the summary text), the summary text it stores, and the RAW
+// content-column payload of that row (the exact bytes a rewrite would replace),
+// or (0, "", nil) when the conversation has no live pair. `compacted = 0` on
+// both halves: a superseded pair must never be revived or rewritten.
+//
+// The raw payload is what the no-growth guard compares against: comparing the
+// serialized column (not just the decoded text) is what makes the comparison the
+// exact claim "this UPDATE would write the bytes that are already there".
+func findLiveCheckpoint(ctx context.Context, d *sql.DB, conversationID string) (toolRowID int64, summary string, rawContent *string) {
 	rows, err := d.QueryContext(ctx,
 		`SELECT id, tool_calls FROM messages
 		 WHERE conversation_id = ? AND role = 'assistant' AND compacted = 0 AND tool_calls LIKE ?
 		 ORDER BY seq ASC`, conversationID, "%"+EcoCheckpointToolName+"%")
 	if err != nil {
-		return 0, ""
+		return 0, "", nil
 	}
 	var toolCallID string
 	for rows.Next() {
@@ -544,7 +574,7 @@ func findLiveCheckpoint(ctx context.Context, d *sql.DB, conversationID string) (
 	}
 	rows.Close()
 	if toolCallID == "" {
-		return 0, ""
+		return 0, "", nil
 	}
 	var contentJSON *string
 	err = d.QueryRowContext(ctx,
@@ -554,9 +584,18 @@ func findLiveCheckpoint(ctx context.Context, d *sql.DB, conversationID string) (
 	if err != nil {
 		// An assistant half with no live tool half is a half-pair this fold
 		// path cannot represent: treat it as no pair.
-		return 0, ""
+		return 0, "", nil
 	}
-	return toolRowID, unmarshalMessageContent(contentJSON).TextContent()
+	return toolRowID, unmarshalMessageContent(contentJSON).TextContent(), contentJSON
+}
+
+// derefContent flattens a content-column payload for the byte comparison
+// (nil — an empty/zero MessageContent — compares as "").
+func derefContent(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // lastUserIdx returns the index of the newest non-checkpoint user message, the
@@ -708,8 +747,23 @@ func composeDurableSummary(machineSummary func([]utils.Message) string, priorSum
 	// Cost the composition must reserve on top of the two texts.
 	const markerSlack = 64 // digits inside the escape-valve marker
 	overhead := len(newerHistoryBanner) + 4
-	if len(prior)+len(excerpt)+overhead <= maxDurableSummaryChars {
-		// It FITS: carry the prior verbatim, append the new section.
+
+	// APPEND-ONLY, ONCE THE CHAIN EXISTS. The prior already carries the ONE
+	// section banner, sitting at the boundary of the FIRST append. Stripping it
+	// here and re-emitting it in front of THIS fold's excerpt moves every byte
+	// between the old and the new boundary — the bytes before the append point
+	// are no longer a byte-for-byte prefix, and the pair is the first content of
+	// the prompt, so the KV prefix cache diverges there every single turn.
+	// A chain that has a banner is therefore EXTENDED at the tail and touched
+	// nowhere else: banner count stays exactly 1 (the chain never nests) and the
+	// stored text is a pure append of the newest section.
+	if strings.Contains(priorSummary, newerHistoryBanner) {
+		if len(priorSummary)+len(excerpt)+2 <= maxDurableSummaryChars {
+			return strings.TrimSpace(priorSummary + "\n" + excerpt)
+		}
+	} else if len(prior)+len(excerpt)+overhead <= maxDurableSummaryChars {
+		// It FITS onto a chain with NO banner yet (a first append, or a legacy
+		// prior): carry the prior verbatim, emit the ONE section banner, append.
 		return strings.TrimSpace(prior + "\n\n" + newerHistoryBanner + "\n" + excerpt)
 	}
 
