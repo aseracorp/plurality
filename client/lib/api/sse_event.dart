@@ -10,6 +10,13 @@ class SSEEvent {
   final String? toolName;
   final String? toolResult;
   final bool isServer;
+  /// True when the server routed this `tool_use` to the user's app over the
+  /// device channel (docs/device-channel.md) instead of to the client reading
+  /// this stream. The device owns the execution, so a viewer must NOT queue
+  /// the call as its own pending client tool: posting back a refusal for a tool
+  /// it cannot run resumes (and thereby cancels) the loop that is blocked on
+  /// the device's real answer. Null/false on every pre-existing frame.
+  final bool deviceDispatched;
   final String conversationId;
   final String? state;
   final Model? model;
@@ -34,6 +41,7 @@ class SSEEvent {
     this.toolName,
     this.toolResult,
     this.isServer = false,
+    this.deviceDispatched = false,
     required this.conversationId,
     this.state,
     this.model,
@@ -58,6 +66,7 @@ class SSEEvent {
       toolName: json['tool_name'],
       toolResult: json['tool_result'],
       isServer: json['is_server'] ?? false,
+      deviceDispatched: json['device_dispatched'] == true,
       conversationId: json['conversation_id'] ?? '',
       state: json['state'],
       model: json['model'] != null ? Model.fromJson(json['model']) : null,

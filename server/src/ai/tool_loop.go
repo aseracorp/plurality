@@ -533,10 +533,19 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 			for _, tc := range clientTools {
 				advertised := clientToolIsAdvertised(tc.Function.Name, payload.ClientSideTools)
 				hasConversationClient := ar.ClientCount() > 0
-				// A live device claim makes the tool dispatchable without a
+				// A live device claim makes the tool dispatchable WITHOUT a
 				// conversation stream, so the reattach grace must not be paid
 				// for it (the stream is not coming, the channel is already open).
-				hasDeviceClaim := advertised && !hasConversationClient && DeviceRegistry.ClaimedTool(tc.Function.Name, ar.UserID)
+				//
+				// It is consulted with a stream attached too, which is the
+				// chat-path gap this fixes (production 2026-11-20, conversation
+				// f533e88d: a browser tab streaming the chat has no device
+				// shell - web has no Process.start - so the app shipped no
+				// shell def, the Registry stub was still advertised to the
+				// model, and the loop parked on a client that can NEVER run the
+				// tool: 90s stall, watchdog timeout, every retry identical. The
+				// user's desktop app held a live claim the whole time.)
+				hasDeviceClaim := advertised && DeviceRegistry.ClaimedTool(tc.Function.Name, ar.UserID)
 				if advertised && !hasConversationClient && !hasDeviceClaim && !reattachChecked {
 					reattachChecked = true
 					hasClientNow = ar.waitForClient(clientToolReattachGrace)
@@ -663,13 +672,31 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 		// Sequential on purpose: the device serialises shell work, and two
 		// concurrent device calls racing on the same app (e.g. two fs_write of
 		// the same file) is a data race on the user's disk.
-		if len(clientTools) > 0 && ar.ClientCount() == 0 {
+		//
+		// Also covers the CHAT case, which is the bug this fixes: a stream IS
+		// attached, but the streaming app did not advertise the tool, so that
+		// client cannot run it. Two real shapes: a web tab (no shell, no
+		// folder tools) and a desktop window whose picker has the tool off,
+		// while the user's other, capable app holds the live claim. Routing the
+		// call to the claim answers it in seconds instead of parking the turn
+		// on a client that will never answer. A tool the streaming client DID
+		// advertise keeps the chat path byte-for-byte, so the normal desktop
+		// case is untouched and consent stays with the client the user picked.
+		if len(clientTools) > 0 {
 			var parkable []utils.ToolCall
 			for _, tc := range clientTools {
 				// Only a LIVE CLAIM makes a call dispatchable: an unclaimed
 				// client tool keeps the pre-existing path (park + stall
 				// watchdog) untouched, byte-for-byte.
 				if !DeviceRegistry.ClaimedTool(tc.Function.Name, ar.UserID) {
+					parkable = append(parkable, tc)
+					continue
+				}
+				if !deviceChannelSteersCall(
+					ar.ClientCount() > 0,
+					clientToolIsAdvertised(tc.Function.Name, payload.ClientSideTools),
+					clientToolModeIsAsk(payload, tc.Function.Name),
+				) {
 					parkable = append(parkable, tc)
 					continue
 				}
@@ -938,6 +965,32 @@ const clientToolStallTimeout = 90 * time.Second
 // the fast-fail for genuinely headless runs (cron, background sub-agents).
 const clientToolReattachGrace = 5 * time.Second
 
+// deviceChannelSteersCall reports whether a client-tool call whose tool is
+// advertised by the user's live device claim should be dispatched over the
+// channel by THIS loop, given what is attached to it. Extracted so the policy
+// is unit-testable, like clientToolUnreachable.
+//
+// Only reached when the claim advertises the tool, so the question is purely
+// "who executes it":
+//
+//   - no conversation stream (background run): steer. This is the #196 case.
+//   - stream attached AND that client advertised the tool: do NOT steer. The
+//     streaming app is the executor the user chose, and the chat path (broadcast
+//     tool_use, park, stall watchdog, approval UI) stays byte-identical for it.
+//   - stream attached but the client did NOT advertise the tool: steer. That
+//     client cannot run it — a web tab has no device shell at all, and a desktop
+//     window whose picker has the tool off cannot dispatch it either. Parking on
+//     it is the stall this fixes: 90s, watchdog timeout, same result every retry.
+//   - "ask" mode with a stream attached: do NOT steer. The approval prompt lives
+//     on the attached client, and steering would auto-execute a call the user
+//     configured to require a click.
+func deviceChannelSteersCall(hasConversationClient, advertisedByStreamClient, askMode bool) bool {
+	if !hasConversationClient {
+		return true
+	}
+	return !advertisedByStreamClient && !askMode
+}
+
 // clientToolUnreachable reports whether a client-side tool call must be
 // short-circuited with a synthetic error instead of dispatched. Extracted from
 // the loop so the policy is unit-testable.
@@ -1161,17 +1214,31 @@ func (ar *ActiveRequest) dispatchDeviceTool(ctx context.Context, conversation *u
 	requestID := utils.GenerateRandomString(16)
 	results, cleanup := DeviceRegistry.RegisterPending(requestID, ar.UserID, ar.ConversationID, tc.ID, tc.Function.Name, timeout)
 	defer cleanup() // the pending entry must not outlive this wait
+	// Announce the wait BEFORE the tool_use broadcast: a viewer of this
+	// conversation that echoes the call back as a tool result (a web tab's
+	// validation refusal is the common case) is refused at the API boundary,
+	// so the loop is never cancelled out from under the device. Cleared on the
+	// way out, so a later genuine result for a reused call id is accepted.
+	ar.markDeviceDispatched(tc.ID)
+	defer ar.clearDeviceDispatched(tc.ID)
 
 	enrichToolCallMetadata(&tc)
 	msSnap := conversation.ModelSelected
 	// tool_use for any viewer / reconnect (is_server: false — the device runs
 	// it), and the compact status event so the sidebar shows the activity.
+	//
+	// device_dispatched tells a viewer this call belongs to the device channel
+	// and not to it: ChatService must not queue it as its own pendingClient-
+	// Tool. That is exactly what produced the validation-refusal echo that
+	// cancelled the loop waiting for the device's real answer. Old clients
+	// ignore the key.
 	ar.Broadcast(SSEEvent{
-		Type:           "tool_use",
-		ToolCall:       &tc,
-		IsServer:       false,
-		ConversationID: ar.ConversationID,
-		ModelSelected:  &msSnap,
+		Type:             "tool_use",
+		ToolCall:         &tc,
+		IsServer:         false,
+		DeviceDispatched: true,
+		ConversationID:   ar.ConversationID,
+		ModelSelected:    &msSnap,
 	})
 	ar.BroadcastStatus("tool_use", tc.Function.Name)
 
