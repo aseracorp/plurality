@@ -173,6 +173,7 @@ func capTailWindow(tail []utils.Message) int {
 //
 //   - BUDGET = WHAT SHIPS: the walker sums SentViewRowChars (post-bound), so
 //     the kept window provably fits maxTailChars and the log line is honest.
+//
 //   - ANCHOR FORWARD: the window must open on a user row so no tool result
 //     is orphaned at the head (its parent call sits in the dropped section).
 //     The old code backed UP to the newest user row, re-adding rows the
@@ -182,8 +183,24 @@ func capTailWindow(tail []utils.Message) int {
 //     eviction is about to fold anyway and can never orphan a tool result.
 //     Only when the slice ENDS in a tool/assistant wall (no user row at or
 //     after the walker's start) does the anchor fall back to the newest user
-//     row — bounded by that tool chain, the same floor
-//     CompactConversationDurable uses.
+//     row — and that fallback is BOUNDED TWICE: it may only walk back across
+//     the contiguous tool/assistant chain (it stops at the first user row),
+//     and it stops the moment the next row would push the window over
+//     maxTailChars. "BUDGET = WHAT SHIPS" is therefore a hard invariant in
+//     BOTH anchor branches.
+//
+//     The pre-fix fallback was `for start > 0 && tail[start].Role != "user" {
+//     start-- }` with NO bound at all, so it re-added every row the walker had
+//     just excluded. Observed live on 2026-11-21 (conv a44a43258742259a60be242d,
+//     a NEW conversation with no checkpoint pair, 68 rows, max prompt_tokens
+//     52709):
+//
+//     12:35:19 [Eco] capping tail by budget: kept 15 msgs / 221162 chars
+//     (budget 100000, start idx 530) for context safety
+//
+//     2.2x the budget shipped on a tail ending in a tool/assistant wall — the
+//     NORMAL shape mid-turn in an agent chat, so the unbounded branch is the
+//     common one, not the rare one.
 func capTail(tail []utils.Message) []utils.Message {
 	if len(tail) == 0 {
 		return tail
@@ -197,8 +214,75 @@ func capTail(tail []utils.Message) []utils.Message {
 		if anchor < len(tail) {
 			start = anchor
 		} else {
-			for start > 0 && tail[start].Role != "user" {
-				start--
+			// The slice ends in a tool/assistant wall: no user row at or
+			// after the walker's start. Fall back to the newest user row,
+			// BOUNDED TWICE (the pre-fix loop was the unbounded
+			// `for start > 0 && tail[start].Role != "user" { start-- }`,
+			// which dragged 221162 chars onto a 100000-char budget — live,
+			// conv a44a43258742259a60be242d, 2026-11-21 12:35:19):
+			//
+			//   1. CHAIN: re-add at most the contiguous tool/assistant
+			//      chain, stopping at the first user row;
+			//   2. BUDGET: stop the moment the next row would push the
+			//      window over maxTailChars.
+			// The walk-back is bounded THREE ways, and the bound must keep
+			// the two older invariants: no orphan tool result at the head,
+			// and the newest turn ships.
+			//
+			//  1. CHAIN: re-add at most the contiguous tool/assistant
+			//     chain; stop at the first user row.
+			//  2. BUDGET: NORMAL rows (under the per-message cap) are added
+			//     only while the window's normal-row total stays under
+			//     maxTailChars — so on the all-normal shapes (the live
+			//     221162-on-100000 case, every row under the cap) the bound
+			//     is EXACT: BUDGET = WHAT SHIPS.
+			//  3. FAT ROWS: a row AT the per-message cap is excluded from
+			//     the normal-row base because it ships BOUNDED
+			//     (maxKeepTailChars + banner), and the pre-existing
+			//     satisfiable bound (maxTailChars + maxKeepTailChars +
+			//     slack, pinned by TestCapTailWindowIsSatisfiable) allows
+			//     exactly ONE bounded oversized row beside the budget. A
+			//     stricter number is NOT achievable: counting the clamped
+			//     fat row against the budget rejected its parent assistant
+			//     row, the head snap dropped the orphan tool result, and
+			//     capTail shipped an EMPTY window — dropping the newest
+			//     turn answers nothing.
+			base, addedFat := 0, 0
+			for i := start; i < len(tail); i++ {
+				c := SentViewRowChars(tail[i])
+				if c >= maxCompactMessageChars {
+					addedFat++
+					continue
+				}
+				base += c
+			}
+			for i := start - 1; i >= 0 && tail[i].Role != "user"; i-- {
+				c := SentViewRowChars(tail[i])
+				if c >= maxCompactMessageChars {
+					if addedFat >= 1 {
+						break
+					}
+					addedFat++
+					start = i
+					continue
+				}
+				if base+c > maxTailChars {
+					break
+				}
+				base += c
+				start = i
+			}
+			// The bounded walk can leave an orphan tool result at the head
+			// (its parent call sits in the dropped section below) — the
+			// same hard provider error the forward anchor exists to avoid,
+			// and the same guard CompactConversationDurable enforces on
+			// the durable fold. Snap the head FORWARD over leading tool
+			// rows (forward only shrinks the window, so the budget bound
+			// survives); stop before the window can empty, so the newest
+			// row always ships.
+			for start < len(tail)-1 && tail[start].Role == "tool" {
+				base -= SentViewRowChars(tail[start])
+				start++
 			}
 		}
 	}
@@ -796,15 +880,21 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 			conversationID, sentView, maxTailChars, lastPT, cfg.TriggerTokens, cfg.TargetTokens)
 	}
 
-	cutoff := findCutoffIndex(conv.Messages, lastPT, cfg.TargetTokens, existingCheckpointEndIdx)
-	if cutoff < 0 && existingCheckpointEndIdx < 0 {
-		// Bootstrap: the PT arithmetic cannot cut (lastPT is window-capped,
-		// often below target while the stored view is far over it). Use the
-		// char-based cutoff so the self-lock cannot survive in this shape.
-		cutoff = bootstrapCutoff(conv.Messages, cfg.TargetTokens)
-	}
+	// THE NO-PAIR RULE + THE HYSTERESIS FLOOR, as ONE pure function
+	// (tickFoldBoundary): the boundary of a conversation with NO checkpoint
+	// pair comes ONLY from the char-based bootstrapCutoff — never from
+	// findCutoffIndex's cumulative prompt_tokens arithmetic — and ANY
+	// boundary that buys less than the hysteresis floor is refused. Both
+	// rules exist because of the live trace below; see the function's doc
+	// comment.
+	cutoff := tickFoldBoundary(conv.Messages, lastPT, cfg.TargetTokens, existingCheckpointEndIdx)
 	if cutoff < 0 {
-		utils.Log("[Eco] no satisfying cutoff for conv %s (lastPT=%d target=%d, %d messages) — skip", conversationID, lastPT, cfg.TargetTokens, len(conv.Messages))
+		// tickFoldBoundary logged WHY (the view already fits the target, the
+		// PT arithmetic cannot cut, or the fold is under the hysteresis
+		// floor). No boundary means NO write, so the checkpoint pair stays
+		// byte-identical — the documented 0-row contract.
+		utils.Log("[Eco] conv %s tick fold refused: no usable boundary (lastPT=%d target=%d, %d messages, checkpoint end=%d) — pair stays byte-identical",
+			conversationID, lastPT, cfg.TargetTokens, len(conv.Messages), existingCheckpointEndIdx)
 		return
 	}
 	utils.Log("[Eco] conv %s cutoff=%d (of %d messages), prior checkpoint end=%d", conversationID, cutoff, len(conv.Messages), existingCheckpointEndIdx)
@@ -1302,6 +1392,116 @@ func UltracaveOverflowFoldFrom(messages []utils.Message, keep int) int {
 				viewTokens, target, cand, bought, ultracaveMinFoldProgressTokens(), ultracaveMinFoldProgressPercent)
 			return -1
 		}
+	}
+	return cand
+}
+
+// tickFoldBoundary picks the durable fold boundary for the eco TICK
+// (runEcoSummary) — the fold every conversation runs on, and for a
+// conversation with NO checkpoint pair it is the fold EVERY NEW CONVERSATION
+// runs on. Pure: no I/O, no clock, no LLM, so both gates below are testable
+// directly.
+//
+// RULE 1 — THE NO-PAIR RULE: with no pair (existingCheckpointEndIdx < 0) the
+// boundary comes ONLY from bootstrapCutoff, the char-based measure of the view
+// the frozen path actually ships. findCutoffIndex is NEVER consulted, and a
+// view that already fits the target folds NOTHING.
+//
+// Why: findCutoffIndex's arithmetic is targetDrop = lastPT - target, and
+// lastPT is the provider's prompt count of the newest turn — system prompt +
+// tool schemas + the whole window, i.e. mostly NOT history. Live trace, conv
+// a44a43258742259a60be242d (a NEW conversation, 68 rows, NO checkpoint pair,
+// max prompt_tokens 52709), /app/data/server.log 2026-11-21 10:51:02:
+//
+//	BOOTSTRAP compaction: sent view 46331 tokens over tail budget (100000
+//	  chars) with no checkpoint pair, lastPT=52709 below trigger=150000
+//	  — compacting toward target=50000
+//	cutoff=67 (of 68 messages), prior checkpoint end=-1
+//
+// targetDrop = 52709 - 50000 = 2709: the LAST assistant crossing 2709
+// cumulative tokens is the second-to-last row, so cutoff = 67 of 68 = fold
+// EVERYTHING older than the newest turn, on a brand-new conversation, toward
+// a target (50000) the sent view (46331) ALREADY meets. The fold then removed
+// 0 rows and left the pair byte-identical — pure churn of the prompt head,
+// and with the cache trace below it is not free: cache_read=24137 FLAT across
+// 8 turns while tok_before grew 31949 -> 107780, ttfb_ms 4475 -> 74034.
+//
+// RULE 2 — THE HYSTERESIS FLOOR: any boundary, pair or no-pair, that buys
+// less than ultracaveMinFoldProgressTokens of sent view is REFUSED. That is
+// the floor UltracaveOverflowFoldFrom already enforces (its 2026-11-20 trace:
+// 20 folds removing ~2 rows each, live row count 1828 -> 1855, UP) — the tick
+// fold must obey it too, or the same conversation rewrites the prompt head
+// every turn for ~2 rows. A refused fold writes NOTHING, so the pair stays
+// byte-identical: the documented 0-row contract.
+//
+// RULE 3 — the boundaries the storage layer enforces, applied here so the
+// caller-side log is honest: the newest user row is the FLOOR, the live window
+// never starts on a `tool` row, never on the checkpoint pair, never empty.
+//
+// Returns a boundary (> 0) or -1 = NO FOLD, logging the specific reason.
+func tickFoldBoundary(messages []utils.Message, lastPT, target, existingCheckpointEndIdx int) int {
+	viewTokens := SentViewTokens(messages)
+	lu := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" && !db.IsCheckpointMessage(messages[i]) {
+			lu = i
+			break
+		}
+	}
+	if lu <= 0 {
+		utils.Log("[Eco] tick fold refused: no non-checkpoint user row past index 0 (view %d tokens, %d messages, lastPT=%d) — a fold would leave no live window; pair stays byte-identical",
+			viewTokens, len(messages), lastPT)
+		return -1
+	}
+
+	cand := -1
+	if existingCheckpointEndIdx < 0 {
+		// NO-PAIR RULE, in both directions.
+		if viewTokens <= target {
+			utils.Log("[Eco] tick fold refused: sent view %d tokens already fits target %d (lastPT=%d, %d messages, NO checkpoint pair) — no fold needed, folding here would only churn the prompt head; pair stays byte-identical",
+				viewTokens, target, lastPT, len(messages))
+			return -1
+		}
+		cand = bootstrapCutoff(messages, target)
+		if cand <= 0 {
+			utils.Log("[Eco] tick fold refused: bootstrapCutoff gave no boundary (view %d tokens, target %d, lastPT=%d, %d messages) — pair stays byte-identical",
+				viewTokens, target, lastPT, len(messages))
+			return -1
+		}
+	} else {
+		cand = findCutoffIndex(messages, lastPT, target, existingCheckpointEndIdx)
+		if cand <= 0 {
+			// A pair exists, so the frozen path owns the view and the token
+			// arithmetic is the trigger's own measure; when it cannot cut,
+			// fall to the char boundary (the measure the view ships).
+			cand = bootstrapCutoff(messages, target)
+		}
+		if cand <= 0 {
+			utils.Log("[Eco] tick fold refused: no boundary from prompt_tokens (lastPT=%d target=%d) nor from the sent view (%d tokens, target %d, %d messages) — pair stays byte-identical",
+				lastPT, target, viewTokens, target, len(messages))
+			return -1
+		}
+	}
+
+	// Boundary legality (the storage layer clamps identically; snapping here
+	// keeps the logged boundary the one the fold will use).
+	if cand > lu {
+		cand = lu
+	}
+	for cand > 0 && cand < len(messages) && (messages[cand].Role == "tool" || db.IsCheckpointMessage(messages[cand])) {
+		cand--
+	}
+	if cand <= 0 || cand >= len(messages) {
+		utils.Log("[Eco] tick fold refused: boundary snapped out of range (cand=%d of %d messages, newest user row %d, view %d tokens) — pair stays byte-identical",
+			cand, len(messages), lu, viewTokens)
+		return -1
+	}
+
+	// THE HYSTERESIS FLOOR.
+	if bought := ultracaveFoldProgressTokens(messages, cand); bought < ultracaveMinFoldProgressTokens() {
+		utils.Log("[Eco] tick fold refused (hysteresis): view %d tokens, target %d, boundary %d of %d buys only %d tokens (< floor %d, %d%% of target) — not compaction; pair stays byte-identical",
+			viewTokens, target, cand, len(messages), bought, ultracaveMinFoldProgressTokens(), ultracaveMinFoldProgressPercent)
+		return -1
 	}
 	return cand
 }
