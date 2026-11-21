@@ -362,7 +362,21 @@ func CompactConversationDurable(
 	// A non-positive value means "the history already fits": folding from index
 	// 0 would fold the WHOLE conversation, which is how a caller ends up
 	// shipping an empty live window. Never do that.
+	//
+	// LOUD, every 0-row return in this function names the guard that fired.
+	// Production trace 2026-11-21 (conv a44a43258742259a60be242d, a NEW
+	// conversation, 68 rows, NO checkpoint pair):
+	//
+	//	[Eco] conv a44a43258742259a60be242d cutoff=67 (of 68 messages), prior checkpoint end=-1
+	//	[Eco] conv a44a43258742259a60be242d durable fold removed 0 rows (cutoff=67 of 68)
+	//
+	// and NO [DurableCompact] line at all: a 0-row fold was unattributable, so
+	// the cause had to be guessed. Every guard below states its boundary, the
+	// clamped firstKeptIdx, the slice length, the role sitting at that index,
+	// the newest user row and the conversation id. Semantics unchanged.
 	if foldFrom <= 0 {
+		utils.Log("[DurableCompact] guard FOLD_FROM_NON_POSITIVE: conv=%s boundary=%d sliceLen=%d — folding from 0 would fold the WHOLE conversation; 0 rows folded, checkpoint pair untouched",
+			conversationID, foldFrom, len(messages))
 		return 0, nil
 	}
 	if foldFrom > len(messages) {
@@ -391,12 +405,29 @@ func CompactConversationDurable(
 	if lu := lastUserIdx(messages); lu <= 0 {
 		// No user row at all (or the very first row is the only one): there is
 		// no safe live window, so nothing may be folded.
+		//
+		// THIS IS THE GUARD THE LIVE 0-ROW FOLD HIT. Conversation
+		// a44a43258742259a60be242d is a SUB-AGENT conversation: its only user
+		// row is seq 0 (the task), every later row is assistant/tool. So
+		// lastUserIdx == 0 and this guard fired — and pre-fix it printed
+		// NOTHING, which is why /app/data/server.log has
+		//
+		//	10:51:02 [Eco] conv a44a43258742259a60be242d cutoff=67 (of 68 messages), prior checkpoint end=-1
+		//	10:51:47 [Eco] conv a44a43258742259a60be242d durable fold removed 0 rows (cutoff=67 of 68)
+		//
+		// with NO [DurableCompact] line between them: the cause had to be
+		// guessed from the slice shape. Semantics unchanged; the guard is now
+		// attributable.
+		utils.Log("[DurableCompact] guard NO_USER_ROW_FLOOR: conv=%s boundary=%d clampedFirstKept=%d sliceLen=%d roleAtFirstKept=%q lastUserIdx=%d — the newest non-checkpoint user row is the FLOOR and there is none past index 0, so there is no safe live window; 0 rows folded, checkpoint pair untouched",
+			conversationID, foldFrom, firstKeptIdx, len(messages), roleAt(messages, firstKeptIdx), lu)
 		return 0, nil
 	} else if firstKeptIdx > lu {
 		firstKeptIdx = lu
 	}
 	if firstKeptIdx >= len(messages) || firstKeptIdx <= 0 {
 		// Folding anything would empty the live window.
+		utils.Log("[DurableCompact] guard LIVE_WINDOW_EMPTY: conv=%s boundary=%d clampedFirstKept=%d sliceLen=%d roleAtFirstKept=%q lastUserIdx=%d — the only legal live-window start is out of range, so folding anything ships an empty window; 0 rows folded, checkpoint pair untouched",
+			conversationID, foldFrom, firstKeptIdx, len(messages), roleAt(messages, firstKeptIdx), lastUserIdx(messages))
 		return 0, nil
 	}
 
@@ -419,6 +450,8 @@ func CompactConversationDurable(
 		folded = append(folded, m)
 	}
 	if len(folded) == 0 {
+		utils.Log("[DurableCompact] guard EMPTY_FOLD_SET: conv=%s boundary=%d clampedFirstKept=%d sliceLen=%d roleAtFirstKept=%q lastUserIdx=%d — every row before the boundary is already compacted or is the checkpoint pair, so this fold has nothing to represent; 0 rows folded, checkpoint pair untouched",
+			conversationID, foldFrom, firstKeptIdx, len(messages), roleAt(messages, firstKeptIdx), lastUserIdx(messages))
 		return 0, nil
 	}
 
@@ -428,6 +461,8 @@ func CompactConversationDurable(
 	// ---- Compose the summary: prior VERBATIM + this fold's excerpt --------
 	summary := composeDurableSummary(machineSummary, priorSummary, folded)
 	if summary == "" {
+		utils.Log("[DurableCompact] guard EMPTY_SUMMARY: conv=%s boundary=%d clampedFirstKept=%d sliceLen=%d foldSetRows=%d roleAtFirstKept=%q — the renderer returned nothing for %d rows, so the pair would be rewritten to represent nothing; 0 rows folded, checkpoint pair untouched",
+			conversationID, foldFrom, firstKeptIdx, len(messages), len(folded), roleAt(messages, firstKeptIdx), len(folded))
 		return 0, nil
 	}
 
@@ -596,6 +631,17 @@ func derefContent(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// roleAt names the role sitting at `i` for the guard logs below: a guard that
+// prints an index without saying what lives there is the unattributable 0-row
+// fold this file had on 2026-11-21. Out-of-range indexes print "none" so the
+// log line is total.
+func roleAt(messages []utils.Message, i int) string {
+	if i < 0 || i >= len(messages) {
+		return "none"
+	}
+	return messages[i].Role
 }
 
 // lastUserIdx returns the index of the newest non-checkpoint user message, the
