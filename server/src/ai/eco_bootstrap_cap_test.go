@@ -189,20 +189,21 @@ func TestCapTailEndsInToolWall(t *testing.T) {
 // below the trigger MUST fold. Master's gate skipped it forever.
 func TestBootstrapFoldNeededGate(t *testing.T) {
 	// Production numbers: no pair, lastPT=85121, trigger=150000, sent view
-	// ~396k tokens (1.19M chars / 3).
-	if !bootstrapFoldNeeded(-1, 85_121, 150_000, 396_561) {
+	// ~396k tokens (1.19M chars / 3), against the 696k-char budget the
+	// 262144-token model affords.
+	if !bootstrapFoldNeeded(-1, 85_121, 150_000, 396_561, bootstrapBudgetChars(262_144)) {
 		t.Fatal("bootstrap case must fold: no pair + over-budget sent view + self-locked trigger")
 	}
 	// Normal trigger crossing folds, pair or not.
-	if !bootstrapFoldNeeded(7, 200_000, 150_000, 20_000) {
+	if !bootstrapFoldNeeded(7, 200_000, 150_000, 20_000, bootstrapBudgetChars(262_144)) {
 		t.Fatal("lastPT above trigger must fold")
 	}
 	// Pair exists: the frozen path owns the view; the trigger alone gates.
-	if bootstrapFoldNeeded(7, 85_121, 150_000, 396_561) {
+	if bootstrapFoldNeeded(7, 85_121, 150_000, 396_561, bootstrapBudgetChars(262_144)) {
 		t.Fatal("a frozen conversation below trigger must NOT fold (the pair path bounds the view)")
 	}
 	// No pair, sent view under budget: nothing to compact, stay quiet.
-	if bootstrapFoldNeeded(-1, 10_000, 150_000, 20_000) {
+	if bootstrapFoldNeeded(-1, 10_000, 150_000, 20_000, bootstrapBudgetChars(262_144)) {
 		t.Fatal("a small conversation must not fold")
 	}
 }
