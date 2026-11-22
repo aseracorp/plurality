@@ -216,10 +216,10 @@ func TestUltracaveSentHistoryPrefixIsByteIdenticalAcrossTurns(t *testing.T) {
 // the next one no matter how large the conversation grows. Bounding the view
 // is durable compaction's job, not a per-request window's.
 func TestUltracaveFrozenPrefixSurvivesPastTheTailCapBudget(t *testing.T) {
-	// Past the budget on purpose: ~60 turns x ~3k chars ≈ 180k chars of live
-	// tail, i.e. 1.8x maxTailChars.
+	// Past the budget on purpose: ~75 turns x ~3k chars ≈ 225k chars of live
+	// tail, i.e. > maxTailChars (which is 200k).
 	hist := append([]utils.Message{checkpointMsg(), toolMsg()},
-		ucHistory("refactor the storage layer", 60, 3_000)...)
+		ucHistory("refactor the storage layer", 75, 3_000)...)
 
 	liveChars := 0
 	for _, m := range hist[2:] {

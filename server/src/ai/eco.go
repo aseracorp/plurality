@@ -95,69 +95,122 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool) []utils.M
 	return truncateOversizedTail(tail)
 }
 
-// maxTailChars is the character budget for the live tail that is sent to
-// the provider. ~100k chars ≈ 25-30k tokens, safe for any 128k-context
-// model, leaving room for system + output.
+// maxTailChars is the character budget for the live tail that is sent to the
+// provider: 200k chars ≈ 66k tokens at the estimator's 3 chars/token.
 //
-// It is NO LONGER the per-request bound of an eco-compacted conversation:
-// the frozen-prefix path in filterCheckpointsForRequest applies no window at
-// all, and durable compaction is what bounds the view. maxTailChars now only
-// bounds the BOOTSTRAP case (a conversation that has never been compacted,
-// so it has no frozen head whose stability is worth protecting).
-const maxTailChars = 100_000
+// The size is the KV-cache ceiling for a conversation that has NOT been
+// compacted yet, and that is the whole story of the regression: the bootstrap
+// window is the prompt, its shipped size is the cached prefix, and the old
+// 100k (≈33k tokens) made the cap BIND on ordinary conversations — conv
+// a44a43258742259a60be242d, a NEW conversation, 68 rows, max prompt_tokens
+// 52709, was capped from its 15th row onward. Every append then pushed the
+// head forward, the prompt prefix moved, and the proxy reported the cache
+// "stuck at 16-24K": cache_read FLAT (24137 over 8 turns; 73289 over 20)
+// while tok_before grew 31949 -> 107780 and ttfb_ms climbed 4475 -> 74034.
+//
+// 200k leaves the cap as a safety net, not a per-request governor:
+//
+//	history 66k + system prompt/tool schemas ~20k + reply reserve 6k
+//	(guardReplyReserve, index.go) ≈ 92k, against the SMALLEST configured
+//	window (131072), and the eco trigger (150k prompt_tokens) plus the
+//	preemptive guard compact a conversation LONG before the cap binds — the
+//	durable fold mints the checkpoint pair, and the pair hands the
+//	conversation to the frozen path, where no window runs at all.
+//
+// It is NO LONGER the per-request bound of an eco-compacted conversation: the
+// frozen-prefix path in filterCheckpointsForRequest applies no window, and
+// durable compaction bounds that view. maxTailChars only bounds the BOOTSTRAP
+// case (no checkpoint pair yet, so no frozen head whose stability is worth
+// protecting).
+const maxTailChars = 200_000
 
-// capTail bounds a message slice to the live-tail budget so a conversation
-// can never ship a context-busting history to the provider. It walks
-// backwards from the end, accumulating the total content size, and keeps
-// the newest messages that fit the budget, always starting on a user
-// message (so the model still has a complete turn boundary to respond to
-// and tool results whose parent call is dropped are never orphaned).
-// Individual oversized messages are then truncated/dropped by
-// truncateOversizedTail.
+// truncationBannerChars bounds the banner truncateOversizedTail appends to a
+// row it truncates. The real banner is ~150 chars; the slack is rounded up so
+// the budget bound below is airtight rather than exactly met.
+const truncationBannerChars = 256
+
+// shippedRowChars is the char size a row ACTUALLY ships once
+// truncateOversizedTail is done with it: a row over maxKeepTailChars is
+// truncated to the cap and gets the banner appended, so its real cost is
+// maxKeepTailChars + the banner, NOT its stored size.
 //
-// This is applied BOTH when a checkpoint exists (live tail after it) and
-// when there is NO checkpoint yet — a never-compacted conversation with a
-// huge raw history must still be bounded on every request, or every turn
-// dies with context_length_exceeded (observed: "WordPress Security
-// Review", 1866 msgs / ~770k tokens / no checkpoint, eco on).
-// capTailWindow computes the START index of the live window capTail keeps,
-// and the char total of the rows from that index on.
+// Counting anything else made the budget a fiction. The pre-fix walker summed
+// PRE-truncation sizes, so the log printed a 100k budget while the request
+// carried far more — live, conv a75308439f290ce744a5e7f1, /app/data/server.log:
 //
-// The accounting uses SentViewRowChars — the size the row ACTUALLY ships
-// (per-message bound included, the same clamp truncateOversizedTail applies
-// and the same measure the eco trigger uses) — not TotalContentChars. The
-// old walker summed PRE-truncation sizes, so the log claimed a 100k budget
-// while the window shipped far more (measured live on this very
-// conversation: "kept 13 msgs / 1189684 chars" against maxTailChars=100000),
-// and one 890KB tool result pushed the walker past every older row, evicting
-// 98 rows of context in a single turn (start idx 1509 -> 1607).
+//	10:23:51 capping tail by budget: kept 18 msgs / 158005 chars (budget 100000)
+//	10:39:56 capping tail by budget: kept 33 msgs / 178176 chars (budget 100000)
+//	20:12:43 capping tail by budget: kept 45 msgs / 340693 chars (budget 100000)
 //
-// Rows bounded at maxCompactMessageChars each, budget maxTailChars: when the
-// newest row ALONE exceeds the budget the window is that one row — it ships
-// truncated (truncateOversizedTail bounds it), never an empty window.
+// An over-budget window fires the preemptive guard every turn, which forces a
+// fold every turn, which rewrites the prompt head every turn. That is the
+// cache killer: measured on the same conversations, cache_read pinned FLAT
+// (24137 for 8 turns, 73289 for 20) while tok_before grew 31949 -> 107780 and
+// ttfb_ms climbed 4475 -> 74034.
 //
-// Returns the start index; 0 when the whole slice fits the budget.
+// It is a pure function of the stored row: same row in, same number out, every
+// turn, so a window head is byte-stable across turns.
+func shippedRowChars(m utils.Message) int {
+	c := m.Content.TotalContentChars()
+	if c <= maxKeepTailChars {
+		return c
+	}
+	return maxKeepTailChars + truncationBannerChars
+}
+
+// capTailWindow picks the START index of the live window capTail keeps: the
+// OLDEST user row whose shipped suffix (sum of shippedRowChars) fits
+// maxTailChars. Returns 0 when the whole slice fits.
+//
+// Anchoring on the OLDEST fitting user row is what makes the head stable: as
+// rows are appended the suffix from the current head keeps fitting, so the
+// head does not move, the sent view stays a byte prefix of the next request,
+// and the provider's KV prefix cache GROWS every turn. The head only advances
+// when the window genuinely outgrows the budget — and every move drops whole
+// turns at the far end, never the newest work.
+//
+// Anchoring on the NEWEST rows that fit (the pre-fix walk) moves the head on
+// EVERY append: the window grows by a turn, a row falls off the front, the
+// first byte of the sent history changes, the prefix cache is invalidated at
+// the head and the whole window re-prefills. That is the regression: cache_read
+// pinned at a constant floor (24137 across 8 turns, 73289 across 20) while
+// tok_before grew 31949 -> 107780 and ttfb_ms climbed 4475 -> 74034.
+//
+// The accounting is shippedRowChars — what the row costs AT THE PROVIDER,
+// per-message cap and banner included — which makes "BUDGET = WHAT SHIPS" true
+// by construction: the walker sums the same bound truncateOversizedTail
+// applies, in the same order, so the window the log reports is the window the
+// request carries. The pre-fix walker summed PRE-truncation sizes, so the log
+// claimed a 100k budget while the window shipped far more (live: "kept 13 msgs
+// / 1189684 chars", "kept 33 msgs / 178176 chars", both against
+// maxTailChars=100000), and one 890KB tool result pushed the walker past every
+// older row, evicting 98 rows of context in one turn (idx 1509 -> 1607). Fat
+// rows are not special-cased: a 300k dump costs maxKeepTailChars+banner, so
+// the window keeps whatever normal rows still fit beside it.
+//
+// Pure function of the stored slice: same rows in, same start out, every turn.
+// Falls back to the newest row when NO user row's suffix fits (a single
+// oversized newest turn): it ships bounded, and an empty window answers nothing.
 func capTailWindow(tail []utils.Message) int {
 	chars := 0
-	start := len(tail)
+	best := -1
 	for i := len(tail) - 1; i >= 0; i-- {
-		c := SentViewRowChars(tail[i])
-		if chars+c > maxTailChars {
-			if start == len(tail) {
-				// The newest row alone exceeds the budget: keep it (it ships
-				// bounded); an empty window answers nothing.
-				start = i
-			}
+		chars += shippedRowChars(tail[i])
+		if chars > maxTailChars {
+			// Past the budget: nothing further left can be a legal head.
 			break
 		}
-		chars += c
-		start = i
+		if tail[i].Role == "user" {
+			best = i
+		}
 	}
-	if start == len(tail) {
-		// Empty tail.
+	if best >= 0 {
+		return best
+	}
+	if len(tail) == 0 {
 		return 0
 	}
-	return start
+	return len(tail) - 1
 }
 
 // capTail bounds a message slice to the live-tail budget so a conversation
@@ -169,131 +222,82 @@ func capTailWindow(tail []utils.Message) int {
 // over and this cap must NOT run (it moves the prompt head and kills KV
 // prefix reuse — the contract pinned by ultracave_prefix_test.go).
 //
-// Two rules the implementation must keep:
+// The window is what capTailWindow picked, then the head is made LEGAL:
 //
-//   - BUDGET = WHAT SHIPS: the walker sums SentViewRowChars (post-bound), so
-//     the kept window provably fits maxTailChars and the log line is honest.
+//  1. snap FORWARD over leading tool rows — a window must not open on a tool
+//     result whose parent assistant call sits in the dropped section (a hard
+//     provider error);
+//  2. snap FORWARD to the first user row inside the window, so the window
+//     opens on a turn boundary;
+//  3. only when the head is STILL a tool row (the window is the single newest
+//     row, which busts the budget on its own) walk back over the owner chain,
+//     BOUNDED — see the walk-back rule below.
 //
-//   - ANCHOR FORWARD: the window must open on a user row so no tool result
-//     is orphaned at the head (its parent call sits in the dropped section).
-//     The old code backed UP to the newest user row, re-adding rows the
-//     walker had just excluded — measured live, a 98-row drag that shipped
-//     1.19M chars on a 100k budget. Walking FORWARD to the first user row
-//     drops the OLD side of the window instead, which costs history the
-//     eviction is about to fold anyway and can never orphan a tool result.
-//     Only when the slice ENDS in a tool/assistant wall (no user row at or
-//     after the walker's start) does the anchor fall back to the newest user
-//     row — and that fallback is BOUNDED TWICE: it may only walk back across
-//     the contiguous tool/assistant chain (it stops at the first user row),
-//     and it stops the moment the next row would push the window over
-//     maxTailChars. "BUDGET = WHAT SHIPS" is therefore a hard invariant in
-//     BOTH anchor branches.
+// THE WALK-BACK RULE. #199/#200/#201 shipped an unbounded
+// `for start > 0 && tail[start].Role != "user" { start-- }` in the tool-wall
+// branch, then a "bounded" version whose base total SKIPPED rows at the
+// per-message cap entirely (`if c >= maxCompactMessageChars { addedFat++;
+// continue }`). Skipping capped rows is what made the bound a lie: on
+// 2026-11-22 the window shipped 178176 chars against a 100000 budget (live,
+// conv a75308439f290ce744a5e7f1, /app/data/server.log 10:23:51 158005 →
+// 10:39:56 178176, and 20:12:43 340693) — every row at the cap was counted as
+// zero, so the walk-back kept adding.
 //
-//     The pre-fix fallback was `for start > 0 && tail[start].Role != "user" {
-//     start-- }` with NO bound at all, so it re-added every row the walker had
-//     just excluded. Observed live on 2026-11-21 (conv a44a43258742259a60be242d,
-//     a NEW conversation with no checkpoint pair, 68 rows, max prompt_tokens
-//     52709):
+// Here EVERY row is counted at its true shipped cost (shippedRowChars), in
+// every branch, and the walk-back stops at the first user row, at the
+// contiguous chain boundary, and the moment the total would exceed the ONE
+// bound this subsystem can satisfy:
 //
-//     12:35:19 [Eco] capping tail by budget: kept 15 msgs / 221162 chars
-//     (budget 100000, start idx 530) for context safety
+//	maxTailChars + maxKeepTailChars + truncationBannerChars
 //
-//     2.2x the budget shipped on a tail ending in a tool/assistant wall — the
-//     NORMAL shape mid-turn in an agent chat, so the unbounded branch is the
-//     common one, not the rare one.
+// i.e. the whole budget plus at most ONE row that ships bounded (the shape
+// TestCapTailWindowIsSatisfiable pins: a lone newest 300k dump needs its
+// parent assistant row kept beside it, and that assistant row is why a
+// strictly-100k bound ships an empty window — dropping the newest turn
+// answers nothing).
+//
+// An over-budget window is not a cosmetic bug: it fires the preemptive guard
+// (index.go) on EVERY turn, which forces a durable fold on every turn, which
+// rewrites the checkpoint pair at the HEAD of the prompt, which destroys the
+// KV prompt-cache prefix. Measured on the reverted build's own data:
+// cache_read pinned FLAT (24137 across 8 turns; 73289 across 20) while
+// tok_before grew 31949 -> 107780 and ttfb_ms climbed 4475 -> 74034.
 func capTail(tail []utils.Message) []utils.Message {
 	if len(tail) == 0 {
 		return tail
 	}
 	start := capTailWindow(tail)
 	if start > 0 {
-		anchor := start
-		for anchor < len(tail) && tail[anchor].Role != "user" {
-			anchor++
+		// (1) Snap the head FORWARD off an orphan tool result. Forward only
+		// shrinks the window, so the budget bound survives; stop before the
+		// window can empty so the newest row always ships.
+		for start < len(tail)-1 && tail[start].Role == "tool" {
+			start++
 		}
-		if anchor < len(tail) {
-			start = anchor
-		} else {
-			// The slice ends in a tool/assistant wall: no user row at or
-			// after the walker's start. Fall back to the newest user row,
-			// BOUNDED TWICE (the pre-fix loop was the unbounded
-			// `for start > 0 && tail[start].Role != "user" { start-- }`,
-			// which dragged 221162 chars onto a 100000-char budget — live,
-			// conv a44a43258742259a60be242d, 2026-11-21 12:35:19):
-			//
-			//   1. CHAIN: re-add at most the contiguous tool/assistant
-			//      chain, stopping at the first user row;
-			//   2. BUDGET: stop the moment the next row would push the
-			//      window over maxTailChars.
-			// The walk-back is bounded THREE ways, and the bound must keep
-			// the two older invariants: no orphan tool result at the head,
-			// and the newest turn ships.
-			//
-			//  1. CHAIN: re-add at most the contiguous tool/assistant
-			//     chain; stop at the first user row.
-			//  2. BUDGET: NORMAL rows (under the per-message cap) are added
-			//     only while the window's normal-row total stays under
-			//     maxTailChars — so on the all-normal shapes (the live
-			//     221162-on-100000 case, every row under the cap) the bound
-			//     is EXACT: BUDGET = WHAT SHIPS.
-			//  3. FAT ROWS: a row AT the per-message cap is excluded from
-			//     the normal-row base because it ships BOUNDED
-			//     (maxKeepTailChars + banner), and the pre-existing
-			//     satisfiable bound (maxTailChars + maxKeepTailChars +
-			//     slack, pinned by TestCapTailWindowIsSatisfiable) allows
-			//     exactly ONE bounded oversized row beside the budget. A
-			//     stricter number is NOT achievable: counting the clamped
-			//     fat row against the budget rejected its parent assistant
-			//     row, the head snap dropped the orphan tool result, and
-			//     capTail shipped an EMPTY window — dropping the newest
-			//     turn answers nothing.
-			base, addedFat := 0, 0
-			for i := start; i < len(tail); i++ {
-				c := SentViewRowChars(tail[i])
-				if c >= maxCompactMessageChars {
-					addedFat++
-					continue
-				}
-				base += c
-			}
-			for i := start - 1; i >= 0 && tail[i].Role != "user"; i-- {
-				c := SentViewRowChars(tail[i])
-				if c >= maxCompactMessageChars {
-					if addedFat >= 1 {
-						break
-					}
-					addedFat++
-					start = i
-					continue
-				}
-				if base+c > maxTailChars {
-					break
-				}
-				base += c
+		// (2) Open on a turn boundary when one is available inside the
+		// window. Forward only, so the bound survives.
+		for i := start; i < len(tail)-1; i++ {
+			if tail[i].Role == "user" {
 				start = i
+				break
 			}
-			// The bounded walk can leave an orphan tool result at the head
-			// (its parent call sits in the dropped section below) — the
-			// same hard provider error the forward anchor exists to avoid,
-			// and the same guard CompactConversationDurable enforces on
-			// the durable fold. Snap the head FORWARD over leading tool
-			// rows (forward only shrinks the window, so the budget bound
-			// survives); stop before the window can empty, so the newest
-			// row always ships.
-			for start < len(tail)-1 && tail[start].Role == "tool" {
-				base -= SentViewRowChars(tail[start])
-				start++
-			}
+		}
+		// (3) The head is still a tool row: the window is the single newest
+		// row and it busts the budget alone, so forward snapping has nowhere
+		// to go and the window must be GROWN to its owner. Bounded by the
+		// walk-back rule above.
+		if tail[start].Role == "tool" {
+			start = walkBackToOwner(tail, start)
 		}
 	}
 	if start > 0 {
 		// Re-measure the ANCHORED window for the log (the anchor may have
-		// moved start; the walker's total covers the pre-anchor set). The
-		// log line is the operator's only view of what the cap shipped —
-		// after the bug this printed "100k" while shipping 1.19M chars.
+		// moved start). The log line is the operator's only view of what the
+		// cap shipped — after the bug this printed "100k" while shipping
+		// 1.19M chars.
 		kept := 0
 		for i := start; i < len(tail); i++ {
-			kept += SentViewRowChars(tail[i])
+			kept += shippedRowChars(tail[i])
 		}
 		utils.Log("[Eco] capping tail by budget: kept %d msgs / %d chars (budget %d, start idx %d) for context safety",
 			len(tail)-start, kept, maxTailChars, start)
@@ -304,6 +308,49 @@ func capTail(tail []utils.Message) []utils.Message {
 	// bound applied. truncateOversizedTail is a pure function of each stored
 	// row, so it is byte-stable across turns.
 	return truncateOversizedTail(tail)
+}
+
+// walkBackToOwner grows a window that opens on a tool result to include the
+// assistant row that carries the matching tool_call, so the window never
+// starts with an orphaned result. Returns the new start index; never 0 (a
+// caller that reached this path had rows to drop).
+//
+// Bounded three ways, in this order:
+//   - CHAIN: stop at the first user row, and never past index 0;
+//   - COST: every row is counted at shippedRowChars; the walk stops the
+//     moment the window's shipped total would exceed capTailWalkBackBound;
+//   - PURPOSE: the walk stops as soon as the head is legal (not a tool row),
+//     so it adds the owner chain and nothing more — it is not a general
+//     "restore history" mechanism.
+func walkBackToOwner(tail []utils.Message, start int) int {
+	bound := capTailWalkBackBound()
+	total := 0
+	for i := start; i < len(tail); i++ {
+		total += shippedRowChars(tail[i])
+	}
+	best := start
+	for i := start - 1; i >= 0 && tail[i].Role != "user"; i-- {
+		c := shippedRowChars(tail[i])
+		if total+c > bound {
+			break
+		}
+		total += c
+		best = i
+		if tail[i].Role != "tool" {
+			// The head is now legal (an assistant row that can own the
+			// results below it, or any other non-tool row). Stop.
+			break
+		}
+	}
+	return best
+}
+
+// capTailWalkBackBound is the one satisfiable ceiling for a window that must
+// grow to keep a tool result's owner: the whole budget, plus at most ONE row
+// shipping bounded (maxKeepTailChars + the truncation banner). Pinned by
+// TestCapTailWindowIsSatisfiable, which uses the same expression.
+func capTailWalkBackBound() int {
+	return maxTailChars + maxKeepTailChars + truncationBannerChars
 }
 
 // bootstrapCutoff is the char-based fold boundary for a conversation with NO
@@ -1129,18 +1176,6 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 	}
 	show := MegacaveRowBudget(chars, len(foldable))
 
-	// The durable WRITE gets its own bounded context, detached from the caller's
-	// deadline. The eco goroutine caps its DB work at 45s (the single SQLite
-	// connection must never be held by a wedged compaction), and that cap is
-	// correct for DB work — but the summariser below can legitimately run for
-	// minutes on a self-hosted model. If the write shared that 45s deadline, a
-	// slow LLM would blow it and the fold would fail: the LLM's latency would
-	// LOSE A FOLD, which is the one thing this design forbids. context.WithoutCancel
-	// keeps the user claim, drops the caller's deadline; the fresh 45s keeps the
-	// connection bound intact.
-	dbWriteCtx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), 45*time.Second)
-	defer cancelWrite()
-
 	// ---- LLM FIRST: the last look at the rows about to be evicted ----------
 	//
 	// The evicted rows are rendered for the diagnostic (how much text the
@@ -1160,17 +1195,60 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 	if llmText, llmErr := attemptFoldSummary(ctx, convForSummary, model, foldable, payload); llmErr == nil && strings.TrimSpace(llmText) != "" {
 		utils.Log("[Eco] LLM fold summary: %d rows, evicted text %d chars, LLM checkpoint %d chars, ceiling %d chars (chat model %s)",
 			len(foldable), len(rendered), len(llmText), ceiling, model.Name)
+		dbWriteCtx, cancelWrite := durableWriteContext(ctx)
+		defer cancelWrite()
 		return db.CompactConversationDurable(dbWriteCtx, conversationID, messages, foldFrom,
 			llmFoldSummaryRenderer(llmText, ceiling))
-	} else if llmErr != nil {
+	} else {
 		// The fallback must be LOUD: a fold that silently lost the LLM summary
-		// is indistinguishable from a machine-only build.
+		// is indistinguishable from a machine-only build. A nil error with an
+		// empty answer is a failure too, so name that case as well.
+		reason := llmErr
+		if reason == nil {
+			reason = fmt.Errorf("the summariser answered with an empty checkpoint")
+		}
 		utils.Log("[Eco] machine-only FALLBACK fold (LLM summariser unavailable: %v): %d rows, room=%d chars, folded=%d chars, budget=%d chars, per-row show=%d",
-			llmErr, len(foldable), room, foldedChars, chars, show)
+			reason, len(foldable), room, foldedChars, chars, show)
+		dbWriteCtx, cancelWrite := durableWriteContext(ctx)
+		defer cancelWrite()
+		// ---- FALLBACK: exactly the machine-only render, unchanged --------
+		return db.CompactConversationDurable(dbWriteCtx, conversationID, messages, foldFrom,
+			machineOnlyFoldRenderer(show, ceiling))
 	}
-	// ---- FALLBACK: exactly the machine-only render, unchanged --------------
-	return db.CompactConversationDurable(dbWriteCtx, conversationID, messages, foldFrom,
-		machineOnlyFoldRenderer(show, ceiling))
+}
+
+// durableWriteContext is the durable fold's DB-write context: detached from
+// the caller's deadline, with its own fresh 45s bound. It is created AFTER
+// the summariser round-trip has finished, never before it.
+//
+// The pre-fix code derived the write's context from the eco goroutine's
+// 45s DB budget BEFORE starting the summariser, so a slow LLM consumed the
+// write's entire budget and the fold died at the write:
+//
+//	20:14:34 [Eco] conv a75308439f290ce744a5e7f1 BOOTSTRAP compaction: sent view
+//	           679865 tokens over tail budget (100000 chars) with no checkpoint pair
+//	20:15:19 [Eco] machine-only FALLBACK fold (LLM summariser unavailable: summary
+//	           request failed: Post "http://127.0.0.1:8787/v1/chat/completions":
+//	           context deadline exceeded): 700 rows, room=149124 chars, folded=2038862 chars
+//	20:15:19 [ERROR] [Eco] durable fold failed : context deadline exceeded
+//
+// 45s to the second, on a 2 MB fold — the write never ran. That is the root
+// cause of the caching regression: the fold MINTS the checkpoint pair, and
+// the pair hands a conversation to the frozen path. With every fold lost, no
+// conversation ever minted a pair, so capTail ran the sliding window on EVERY
+// turn (live: start idx 655 → 702 across one afternoon, 33 msgs / 178176
+// chars on a 100000-char budget), the prompt head moved every turn, cache_read
+// stayed pinned flat and ttfb climbed to 83s. A lost fold is not a missed
+// optimisation — it is the trigger for the whole churn.
+//
+// context.WithoutCancel keeps the userID claim the storage layer needs and
+// drops the caller's deadline (a cancelled turn must not abort the write);
+// the fresh 45s keeps the single-connection bound. The summariser's own
+// ceiling (summaryHTTPTimeout) bounds the LLM round-trip, so the two
+// deadlines can no longer eat each other. The 45s applies to the write alone,
+// which is pure SQLite work: the bound stays honest.
+func durableWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 45*time.Second)
 }
 
 // ecoTargetTokens is the eco target window (chars budget denominator) with a
