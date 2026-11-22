@@ -132,7 +132,7 @@ func liveSubagentShape(rows, chars, maxPT int) []utils.Message {
 // boundary is refused LOUDLY. Pre-fix this shape walked into findCutoffIndex,
 // produced cutoff=67 of 68, and the fold died silently at the storage layer.
 func TestTickFoldBoundarySubagentShapeRefuses(t *testing.T) {
-	msgs := liveSubagentShape(68, 2_100, 52_709)
+	msgs := liveSubagentShape(100, 2_100, 52_709)
 	if SentViewTokens(msgs)*3 <= maxTailChars {
 		t.Fatalf("fixture must be over the tail budget: %d tokens", SentViewTokens(msgs))
 	}
@@ -153,7 +153,7 @@ func TestEcoTickRefusesSubagentBootstrapFold(t *testing.T) {
 		`{"eco_mode":true}`, convID); err != nil {
 		t.Fatalf("set eco mode: %v", err)
 	}
-	ucPush(t, ctx, convID, liveSubagentShape(68, 2_100, 52_709)...)
+	ucPush(t, ctx, convID, liveSubagentShape(100, 2_100, 52_709)...)
 
 	buf := captureStdlibLog(t)
 	runEcoSummary(ctx, convID)
