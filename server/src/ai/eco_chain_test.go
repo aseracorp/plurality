@@ -113,14 +113,22 @@ func TestChainCompositionBoundsAndKeepsPrior(t *testing.T) {
 	// prior that fat: UltracaveOverflowFoldFrom bounds the LIVE TAIL at
 	// half the eco target, and durableFold sizes the new excerpt with the
 	// other half, so the stored roll-up is capped near
-	// ecoTargetTokens*3/2 — 75,780 chars at the 50,000-token default,
+	// ecoFoldTarget(model)*3/2 — 75,780 chars at the 50,000-token default,
 	// well under the 100,000 storage bound. Tighter is the point: a
 	// roll-up that reaches the storage bound is what re-inflates the next
 	// reload above the eco trigger and rewrites the prompt head every
 	// turn. The valve itself (prior megacaved down, marker naming the
 	// loss, newest section protected) is pinned at the storage layer, in
 	// checkpoints_chain_test.go, where it is reachable directly.
-	ceiling := ecoTargetTokens() * 3 / 2
+	//
+	// The ceiling is derived from the SAME target the fold used
+	// (ecoFoldTarget resolves the model's window), not from the configured
+	// global: the target is the denominator of the two-half budget split, so
+	// asserting against a different whole than the code uses is what produced
+	// a "leak" that was only a unit mismatch (92598 chars vs a 75000-char
+	// ceiling computed from 50,000 tokens, while the 131072-token model this
+	// test seeds folds toward 83,285).
+	ceiling := ecoFoldTarget(model.Name) * 3 / 2
 	if len(stored) > ceiling {
 		t.Fatalf("stored roll-up is %d chars, over the %d-char production ceiling — the tail bound leaked",
 			len(stored), ceiling)

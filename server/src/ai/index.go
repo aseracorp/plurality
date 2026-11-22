@@ -186,7 +186,7 @@ func buildChatRequestParts(ctx context.Context, model utils.Model, conv utils.Co
 	// When eco is off: drop the checkpoint pair entirely and send the raw
 	// history.
 	windowTokens := Models.MaxContextTokensForPrefixed(model.Name)
-	visibleMessages := filterCheckpointsForRequest(conv.Messages, conv.ModelSelected.EcoMode)
+	visibleMessages := filterCheckpointsForRequest(conv.Messages, conv.ModelSelected.EcoMode, windowTokens)
 	allMessages := append([]utils.Message{systemMsg}, visibleMessages...)
 	optimizedMessages, hasAttachments, hasDocAttachments := PrepareMessagesForAI(allMessages, model)
 
