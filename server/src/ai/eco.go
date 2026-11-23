@@ -744,6 +744,38 @@ func truncateOversizedTail(tail []utils.Message) []utils.Message {
 		m.Content = utils.NewTextContent(trunc)
 		out = append(out, m)
 	}
+
+	// THE WINDOW MUST NEVER BE EMPTY. Every drop rule above can fire on the
+	// same conversation at once: a window made only of oversized tool results
+	// whose parent assistant calls were dropped. An empty window is not a
+	// degraded request, it is a request with NO history, and the failure is
+	// not a cache miss — it is the model receiving the system prompt, the tool
+	// schemas and nothing else. appendCurrentTimeTail then takes its
+	// len(msgs)==0 branch and invents a clock-only row, so the last thing in
+	// the prompt is "The current time is ...". Observed live on the deployed
+	// build: a turn arrived as ONLY that clock line, and one stored tool row
+	// carried 18 copies of it, because the model narrated the timestamp back
+	// into its own output.
+	//
+	// Keep the newest row, bounded by the same pure, idempotent truncation the
+	// loop above uses, so the model always has a turn boundary to respond to
+	// and the row is byte-stable on every later pass.
+	if len(out) == 0 {
+		last := tail[len(tail)-1]
+		txt := ""
+		for _, p := range last.Content.ContentParts() {
+			if p.Type == "text" {
+				txt += p.Text
+			}
+		}
+		trunc, _ := textsafe.TruncateWithBanner(txt, maxKeepTailChars)
+		if trunc == "" {
+			trunc = "[content omitted by Plurality: over the per-message context budget]"
+		}
+		last.Content = utils.NewTextContent(trunc)
+		out = append(out, last)
+		utils.Log("[Eco] tail cap emptied the window — kept the newest row (role=%s) so the request is never history-less", last.Role)
+	}
 	return out
 }
 
