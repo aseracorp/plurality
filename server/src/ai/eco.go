@@ -66,6 +66,48 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool, windowTok
 		return db.FilterOutCheckpoints(messages)
 	}
 
+	// THE SLICE IS NOT THE LLM VIEW. Every caller of this function hands it a
+	// slice, and the row set behind that slice is NOT guaranteed to exclude the
+	// rows durable compaction folded (compacted = 1). It is for the loop's
+	// reload path (db.GetConversationByIdInternal adds "AND compacted = 0"),
+	// it is NOT for the path that STARTS a turn: handleChat pushes the user
+	// message with db.PushMessage, which reloads through
+	// getConversationFromDB's DEFAULT row set — folded rows INCLUDED — and that
+	// slice is what RunLLMLoop ships on the turn's first request.
+	//
+	// The frozen branch slices from the pair, and the pair sits at seq -2/-1
+	// while folded rows carry seq 0..N, i.e. folded rows sit AFTER the pair.
+	// Slicing from the pair therefore re-shipped the entire folded history:
+	//
+	//	21:58:35 PERF msgs=557 tok_before=241327 cache_read=21521
+	//	  (the post-fold LLM view of this conversation is 171 rows)
+	//	21:59:50 [Eco] lastPT=241327 -> 241649 > trigger=216000 — compacting
+	//	21:59:50 [Eco] cutoff=171 (of 175 messages) — folds 169 of 175
+	//	22:00:35 [Eco] LLM view 111080 -> 34125 tokens (view rows 6)
+	//
+	// Three consequences, all of them the bug being reported: the prompt
+	// re-inflates to the full history, so lastPT (the provider's own count)
+	// measures a view the frozen path never intends to ship and the eco trigger
+	// fires on a phantom; findCutoffIndex's cumulative-PT arithmetic is then
+	// taken against rows whose prompt_tokens came from those fat requests, so
+	// targetDrop sits below the whole PT floor and the cutoff lands on the
+	// newest row — fold everything; and the fold rewrites the pair, which is
+	// the head of the prompt, so the KV prefix collapses to
+	// cache_read=21521 (system block + tool schemas).
+	//
+	// Dropping folded rows HERE, at the one request-path choke point, makes the
+	// frozen view correct for every slice shape (client view, internal view,
+	// post-push view) and keeps the measure the trigger uses (SentViewTokens
+	// skips m.Compacted too) the same measure the request ships.
+	live := make([]utils.Message, 0, len(messages))
+	for _, m := range messages {
+		if m.Compacted {
+			continue
+		}
+		live = append(live, m)
+	}
+	messages = live
+
 	// Find the LAST checkpoint pair (assistant half) — the rolling design
 	// keeps only one, but defensive against any stale extras.
 	lastCheckpointIdx := -1
@@ -278,10 +320,21 @@ func ecoConversationWindow(conv *utils.Conversation) int {
 	if conv == nil {
 		return 0
 	}
-	if conv.ModelSelected.Text != nil {
-		return Models.MaxContextTokensForPrefixed(conv.ModelSelected.Text.Name)
+	// The SAME resolution the request path uses (index.go: SelectModel over
+	// conv.ModelSelected). Reading ModelSelected.Text directly leaves a hole:
+	// SelectModel also resolves through Vision, and a conversation with only
+	// Vision set would yield window=0 here — the policy's fallback is the
+	// CONFIGURED pair (trigger 150000 / target 50000), so the compaction tick
+	// would fold a 148K-token conversation toward 50K on a 262144-token model.
+	// That is the "sent 27K tokens, not containing any real history" failure,
+	// reachable through a nil-Text ModelSelected. Resolving the model the way
+	// the request does makes the policy and the shipped request agree by
+	// construction: one model, one window, one policy.
+	name := chatModelForConversation(*conv).Name
+	if name == "" {
+		return 0
 	}
-	return 0
+	return Models.MaxContextTokensForPrefixed(name)
 }
 
 // truncationBannerChars bounds the banner truncateOversizedTail appends to a
@@ -1374,12 +1427,28 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 	// 1,458,172 chars, 16x over the budget. The caller knows the total, so the
 	// total is passed explicitly: MachineExcerptMegacaveCapped truncates at
 	// `chars` and appends one marker naming the original size. `chars` is
-	// clamped to the storage bound (db.MaxDurableSummaryChars) so the ai layer
-	// and the storage layer agree on ONE number — the renderer's ceiling is the
-	// number that gets applied, not the storage backstop slicing the text after
-	// the fact.
-	if chars > db.MaxDurableSummaryChars {
-		chars = db.MaxDurableSummaryChars
+	// passed to the storage layer as THIS fold's bound, so the ai layer and the
+	// storage layer agree on ONE number — the renderer's ceiling is the number
+	// that gets applied, not the storage backstop slicing the text after the
+	// fact.
+	//
+	// IT IS NOT db.MaxDurableSummaryChars. A fold's roll-up bound is a number in
+	// the fold's OWN budget: the stored roll-up plus the live tail the fold
+	// leaves is what the next request ships, and `room` above IS that budget
+	// (target − live tail, in chars). Clamping it to the global 100k-char
+	// constant (≈33333 tokens) throws away the headroom the fold just bought:
+	// on this 262144-token deployment the target is 144000 tokens, so every fold
+	// stored a roll-up at a FIFTH of the room it had, the post-fold view landed
+	// at 34125 tokens, the view crossed the trigger again within turns, and each
+	// re-fold rewrote the pair — the head of the prompt (cache_read pinned at
+	// 21521). The bound stays a CEILING: room is bounded by the model's window,
+	// so the write can still never grow the roll-up without limit.
+	floor := (minMegacaveRowShowChars + megacaveLabelOverheadChars) * len(foldable)
+	summaryBound := chars
+	if summaryBound < floor {
+		// No room: the renderer lands on its floor, so the bound must cover the
+		// floor, or the storage layer truncates text its own renderer produced.
+		summaryBound = floor
 	}
 	// The ceiling is passed EXPLICITLY, so "no ceiling" (0 = unlimited in the
 	// renderer) must never reach it: a fold with no room renders at the smallest
@@ -1387,7 +1456,7 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 	// resolver escalates, and the excerpt stays bounded either way.
 	ceiling := chars
 	if ceiling <= 0 {
-		ceiling = (minMegacaveRowShowChars + megacaveLabelOverheadChars) * len(foldable)
+		ceiling = floor
 	}
 	show := MegacaveRowBudget(chars, len(foldable))
 
@@ -1407,13 +1476,29 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 	if uid, ok := ctx.Value("userID").(string); ok {
 		convForSummary.UserID = uid
 	}
-	if llmText, llmErr := attemptFoldSummary(ctx, convForSummary, model, foldable, payload); llmErr == nil && strings.TrimSpace(llmText) != "" {
+	// THE SUMMARISER'S OWN DEADLINE. durableFold is handed the tick's dbCtx,
+	// whose 45s bound exists to keep the SQLite path off a wedged
+	// single-connection pool. That budget is DB work ONLY, and the summariser
+	// is not DB work: it is a chat round-trip on a 262k-token prompt against a
+	// self-hosted model, measured at ~3.5 min per summary. Inheriting the 45s
+	// bound killed it on every fold of the live incident, so no conversation
+	// ever got an LLM checkpoint — each fold fell to the machine-only render
+	// (21:10:27 and 22:00:35, both "context deadline exceeded"), which is the
+	// cheap, lossy roll-up the user is now reading.
+	//
+	// context.WithoutCancel keeps the userID claim (the write path needs it)
+	// and detaches the caller's deadline; summaryHTTPTimeout is the summariser's
+	// own hard ceiling. The DB write keeps its own fresh bound
+	// (durableWriteContext, created AFTER this call).
+	summariserCtx, cancelSummariser := summariserCallContext(ctx)
+	defer cancelSummariser()
+	if llmText, llmErr := attemptFoldSummary(summariserCtx, convForSummary, model, foldable, payload); llmErr == nil && strings.TrimSpace(llmText) != "" {
 		utils.Log("[Eco] LLM fold summary: %d rows, evicted text %d chars, LLM checkpoint %d chars, ceiling %d chars (chat model %s)",
 			len(foldable), len(rendered), len(llmText), ceiling, model.Name)
 		dbWriteCtx, cancelWrite := durableWriteContext(ctx)
 		defer cancelWrite()
 		return db.CompactConversationDurable(dbWriteCtx, conversationID, messages, foldFrom,
-			llmFoldSummaryRenderer(llmText, ceiling))
+			llmFoldSummaryRenderer(llmText, ceiling), summaryBound)
 	} else {
 		// The fallback must be LOUD: a fold that silently lost the LLM summary
 		// is indistinguishable from a machine-only build. A nil error with an
@@ -1428,7 +1513,7 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 		defer cancelWrite()
 		// ---- FALLBACK: exactly the machine-only render, unchanged --------
 		return db.CompactConversationDurable(dbWriteCtx, conversationID, messages, foldFrom,
-			machineOnlyFoldRenderer(show, ceiling))
+			machineOnlyFoldRenderer(show, ceiling), summaryBound)
 	}
 }
 
@@ -1464,6 +1549,18 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 // which is pure SQLite work: the bound stays honest.
 func durableWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), 45*time.Second)
+}
+
+// summariserCallContext gives the fold's summarisation round-trip a deadline
+// of its OWN. See durableFold: the tick's 45s DB budget is not a budget for a
+// chat completion, and inheriting it turned every fold into a machine-only
+// fallback. WithoutCancel keeps the request-scoped values (userID), detaches
+// the caller's deadline, and applies summaryHTTPTimeout.
+func summariserCallContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), summaryHTTPTimeout)
 }
 
 // ecoFoldTarget is THE fold target for a model: the size of the live view a
@@ -1820,6 +1917,23 @@ func tickFoldBoundary(messages []utils.Message, lastPT, target, existingCheckpoi
 			return -1
 		}
 	} else {
+		// THE VIEW-FITS GATE, PAIR BRANCH. The no-pair branch refuses a view
+		// that already fits the target; this branch had no such gate, so it
+		// folded on lastPT alone — and lastPT is the provider's prompt count
+		// of the last request, which measures the slice that request shipped.
+		// Live, conv af46ee1c387e35a6e5467822 (2026-11-22 21:59:50): the sent
+		// view was 111080 tokens, the target 144000 — the view FIT — and
+		// lastPT=241649 (inflated by folded rows the request re-shipped) drove
+		// targetDrop=97649 below the prompt_tokens floor of every live row, so
+		// every assistant "crossed", the cutoff landed on the newest row and
+		// 169 of 175 rows folded: 111080 -> 34125 tokens. A fold that lands
+		// under the target on a view that already fits is not compaction, it
+		// is context loss, and it rewrites the prompt head to do it.
+		if viewTokens <= target {
+			utils.Log("[Eco] tick fold refused: sent view %d tokens already fits target %d (lastPT=%d, %d messages, checkpoint end=%d) — lastPT measures the request, not the frozen view; folding here would ship a view under the target and rewrite the prompt head for nothing; pair stays byte-identical",
+				viewTokens, target, lastPT, len(messages), existingCheckpointEndIdx)
+			return -1
+		}
 		cand = findCutoffIndex(messages, lastPT, target, existingCheckpointEndIdx)
 		if cand <= 0 {
 			// A pair exists, so the frozen path owns the view and the token

@@ -123,8 +123,19 @@ func GetCheckpoint(ctx context.Context, conversationID string) (*CheckpointPair,
 		}
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, err
 	}
+	// CLOSE THE RESULT SET BEFORE THE SECOND QUERY. The pool is
+	// SetMaxOpenConns(1) (SQLite), so a second query issued while this result
+	// set is open has no connection to take and blocks FOREVER — the `defer
+	// rows.Close()` cannot help, because it only runs when this function
+	// returns, and this function is now parked. The loop above breaks early on
+	// `found`, so the result set is still live at this point, which means the
+	// wedge fires exactly when a conversation HAS a pair: the helper is
+	// unreachable-safe today only because nothing calls it. The eco tick reads
+	// the pair out of the loaded slice for this same reason (see eco.go).
+	rows.Close()
 	if !found {
 		return nil, nil
 	}
@@ -348,7 +359,14 @@ func CompactConversationDurable(
 	messages []utils.Message,
 	foldFrom int,
 	machineSummary func([]utils.Message) string,
+	// summaryBound is the roll-up bound THIS fold asks for, in chars. It comes
+	// from the caller (the ai fold path derives it from the model's window and
+	// the live tail it is leaving in place). Variadic so the storage layer's
+	// many existing call sites keep the historical bound. Omitting it is the
+	// documented default (maxDurableSummaryChars), NOT "no limit".
+	summaryBound ...int,
 ) (int, error) {
+	limit := durableSummaryLimit(summaryBound)
 	userID, ok := ctx.Value("userID").(string)
 	if !ok {
 		return 0, errors.New("user ID not found in request context")
@@ -459,7 +477,7 @@ func CompactConversationDurable(
 	oldToolID, priorSummary, priorRawContent := findLiveCheckpoint(ctx, d, conversationID)
 
 	// ---- Compose the summary: prior VERBATIM + this fold's excerpt --------
-	summary := composeDurableSummary(machineSummary, priorSummary, folded)
+	summary := composeDurableSummary(machineSummary, priorSummary, folded, limit)
 	if summary == "" {
 		utils.Log("[DurableCompact] guard EMPTY_SUMMARY: conv=%s boundary=%d clampedFirstKept=%d sliceLen=%d foldSetRows=%d roleAtFirstKept=%q — the renderer returned nothing for %d rows, so the pair would be rewritten to represent nothing; 0 rows folded, checkpoint pair untouched",
 			conversationID, foldFrom, firstKeptIdx, len(messages), len(folded), roleAt(messages, firstKeptIdx), len(folded))
@@ -657,10 +675,34 @@ func lastUserIdx(messages []utils.Message) int {
 	return 0
 }
 
-// maxDurableSummaryChars bounds the stored checkpoint summary. The bound is a
-// constant, so the write cannot grow the roll-up without limit and re-inflate
-// the request that the caller just measured as fitting.
+// maxDurableSummaryChars is the DEFAULT bound of the stored checkpoint
+// summary, and the backstop for callers that name no bound. It is a constant so
+// the write cannot grow the roll-up without limit and re-inflate the request
+// the caller just measured as fitting.
+//
+// It is NOT the production bound. A fold's roll-up bound is a number in the
+// fold's OWN budget: the stored roll-up plus the live tail a fold leaves is
+// what the next request ships, so the bound is the part of the eco TARGET the
+// live tail does not use (see ai.durableFold, which derives it as `room`). A
+// global char
+// constant cannot express that: on this 262144-token deployment the target is
+// 144000 tokens, and 100_000 chars is ~33333 tokens — a FIFTH of it. Every fold
+// then stored a roll-up far under the room the fold had bought, the post-fold
+// view landed at 34125 tokens against a 144000 target, and the view crossed the
+// trigger again within a few turns — the fold cadence IS the context-size
+// "jumping" the user sees, and each fold rewrites the pair, which is the head
+// of the prompt (cache_read pinned at 21521 = system block + tool schemas).
 const maxDurableSummaryChars = 100_000
+
+// durableSummaryLimit resolves the roll-up bound for ONE fold. Callers pass the
+// bound they computed from the model's window; callers that pass nothing get the
+// historical constant, so every existing call site keeps its behaviour.
+func durableSummaryLimit(bound []int) int {
+	if len(bound) > 0 && bound[0] > 0 {
+		return bound[0]
+	}
+	return maxDurableSummaryChars
+}
 
 // minDurableExcerptChars is the floor of the room left for the NEW excerpt
 // after the prior roll-up is paid for. Without a floor, a prior summary near
@@ -748,7 +790,12 @@ const truncatedExcerptBanner = "[... durable summary truncated at "
 //
 // The output is a pure function of (priorSummary, folded): no clock, no
 // random, no LLM. Repeated folds of the same input store byte-identical text.
-func composeDurableSummary(machineSummary func([]utils.Message) string, priorSummary string, folded []utils.Message) string {
+func composeDurableSummary(machineSummary func([]utils.Message) string, priorSummary string, folded []utils.Message, bound ...int) string {
+	// Every bound below is THIS fold's bound, so the caller's window-derived
+	// number is what truncates the chain. The escape valve stays at the same
+	// number the caller was asked to respect — two caps fighting each other is
+	// how a fold stores text its own renderer never produced.
+	limit := durableSummaryLimit(bound)
 	excerpt := ""
 	if machineSummary != nil {
 		excerpt = strings.TrimSpace(machineSummary(folded))
@@ -763,7 +810,7 @@ func composeDurableSummary(machineSummary func([]utils.Message) string, priorSum
 		if excerpt == "" {
 			return ""
 		}
-		excerpt = boundDurableExcerpt(excerpt)
+		excerpt = boundDurableExcerpt(excerpt, limit)
 		excerpt = "[compacted by Plurality — machine excerpt unavailable; raw excerpt follows]\n" + excerpt
 	} else {
 		// THE SUCCESS PATH IS BOUNDED TOO. The fallback path truncated the excerpt
@@ -778,7 +825,7 @@ func composeDurableSummary(machineSummary func([]utils.Message) string, priorSum
 		// (ai.MachineExcerptMegacaveCapped via eco.durableFold); this is the outer
 		// backstop that keeps that promise true for ANY machineSummary, at the same
 		// number the caller was asked to respect.
-		excerpt = boundDurableExcerpt(excerpt)
+		excerpt = boundDurableExcerpt(excerpt, limit)
 	}
 	// THE CHAIN: the prior roll-up is the accumulated record of every row
 	// earlier folds marked compacted, carried forward VERBATIM (never
@@ -804,10 +851,10 @@ func composeDurableSummary(machineSummary func([]utils.Message) string, priorSum
 	// nowhere else: banner count stays exactly 1 (the chain never nests) and the
 	// stored text is a pure append of the newest section.
 	if strings.Contains(priorSummary, newerHistoryBanner) {
-		if len(priorSummary)+len(excerpt)+2 <= maxDurableSummaryChars {
+		if len(priorSummary)+len(excerpt)+2 <= limit {
 			return strings.TrimSpace(priorSummary + "\n" + excerpt)
 		}
-	} else if len(prior)+len(excerpt)+overhead <= maxDurableSummaryChars {
+	} else if len(prior)+len(excerpt)+overhead <= limit {
 		// It FITS onto a chain with NO banner yet (a first append, or a legacy
 		// prior): carry the prior verbatim, emit the ONE section banner, append.
 		return strings.TrimSpace(prior + "\n\n" + newerHistoryBanner + "\n" + excerpt)
@@ -820,30 +867,30 @@ func composeDurableSummary(machineSummary func([]utils.Message) string, priorSum
 	// live model is about to lose, and the prior has already survived one
 	// compaction pass.
 	markerCost := len(chainCompressionMarker) + markerSlack + 2
-	priorRoom := maxDurableSummaryChars - len(excerpt) - overhead - markerCost
+	priorRoom := limit - len(excerpt) - overhead - markerCost
 	if priorRoom < minPriorRollupChars {
 		// The new section is fat: give the prior a floor and bound the excerpt
 		// to what is left, announcing the truncation (boundDurableExcerpt keeps
 		// the TAIL, i.e. the newest folded rows, and names the drop).
 		priorRoom = minPriorRollupChars
-		excerpt = boundDurableExcerpt(excerpt, maxDurableSummaryChars-overhead-priorRoom-markerCost)
+		excerpt = boundDurableExcerpt(excerpt, limit-overhead-priorRoom-markerCost)
 	}
 	if compressed := compressPriorRollup(prior, priorRoom); compressed != "" {
 		marker := chainCompressionMarker + strconv.Itoa(len(prior)) + " chars -> " +
 			strconv.Itoa(len(compressed)) + " chars, nothing dropped silently]"
 		combined := strings.TrimSpace(marker + "\n" + compressed + "\n\n" + newerHistoryBanner + "\n" + excerpt)
-		if len(combined) <= maxDurableSummaryChars {
+		if len(combined) <= limit {
 			return combined
 		}
 		// The compressor overshot its room: re-run it at the exact remainder so
 		// the bound holds with the marker in place. One retry is enough because
 		// the second room is strictly smaller than the first.
-		retry := priorRoom - (len(combined) - maxDurableSummaryChars)
+		retry := priorRoom - (len(combined) - limit)
 		if again := compressPriorRollup(prior, retry); again != "" {
 			marker = chainCompressionMarker + strconv.Itoa(len(prior)) + " chars -> " +
 				strconv.Itoa(len(again)) + " chars, nothing dropped silently]"
 			combined = strings.TrimSpace(marker + "\n" + again + "\n\n" + newerHistoryBanner + "\n" + excerpt)
-			if len(combined) <= maxDurableSummaryChars {
+			if len(combined) <= limit {
 				return combined
 			}
 		}
@@ -853,10 +900,10 @@ func composeDurableSummary(machineSummary func([]utils.Message) string, priorSum
 	// produced nothing: keep the bound with the outer backstop, keeping the
 	// prior's TAIL and ANNOUNCING the compression. The newest section is
 	// preserved in full: the prior is the thing that shrinks.
-	room := maxDurableSummaryChars - len(excerpt) - overhead - markerCost
+	room := limit - len(excerpt) - overhead - markerCost
 	if room < minPriorRollupChars {
 		room = minPriorRollupChars
-		excerpt = boundDurableExcerpt(excerpt, maxDurableSummaryChars-overhead-room)
+		excerpt = boundDurableExcerpt(excerpt, limit-overhead-room)
 	}
 	prior = boundDurableExcerpt(prior, room)
 	return strings.TrimSpace(chainCompressionMarker + strconv.Itoa(len(priorSummary)) +
