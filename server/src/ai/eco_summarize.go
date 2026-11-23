@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -78,14 +79,68 @@ const summaryCharsPerToken = 3
 // single-flight slot must not be held forever by a wedged proxy.
 const summaryHTTPTimeout = 10 * time.Minute
 
-// summaryHTTPClient is the summariser's client. It shares utils.HTTPClient's
-// transport (connection reuse, the proxy's keep-alive) and adds the per-call
-// timeout utils.HTTPClient deliberately does not have (Timeout: 0 for SSE
-// streams). Without a bound, a proxy that accepts and stalls parks the eco
-// goroutine forever and no conversation ever compacts again.
+// summaryHTTPClient is the summariser's client.
+//
+// It MUST NOT share utils.HTTPClient.Transport, and the deployed build proves
+// why. That transport sets ResponseHeaderTimeout: 90s, which bounds the time to
+// the FIRST RESPONSE HEADER. For a STREAMING chat request that is the time to
+// the first SSE event, so 90s is generous and a long stream is unaffected. The
+// summary request is Stream: false — a one-shot completion — so its headers
+// arrive only when the WHOLE summary has been generated, so the 90s caps the
+// ANSWER at 90 seconds of generation. Measured decode rate on the deployed
+// backend (tok_out / (total_ms - ttfb_ms), decode-dominated samples only,
+// n=2139): median 36.6 tok/s, p10 24.5, min 3.6. The summary asks for up to
+// maxSummaryOutputTokens (32768) tokens, which needs ~896s at the median rate —
+// far past 90s. The inherited bound therefore shot every summary, at exactly
+// 90s. (Do NOT derive this rate from tok_out / ttfb_ms: chat requests are
+// Stream:true, so ttfb_ms is PREFILL, and that ratio measures nothing.)
+//
+// The error string pins the owner. Go emits "net/http: timeout awaiting
+// response headers" ONLY from Transport.ResponseHeaderTimeout
+// (net/http/transport.go, errTimeout); a Client.Timeout produces
+// "context deadline exceeded (Client.Timeout exceeded while awaiting
+// headers)". The deployed log has the former, five folds running, and
+// "LLM fold summary" appears ZERO times against 30 machine-only fallbacks:
+//
+//	[Eco] machine-only FALLBACK fold (LLM summariser unavailable: summary
+//	request failed: Post "http://127.0.0.1:8787/v1/chat/completions":
+//	net/http: timeout awaiting response headers)
+//
+// The summariser's own ceiling (summaryHTTPTimeout, 10min) was never the
+// binding constraint; it is the bound this transport clone restores. Raising
+// the header budget to it adds NO new exposure: the round-trip was already
+// capped at 10min by Client.Timeout, and the summariser calls
+// summaryHTTPClient.Do directly (no DoLLMHTTPWithRetry, so no retry storm).
 var summaryHTTPClient = &http.Client{
 	Timeout:   summaryHTTPTimeout,
-	Transport: utils.HTTPClient.Transport,
+	Transport: summaryTransport(),
+}
+
+// summaryTransport clones the shared transport and raises ONLY the header
+// budget. Connection pooling, dial and TLS bounds are inherited unchanged, so
+// the summariser keeps reusing the proxy's keep-alive connections.
+//
+// The type assertion is guarded, not assumed: this runs in a package-level
+// initializer, and a panic here would take the whole server down. If the shared
+// transport is ever not an *http.Transport, fall back to a fresh one with the
+// same bounds rather than inheriting a 90s header budget we cannot control.
+func summaryTransport() http.RoundTripper {
+	if shared, ok := utils.HTTPClient.Transport.(*http.Transport); ok {
+		t := shared.Clone()
+		// For a one-shot (Stream:false) call, "time to headers" IS "time to the
+		// complete answer", so the header budget must equal the round-trip
+		// budget. Inheriting the shared 90s shot every summary.
+		t.ResponseHeaderTimeout = summaryHTTPTimeout
+		return t
+	}
+	return &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: summaryHTTPTimeout,
+		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   8,
+	}
 }
 
 func init() {
