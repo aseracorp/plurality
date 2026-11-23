@@ -381,6 +381,20 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	}
 	jsonData := jsonBuf.Bytes()
 
+	// Prefix-stability observer (PREFIX_WATCH=1): report the byte offset where
+	// this request stops sharing a prefix with the previous request for the
+	// same conversation, attributed to a region. Every prefix-stability test
+	// in this repo is a synthetic fixture; the deployed cache defect was only
+	// ever visible as a proxy-side cache_read pinned flat. This is the
+	// instrument that names the mutation in production. See ai/prefix_watch.go.
+	if prefixWatchOn {
+		sysBytes := 0
+		if len(requestData.Messages) > 0 {
+			sysBytes = prefixWatchPartSize(requestData.Messages[:1])
+		}
+		prefixWatchCompare(conv.ID, jsonData, sysBytes, prefixWatchPartSize(requestData.Tools))
+	}
+
 	// Preemptive context-window guard. The provider's 500 body is often a
 	// bare "Internal Server Error" with the real reason only in LiteLLM's
 	// own logs, so isContextLengthError in the LLM loop cannot see it and
