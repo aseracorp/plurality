@@ -392,7 +392,7 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 		if len(requestData.Messages) > 0 {
 			sysBytes = prefixWatchPartSize(requestData.Messages[:1])
 		}
-		prefixWatchCompare(conv.ID, jsonData, sysBytes, prefixWatchPartSize(requestData.Tools))
+		prefixWatchCompare(conv.ID, jsonData, requestData.Messages, sysBytes)
 	}
 
 	// Preemptive context-window guard. The provider's 500 body is often a
