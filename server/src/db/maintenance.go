@@ -3,20 +3,19 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
 
-	"github.com/azukaar/plurality/src/utils"
 	"github.com/azukaar/plurality/src/textsafe"
+	"github.com/azukaar/plurality/src/utils"
 )
 
 // Storage constants shared with the AI context paths (eco.go and
-// context_compaction.go use the same 100k bound + banner text). Keeping the
-// bound identical means the stored, on-disk form never disagrees with what
-// the context filter would have shipped anyway.
-const (
-	maintenanceMaxChars = 100_000
-	maintenanceBanner   = "\n\n[message truncated by Plurality: original length %d chars exceeded the per-message context budget]"
-)
+// context_compaction.go use the same 100k bound). The banner TEXT is not a
+// constant here: it comes from textsafe.Banner, so the on-disk form and the
+// request path cannot drift. They used to be two different literals
+// ("...exceeded the per-message context budget" here, "...across all content
+// parts exceeded..." there), which is how the stored form ended up never
+// matching what the context filter shipped.
+const maintenanceMaxChars = 100_000
 
 // RunStorageMaintenance heals a user database that accumulated oversized
 // message blobs. Before the eco context filter (eco.go
@@ -207,11 +206,23 @@ func truncateStoredToolCalls(ns sql.NullString) (*string, bool) {
 	return &s, true
 }
 
+// truncateText bounds one text body to maintenanceMaxChars.
+//
+// MUST be idempotent, and MUST return a body within maintenanceMaxChars. The
+// pre-fix form was HeadBytes(s, max) + banner, i.e. max + ~110 bytes: LONGER
+// than the bound it was truncating to, so every boot saw the row still over
+// the bound and truncated it again — shaving ~110 bytes off the preserved head
+// and stacking a second banner with a new "original length". Observed live:
+// 345 stored rows carrying the banner while over the 100000 bound they were
+// truncated to, some with FIVE stacked banners. Because the length never
+// settled, those rows' BYTES CHANGED ON EVERY BOOT, and KV prompt caching
+// matches the longest common prefix: one changed byte mid-history discards the
+// whole conversation's cached KV (measured: cache_read pinned flat at 38030
+// tokens across consecutive turns while prompt tokens grew 106710 -> 109378).
+// textsafe.TruncateWithBanner reserves the banner's room inside max, so the
+// stored bytes settle on the first pass and never move again.
 func truncateText(s string) (string, bool) {
-	if len(s) <= maintenanceMaxChars {
-		return s, false
-	}
-	return textsafe.HeadBytes(s, maintenanceMaxChars) + fmt.Sprintf(maintenanceBanner, len(s)), true
+	return textsafe.TruncateWithBanner(s, maintenanceMaxChars)
 }
 
 func nullableString(s *string) interface{} {

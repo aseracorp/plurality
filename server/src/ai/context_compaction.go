@@ -116,16 +116,15 @@ func TruncateOversizedMessages(messages []utils.Message) []utils.Message {
 					txt += p.Text
 				}
 			}
-			truncLen := len(txt)
-			if truncLen > maxCompactMessageChars {
-				truncLen = maxCompactMessageChars
-			}
-			trunc := textsafe.HeadBytes(txt, truncLen)
+			// Idempotent, banner-inside-the-bound truncation (see
+			// textsafe.TruncateWithBanner). HeadBytes + banner produced a body
+			// LONGER than maxCompactMessageChars, so a context-overflow retry
+			// that ran this twice changed the row's bytes between the two
+			// requests — and the on-disk maintenance pass re-truncated the
+			// same row on every boot for the same reason.
+			trunc, _ := textsafe.TruncateWithBanner(txt, maxCompactMessageChars)
 			utils.Log("[Compaction] truncating oversized message (%d chars -> %d)", total, maxCompactMessageChars)
-			m.Content = utils.NewTextContent(trunc +
-				"\n\n[message truncated by Plurality: original length " +
-				fmt.Sprintf("%d", total) +
-				" chars across all content parts exceeded the per-message context budget]")
+			m.Content = utils.NewTextContent(trunc)
 		}
 		out = append(out, m)
 	}
