@@ -506,6 +506,56 @@ func TestEcoWindowPolicyIsDenominatedInTheWindow(t *testing.T) {
 	t.Logf("policy 262144 -> trigger/target from the window; 131072, 32000 clamped; 0 = configured")
 }
 
+// TestEcoConversationWindowMatchesTheRequestPath pins the model resolution
+// behind the compaction policy. The window sizes the (trigger, target) pair;
+// an unresolved window yields 0, and 0 makes ecoWindowPolicy return the
+// CONFIGURED pair verbatim — trigger 150000, target 50000. On this
+// 262144-token deployment that is the 27K-token context loss: the tick folds a
+// 148K conversation toward 50000.
+//
+// The pre-fix reader used conv.ModelSelected.Text directly. The REQUEST path
+// (index.go) uses SelectModel, which also resolves through Vision — so a
+// conversation with only Vision pinned (or any selection shape SelectModel
+// handles and the direct read does not) compacts under a fallback policy the
+// request it is protecting knows nothing about. Policy and request must
+// resolve the model the same way, by construction.
+func TestEcoConversationWindowMatchesTheRequestPath(t *testing.T) {
+	// Nothing selected: 0 is correct, and the policy falls back to the
+	// configured pair — the documented contract.
+	if got := ecoConversationWindow(&utils.Conversation{}); got != 0 {
+		t.Fatalf("empty selection: window %d, want 0 (configured fallback)", got)
+	}
+
+	// Vision-only selection: SelectModel returns the Vision model, so the
+	// window must resolve — the direct Text read returned 0 and silently
+	// armed the 150000/50000 fold.
+	visionName := "kimi-k3"
+	convVision := &utils.Conversation{ModelSelected: utils.ModelSelected{
+		Vision: &utils.Model{Name: visionName},
+	}}
+	want := Models.MaxContextTokensForPrefixed(visionName)
+	if got := ecoConversationWindow(convVision); got != want {
+		t.Fatalf("vision-only selection: window %d, want %d (SelectModel resolves Vision; a 0 here arms the "+
+			"configured 150000/50000 pair — the 27K-token fold on a 262144-token model)", got, want)
+	}
+
+	// Text set: same resolution as the request path (Text wins when no
+	// images are present).
+	convText := &utils.Conversation{ModelSelected: utils.ModelSelected{
+		Text:   &utils.Model{Name: visionName},
+		Vision: &utils.Model{Name: "a-vision-model"},
+	}}
+	if got := ecoConversationWindow(convText); got != want {
+		t.Fatalf("text+vision selection: window %d, want %d", got, want)
+	}
+
+	// Nil conversation: 0, never a panic — durableCompact runs on a ticker
+	// and a panic there kills the compaction subsystem.
+	if got := ecoConversationWindow(nil); got != 0 {
+		t.Fatalf("nil conversation: window %d, want 0", got)
+	}
+}
+
 // TestBootstrapGateIgnoresTheFallbackFloorOnABigWindow: the self-locking gate
 // compared the sent view against the GLOBAL 100000-char fallback (~33333
 // tokens), a FIFTH of the trigger on this 262144-token model. A ~90k-token
