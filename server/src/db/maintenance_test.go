@@ -124,3 +124,89 @@ func TestRunStorageMaintenanceIsIdempotent(t *testing.T) {
 		t.Fatalf("expected 1 banner, got %d", c)
 	}
 }
+
+// The pre-fix maintenance pass reported "truncated 327 oversized stored
+// message blob(s)" on EVERY boot, in every log line, forever. That number is
+// the test: an idempotent pass reports 0 after the first run, because there is
+// nothing left to fix. It was not idempotent because truncateText returned
+// HeadBytes(s, max) + banner = max + ~110 bytes, i.e. a body LONGER than the
+// bound it was truncating to, so the next pass saw the row still over the bound
+// and rewrote it again.
+//
+// The cost is not disk space. KV prompt caching reuses the longest common
+// PREFIX of the prompt, so a row whose stored bytes change rewrites every byte
+// of the prompt after it. Measured on the live deployment: cache_read pinned
+// FLAT at 38030 tokens across consecutive turns (10:07, 10:12, 10:21) while
+// tok_before grew 106710 -> 108844 -> 109378, with ttfb_ms at 89983-114744.
+// 38030 is the shared head of the conversation up to its first banner-bearing
+// row — the exact point where the stored bytes stop matching.
+//
+// The existing TestRunStorageMaintenanceIsIdempotent passes against the broken
+// code: it allows max+200 (the over-bound result fits) and counts banners,
+// which stays at 1 because the re-shave discards the previous banner. Byte
+// identity is the invariant, so that is what this pins.
+func TestRunStorageMaintenanceStoredBytesNeverMove(t *testing.T) {
+	db := openTestDB(t)
+
+	if _, err := db.Exec(
+		`INSERT INTO conversations (id, title, last_message_at) VALUES ('c1','t','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("conv: %v", err)
+	}
+	insert := func(seq int, body string) {
+		j, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO messages (conversation_id, seq, role, content) VALUES ('c1', ?, 'tool', ?)`,
+			seq, string(j)); err != nil {
+			t.Fatalf("msg: %v", err)
+		}
+	}
+	// The live shapes: a fat tool result over the bound, and a legacy row that
+	// already carries a stacked banner and is STILL over the bound.
+	insert(1, strings.Repeat("A", 200_000))
+	legacy := strings.Repeat("B", 120_000) +
+		"\n\n[message truncated by Plurality: original length 400000 chars exceeded the per-message context budget]"
+	insert(2, legacy)
+
+	// First pass: everything settles.
+	first, err := truncateOversizedStoredContent(db)
+	if err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	if first == 0 {
+		t.Fatal("first pass fixed nothing — the fixture is not over the bound")
+	}
+
+	// Every later pass must be a NO-OP. This is the assertion the deployed
+	// binary fails: it logs a non-zero count on every single start.
+	for pass := 2; pass <= 4; pass++ {
+		again, err := truncateOversizedStoredContent(db)
+		if err != nil {
+			t.Fatalf("pass %d: %v", pass, err)
+		}
+		if again != 0 {
+			t.Fatalf("pass %d rewrote %d row(s): truncation is not idempotent, "+
+				"so these rows' bytes change on every boot and the KV prefix "+
+				"cache cannot survive past them", pass, again)
+		}
+	}
+
+	// Strict bound: the stored body must be WITHIN maintenanceMaxChars, not
+	// "max + room for the banner".
+	for _, seq := range []int{1, 2} {
+		var raw string
+		if err := db.QueryRow(`SELECT content FROM messages WHERE seq=?`, seq).Scan(&raw); err != nil {
+			t.Fatalf("read seq %d: %v", seq, err)
+		}
+		var text string
+		if err := json.Unmarshal([]byte(raw), &text); err != nil {
+			t.Fatalf("seq %d content not a JSON string: %v", seq, err)
+		}
+		if len(text) > maintenanceMaxChars {
+			t.Fatalf("seq %d stored body is %d bytes, over the %d bound — the next "+
+				"pass will truncate it again", seq, len(text), maintenanceMaxChars)
+		}
+	}
+}

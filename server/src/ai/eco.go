@@ -724,24 +724,24 @@ func truncateOversizedTail(tail []utils.Message) []utils.Message {
 			utils.Log("[Eco] dropping oversized tool result (%d chars) from tail", total)
 			continue
 		}
-		// Multi-part message whose TOTAL size blows the bound. Keep the first
-		// text part (up to the bound, with a banner) and drop the rest so the
-		// hidden multi-MB later parts can never reach the provider.
+
+		// Multi-part message whose TOTAL size blows the bound. Keep the head
+		// of the text parts (with a banner) and drop the rest, so a hidden
+		// multi-MB later part can never reach the provider.
 		txt := ""
 		for _, p := range m.Content.ContentParts() {
 			if p.Type == "text" {
 				txt += p.Text
 			}
 		}
-		truncLen := len(txt)
-		if truncLen > maxKeepTailChars {
-			truncLen = maxKeepTailChars
-		}
-		trunc := textsafe.HeadBytes(txt, truncLen)
-		m.Content = utils.NewTextContent(trunc +
-			"\n\n[message truncated by Plurality: original length " +
-			fmt.Sprintf("%d", total) +
-			" chars across all content parts exceeded the per-message context budget]")
+		// textsafe.TruncateWithBanner, NOT HeadBytes + banner: the banner's
+		// room is reserved INSIDE maxKeepTailChars, so the shipped row is
+		// within the bound this function claims to enforce, and the result is
+		// a pure function of the stored row (running it again is a no-op).
+		// That is the requirement the prefix-stability tests pin: a row whose
+		// bytes change between turns discards the whole cached KV prefix.
+		trunc, _ := textsafe.TruncateWithBanner(txt, maxKeepTailChars)
+		m.Content = utils.NewTextContent(trunc)
 		out = append(out, m)
 	}
 	return out
