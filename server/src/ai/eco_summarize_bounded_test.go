@@ -218,10 +218,13 @@ func TestBoundedSummaryRequestShape(t *testing.T) {
 //	summary budget collapsed (max_tokens=1024 for a 262144-token window)
 //
 // and folded megabytes into the machine-only roll-up WITHOUT EVER CALLING THE
-// MODEL (30 machine-only folds, 0 LLM folds). The shape is the FROZEN view: the
-// checkpoint pair at the head plus an uncapped live tail, so the replayed
-// prefix is at the window and the replay's output budget floors. The collapse
-// must route to the bounded recovery path, which reaches the proxy.
+// MODEL. /app/data/server.log on the #208 build: 0 "LLM fold summary" lines, 32
+// "machine-only FALLBACK fold" lines, 21 of them budget collapses, the newest
+// at 09:59:50 — "1240 rows, room=162452 chars, folded=2824666 chars". The shape
+// is the FROZEN view: the checkpoint pair at the head plus an uncapped live
+// tail, so the replayed prefix is at the window and the replay's output budget
+// floors. The collapse must route to the bounded recovery path, which reaches
+// the proxy.
 func TestBudgetCollapseRoutesToTheRecoveryPath(t *testing.T) {
 	ctx, _, convID := ucDB(t)
 	model := ucSeedActionModel(t, "bounded-collapse-model", window262k,
