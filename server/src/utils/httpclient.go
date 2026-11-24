@@ -18,9 +18,19 @@ import (
 // checks). It keeps a bound on connect/response time so no single call can
 // hang forever and wedge a goroutine.
 //
-// The 90s ResponseHeaderTimeout still allows long SSE chat streams; only the
-// time to first response byte is bounded. Dial/TLS are bounded so no call can
+// The 90s ResponseHeaderTimeout bounds the time to the FIRST RESPONSE HEADER.
+// That is safe for STREAMING calls, where it means "time to the first SSE
+// event"; a long stream is not affected. Dial/TLS are bounded so no call can
 // hang on connect either.
+//
+// It is NOT safe for a Stream:false one-shot LLM call. There, headers arrive
+// only when the whole completion has been generated, so 90s caps the ANSWER at
+// ~90s of generation — measured 1116-19683 tokens at the deployed backend's
+// 12.4-218.7 tok/s. Any one-shot LLM call must use a client whose transport
+// raises ResponseHeaderTimeout to its own round-trip budget; see
+// ai.summaryHTTPClient, which CLONES this transport for exactly that reason
+// after the 90s silently killed every durable-fold summary on the deployed
+// build (net/http: timeout awaiting response headers, at exactly 90s).
 var HTTPClient = &http.Client{
 	Timeout: 0, // no overall deadline: SSE streams can run for minutes
 	Transport: &http.Transport{
