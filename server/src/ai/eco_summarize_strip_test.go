@@ -48,7 +48,7 @@ func TestSummariserRequestHeadIsByteIdenticalToChatRequest(t *testing.T) {
 		t.Fatalf("chat parts: %v", err)
 	}
 	evicted := view[:len(view)-4]
-	req, err := buildSummaryRequestFromView(ctx, conv, model, evicted, payload)
+	req, err := buildSummaryRequestFromMegacave(ctx, conv, model, evicted, payload)
 	if err != nil {
 		t.Fatalf("summary request: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestSummariserStripsTheLiveTail(t *testing.T) {
 	chatFull := stripCurrentTimeTail(append([]StandardMessageReq(nil), chat.request.Messages...))
 
 	evicted := view[:len(view)-6]
-	req, err := buildSummaryRequestFromView(ctx, conv, model, evicted, payload)
+	req, err := buildSummaryRequestFromMegacave(ctx, conv, model, evicted, payload)
 	if err != nil {
 		t.Fatalf("summary request: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestSummariserNeverExceedsTheWindow(t *testing.T) {
 	if SentViewTokens(evicted) <= window {
 		t.Fatalf("fixture is too small to exercise the cap: evicted %d tokens, window %d", SentViewTokens(evicted), window)
 	}
-	req, err := buildSummaryRequestFromView(ctx, conv, model, evicted, payload)
+	req, err := buildSummaryRequestFromMegacave(ctx, conv, model, evicted, payload)
 	if err != nil {
 		t.Fatalf("summary request: %v", err)
 	}
@@ -181,11 +181,11 @@ func TestSummariserRefusesWhenTheHeadCannotFit(t *testing.T) {
 	conv := ucConvOf(t, ctx, convID, view, model)
 	payload := ChatPayload{ConversationID: convID, ModelSelected: conv.ModelSelected}
 
-	_, err := buildSummaryRequestFromView(ctx, conv, model, view[:len(view)-2], payload)
+	_, err := buildSummaryRequestFromMegacave(ctx, conv, model, view[:len(view)-2], payload)
 	if err == nil {
 		t.Fatal("the builder shipped a request whose own head exceeds a 512-token window")
 	}
-	if !strings.Contains(err.Error(), "does not fit the window") {
+	if !strings.Contains(err.Error(), "no room in the window") {
 		t.Fatalf("want the head-does-not-fit refusal, got: %v", err)
 	}
 }

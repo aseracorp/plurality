@@ -321,7 +321,9 @@ func mcFenced(lang string, lines int) string {
 func TestMegacaveFencedBlockIsBudgeted(t *testing.T) {
 	const show = 200
 	text := "look:\n" + mcFenced("go", 200)
-	out := MachineExcerptMegacaveBudget([]utils.Message{mcMsg("user", text)}, show)
+	// An AGENT row: megacave never touches user rows (they render verbatim), so
+	// the fence budget is a property of the rows it DOES compress.
+	out := MachineExcerptMegacaveBudget([]utils.Message{mcMsg("assistant", text)}, show)
 
 	re := regexp.MustCompile(`\[... fenced (\S+) block elided: (\d+) lines, (\d+) chars \.\.\.\]`)
 	m := re.FindStringSubmatch(out)
@@ -353,7 +355,7 @@ func TestMegacaveFencedBlockIsBudgeted(t *testing.T) {
 			len(out), show, len(m[0]), mcHead(out, 200))
 	}
 	// Deterministic.
-	if again := MachineExcerptMegacaveBudget([]utils.Message{mcMsg("user", text)}, show); again != out {
+	if again := MachineExcerptMegacaveBudget([]utils.Message{mcMsg("assistant", text)}, show); again != out {
 		t.Errorf("fenced render is not byte-identical across runs")
 	}
 }
