@@ -630,12 +630,30 @@ func TestFoldSummaryRequestShapeAgainstFakeProxy(t *testing.T) {
 	// reorders keys — a comparison artifact, not a request difference.
 	chatNoClock := stripCurrentTimeTail(append([]StandardMessageReq(nil), chat.request.Messages...))
 	m := len(req.Messages) - 1
-	if m != len(chatNoClock) {
-		t.Fatalf("the summary request replays %d history rows, want exactly the chat request's %d (the replay must be the same slice, not the fold's narrower one)", m, len(chatNoClock))
+	// THE CONTRACT: the summary request ships a PREFIX of the chat request's
+	// rows — the oldest ones, the evicted range — with the LIVE TAIL stripped.
+	// Stripping the tail is what makes the fold's summariser fit: the deployed
+	// failure was the replay carrying the whole view, filling the window, and
+	// the output budget flooring ("summary budget collapsed (max_tokens=1024
+	// for a 262144-token window)"), so every fold went machine-only without
+	// ever asking the model.
+	if m > len(chatNoClock) {
+		t.Fatalf("the summary request ships %d history rows, more than the chat request's %d", m, len(chatNoClock))
 	}
+	if m >= len(chatNoClock) {
+		t.Fatalf("the summary request ships ALL %d chat rows — the live tail was not stripped, so the request is the full view and its budget can collapse", m)
+	}
+	// The rows it DOES ship are byte-identical to the chat request's rows at the
+	// same positions: the head (system rows + tool schemas) and the evicted
+	// history. Nothing a fold does may move the head — that is the cache.
 	if !bytes.Equal(ucRowsBytes(t, req.Messages[:m]), ucRowsBytes(t, chatNoClock[:m])) {
 		t.Fatalf("the summary prefix is not byte-identical to the chat request's (first divergence at %d) — the KV cache would not be reused",
 			firstDivergence(ucRowsBytes(t, req.Messages[:m]), ucRowsBytes(t, chatNoClock[:m])))
+	}
+	// The stripped rows are the NEWEST ones: the live tail the fold keeps, not
+	// something from the middle.
+	if stripped := len(chatNoClock) - m; stripped < 1 {
+		t.Fatalf("%d rows stripped, want at least the live tail", stripped)
 	}
 	// The POSTED rows are the chat request's rows, unchanged. Compared
 	// semantically (role / name / tool_call_id / tool_calls / text): the body

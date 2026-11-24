@@ -274,11 +274,17 @@ func buildChatRequestParts(ctx context.Context, model utils.Model, conv utils.Co
 	}, nil
 }
 
+// guardSafetyReserve is the safety half of the preemptive context guard's reply
+// reservation — the part that is NOT a request's max_tokens. Split out so the
+// fold summariser can reserve reply room without reserving the CHAT request's
+// max_tokens on top of its own output budget (see buildSummaryRequestFromView).
+const guardSafetyReserve = 2048
+
 // guardReplyReserve is the room the preemptive context guard keeps for the
 // model's answer: max_tokens (4096) + safety (2048). It is the SAME
 // reservation the request sends as max_tokens, so the guard and the backend
 // agree on the prompt ceiling.
-const guardReplyReserve = 4096 + 2048
+const guardReplyReserve = 4096 + guardSafetyReserve
 
 // preemptiveGuardEstimate is the preemptive context guard's client-side token
 // estimate: the SENT VIEW of the history (folded rows skipped, per-message cap
