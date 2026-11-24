@@ -57,10 +57,10 @@ func userContextFor(userID string) context.Context {
 //
 // The system prompt is prepended elsewhere (in SendChatCompletion) and is
 // not part of `messages` here.
-// windowTokens is the selected model's context window (0 = unknown). It is
-// the ONLY thing that can size the bootstrap budget: the cap must bound
-// a request, and a request is measured in the model's tokens, not in a
-// global char constant. See bootstrapBudgetChars.
+// windowTokens is the selected model's context window (0 = unknown), resolved
+// by the caller for the preemptive guard and the durable fold. It no longer
+// sizes a per-request cap: the sent view is bounded per MESSAGE here, and the
+// guard turns "this view no longer fits the window" into a durable fold.
 func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool, windowTokens ...int) []utils.Message {
 	if !ecoOn {
 		return db.FilterOutCheckpoints(messages)
@@ -116,21 +116,30 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool, windowTok
 			lastCheckpointIdx = i
 		}
 	}
-	// No checkpoint yet: this conversation has never been compacted, so
-	// there is no frozen head to protect and NOTHING bounds the history.
-	// A giant raw history must not be shipped whole — that is exactly how
-	// "WordPress Security Review" (1866 msgs, ~770k tokens) kept dying with
-	// context_length_exceeded. So the BOOTSTRAP case keeps the budget-capped
-	// tail: bounded on every request, at the cost of a moving head, until
-	// the first durable fold mints the pair (after which the frozen path
-	// below takes over). The overflow path in tool_loop.go is what forces
-	// that first fold for a conversation that never crossed the eco trigger.
-	window := 0
-	if len(windowTokens) > 0 {
-		window = windowTokens[0]
-	}
+	// No checkpoint pair: this conversation has never been compacted, so there
+	// is no frozen head to protect, and NOTHING on this path bounds the
+	// history as a whole. That is deliberate.
+	//
+	// This branch used to cap the slice to a char budget (capTail). capTail
+	// sliced tail[start:] and returned: no db write, no compacted flag, no
+	// summary, no log naming what it removed. The client keeps those rows, so
+	// the user watched the full transcript while the model answered from the
+	// newest slice - the history loss eco exists to eliminate, and silent.
+	// It also broke eco's own trigger: capping the prompt held lastPT below
+	// the trigger forever, so the conversation that most needed compaction was
+	// the one the trigger could never see.
+	//
+	// The no-pair path is now the frozen path with no pair: every live row,
+	// bounded PER MESSAGE by truncateOversizedTail, a pure and idempotent
+	// function of the stored row, so the KV prefix survives. "This view no
+	// longer fits the window" is handled where it belongs: the preemptive
+	// guard in index.go measures this exact slice (SentViewTokens of the value
+	// returned here) and returns the context-length error the LLM loop
+	// recovers from with a DURABLE fold. That fold mints the pair, bounds the
+	// view losslessly, and tells the user it happened. Bounded, lossless, and
+	// the head never slides.
 	if lastCheckpointIdx < 0 {
-		return capTail(messages, bootstrapBudgetChars(window))
+		return truncateOversizedTail(messages)
 	}
 
 	// Frozen prefix: the pair, then every live row after it. No window, no
@@ -144,30 +153,6 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool, windowTok
 	tail := messages[lastCheckpointIdx:]
 	return truncateOversizedTail(tail)
 }
-
-// maxTailChars is the FALLBACK live-tail budget: what the bootstrap cap uses
-// when the model's context window is unknown, and the budget the bootstrap cap
-// tests pin. ~100k chars ≈ 33k tokens at the server's own 3 chars/token
-// estimator.
-//
-// It is NOT the production budget. Production derives the budget from the
-// model's window — see bootstrapBudgetChars. A global char constant cannot
-// bound a request, because a request is measured in the model's TOKENS: the
-// eco trigger that is supposed to govern compaction is 150000 PROMPT TOKENS,
-// so a 100k-char budget binds at ~33k tokens (a fifth of the trigger) and a
-// 200k-char budget at ~66k (under half). On the 262144-token model this
-// deployment runs, the cap became the context policy: the model answered from
-// a fragment while the user watched the full history in the client ("sent 27K
-// tokens ... not containing any real history"). The #196 build the user
-// reverted to shipped tok_before=177562 with cache_read=176045 — over 100k
-// TOKENS of context, which is what the user expects and what a char constant
-// of that size cannot express.
-//
-// The bootstrap case is a conversation with NO checkpoint pair, so it has no
-// frozen head whose stability is worth protecting. Once a durable pair exists,
-// the frozen path in filterCheckpointsForRequest applies NO window at all and
-// durable compaction (the eco trigger/target) is what bounds that view.
-const maxTailChars = 100_000
 
 // charsPerToken is the estimator divisor used across the eco path
 // (SentViewTokens divides by it), so a char budget built with it is consistent
@@ -184,62 +169,12 @@ const charsPerToken = 3
 //	        tool-capable request
 //
 // The split matters because the two budgets must not double-count and must not
-// leave a hole: capTail keeps history of at most bootstrapBudgetChars, the
-// guard fires at window - guardReplyReserve against history + schemas, and the
-// provider rejects above the window. Reserving only the system prompt leaves a
-// schemas-sized hole — the cap ships a history the guard calls legal and the
-// provider answers 400, which is the overflow path firing every turn.
+// leave a hole: the guard fires at window - guardReplyReserve against
+// history + schemas, and the provider rejects above the window. Reserving only
+// the system prompt leaves a schemas-sized hole — the guard calls a history
+// legal that the provider answers 400, which is the overflow path firing every
+// turn.
 const promptOverheadTokens = 40_000
-
-// bootstrapBudgetChars derives the live-tail budget for a conversation that
-// has never been compacted from the MODEL's context window:
-//
-//	(windowTokens - promptOverheadTokens - guardReplyReserve) * charsPerToken
-//
-//	262144 -> 648000 chars (~216000 tokens)  this deployment's model
-//	131072 -> 254784 chars ( ~84928 tokens)  deepseek-v4 / glm-5 / qwen-3
-//	 32000 ->      0 chars                   the prompt alone fills the window:
-//	                                         there is NO history room, and 0 is
-//	                                         the honest answer (capTail then
-//	                                         keeps the newest row alone)
-//	unknown -> 100000 chars                  the historical fallback
-//
-// The 262144 case is the one that matters here: 216000 history tokens plus the
-// 40000-token prompt overhead and the 6144-token reply reserve is 262144, so
-// the cap's window is exactly the room the model has. The eco trigger the
-// policy derives (216000 prompt tokens) fires at the same point, so compaction
-// governs and the cap stays the net.
-//
-// Deriving it is the whole fix. Two global constants were tried (100k, then
-// 200k chars) and both fail the same way: below the eco trigger, so the cap
-// binds first and compaction never governs.
-//
-// The rule this enforces: on a real model the history budget must sit ABOVE
-// the eco trigger, so compaction (trigger/target) governs the context and the
-// cap stays the safety net it claims to be — it exists only to stop a
-// never-compacted conversation shipping a context-busting history (the
-// "WordPress Security Review" shape: 1866 msgs, ~770k tokens, dying with
-// context_length_exceeded on every turn).
-//
-// Returns 0 when the prompt overhead alone fills the window: there is no room
-// for history, and capTail reads 0 as "keep the newest row alone". Clamping UP
-// to the fallback there is how a 32k-token window would be handed a 33k-token
-// history budget, making the cap the thing that busts the context.
-func bootstrapBudgetChars(windowTokens int) int {
-	// Unknown window: the historical behaviour, bounded and conservative.
-	if windowTokens <= 0 {
-		return maxTailChars
-	}
-	room := windowTokens - promptOverheadTokens - guardReplyReserve
-	if room <= 0 {
-		// The prompt fills the window: NO room for history. 0 is the honest
-		// answer, and capTail honours it by keeping the newest row alone
-		// (bounded) rather than shipping nothing.
-		return 0
-	}
-	// A small window buys a small budget: the window sizes it, never a floor.
-	return room * charsPerToken
-}
 
 // ecoWindowPolicy derives the compaction (trigger, target) PROMPT-token
 // thresholds for a model's context window, from the operator's configured
@@ -342,246 +277,6 @@ func ecoConversationWindow(conv *utils.Conversation) int {
 // the budget bound below is airtight rather than exactly met.
 const truncationBannerChars = 256
 
-// shippedRowChars is the char size a row ACTUALLY ships, and it is the only
-// measure the bootstrap cap budgets against. It counts:
-//
-//   - the row's content (bounded by maxKeepTailChars, the per-message cap
-//     truncateOversizedTail applies, plus the banner it appends);
-//   - the row's tool_calls: the function NAME and the JSON ARGUMENTS.
-//
-// The tool_calls term is the fix for the undercount that made every number in
-// this subsystem a fiction. Live, this conversation, on #196:
-//
-//	14:35:44 [Eco] capping tail by budget: kept 228 msgs / 117987 chars
-//	  same request: PERF tok_before=177562 cache_read=176045
-//
-// The cap believed it shipped118k chars while the request carried177k TOKENS.
-// The gap is the assistant rows' tool-call arguments — file writes, shell
-// commands, patch bodies — which for an agent chat ARE most of the request,
-// plus the system prompt (over 20k tokens on its own) and the tool schemas.
-// A budget measured on content alone cannot bound anything: it reports a
-// window a third of the size of the one it picked, and any bound derived from
-// it (a 100k-char "safe for 128k models" comment, an over-budget check, a
-// cache-growth estimate) is wrong by that factor.
-//
-// It is a pure function of the stored row: same row in, same number out, every
-// turn, so a window head is byte-stable across turns.
-func shippedRowChars(m utils.Message) int {
-	c := m.Content.TotalContentChars()
-	if c > maxKeepTailChars {
-		c = maxKeepTailChars + truncationBannerChars
-	}
-	for _, tc := range m.ToolCalls {
-		c += len(tc.Function.Arguments) + len(tc.Function.Name) + len(tc.ID)
-	}
-	return c
-}
-
-// capTailWindow picks the START index of the live window capTail keeps: the
-// OLDEST user row whose shipped suffix (the sum of shippedRowChars) fits
-// `budget`. Returns 0 when the whole slice fits.
-//
-// Anchoring on the OLDEST fitting user row is what makes the head STABLE, and
-// head stability IS prompt caching: appending rows keeps the suffix from the
-// current head within the budget, so the head does not move, the sent view
-// stays a byte PREFIX of the next request, and the provider's KV prefix cache
-// GROWS every turn. The head advances only when the window genuinely outgrows
-// the budget, and then it drops whole turns at the FAR end, never the newest
-// work.
-//
-// A head anchored on "the newest rows that fit" moves on EVERY append (the
-// window grows by a turn, a row falls off the front), so the first byte of the
-// sent history changes every turn and the provider can only reuse the bytes in
-// front of the change. Measured: cache_read pinned at a constant floor (24137
-// across 8 turns, 73289 across 20, 16384 on the #202 build) while tok_before
-// grew 31949 -> 107780 and ttfb_ms climbed 4475 -> 74034.
-//
-// The accounting is shippedRowChars — the row's cost AT THE PROVIDER, content
-// cap + banner + tool-call arguments. That makes "BUDGET = WHAT SHIPS" true by
-// construction: the walker sums the same bound truncateOversizedTail applies,
-// in the same order, so the window the log reports is the window the request
-// carries. The pre-fix walker summed content-only, PRE-truncation sizes, so
-// the log claimed a 100k budget while the window shipped 1189684 chars, and
-// one 890KB tool result pushed the walker past every older row, evicting 98
-// rows of context in one turn (idx 1509 -> 1607). Fat rows are not
-// special-cased: a 300k dump costs maxKeepTailChars+banner, so the window
-// keeps whatever normal rows still fit beside it.
-//
-// Pure function of the stored slice: same rows in, same start out, every turn.
-// Falls back to the newest row when NO user row's suffix fits (a single
-// oversized newest turn): it ships bounded, and an empty window answers nothing.
-func capTailWindow(tail []utils.Message, budget ...int) int {
-	allowed := maxTailChars
-	if len(budget) > 0 && budget[0] >= 0 {
-		allowed = budget[0]
-	}
-	chars := 0
-	best := -1
-	for i := len(tail) - 1; i >= 0; i-- {
-		chars += shippedRowChars(tail[i])
-		if chars > allowed {
-			// Past the budget: nothing further left can be a legal head.
-			break
-		}
-		if tail[i].Role == "user" {
-			best = i
-		}
-	}
-	if best >= 0 {
-		return best
-	}
-	if len(tail) == 0 {
-		return 0
-	}
-	return len(tail) - 1
-}
-
-// capTail bounds a message slice to the live-tail budget so a conversation
-// can never ship a context-busting history to the provider. Applied ONLY to
-// the bootstrap case (no checkpoint pair yet — see
-// filterCheckpointsForRequest): a never-compacted conversation with a huge
-// raw history must be bounded on every request, or every turn dies with
-// context_length_exceeded. Once a durable pair exists the frozen path takes
-// over and this cap must NOT run (it moves the prompt head and kills KV
-// prefix reuse — the contract pinned by ultracave_prefix_test.go).
-//
-// The window is what capTailWindow picked, then the head is made LEGAL:
-//
-//  1. snap FORWARD over leading tool rows — a window must not open on a tool
-//     result whose parent assistant call sits in the dropped section (a hard
-//     provider error);
-//  2. snap FORWARD to the first user row inside the window, so the window
-//     opens on a turn boundary;
-//  3. only when the head is STILL a tool row (the window is the single newest
-//     row, which busts the budget on its own) walk back over the owner chain,
-//     BOUNDED — see the walk-back rule below.
-//
-// THE WALK-BACK RULE. #199/#200/#201 shipped an unbounded
-// `for start > 0 && tail[start].Role != "user" { start-- }` in the tool-wall
-// branch, then a "bounded" version whose base total SKIPPED rows at the
-// per-message cap entirely (`if c >= maxCompactMessageChars { addedFat++;
-// continue }`). Skipping capped rows is what made the bound a lie: on
-// 2026-11-22 the window shipped 178176 chars against a 100000 budget (live,
-// conv a75308439f290ce744a5e7f1, /app/data/server.log 10:23:51 158005 →
-// 10:39:56 178176, and 20:12:43 340693) — every row at the cap was counted as
-// zero, so the walk-back kept adding.
-//
-// Here EVERY row is counted at its true shipped cost (shippedRowChars), in
-// every branch, and the walk-back stops at the first user row, at the
-// contiguous chain boundary, and the moment the total would exceed the ONE
-// bound this subsystem can satisfy:
-//
-//	maxTailChars + maxKeepTailChars + truncationBannerChars
-//
-// i.e. the whole budget plus at most ONE row that ships bounded (the shape
-// TestCapTailWindowIsSatisfiable pins: a lone newest 300k dump needs its
-// parent assistant row kept beside it, and that assistant row is why a
-// strictly-100k bound ships an empty window — dropping the newest turn
-// answers nothing).
-//
-// An over-budget window is not a cosmetic bug: it fires the preemptive guard
-// (index.go) on EVERY turn, which forces a durable fold on every turn, which
-// rewrites the checkpoint pair at the HEAD of the prompt, which destroys the
-// KV prompt-cache prefix. Measured on the reverted build's own data:
-// cache_read pinned FLAT (24137 across 8 turns; 73289 across 20) while
-// tok_before grew 31949 -> 107780 and ttfb_ms climbed 4475 -> 74034.
-func capTail(tail []utils.Message, budget ...int) []utils.Message {
-	if len(tail) == 0 {
-		return tail
-	}
-	allowed := maxTailChars
-	if len(budget) > 0 && budget[0] >= 0 {
-		allowed = budget[0]
-	}
-	start := capTailWindow(tail, allowed)
-	if start > 0 {
-		// (1) Snap the head FORWARD off an orphan tool result. Forward only
-		// shrinks the window, so the budget bound survives; stop before the
-		// window can empty so the newest row always ships.
-		for start < len(tail)-1 && tail[start].Role == "tool" {
-			start++
-		}
-		// (2) Open on a turn boundary when one is available inside the
-		// window. Forward only, so the bound survives.
-		for i := start; i < len(tail)-1; i++ {
-			if tail[i].Role == "user" {
-				start = i
-				break
-			}
-		}
-		// (3) The head is still a tool row: the window is the single newest
-		// row and it busts the budget alone, so forward snapping has nowhere
-		// to go and the window must be GROWN to its owner.
-		if tail[start].Role == "tool" {
-			start = walkBackToOwner(tail, start, allowed)
-		}
-	}
-	if start > 0 {
-		// Re-measure the ANCHORED window for the log (the anchor may have
-		// moved start). The log line is the operator's only view of what the
-		// cap shipped — after the bug this printed a 100k budget while
-		// shipping 1.19M chars.
-		kept := 0
-		for i := start; i < len(tail); i++ {
-			kept += shippedRowChars(tail[i])
-		}
-		utils.Log("[Eco] capping tail by budget: kept %d msgs / %d chars (budget %d, ~%d tokens, start idx %d) for context safety",
-			len(tail)-start, kept, allowed, kept/charsPerToken, start)
-		tail = tail[start:]
-	}
-	// The budget bounds whole rows; a single oversized row that is KEPT
-	// (e.g. the lone newest row over the budget) still needs its per-message
-	// bound applied. truncateOversizedTail is a pure function of each stored
-	// row, so it is byte-stable across turns.
-	return truncateOversizedTail(tail)
-}
-
-// walkBackToOwner grows a window that opens on a tool result to include the
-// assistant row that carries the matching tool_call, so the window never
-// starts with an orphaned result. Returns the new start index; never 0 (a
-// caller that reached this path had rows to drop).
-//
-// Bounded three ways, in this order:
-//   - CHAIN: stop at the first user row, and never past index 0;
-//   - COST: every row is counted at shippedRowChars; the walk stops the
-//     moment the window's shipped total would exceed capTailWalkBackBound;
-//   - PURPOSE: the walk stops as soon as the head is legal (not a tool row),
-//     so it adds the owner chain and nothing more — it is not a general
-//     "restore history" mechanism.
-func walkBackToOwner(tail []utils.Message, start int, budget ...int) int {
-	allowed := capTailWalkBackBound()
-	if len(budget) > 0 && budget[0] >= 0 {
-		allowed = budget[0] + maxKeepTailChars + truncationBannerChars
-	}
-	total := 0
-	for i := start; i < len(tail); i++ {
-		total += shippedRowChars(tail[i])
-	}
-	best := start
-	for i := start - 1; i >= 0 && tail[i].Role != "user"; i-- {
-		c := shippedRowChars(tail[i])
-		if total+c > allowed {
-			break
-		}
-		total += c
-		best = i
-		if tail[i].Role != "tool" {
-			// The head is now legal (an assistant row that can own the
-			// results below it, or any other non-tool row). Stop.
-			break
-		}
-	}
-	return best
-}
-
-// capTailWalkBackBound is the one satisfiable ceiling for a window that must
-// grow to keep a tool result's owner: the whole budget, plus at most ONE row
-// shipping bounded (maxKeepTailChars + the truncation banner). Pinned by
-// TestCapTailWindowIsSatisfiable, which uses the same expression.
-func capTailWalkBackBound() int {
-	return maxTailChars + maxKeepTailChars + truncationBannerChars
-}
-
 // bootstrapCutoff is the char-based fold boundary for a conversation with NO
 // checkpoint pair: the oldest user-anchored boundary whose REMAINING sent
 // view fits the eco target. findCutoffIndex's arithmetic is cumulative
@@ -638,40 +333,6 @@ func bootstrapCutoff(messages []utils.Message, targetTokens int) int {
 	// A fold that leaves only the newest user turn is the floor; the storage
 	// layer clamps the same way.
 	return lu
-}
-
-// bootstrapFoldNeeded reports whether runEcoSummary must fold a conversation
-// that has NOT crossed the prompt-tokens trigger.
-//
-// The trigger measures lastPT = the provider's prompt count of the last
-// turn. For a conversation with NO checkpoint pair, capTail caps that prompt
-// at maxTailChars (~33k tokens) on every turn, so lastPT can NEVER reach a
-// trigger far above the cap — the conversation that most needs compaction
-// is the one the trigger can never see. Self-locking, observed live: 98 rows
-// evicted in one turn at lastPT=85121 < trigger=150000, the eviction storm
-// repeating every turn, no pair ever minted, the sliding window running
-// forever. The sliding window evicting rows IS compaction pressure: hand it
-// to the durable fold, which mints the pair, after which the frozen path
-// takes over and the trigger measures the real (unslid) view.
-//
-// Pure decision (no I/O) so the gate itself is testable.
-func bootstrapFoldNeeded(existingCheckpointEndIdx, lastPT, triggerTokens, sentViewTokens, bootstrapBudget int) bool {
-	if lastPT > triggerTokens {
-		return true
-	}
-	// The self-locking branch: a conversation with NO pair whose live window
-	// already outgrows the budget it will be capped to. Folding durably mints
-	// the pair and hands the conversation to the frozen path.
-	//
-	// The budget is the MODEL-DERIVED one (bootstrapBudgetChars(window)), not
-	// the global maxTailChars fallback. Gating on the fallback (100000 chars =
-	// ~33333 tokens) fires a fold at a FIFTH of the trigger on this
-	// 262144-token model: a 270k-char / ~90k-token view passed the gate and was
-	// folded toward the 50000 target, and the model answered from ~27k tokens
-	// of history while the user watched the full transcript in the client.
-	// Folding early is not "compacting safely" — it is losing context the
-	// window had room for.
-	return existingCheckpointEndIdx < 0 && sentViewTokens*3 > bootstrapBudget
 }
 
 // maxKeepTailChars bounds how many characters of a tail message are kept
@@ -1165,8 +826,9 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 			conversationID, cfg.TriggerTokens, cfg.TargetTokens, convWindow, ecoTrigger, ecoTarget)
 	}
 
-	// Locate the existing checkpoint (if any) BEFORE the trigger gate: the
-	// bootstrap case (no pair) has its own gate — see bootstrapFoldNeeded.
+	// Locate the existing checkpoint (if any) BEFORE the trigger gate: it tells
+	// the fold whether it is minting the first pair or rolling an existing one,
+	// and the no-pair boundary rules read it (see tickFoldBoundary).
 	// Read the CURRENT checkpoint pair straight out of the loaded LLM view
 	// (it carries the pair) instead of db.GetCheckpoint: that helper issues
 	// its second query while the first result set is still open, which
@@ -1194,20 +856,36 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 		return
 	}
 	sentView := SentViewTokens(conv.Messages)
-	if !bootstrapFoldNeeded(existingCheckpointEndIdx, lastPT, ecoTrigger, sentView, bootstrapBudgetChars(convWindow)) {
-		utils.Log("[Eco] conv %s lastPT=%d below trigger=%d — skip", conversationID, lastPT, ecoTrigger)
+	// ONE trigger for both paths. The trigger measures lastPT = the provider's
+	// own prompt count of the newest turn, and with the bootstrap tail cap
+	// gone the sent view IS the prompt, so that measure is honest for a
+	// conversation with no checkpoint pair too.
+	//
+	// It used to be self-locking: capTail capped the prompt at a char budget,
+	// so lastPT could never climb to a trigger far above the cap, and the
+	// conversation that most needed compaction was the one the trigger could
+	// never see. The gate needed a second arm (bootstrapFoldNeeded: fold when
+	// the view outgrows the budget the cap would apply) to break that lock.
+	// The lock is gone with the cap, so the arm is gone with it - keeping it
+	// would fold a view that fits the window comfortably, which is not
+	// compacting safely, it is losing context the model had room for.
+	//
+	// "This request will not fit the window" is not the tick's job: the
+	// preemptive guard in index.go measures the exact slice this turn ships
+	// and raises the context-length error the LLM loop answers with a durable
+	// fold, so a conversation that jumps the window in one turn is compacted
+	// durably at the moment it happens, with the user told.
+	if lastPT <= ecoTrigger {
+		utils.Log("[Eco] conv %s lastPT=%d below trigger=%d (sent view %d tokens) - skip",
+			conversationID, lastPT, ecoTrigger, sentView)
 		return
 	}
-	if lastPT > ecoTrigger {
-		utils.Log("[Eco] conv %s lastPT=%d > trigger=%d — compacting toward target=%d", conversationID, lastPT, ecoTrigger, ecoTarget)
+	if existingCheckpointEndIdx < 0 {
+		utils.Log("[Eco] conv %s lastPT=%d > trigger=%d - compacting toward target=%d (this fold mints the first checkpoint pair)",
+			conversationID, lastPT, ecoTrigger, ecoTarget)
 	} else {
-		// The self-locking trigger, broken: no pair exists, the sliding
-		// capTail window is over budget every turn, and lastPT can never
-		// reach the trigger because the window caps the prompt. The window
-		// evicting rows IS compaction pressure — fold it durably now, which
-		// mints the pair and hands the conversation to the frozen path.
-		utils.Log("[Eco] conv %s BOOTSTRAP compaction: sent view %d tokens over tail budget (%d chars) with no checkpoint pair, lastPT=%d below trigger=%d — compacting toward target=%d",
-			conversationID, sentView, maxTailChars, lastPT, ecoTrigger, ecoTarget)
+		utils.Log("[Eco] conv %s lastPT=%d > trigger=%d - compacting toward target=%d",
+			conversationID, lastPT, ecoTrigger, ecoTarget)
 	}
 
 	// THE NO-PAIR RULE + THE HYSTERESIS FLOOR, as ONE pure function

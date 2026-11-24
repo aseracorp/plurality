@@ -80,10 +80,12 @@ func TestFilterCheckpointsTiny(t *testing.T) {
 // TestFilterNoCheckpointHugeHistory_WordPressRegression pins the exact
 // failure mode of the "WordPress Security Review" conversation: eco on, NO
 // checkpoint ever written (all eco summaries 500'd on the 131k fast model),
-// and a ~770k-token raw history. Before the fix, filterCheckpointsForRequest
-// returned the WHOLE history when no checkpoint existed, so every turn died
-// with context_length_exceeded. After the fix it must return a bounded tail
-// (<= maxTailChars + one truncated oversized message).
+// and a ~770k-token raw history.
+//
+// What it pins now: NO row is dropped from the sent view (that was capTail's
+// silent history loss), and every row is bounded PER MESSAGE so no single
+// blob can blow the window on its own. The whole-view bound is the preemptive
+// guard's job, which turns "this view no longer fits" into a durable fold.
 func TestFilterNoCheckpointHugeHistory_WordPressRegression(t *testing.T) {
 	var msgs []utils.Message
 	// 1900 tool results ~50k chars each ≈ 95M chars ≈ 24M tokens — far
@@ -105,21 +107,38 @@ func TestFilterNoCheckpointHugeHistory_WordPressRegression(t *testing.T) {
 	if len(out) == 0 {
 		t.Fatal("empty tail")
 	}
-	total := 0
+	// NO HISTORY LOSS: every live row is in the sent view.
+	if len(out) != len(msgs) {
+		t.Fatalf("sent view dropped %d of %d rows - the model cannot see them and "+
+			"nothing records their removal; that is the history loss eco removes",
+			len(msgs)-len(out), len(msgs))
+	}
 	max := 0
 	for _, m := range out {
-		l := len(m.TextContent())
-		total += l
-		if l > max {
+		if l := m.Content.TotalContentChars(); l > max {
 			max = l
 		}
 	}
-	t.Logf("filtered %d msgs -> %d msgs, %d chars, max msg %d", len(msgs), len(out), total, max)
-	// Budget + one truncated 100k bound (capTail's truncateOversizedTail).
-	if total > maxTailChars+100_000+200_000 {
-		t.Fatalf("tail chars too big for context: %d", total)
-	}
-	if max > 100_000 {
+	t.Logf("sent view %d msgs, max msg %d chars", len(out), max)
+	// The per-message bound: a 200k blob ships truncated, so no single row can
+	// exceed the window by itself.
+	if max > maxKeepTailChars+truncationBannerChars {
 		t.Fatalf("oversized message not truncated: %d", max)
+	}
+	// The whole view is unbounded by design; the guard is what bounds it, by
+	// raising the context-length error the loop folds durably in response.
+	// This fixture is ~95M chars, so the guard MUST fire on a normal window.
+	if err := preemptiveContextGuard("gpt-4o", SentViewTokens(out), nil, 0, 128_000, len(out)); err == nil {
+		t.Fatal("preemptive guard accepted a ~95M-char view on a 128k window - " +
+			"the unbounded no-pair path would ship it and die at the provider")
+	}
+	// And the overflow fold has a boundary for it, so the recovery is durable.
+	for i := range msgs {
+		if msgs[i].Role == "assistant" {
+			msgs[i].PromptTokens = 700_000
+		}
+	}
+	if b := UltracaveOverflowFoldFrom(msgs, 24); b <= 0 {
+		t.Fatalf("no overflow boundary for a never-compacted huge history: %d", b)
 	}
 }
