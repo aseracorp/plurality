@@ -249,54 +249,46 @@ func summaryInstruction(priorSummary string, evictedRows int) string {
 	return b.String()
 }
 
-// buildSummaryRequestFromView rebuilds the chat request for `conv` through the
-// production builder, STRIPS THE LIVE TAIL, and appends the summarisation
-// instruction as the final user turn.
+// buildSummaryRequestFromMegacave is STAGE 2 of the durable fold: the model
+// summarises the MEGACAVED history, never the raw rows.
 //
-// THE HEAD IS NEVER MOVED. The request keeps the chat request's system rows and
-// its tool schemas byte-for-byte, and its history rows are a PREFIX of the chat
-// request's history rows — the oldest ones, the evicted range. Removing rows
-// from the END of the history cannot change the bytes before them, so the
-// provider's KV prefix cache extends over the whole summariser request: the
-// system block, the schemas and the evicted rows are exactly the bytes the chat
-// turn sent last. Nothing about a fold may touch the head: a summariser request
-// that dropped the schemas, reordered rows, or rebuilt the system prompt from a
-// narrower slice would start a NEW cache entry and pay a full prefill, which is
-// the defect this subsystem has been chasing for its whole existence.
+// THE ORDER (the owner's design, #197 onwards): a fold first MEGACAVES the
+// history — the deterministic machine render, lossless for user rows. As long as
+// that render fits the fold's ceiling it IS the checkpoint and the model is
+// never called. Only when the megacaved history is still over budget does stage
+// 2 run, and what stage 2 sends is the MEGACAVED text: the model's job is to
+// compact the already-compacted history further, not to re-read 2.8 MB of raw
+// tool output.
 //
-// WHY THE TAIL IS STRIPPED. The fold's subject is the EVICTED range. The rows
-// the fold keeps live are the model's context next turn already; shipping them
-// to the summariser costs window and adds nothing to checkpoint. The deployed
-// failure was exactly that: the replay carried the whole view, the view filled
-// the window, and the output budget floored —
+// WHY THE LOSSY CAP IS GONE. This function used to be handed the RAW evicted
+// range, which is unbounded (a deployed fold carried 1240 rows / 2824666 chars),
+// so it needed a window cap that DROPPED ROWS from the summariser's view — the
+// summariser then wrote a checkpoint about a fraction of the history it was
+// supposed to summarise. Here the input is the megacave, and the megacave is
+// budget-driven: the per-row show and the total ceiling are DERIVED from the
+// room this request has left (window - head - schemas - instruction - reply
+// reserve). The transform shrinks to fit; nothing is dropped silently.
 //
-//	summary budget collapsed (max_tokens=1024 for a 262144-token window):
-//	the prefix already fills it
-//
-// — so every fold of a long conversation fell to the machine-only render
-// without ever asking the model (0 LLM fold summaries, 32 machine-only folds,
-// 21 budget collapses in /app/data/server.log on the #208 build).
-//
-// THE STRIP POINT IS THE LONGEST BYTE-IDENTICAL PREFIX, not a row count. The
-// evicted rows are re-rendered from the evicted slice and compared to the full
-// render; the strip happens at the first divergence. That is required, not
-// cosmetic: PrepareMessagesForAI numbers attachments by scan order over the
-// slice it is given, and the attachment-age window counts USER messages AFTER
-// each row, so a row inside the evicted range can render differently once the
-// tail is gone (measured: an attachment-indexed system prompt renders verbatim
-// at one slice length and as its "[Attachment omitted: ...]" placeholder at a
-// shorter one). Rows past the divergence are simply not sent — the machine
-// render covers the whole evicted range verbatim, so nothing is lost, and the
-// head stays byte-identical, which is the property that matters.
+// THE HEAD IS STILL NEVER MOVED. The request is the chat request's leading
+// system rows and tool schemas, byte-for-byte, taken from a replay over the
+// FULL slice (PrepareMessagesForAI numbers attachments by scan order over the
+// slice it is given, so only the full slice renders the head identically),
+// followed by ONE user row. Every history row is stripped — the tail-strip rule
+// taken to its end. The KV prefix covers system + schemas; the history region is
+// where the fold legitimately diverges, because the fold is the user-visible
+// event that changes the context.
 //
 // ctx carries the per-user claim the builder needs for the important_memory
 // block and the MCP/skill appends — the system prompt must be the same bytes.
-func buildSummaryRequestFromView(ctx context.Context, conv utils.Conversation, model utils.Model, evicted []utils.Message, payload ...ChatPayload) (StandardChatRequest, error) {
+func buildSummaryRequestFromMegacave(ctx context.Context, conv utils.Conversation, model utils.Model, foldable []utils.Message, payload ...ChatPayload) (StandardChatRequest, error) {
 	if model.Name == "" {
 		model = chatModelForConversation(conv)
 	}
 	if model.Name == "" {
 		return StandardChatRequest{}, fmt.Errorf("no chat model resolved for conversation %s — the fold must fall back to the machine-only render", conv.ID)
+	}
+	if len(foldable) == 0 {
+		return StandardChatRequest{}, fmt.Errorf("stage 2 has no history to summarise for conversation %s", conv.ID)
 	}
 	p := chatPayloadForConversation(conv)
 	if len(payload) > 0 {
@@ -306,10 +298,7 @@ func buildSummaryRequestFromView(ctx context.Context, conv utils.Conversation, m
 		p.ConversationID = conv.ID
 	}
 
-	// (1) The FULL replay, over the exact slice the last real request carried.
-	// This is the source of the head: its system rows and schemas are the bytes
-	// the chat turn sent, and its attachment index is numbered over the full
-	// slice, so the head is byte-identical by construction.
+	// The head, from the full replay, byte-for-byte.
 	parts, err := buildChatRequestParts(ctx, model, conv, p)
 	if err != nil {
 		return StandardChatRequest{}, fmt.Errorf("cannot replay the chat request for the fold summary: %w", err)
@@ -317,111 +306,82 @@ func buildSummaryRequestFromView(ctx context.Context, conv utils.Conversation, m
 	// Drop the clock: it is the only per-turn mutation of the prefix, and the
 	// roll-up must not narrate a timestamp.
 	full := stripCurrentTimeTail(append([]StandardMessageReq(nil), parts.request.Messages...))
+	head := append([]StandardMessageReq(nil), full[:leadingSystemRows(full)]...)
 
-	// (2) The same request over the evicted slice only, for the strip point.
-	evictedConv := conv
-	evictedConv.Messages = evicted
-	evictedParts, err := buildChatRequestParts(ctx, model, evictedConv, p)
-	if err != nil {
-		return StandardChatRequest{}, fmt.Errorf("cannot render the evicted range for the fold summary: %w", err)
-	}
-	evictedRows := stripCurrentTimeTail(append([]StandardMessageReq(nil), evictedParts.request.Messages...))
-
-	// (3) The strip point. Keep the leading system rows from the FULL replay —
-	// they are the head, and only the full slice renders them byte-identically.
-	// Then keep the longest run of history rows that the evicted-slice render
-	// reproduces byte-for-byte. Rows past it are not sent.
-	//
-	// Why a comparison and not a row count: PrepareMessagesForAI numbers
-	// attachments by scan order over the slice it is given, and the
-	// attachment-age window counts USER messages AFTER each row, so a row inside
-	// the evicted range can render differently once the live tail is gone. The
-	// comparison finds that; a count cannot know about it.
-	fullHistoryFrom := leadingSystemRows(full)
-	evictedHistoryFrom := leadingSystemRows(evictedRows)
-	keep := fullHistoryFrom + commonRenderedPrefixRows(full[fullHistoryFrom:], evictedRows[evictedHistoryFrom:])
-
-	// (4) THE WINDOW CAP. The summariser must never be handed more history than
-	// fits the model's window. The evicted range is unbounded by construction —
-	// a fold of 1240 rows carried 2824666 chars — so the kept history is trimmed
-	// from its NEWEST end until head + kept + schemas + instruction + the reply
-	// reserve + the output floor fit the window. Trimming the newest kept rows is
-	// the same operation as stripping the live tail: the head does not move, and
-	// the rows that go are the freshest of the evicted range, which the machine
-	// render covers verbatim.
-	//
-	// This is also what makes the output budget non-collapsing: the input is
-	// bounded by the window, so summaryOutputTokens cannot floor, which is the
-	// deployed failure ("summary budget collapsed (max_tokens=1024 for a
-	// 262144-token window): the prefix already fills it") that sent every fold of
-	// a long conversation to the machine-only render without asking the model.
-	instruction := summaryInstruction(PriorSummaryFromView(conv.Messages), len(evicted))
+	instruction := summaryInstruction(PriorSummaryFromView(conv.Messages), len(foldable))
 	window := Models.MaxContextTokensForPrefixed(model.Name)
 	schemaTokens := len(marshalNoEscape(parts.request.Tools)) / summaryCharsPerToken
-	headTokens := renderedRowsTokens(full[:fullHistoryFrom])
+	headTokens := renderedRowsTokens(head)
 	instrTokens := len(instruction) / summaryCharsPerToken
-	// What the kept history may cost. The reservation is the summariser's OWN
-	// reply room: minSummaryOutputTokens is the output floor (the max_tokens this
-	// request will be given), plus the safety half of guardReplyReserve.
-	//
-	// guardReplyReserve ITSELF is NOT subtracted. It is the CHAT request's
-	// reservation — max_tokens (4096) + safety (2048) — and the summariser's
-	// max_tokens is the budget computed FROM this arithmetic, so subtracting the
-	// chat's 6144 on top of the output floor reserves the reply twice. Measured
-	// on the narrow-window test: 8192 - 35 - 945 - 450 - 6144 - 1024 < 0, i.e.
-	// the guard reported an impossible head and refused a call that fits.
-	historyBudget := window - headTokens - schemaTokens - instrTokens - guardSafetyReserve - minSummaryOutputTokens
-	if window > 0 && historyBudget < 0 {
-		// THE HEAD ITSELF DOES NOT FIT. System rows + schemas + instruction +
-		// the reply reserve + the output floor already exceed the window, so NO
-		// history can be sent and the summariser cannot run in this shape. Say
-		// so, and let the fold fall back to the machine-only render: shipping an
-		// over-window request would 500 at the provider and lose the fold's LLM
-		// attempt to a transport error instead of a decision.
-		return StandardChatRequest{}, fmt.Errorf("the summariser's own head does not fit the window: head %d + schemas %d + instruction %d tokens + safety %d + output floor %d vs window %d — the fold falls back to the machine-only render",
+
+	// THE SUMMARISER'S HISTORY ROOM. The summariser's own reply room is its
+	// output floor plus the safety half of the guard reservation.
+	// guardReplyReserve ITSELF is not subtracted — it is the CHAT request's
+	// max_tokens reservation, and the summariser's max_tokens is computed FROM
+	// this arithmetic, so subtracting it reserves the reply twice (measured: an
+	// 8192-token window reported an impossible head and refused a call that
+	// fits).
+	roomTokens := window - headTokens - schemaTokens - instrTokens - guardSafetyReserve - minSummaryOutputTokens
+	if window > 0 && roomTokens < minSummaryOutputTokens {
+		// THE HEAD ITSELF DOES NOT LEAVE ROOM. No history can be sent in this
+		// shape, so stage 2 cannot run: refuse and let the fold keep the stage-1
+		// machine render. That is a decision, not a provider 500 and not a cap.
+		return StandardChatRequest{}, fmt.Errorf("stage 2 has no room in the window: head %d + schemas %d + instruction %d tokens + safety %d + output floor %d vs window %d — the fold keeps the stage-1 machine render",
 			headTokens, schemaTokens, instrTokens, guardSafetyReserve, minSummaryOutputTokens, window)
 	}
 
-	// Per-row token cost, computed ONCE. The conversations this path exists for
-	// run to 30k rows (see bootstrapCutoff), so re-scanning the kept slice per
-	// candidate boundary would be quadratic on exactly the input it targets.
-	hist := full[fullHistoryFrom:keep]
-	rowTokens := make([]int, len(hist))
-	keptTokens := 0
-	for i := range hist {
-		rowTokens[i] = renderedRowsTokens(hist[i : i+1])
-		keptTokens += rowTokens[i]
+	// THE MEGACAVE, SIZED TO THIS ROOM. User rows are verbatim and cannot be
+	// shrunk, so they are paid for FIRST and the per-row budget is split over
+	// only the rows megacave can compress (assistant + tool). The total ceiling
+	// is the room itself, so the body this request ships is bounded by
+	// construction.
+	roomChars := roomTokens * summaryCharsPerToken
+	incompressible := MegacaveIncompressibleChars(foldable)
+	show := MegacaveRowBudget(roomChars-incompressible, MegacaveCompressibleRows(foldable))
+	megacaved := MachineExcerptMegacaveCapped(foldable, show, roomChars)
+
+	// One user row: the megacaved history, then the instruction that names it.
+	// Two rows would put a user turn between the history and the task, and the
+	// history is not a turn the model should answer.
+	body := megacaved + "\n\n" + instruction
+	bodyTokens := len(body) / summaryCharsPerToken
+	if window > 0 && headTokens+schemaTokens+bodyTokens+guardSafetyReserve+minSummaryOutputTokens > window {
+		// The budget-driven render is bounded, so reaching here means the head
+		// grew past its arithmetic (a fat system prompt, a huge schema set). Say
+		// so precisely; the fold keeps the stage-1 render.
+		return StandardChatRequest{}, fmt.Errorf("stage 2 body does not fit the window: head %d + schemas %d + megacaved body %d tokens + safety %d + output floor %d vs window %d — the fold keeps the stage-1 machine render",
+			headTokens, schemaTokens, bodyTokens, guardSafetyReserve, minSummaryOutputTokens, window)
 	}
-	// Drop from the NEWEST end until the kept history fits its budget.
-	strippedByCap := 0
-	for keptTokens > historyBudget && len(rowTokens)-strippedByCap > 0 {
-		keptTokens -= rowTokens[len(rowTokens)-1-strippedByCap]
-		strippedByCap++
-	}
-	keep -= strippedByCap
-	if strippedByCap > 0 {
-		utils.Log("[EcoSummary] window cap: %d evicted rows dropped from the summariser request (head %d + schemas %d + instruction %d tokens, history budget %d, window %d) — the machine render covers them verbatim",
-			strippedByCap, headTokens, schemaTokens, instrTokens, historyBudget, window)
-	}
-	prefix := append([]StandardMessageReq(nil), full[:keep]...)
-	utils.Log("[EcoSummary] live tail stripped: %d history rows shipped of %d (evicted %d, head byte-identical for %d rows)",
-		keep-fullHistoryFrom, len(full)-fullHistoryFrom, len(evicted), keep-fullHistoryFrom)
 
 	req := StandardChatRequest{
 		Model:       model.Name, // the CHAT model, never the fast shortcut
-		Messages:    append(prefix, StandardMessageReq{Role: "user", Content: instruction}),
+		Messages:    append(head, StandardMessageReq{Role: "user", Content: body}),
 		Stream:      false, // one-shot: the summary is a text answer, not a stream
 		Tools:       parts.request.Tools,
 		CachePrompt: parts.request.CachePrompt,
 		NKeep:       parts.request.NKeep,
 	}
-	// Size the budget from what this request ACTUALLY ships: the kept rows plus
-	// the schemas plus the instruction. Measured, not assumed — the deployed
-	// collapse was an over-estimate of the prefix, and an over-estimate is what
-	// floors the budget and loses the LLM checkpoint.
-	maxTokens := summaryOutputTokens(model.Name, headTokens+schemaTokens+instrTokens+keptTokens, nil)
+	maxTokens := summaryOutputTokens(model.Name, headTokens+schemaTokens+bodyTokens, nil)
 	req.MaxTokens = &maxTokens
+	utils.Log("[EcoSummary] stage 2: %d rows megacaved to %d chars (~%d tokens, per-row show %d, verbatim user rows %d chars) for a %d-token room, head %d + schemas %d, output budget %d, window %d",
+		len(foldable), len(megacaved), bodyTokens, show, incompressible, roomTokens, headTokens, schemaTokens, maxTokens, window)
 	return req, nil
+}
+
+// attemptFoldSummaryFromMegacave is stage 2's entry point: ask the chat model to
+// compact the megacaved history further. Any error — no proxy, non-200, empty
+// answer, deadline, no room — is returned to the caller, which MUST keep the
+// stage-1 machine render. The fold is never lost because stage 2 failed.
+func attemptFoldSummaryFromMegacave(ctx context.Context, conv utils.Conversation, model utils.Model, foldable []utils.Message, payload ...ChatPayload) (string, error) {
+	req, err := buildSummaryRequestFromMegacave(ctx, conv, model, foldable, payload...)
+	if err != nil {
+		return "", err
+	}
+	if req.MaxTokens != nil && *req.MaxTokens <= minSummaryOutputTokens {
+		return "", fmt.Errorf("summary budget collapsed (max_tokens=%d for a %d-token window): the prefix already fills it",
+			*req.MaxTokens, Models.MaxContextTokensForPrefixed(req.Model))
+	}
+	return GenerateCheckpointSummaryFromRequest(ctx, req)
 }
 
 // renderedRowsTokens counts the rendered rows of a summary request in the
@@ -521,23 +481,6 @@ func marshalNoEscape(v interface{}) []byte {
 		return nil
 	}
 	return bytes.TrimRight(buf.Bytes(), "\n")
-}
-
-// attemptFoldSummary is the fold's LLM-first attempt: build the replayed
-// summary request and ask the chat model for the checkpoint. Any error — no
-// proxy, non-200, empty answer, deadline — is returned to the caller, which
-// MUST fall back to the machine-only render. The fold never fails because the
-// LLM failed.
-func attemptFoldSummary(ctx context.Context, conv utils.Conversation, model utils.Model, evicted []utils.Message, payload ...ChatPayload) (string, error) {
-	req, err := buildSummaryRequestFromView(ctx, conv, model, evicted, payload...)
-	if err != nil {
-		return "", err
-	}
-	if req.MaxTokens != nil && *req.MaxTokens <= minSummaryOutputTokens {
-		return "", fmt.Errorf("summary budget collapsed (max_tokens=%d for a %d-token window): the prefix already fills it",
-			*req.MaxTokens, Models.MaxContextTokensForPrefixed(req.Model))
-	}
-	return GenerateCheckpointSummaryFromRequest(ctx, req)
 }
 
 // llmFoldSummaryRenderer is the SUCCESS path of the fold: the LLM's checkpoint
@@ -676,14 +619,6 @@ func GenerateCheckpointSummary(text, model string) (string, error) {
 		MaxTokens: &maxTokens,
 		Stream:    false,
 	})
-}
-
-// renderEvictedRowsForSummary is the plain-text dump of the rows the fold is
-// evicting, bounded by the summary input budget. The fold's LLM path is the
-// replayed request (the model reads its own rows), so this dump is the size
-// diagnostic the fold logs — how much text the eviction is standing in for.
-func renderEvictedRowsForSummary(messages []utils.Message) string {
-	return renderMessagesForSummary(messages)
 }
 
 // headOf truncates for a log line.

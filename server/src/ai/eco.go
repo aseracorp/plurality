@@ -1356,6 +1356,39 @@ func SentViewRowChars(m utils.Message) int {
 	return chars
 }
 
+// megacaveFitsCeiling is STAGE 1's fit test: is the machine megacave enough, so
+// the fold needs no model call?
+//
+// THREE conditions, all required:
+//
+//   - non-empty: an empty render means the fold set rendered nothing, and an
+//     empty section must never be stored (the storage layer would refuse it and
+//     the fold would be lost);
+//   - within the ceiling: the render was taken UNCEILED (maxTotalChars = 0), so
+//     this is a real measurement. Rendering with the ceiling and measuring the
+//     result is vacuously true — capMegacaveExcerpt enforces the ceiling by
+//     truncating, so a capped render is always <= ceiling;
+//   - not at the per-row floor: MegacaveRowBudget floors at
+//     minMegacaveRowShowChars, and a fold whose rows all sit at that floor is
+//     rows x (64 + label) of elision MARKERS. That is numerically in-window and
+//     content-free — the failure mode the live incident produced (1240 rows /
+//     2824666 chars folded into a checkpoint that described nothing). A fold with
+//     no room for content escalates: the model can compress the same history into
+//     a checkpoint that is short AND meaningful.
+//
+// The floor condition is the one that fires in practice: the per-row budget is
+// DERIVED from the ceiling, so an uncapped render lands near the ceiling by
+// construction and the size clause is a boundary guard, not the discriminator.
+func megacaveFitsCeiling(megacaved string, ceiling int, atRowFloor bool) bool {
+	if strings.TrimSpace(megacaved) == "" {
+		return false
+	}
+	if atRowFloor {
+		return false
+	}
+	return len(megacaved) <= ceiling
+}
+
 // PriorSummaryFromView returns the roll-up text the conversation's LIVE
 // checkpoint pair carries, read straight out of a loaded LLM-facing view
 // (that view includes the pair), and "" when there is no pair.
@@ -1490,16 +1523,72 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 	if ceiling <= 0 {
 		ceiling = floor
 	}
-	show := MegacaveRowBudget(chars, len(foldable))
-
-	// ---- LLM FIRST: the last look at the rows about to be evicted ----------
+	// ---- STAGE 1: MEGACAVE FIRST, and it is usually the whole fold ----------
 	//
-	// The evicted rows are rendered for the diagnostic (how much text the
-	// checkpoint is standing in for), then the chat model is asked for the
-	// durable checkpoint on a request that replays the conversation's own
-	// cached prefix. SUCCESS feeds the LLM text into the megacave renderer, so
-	// the stored section is itself megacaved and stays under `ceiling`.
-	rendered := renderEvictedRowsForSummary(foldable)
+	// THE ORDER (the owner's design, #197 onwards): a fold first MEGACAVES the
+	// history — the deterministic machine render, no model call. As long as that
+	// render FITS the fold's ceiling it IS the checkpoint, and the model is never
+	// asked. Only when the megacaved history is still over budget does the fold
+	// escalate to stage 2, which sends the MEGACAVED text to the chat model to
+	// compact it further.
+	//
+	// MEGACAVE NEVER TOUCHES USER ROWS. The human's own words are rendered
+	// verbatim (see MachineExcerptMegacaveCapped), so the roll-up always carries
+	// what the user actually asked for — the context loss this subsystem kept
+	// producing came from compressing the request itself. The per-row budget is
+	// therefore split over the COMPRESSIBLE rows only, after paying for the
+	// verbatim user rows first; splitting over all rows hands the verbatim ones a
+	// share they never spend and starves the tool rows that need it.
+	//
+	// THE FIT TEST IS NOT "did the ceiling cut it". MachineExcerptMegacaveCapped
+	// enforces its ceiling by TRUNCATING, so rendering with the ceiling and
+	// measuring the result is vacuously true. The honest test renders UNCEILED and
+	// compares: stage 1 fits iff the budgeted render is within the ceiling.
+	//
+	// AND the render must be a real compaction, not marker-mush.
+	// MegacaveRowBudget floors at minMegacaveRowShowChars; on a 1240-row fold that
+	// floor renders ~168640 chars of elision markers — numerically in-window,
+	// content-free, and the failure mode the live incident produced. A fold whose
+	// rows sit at the floor has no room for content, so it escalates: the model
+	// can compress 1240 rows into a checkpoint that is short AND meaningful.
+	verbatim := MegacaveIncompressibleChars(foldable)
+	show := MegacaveRowBudget(chars-verbatim, MegacaveCompressibleRows(foldable))
+	megacaved := MachineExcerptMegacaveCapped(foldable, show, 0)
+	stage1Fits := megacaveFitsCeiling(megacaved, ceiling, show == minMegacaveRowShowChars)
+
+	if stage1Fits {
+		// STAGE 1 FITS: store the machine render. NO MODEL CALL. The stored bytes
+		// are the deterministic render, so the prompt head is a pure function of
+		// the fold set (the byte-identity the frozen-prefix design needs).
+		utils.Log("[Eco] stage 1 MEGACAVE fold (no model call): %d rows, folded %d chars -> excerpt %d chars, ceiling %d, per-row show %d (verbatim user rows %d chars)",
+			len(foldable), foldedChars, len(megacaved), ceiling, show, verbatim)
+		dbWriteCtx, cancelWrite := durableWriteContext(ctx)
+		defer cancelWrite()
+		return db.CompactConversationDurable(dbWriteCtx, conversationID, messages, foldFrom,
+			machineOnlyFoldRenderer(show, ceiling), summaryBound)
+	}
+
+	// ---- STAGE 2: the megacave is not enough, ask the model ------------------
+	//
+	// The megacaved history is still over the ceiling (or the rows sit at the
+	// floor, so the render is markers, not content). The chat model compacts the
+	// MEGACAVED history further — it is NOT handed the raw rows, which is what
+	// made the old request-level window cap necessary (a deployed fold carried
+	// 1240 rows / 2824666 chars and the cap silently dropped most of them from
+	// the summariser's view).
+	//
+	// THE SUMMARISER'S OWN DEADLINE. durableFold is handed the tick's dbCtx,
+	// whose 45s bound exists to keep the SQLite path off a wedged
+	// single-connection pool. That budget is DB work ONLY, and the summariser is
+	// not DB work: it is a chat round-trip on a large prompt against a
+	// self-hosted model, measured at ~3.5 min per summary. Inheriting the 45s
+	// bound killed it on every fold of the live incident, so no conversation ever
+	// got an LLM checkpoint. context.WithoutCancel keeps the userID claim (the
+	// write path needs it) and detaches the caller's deadline;
+	// summaryHTTPTimeout is the summariser's own hard ceiling. The DB write keeps
+	// its own fresh bound (durableWriteContext, created AFTER this call).
+	summariserCtx, cancelSummariser := summariserCallContext(ctx)
+	defer cancelSummariser()
 	convForSummary := utils.Conversation{
 		ID:            conversationID,
 		Messages:      messages,
@@ -1508,42 +1597,27 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 	if uid, ok := ctx.Value("userID").(string); ok {
 		convForSummary.UserID = uid
 	}
-	// THE SUMMARISER'S OWN DEADLINE. durableFold is handed the tick's dbCtx,
-	// whose 45s bound exists to keep the SQLite path off a wedged
-	// single-connection pool. That budget is DB work ONLY, and the summariser
-	// is not DB work: it is a chat round-trip on a 262k-token prompt against a
-	// self-hosted model, measured at ~3.5 min per summary. Inheriting the 45s
-	// bound killed it on every fold of the live incident, so no conversation
-	// ever got an LLM checkpoint — each fold fell to the machine-only render
-	// (21:10:27 and 22:00:35, both "context deadline exceeded"), which is the
-	// cheap, lossy roll-up the user is now reading.
-	//
-	// context.WithoutCancel keeps the userID claim (the write path needs it)
-	// and detaches the caller's deadline; summaryHTTPTimeout is the summariser's
-	// own hard ceiling. The DB write keeps its own fresh bound
-	// (durableWriteContext, created AFTER this call).
-	summariserCtx, cancelSummariser := summariserCallContext(ctx)
-	defer cancelSummariser()
-	if llmText, llmErr := attemptFoldSummary(summariserCtx, convForSummary, model, foldable, payload); llmErr == nil && strings.TrimSpace(llmText) != "" {
-		utils.Log("[Eco] LLM fold summary: %d rows, evicted text %d chars, LLM checkpoint %d chars, ceiling %d chars (chat model %s)",
-			len(foldable), len(rendered), len(llmText), ceiling, model.Name)
+	if llmText, llmErr := attemptFoldSummaryFromMegacave(summariserCtx, convForSummary, model, foldable, payload); llmErr == nil && strings.TrimSpace(llmText) != "" {
+		utils.Log("[Eco] stage 2 LLM fold summary: %d rows, megacaved %d chars (ceiling %d, per-row show %d) -> LLM checkpoint %d chars (chat model %s)",
+			len(foldable), len(megacaved), ceiling, show, len(llmText), model.Name)
 		dbWriteCtx, cancelWrite := durableWriteContext(ctx)
 		defer cancelWrite()
 		return db.CompactConversationDurable(dbWriteCtx, conversationID, messages, foldFrom,
 			llmFoldSummaryRenderer(llmText, ceiling), summaryBound)
 	} else {
-		// The fallback must be LOUD: a fold that silently lost the LLM summary
-		// is indistinguishable from a machine-only build. A nil error with an
-		// empty answer is a failure too, so name that case as well.
+		// LOUD, and bounded: stage 2 failed, so the fold stores the STAGE-1
+		// render — the same bytes stage 1 would have stored, capped at the
+		// ceiling with the announcing truncation marker. The fold is never lost
+		// and the roll-up is never unbounded. A nil error with an empty answer is
+		// a failure too, so name that case as well.
 		reason := llmErr
 		if reason == nil {
 			reason = fmt.Errorf("the summariser answered with an empty checkpoint")
 		}
-		utils.Log("[Eco] machine-only FALLBACK fold (LLM summariser unavailable: %v): %d rows, room=%d chars, folded=%d chars, budget=%d chars, per-row show=%d",
-			reason, len(foldable), room, foldedChars, chars, show)
+		utils.Log("[Eco] stage 2 FAILED, storing the stage-1 megacave (%v): %d rows, room=%d chars, folded=%d chars, budget=%d chars, megacaved=%d chars, per-row show=%d",
+			reason, len(foldable), room, foldedChars, chars, len(megacaved), show)
 		dbWriteCtx, cancelWrite := durableWriteContext(ctx)
 		defer cancelWrite()
-		// ---- FALLBACK: exactly the machine-only render, unchanged --------
 		return db.CompactConversationDurable(dbWriteCtx, conversationID, messages, foldFrom,
 			machineOnlyFoldRenderer(show, ceiling), summaryBound)
 	}

@@ -106,13 +106,17 @@ func ucRowsBytes(t *testing.T, rows []StandardMessageReq) []byte {
 	return out
 }
 
-// TestSummaryRequestPrefixIsByteIdenticalToChatRequest is the cache-reuse
-// guarantee: build the chat request through the production path, build the
-// summary request via buildSummaryRequestFromView, then assert the summary
-// request's leading rows serialize BYTE-IDENTICAL to the chat request's rows
-// with the clock stripped. If this fails, the model re-prefills the whole
-// conversation for the summary call — the feature buys nothing.
-func TestSummaryRequestPrefixIsByteIdenticalToChatRequest(t *testing.T) {
+// TestSummaryRequestHeadIsByteIdenticalToChatRequest is the cache-reuse
+// guarantee, re-derived to STAGE 2: the summariser's request is the chat
+// request's leading system rows and tool schemas, BYTE-IDENTICAL, plus exactly
+// ONE user row carrying the megacaved history and the instruction.
+//
+// The old contract was "the chat prefix plus the appended instruction" — stage 2
+// used to ship the evicted history as real rows. It no longer does: the history
+// region is the megacave, because the model's job is to compact the
+// already-compacted history. The KV prefix is therefore system rows + schemas,
+// and the claim that matters is that a fold never moves THAT.
+func TestSummaryRequestHeadIsByteIdenticalToChatRequest(t *testing.T) {
 	ctx, _, convID := ucDB(t)
 	// Tools ON: the tool schemas are part of the prompt prefix, so the
 	// summary request must carry the SAME array to reuse the cache.
@@ -139,90 +143,56 @@ func TestSummaryRequestPrefixIsByteIdenticalToChatRequest(t *testing.T) {
 		t.Fatal("fixture is not exercising the action-model path: no tool schemas in the chat request")
 	}
 
-	req, err := buildSummaryRequestFromView(ctx, conv, model, view)
+	req, err := buildSummaryRequestFromMegacave(ctx, conv, model, view, payload)
 	if err != nil {
-		t.Fatalf("buildSummaryRequestFromView: %v", err)
+		t.Fatalf("buildSummaryRequestFromMegacave: %v", err)
 	}
 
 	// The clock is the ONLY per-turn tail mutation of a chat request; the
 	// summary replay must not carry it (a timestamp makes the replay
 	// non-identical and the model narrates it into the roll-up).
 	chatNoClock := stripCurrentTimeTail(append([]StandardMessageReq(nil), chat.request.Messages...))
-	n := len(chatNoClock)
-	if len(req.Messages) <= n {
-		t.Fatalf("summary request must be the chat prefix PLUS the appended instruction: %d rows vs prefix %d", len(req.Messages), n)
+	n := leadingSystemRows(chatNoClock)
+	if n == 0 {
+		t.Fatal("the chat request has no leading system rows — the fixture is not the production shape")
+	}
+	if len(req.Messages) != n+1 {
+		t.Fatalf("stage 2 ships %d rows, want the %d system rows plus exactly one megacave row", len(req.Messages), n)
 	}
 	got := ucRowsBytes(t, req.Messages[:n])
-	want := ucRowsBytes(t, chatNoClock)
+	want := ucRowsBytes(t, chatNoClock[:n])
 	if !bytes.Equal(got, want) {
-		t.Fatalf("summary request prefix is NOT byte-identical to the chat request (summary %d bytes, chat %d bytes)\nfirst divergence at byte %d\n--- summary ---\n%s\n--- chat ---\n%s",
+		t.Fatalf("stage 2's head is NOT byte-identical to the chat request's (summary %d bytes, chat %d bytes)\nfirst divergence at byte %d\n--- summary ---\n%s\n--- chat ---\n%s",
 			len(got), len(want), firstDivergence(got, want), headRunes(got, 400), headRunes(want, 400))
 	}
-	// The pre-clock rows — the exact bytes the chat path renders before the
-	// clock is attached — must be what the summary request replays.
-	if pre := ucRowsBytes(t, chat.preClock); !bytes.Equal(got, pre) {
-		t.Fatalf("summary prefix != the chat request's pre-clock rows (first divergence at %d)", firstDivergence(got, pre))
+	// The pre-clock system rows — the exact bytes the chat path renders before
+	// the clock is attached — must be what stage 2 replays.
+	preClock := stripCurrentTimeTail(append([]StandardMessageReq(nil), chat.preClock...))
+	if pre := ucRowsBytes(t, preClock[:n]); !bytes.Equal(got, pre) {
+		t.Fatalf("stage 2 head != the chat request's pre-clock system rows (first divergence at %d)", firstDivergence(got, pre))
 	}
 	// The system prompt is the head of the prefix: any drift there invalidates
 	// the whole cached prefix, so it must be the SAME row bytes.
-	if !bytes.Equal(ucMarshalRows(t, req.Messages[:1]), ucMarshalRows(t, chat.preClock[:1])) {
-		t.Fatal("summary request's system prompt differs from the chat request's — the cached prefix is invalidated")
+	if !bytes.Equal(ucMarshalRows(t, req.Messages[:1]), ucMarshalRows(t, preClock[:1])) {
+		t.Fatal("stage 2's system prompt differs from the chat request's — the cached prefix is invalidated")
+	}
+	// The tool schemas are the chat request's array, byte for byte.
+	if !bytes.Equal(marshalNoEscape(chat.request.Tools), marshalNoEscape(req.Tools)) {
+		t.Fatal("stage 2 changed the tool schemas — the tool block renders at the head of the prompt")
 	}
 
-	// The instruction is the LAST message, a real user turn, and it names the
-	// eviction, the verbatim-preservation contract and the existing roll-up.
+	// The ONE body row: a user turn carrying the megacaved history AND the
+	// instruction that names the eviction.
 	last := req.Messages[len(req.Messages)-1]
 	if last.Role != "user" {
-		t.Fatalf("instruction is a %q turn; only a user turn can be answered", last.Role)
+		t.Fatalf("the body row is %q, want user — the assistant can only answer a user turn", last.Role)
 	}
-	text, ok := last.Content.(string)
-	if !ok {
-		t.Fatalf("instruction content must be a plain string, got %T", last.Content)
+	body, _ := last.Content.(string)
+	if !strings.Contains(body, "evicted") {
+		t.Fatal("the instruction does not name the eviction")
 	}
-	for _, needle := range []string{"evicted", "verbatim", newerHistoryBannerName} {
-		if !strings.Contains(text, needle) {
-			t.Fatalf("summary instruction is missing %q:\n%s", needle, text)
-		}
-	}
-	if strings.Contains(text, "The current time is") {
-		t.Fatal("summary instruction carries a clock")
-	}
-	// Exactly one appended row: the prefix is the prefix, nothing else.
-	if n2 := len(stripCurrentTimeTail(append([]StandardMessageReq(nil), chat.request.Messages...))); n2 != len(req.Messages)-1 {
-		t.Fatalf("summary request appended %d rows, want exactly 1", len(req.Messages)-n2)
-	}
-
-	// Tool schemas: byte-identical, same order (they render into the prefix).
-	a, _ := json.Marshal(chat.request.Tools)
-	b, _ := json.Marshal(req.Tools)
-	if !bytes.Equal(a, b) {
-		t.Fatalf("tool schemas differ between the chat request and the summary request (%d vs %d bytes) — the prompt prefix would be re-prefilled", len(a), len(b))
-	}
-
-	// Report the shape that goes on the wire: the role sequence, where the
-	// instruction lands, and the window-derived output budget.
-	var roles []string
-	for i, m := range req.Messages {
-		tag := m.Role
-		if i == len(req.Messages)-1 {
-			tag += "(INSTRUCTION)"
-		}
-		roles = append(roles, tag)
-	}
-	t.Logf("SUMMARY REQUEST SHAPE: model=%s stream=%v max_tokens=%d (window=%d, prefix~%d tokens) messages=%d roles=%s tools=%d cache_prompt=%v n_keep=%d",
-		req.Model, req.Stream, *req.MaxTokens, Models.MaxContextTokensForPrefixed(req.Model),
-		len(marshalNoEscape(req.Messages[:len(req.Messages)-1]))/3, len(req.Messages), strings.Join(roles, ","),
-		len(req.Tools), *req.CachePrompt, *req.NKeep)
-
-	// Cache knobs survive; Stream flips off (the summary is one-shot).
-	if req.CachePrompt == nil || !*req.CachePrompt {
-		t.Fatal("summary request drops cache_prompt — the KV prefix would not be reused")
-	}
-	if req.NKeep == nil || *req.NKeep != -1 {
-		t.Fatal("summary request drops n_keep=-1 (keep the whole prefix)")
-	}
-	if req.Stream {
-		t.Fatal("summary request must be non-streaming")
+	if !strings.Contains(body, "TOOL_RESULT ") {
+		t.Fatal("the body is not a megacave render: the model is being handed raw rows, not the compacted history")
 	}
 }
 
@@ -240,9 +210,9 @@ func TestSummaryRequestUsesChatModelNotFast(t *testing.T) {
 	view := ucLLMView(t, ctx, convID)
 	conv := ucConvOf(t, ctx, convID, view, model)
 
-	req, err := buildSummaryRequestFromView(ctx, conv, model, view)
+	req, err := buildSummaryRequestFromMegacave(ctx, conv, model, view)
 	if err != nil {
-		t.Fatalf("buildSummaryRequestFromView: %v", err)
+		t.Fatalf("buildSummaryRequestFromMegacave: %v", err)
 	}
 	if req.Model != chatModelName {
 		t.Fatalf("summary request model = %q, want the chat model %q", req.Model, chatModelName)
@@ -270,7 +240,7 @@ func TestSummaryRequestMaxTokensIsWindowBounded(t *testing.T) {
 
 	wide := ucSeedActionModel(t, "uc-window-wide", 262144, map[string]string{"system_tools__shell_exec": "on"})
 	convWide := ucConvOf(t, ctx, convID, view, wide)
-	req, err := buildSummaryRequestFromView(ctx, convWide, wide, view)
+	req, err := buildSummaryRequestFromMegacave(ctx, convWide, wide, view)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -288,7 +258,7 @@ func TestSummaryRequestMaxTokensIsWindowBounded(t *testing.T) {
 	// the floor that keeps the call usable.
 	narrow := ucSeedActionModel(t, "uc-window-narrow", 8192, map[string]string{"system_tools__shell_exec": "on"})
 	convNarrow := ucConvOf(t, ctx, convID, view, narrow)
-	req2, err := buildSummaryRequestFromView(ctx, convNarrow, narrow, view)
+	req2, err := buildSummaryRequestFromMegacave(ctx, convNarrow, narrow, view)
 	if err != nil {
 		t.Fatalf("build narrow: %v", err)
 	}
@@ -380,7 +350,7 @@ func TestFoldSurvivesLLMFailure(t *testing.T) {
 	if LiteLLMReady() {
 		t.Skip("LiteLLM is ready in this environment; the failure path is not reproducible")
 	}
-	if _, err := attemptFoldSummary(ctx, conv, model, view[:len(view)-4]); err == nil {
+	if _, err := attemptFoldSummaryFromMegacave(ctx, conv, model, view[:len(view)-4]); err == nil {
 		t.Fatal("attemptFoldSummary succeeded with no proxy — the fold would depend on an LLM that is not there")
 	}
 
@@ -536,18 +506,22 @@ func ucTarget(conv utils.Conversation, model utils.Model) foldSummaryTarget {
 	}
 }
 
-// TestFoldSummaryRequestShapeAgainstFakeProxy drives the whole LLM-success path
-// against a stand-in proxy: it captures the bytes the summariser posts and
-// asserts the request SHAPE, then asserts the fold stores the LLM's text
-// megacaved (the chain's newest section is a megacaved LLM summary).
+// TestFoldSummaryRequestShapeAgainstFakeProxy drives STAGE 2's whole
+// LLM-success path against a stand-in proxy: it captures the bytes the
+// summariser posts and asserts the request SHAPE, then asserts the fold stores
+// the LLM's text megacaved (the chain's newest section is a megacaved LLM
+// summary).
 //
-// This is the "what exactly goes on the wire" test: model = the chat model,
-// Stream = false, max_tokens window-derived (> 8192), the leading messages
-// BYTE-IDENTICAL to the chat request's pre-clock rows, the instruction the LAST
-// message, and the tool schemas identical.
+// THE FIXTURE MUST FORCE STAGE 2. On a wide window the fold's room is generous,
+// the stage-1 megacave fits, and the model is never called — which is the
+// design, and is pinned by TestFoldFitsTheMegacaveAndNeverCallsTheModel. To
+// reach stage 2 the fixture uses a NARROW window: the fold's room collapses,
+// the per-row budget lands on its floor (markers, not content), the fit test
+// fails, and the fold escalates.
 func TestFoldSummaryRequestShapeAgainstFakeProxy(t *testing.T) {
+	const window = 8_192
 	ctx, _, convID := ucDB(t)
-	model := ucSeedActionModel(t, "uc-fake-proxy-chat", 262144, map[string]string{"system_tools__shell_exec": "on"})
+	model := ucSeedActionModel(t, "uc-fake-proxy-chat", window, map[string]string{"system_tools__shell_exec": "on"})
 
 	var gotBody []byte
 	var gotPath string
@@ -568,15 +542,14 @@ func TestFoldSummaryRequestShapeAgainstFakeProxy(t *testing.T) {
 	conv := ucConvOf(t, ctx, convID, view, model)
 	payload := ChatPayload{ConversationID: convID, ModelSelected: conv.ModelSelected}
 
-	// The chat request the production path would send, for the prefix compare.
+	// The chat request the production path would send, for the head compare.
 	chat, err := buildChatRequestParts(ctx, model, conv, payload)
 	if err != nil {
 		t.Fatalf("chat parts: %v", err)
 	}
 
-	evicted := view[:len(view)-4]
-	// The request the summariser BUILDS (no network), for the shape asserts.
-	req, err := buildSummaryRequestFromView(ctx, conv, model, evicted, payload)
+	// The request stage 2 BUILDS (no network), for the shape asserts.
+	req, err := buildSummaryRequestFromMegacave(ctx, conv, model, view[:len(view)-4], payload)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -586,8 +559,21 @@ func TestFoldSummaryRequestShapeAgainstFakeProxy(t *testing.T) {
 	if req.Model != model.Name {
 		t.Fatalf("model %q, want the chat model %q", req.Model, model.Name)
 	}
-	if req.MaxTokens == nil || *req.MaxTokens <= 8192 {
-		t.Fatalf("max_tokens %v — must be window-derived for a 262144-token window, not the old 8192", req.MaxTokens)
+	if req.MaxTokens == nil || *req.MaxTokens <= minSummaryOutputTokens {
+		t.Fatalf("max_tokens %v — stage 2's budget collapsed, so the fold would refuse the model on a window that fits", req.MaxTokens)
+	}
+	// STAGE 2'S INPUT IS BOUNDED BY CONSTRUCTION. The body is the megacave, and
+	// the megacave is sized to the room this window leaves. No request-level row
+	// cap exists any more, so this assertion is the whole guarantee: the input
+	// plus the reply reserve must fit the window.
+	input := renderedRowsTokens(req.Messages) + len(marshalNoEscape(req.Tools))/summaryCharsPerToken
+	if input+guardSafetyReserve+minSummaryOutputTokens > window {
+		t.Fatalf("stage 2 ships %d input tokens against a %d-token window — the megacave is not sized to the room", input, window)
+	}
+	// The body row is the megacave, not raw rows.
+	body, _ := req.Messages[len(req.Messages)-1].Content.(string)
+	if !strings.Contains(body, "TOOL_RESULT ") {
+		t.Fatal("stage 2's body is not a megacave render")
 	}
 
 	// The fold, with the proxy answering.
@@ -599,7 +585,7 @@ func TestFoldSummaryRequestShapeAgainstFakeProxy(t *testing.T) {
 		t.Fatal("fold removed 0 rows")
 	}
 	if gotPath == "" {
-		t.Fatal("the summariser never posted anything")
+		t.Fatal("the summariser never posted anything: the fixture did not force stage 2")
 	}
 	if gotPath != "/v1/chat/completions" {
 		t.Fatalf("posted to %q, want /v1/chat/completions", gotPath)
@@ -616,63 +602,26 @@ func TestFoldSummaryRequestShapeAgainstFakeProxy(t *testing.T) {
 	if sent.Stream {
 		t.Fatal("posted Stream=true; the summary is one-shot")
 	}
-	if sent.MaxTokens == nil || *sent.MaxTokens <= 8192 {
+	if sent.MaxTokens == nil || *sent.MaxTokens <= minSummaryOutputTokens {
 		t.Fatalf("posted max_tokens %v", sent.MaxTokens)
 	}
-	// The fold replays the FOLD's view (the rows through the fold boundary), so
-	// its history is the chat request's history MINUS the live tail the fold
-	// keeps — shorter by design. The prefix property that matters for KV reuse
-	// is therefore: every row the summary request carries, in order, is
-	// byte-identical to the chat request's row at the same position.
-	// Byte-identity is asserted on the Go structs the summariser built, NOT on
-	// the JSON round-trip: StandardMessageReq.Content is interface{}, so
-	// unmarshalling the posted body turns it into a map and re-marshalling
-	// reorders keys — a comparison artifact, not a request difference.
+	// THE HEAD IS NEVER MOVED: the posted system rows are the chat request's
+	// system rows, semantically (the body went through a JSON round-trip, and
+	// StandardMessageReq.Content is interface{}, so unmarshalling turns
+	// parts-shaped content into maps whose re-marshal reorders keys).
 	chatNoClock := stripCurrentTimeTail(append([]StandardMessageReq(nil), chat.request.Messages...))
-	m := len(req.Messages) - 1
-	// THE CONTRACT: the summary request ships a PREFIX of the chat request's
-	// rows — the oldest ones, the evicted range — with the LIVE TAIL stripped.
-	// Stripping the tail is what makes the fold's summariser fit: the deployed
-	// failure was the replay carrying the whole view, filling the window, and
-	// the output budget flooring ("summary budget collapsed (max_tokens=1024
-	// for a 262144-token window)"), so every fold went machine-only without
-	// ever asking the model.
-	if m > len(chatNoClock) {
-		t.Fatalf("the summary request ships %d history rows, more than the chat request's %d", m, len(chatNoClock))
+	n := leadingSystemRows(chatNoClock)
+	if len(sent.Messages) != n+1 {
+		t.Fatalf("posted %d rows, want the %d system rows plus one megacave row", len(sent.Messages), n)
 	}
-	if m >= len(chatNoClock) {
-		t.Fatalf("the summary request ships ALL %d chat rows — the live tail was not stripped, so the request is the full view and its budget can collapse", m)
-	}
-	// The rows it DOES ship are byte-identical to the chat request's rows at the
-	// same positions: the head (system rows + tool schemas) and the evicted
-	// history. Nothing a fold does may move the head — that is the cache.
-	if !bytes.Equal(ucRowsBytes(t, req.Messages[:m]), ucRowsBytes(t, chatNoClock[:m])) {
-		t.Fatalf("the summary prefix is not byte-identical to the chat request's (first divergence at %d) — the KV cache would not be reused",
-			firstDivergence(ucRowsBytes(t, req.Messages[:m]), ucRowsBytes(t, chatNoClock[:m])))
-	}
-	// The stripped rows are the NEWEST ones: the live tail the fold keeps, not
-	// something from the middle.
-	if stripped := len(chatNoClock) - m; stripped < 1 {
-		t.Fatalf("%d rows stripped, want at least the live tail", stripped)
-	}
-	// The POSTED rows are the chat request's rows, unchanged. Compared
-	// semantically (role / name / tool_call_id / tool_calls / text): the body
-	// went through a JSON round-trip, and StandardMessageReq.Content is
-	// interface{}, so unmarshalling turns parts-shaped content into maps whose
-	// re-marshal reorders keys. Semantic equality on every row is the wire claim;
-	// the byte claim is the struct-level assertion above.
-	mPosted := len(sent.Messages) - 1
-	if mPosted > len(chatNoClock) {
-		t.Fatalf("posted %d history rows, more than the chat request's %d", mPosted, len(chatNoClock))
-	}
-	for i := 0; i < mPosted; i++ {
+	for i := 0; i < n; i++ {
 		if a, b := wireShape(sent.Messages[i]), wireShape(chatNoClock[i]); a != b {
-			t.Fatalf("posted row %d differs from the chat request's row %d:\n  posted: %s\n  chat:   %s", i, i, a, b)
+			t.Fatalf("posted system row %d differs from the chat request's row %d:\n  posted: %s\n  chat:   %s", i, i, a, b)
 		}
 	}
 	last := sent.Messages[len(sent.Messages)-1]
 	if last.Role != "user" {
-		t.Fatalf("the instruction is a %q message; the assistant can only answer a user turn", last.Role)
+		t.Fatalf("the megacave+instruction row is a %q message; the assistant can only answer a user turn", last.Role)
 	}
 	if s, _ := last.Content.(string); !strings.Contains(s, "evicted") {
 		t.Fatal("the instruction does not name the eviction")
@@ -689,30 +638,56 @@ func TestFoldSummaryRequestShapeAgainstFakeProxy(t *testing.T) {
 	if !strings.Contains(stored, "CHECKPOINT-TEXT-7f3a") {
 		t.Fatalf("the LLM's checkpoint is not in the stored roll-up:\n%s", headRunes([]byte(stored), 400))
 	}
-	if len(stored) > db.MaxDurableSummaryChars {
-		t.Fatalf("stored roll-up %d chars over the bound", len(stored))
-	}
+}
 
-	// SECOND fold: the roll-up becomes a CHAIN — the first LLM checkpoint carried
-	// verbatim, ONE section banner, and the second LLM checkpoint as the newest
-	// section. LiteLLM is still up, so the second fold's section is LLM text too.
-	ucPush(t, ctx, convID, ucHistory("second generation for the chain", 10, 1_200)...)
-	v2 := ucLLMView(t, ctx, convID)
-	conv2 := ucConvOf(t, ctx, convID, v2, model)
-	if _, err := CompactConversationMachineOnly(ctx, convID, v2, PriorSummaryFromView(v2), 6, ucTarget(conv2, model)); err != nil {
-		t.Fatalf("fold 2: %v", err)
+// TestFoldFitsTheMegacaveAndNeverCallsTheModel is the runtime proof of the
+// ORDER, on the opposite fixture: a WIDE window gives the fold room, the
+// stage-1 megacave fits, and the summariser must post NOTHING. A proxy that is
+// up and answering, and never gets a request, is the assertion — the fold costs
+// zero inference whenever the machine render is enough, and the stored roll-up
+// is the deterministic megacave (it carries the folded rows' own file paths,
+// which an LLM summary would not reproduce verbatim).
+func TestFoldFitsTheMegacaveAndNeverCallsTheModel(t *testing.T) {
+	ctx, _, convID := ucDB(t)
+	model := ucSeedActionModel(t, "uc-stage1-no-call", 262_144, map[string]string{"system_tools__shell_exec": "on"})
+
+	var gotBody []byte
+	var gotPath string
+	srv := newFakeSummaryProxy(t, &gotBody, &gotPath,
+		"MUST-NOT-APPEAR-9d21: the model was called on a fold that fits its megacave")
+	oldBase := LiteLLMBaseURL
+	LiteLLMBaseURL = srv.URL
+	prevReady := litellmReady.Load()
+	litellmReady.Store(true)
+	t.Cleanup(func() {
+		LiteLLMBaseURL = oldBase
+		litellmReady.Store(prevReady)
+	})
+
+	hist := ucHistory("stage 1 only", 10, 1_200)
+	ucPush(t, ctx, convID, hist...)
+	view := ucLLMView(t, ctx, convID)
+	conv := ucConvOf(t, ctx, convID, view, model)
+
+	folded, err := CompactConversationMachineOnly(ctx, convID, view, PriorSummaryFromView(view), 8, ucTarget(conv, model))
+	if err != nil {
+		t.Fatalf("fold: %v", err)
 	}
-	stored2 := ucSummaryText(t, ctx, convID)
-	if !strings.Contains(stored2, "CHECKPOINT-TEXT-7f3a") {
-		t.Fatal("fold 2 dropped the FIRST generation's LLM checkpoint from the chain")
+	if folded == 0 {
+		t.Fatal("fold removed 0 rows")
 	}
-	// The second summariser call returned the same canned text, so it is present
-	// in the newest section; the section marker separates the chain.
-	if n := strings.Count(stored2, newerHistoryBannerName); n != 1 {
-		t.Fatalf("section banner count %d, want exactly 1 (the chain must not nest)", n)
+	if gotPath != "" {
+		t.Fatalf("the fold posted to the summariser (%q) on a fixture whose megacave fits: stage 1 is not the first attempt", gotPath)
 	}
-	if len(stored2) > db.MaxDurableSummaryChars {
-		t.Fatalf("chained roll-up %d chars over the bound", len(stored2))
+	stored := ucSummaryText(t, ctx, convID)
+	if stored == "" {
+		t.Fatal("no roll-up stored")
+	}
+	if strings.Contains(stored, "MUST-NOT-APPEAR-9d21") {
+		t.Fatal("the model's answer is in the stored roll-up: stage 2 ran on a fold that fits")
+	}
+	if !strings.Contains(stored, "module_0.go") {
+		t.Fatalf("the stored roll-up is not the machine megacave of the folded rows:\n%s", headRunes([]byte(stored), 300))
 	}
 }
 
@@ -856,7 +831,7 @@ func TestFoldSurvivesSummariserDeadline(t *testing.T) {
 	defer cancel()
 	<-dead.Done()
 	start := time.Now()
-	if _, err := attemptFoldSummary(dead, conv, model, view[:len(view)-4]); err == nil {
+	if _, err := attemptFoldSummaryFromMegacave(dead, conv, model, view[:len(view)-4]); err == nil {
 		t.Fatal("the summariser returned success on a cancelled context")
 	}
 	if el := time.Since(start); el > 2*time.Second {

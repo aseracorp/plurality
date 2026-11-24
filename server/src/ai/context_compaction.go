@@ -345,8 +345,15 @@ func MachineExcerptMegacaveCapped(messages []utils.Message, showChars, maxTotalC
 	for _, m := range messages {
 		switch m.Role {
 		case "user":
+			// USER ROWS ARE NEVER MEGACAVED. The owner's rule: megacave touches
+			// only tool and agent rows. A user row is the human's own words — the
+			// request, the correction, the pasted error — and compressing it
+			// silently rewrites what the user asked for, which is the context loss
+			// this subsystem keeps producing. The row is rendered VERBATIM, so the
+			// roll-up can always be read as "what the user said", and the fit test
+			// sees its true cost (see MegacaveIncompressibleChars).
 			writeLine("USER:")
-			writeMegacaveContent(&b, m, writeLine, showChars)
+			writeMegacaveContentVerbatim(&b, m, writeLine)
 			writeLine("")
 		case "assistant":
 			writeLine("ASSISTANT:")
@@ -363,6 +370,58 @@ func MachineExcerptMegacaveCapped(messages []utils.Message, showChars, maxTotalC
 		}
 	}
 	return capMegacaveExcerpt(strings.TrimSpace(b.String()), maxTotalChars)
+}
+
+// MegacaveIncompressibleChars is the render cost of the rows megacave CANNOT
+// shrink: the user rows, emitted verbatim (see MachineExcerptMegacaveCapped).
+//
+// A caller that splits a budget over "all the rows" is lying to itself on the
+// agentic shape, where a fold set is mostly assistant/tool rows but its user
+// rows carry the human's requests: the per-row split hands the verbatim rows a
+// share of the budget they will never spend, and starves the tool rows that
+// needed it. Subtract this from the budget and split the rest over
+// MegacaveCompressibleRows.
+func MegacaveIncompressibleChars(messages []utils.Message) int {
+	cost := 0
+	for _, m := range messages {
+		if m.Role != "user" {
+			continue
+		}
+		cost += m.Content.TotalContentChars() + len("USER:\n\n")
+	}
+	return cost
+}
+
+// MegacaveCompressibleRows counts the rows megacave DOES shrink: assistant and
+// tool rows. User rows are excluded (verbatim) and system rows are not part of
+// a fold set.
+func MegacaveCompressibleRows(messages []utils.Message) int {
+	n := 0
+	for _, m := range messages {
+		if m.Role == "assistant" || m.Role == "tool" {
+			n++
+		}
+	}
+	return n
+}
+
+// writeMegacaveContentVerbatim writes a row's text parts UNCHANGED: no
+// head+tail budget, no JSON single-lining, no fence elision. The attachment
+// name is kept as a label because the stored row's parts are what the client
+// shows; the text itself is byte-for-byte what the user wrote.
+func writeMegacaveContentVerbatim(b *strings.Builder, m utils.Message, writeLine func(string)) {
+	for _, p := range m.ContentParts() {
+		if p.Type != "text" && p.Type != "snippet" {
+			continue
+		}
+		if p.Text == "" {
+			continue
+		}
+		if p.Filename != "" {
+			writeLine("[attachment: " + p.Filename + "]")
+		}
+		writeLine(p.Text)
+	}
 }
 
 // megacaveTruncatedBanner is the single final marker announcing that the

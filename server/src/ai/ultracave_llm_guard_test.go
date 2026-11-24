@@ -20,7 +20,7 @@ import (
 //
 //  1. THE LLM IS THE FIRST ATTEMPT, ON THE CHAT MODEL. The fold path reaches
 //     exactly ONE entry point that puts bytes on the wire to a model:
-//     GenerateCheckpointSummaryFromRequest (fed by buildSummaryRequestFromView,
+//     GenerateCheckpointSummaryFromRequest (fed by buildSummaryRequestFromMegacave,
 //     which replays the production chat request builder). It must NOT reach
 //     SendChatCompletion (a fold must never take a chat turn, and that path
 //     streams), and must NOT reach fastShortcutModels (the fast model's KV
@@ -240,17 +240,17 @@ func identName(e ast.Expr) string {
 // TestUltracaveCompactionPathHasNoLLMCall.
 //
 // WHY THE OLD INVARIANT NO LONGER HOLDS: the owner's design puts the LLM
-// summarisation call back as the LAST reader of the context a fold is about to
-// evict, reusing the KV-cached prefix. "No LLM anywhere in compaction" would
-// forbid the feature outright. What the old test protected against — a model
-// call in the request/visibility path, a fold that takes a chat turn, the fast
-// model, and anything that moves the prompt head — is still enforced, by name.
+// summarisation call back as STAGE 2, reached only when the stage-1 megacave is
+// not enough. "No LLM anywhere in compaction" would forbid the feature outright.
+// What the old test protected against — a model call in the request/visibility
+// path, a fold that takes a chat turn, the fast model, and anything that moves
+// the prompt head — is still enforced, by name.
 func TestUltracaveCompactionPathUsesExactlyOneChatModelSummariser(t *testing.T) {
 	g := installLLMGuard(t)
 
-	// (1) The fold path reaches a summariser at all — the feature is wired.
+	// (1) The fold path reaches a summariser at all — stage 2 is wired.
 	if len(g.hits) == 0 {
-		t.Fatal("the fold path reaches NO summarisation entry point: durableFold does not attempt the LLM (the design requires LLM-FIRST)")
+		t.Fatal("the fold path reaches NO summarisation entry point: durableFold never escalates to stage 2, so a history the megacave cannot fit is never compacted further")
 	}
 	// (2) EXACTLY ONE wire entry, and it is the chat-model summariser.
 	seen := map[string]bool{}
@@ -278,6 +278,123 @@ func TestUltracaveCompactionPathUsesExactlyOneChatModelSummariser(t *testing.T) 
 	}
 }
 
+// TestFoldIsMegacaveFirst pins THE ORDER the owner specified: stage 1 is the
+// machine megacave, and the model is asked ONLY when that render is not enough.
+//
+// Asserted on the AST of durableFold, in statement order:
+//
+//	a. the stage-1 render (MachineExcerptMegacaveCapped) is reached BEFORE any
+//	   summariser call — the fold renders first, it does not ask first;
+//	b. the branch that stores the stage-1 render calls NO summariser at all —
+//	   when the megacave fits, the model is never called, so the fold costs zero
+//	   inference and the stored bytes stay deterministic;
+//	c. the summariser call site comes AFTER the stage-1 render, and its failure
+//	   path stores the machine render and folds (a fold is never lost to stage 2).
+func TestFoldIsMegacaveFirst(t *testing.T) {
+	g := installLLMGuard(t)
+	fd := g.funcs["durableFold"]
+	if fd == nil || fd.Body == nil {
+		t.Fatal("durableFold not found for the order guard")
+	}
+	list := fd.Body.List
+
+	stage1 := stmtIndexOf(list, func(n ast.Node) bool { return callsNamed(n, "MachineExcerptMegacaveCapped") })
+	summ := stmtIndexOf(list, callsSummariser)
+	if stage1 < 0 {
+		t.Fatal("durableFold never renders a megacave: there is no stage 1, so the fold is LLM-first")
+	}
+	if summ < 0 {
+		t.Fatal("durableFold never reaches the summariser: stage 2 does not exist")
+	}
+	if stage1 > summ {
+		t.Fatalf("the megacave render (statement %d) comes AFTER the summariser call (statement %d): the fold is LLM-first, not megacave-first", stage1, summ)
+	}
+
+	// (b) The stage-1 store branch must not touch the model.
+	stage1Store := -1
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		is, ok := n.(*ast.IfStmt)
+		if !ok {
+			return true
+		}
+		if callsSelectorNamed(is.Body, "CompactConversationDurable") && callsNamed(is.Body, "machineOnlyFoldRenderer") && !callsSummariser(is.Body) {
+			stage1Store = stmtIndexOf(list, func(x ast.Node) bool { return x == is })
+		}
+		return true
+	})
+	if stage1Store < 0 {
+		t.Fatal("durableFold has no branch that stores the stage-1 megacave WITHOUT calling the summariser: a fold that fits the megacave still pays for inference")
+	}
+	if stage1Store > summ {
+		t.Fatalf("the stage-1 store branch (statement %d) sits after the summariser call (statement %d): the fit test cannot short-circuit the model", stage1Store, summ)
+	}
+
+	// (c) Stage 2's failure path stores the machine render and folds.
+	summIf, _ := list[summ].(*ast.IfStmt)
+	if summIf == nil {
+		t.Fatal("the summariser call is not in an if-statement: its failure has no branch")
+	}
+	onFailure := callsNamed(summIf.Else, "machineOnlyFoldRenderer")
+	folds := callsSelectorNamed(summIf.Else, "CompactConversationDurable")
+	for _, s := range statementsAfter(list, summIf) {
+		if callsNamed(s, "machineOnlyFoldRenderer") {
+			onFailure = true
+		}
+		if callsSelectorNamed(s, "CompactConversationDurable") {
+			folds = true
+		}
+	}
+	if !onFailure {
+		t.Fatal("stage 2's failure path does not call machineOnlyFoldRenderer: a stage-2 failure would lose the fold")
+	}
+	if !folds {
+		t.Fatal("stage 2's failure path does not call db.CompactConversationDurable: the fallback is not a fold")
+	}
+}
+
+// TestFoldMegacaveNeverTouchesUserRows pins the owner's rule at the renderer:
+// the megacave compresses tool and agent rows and renders USER rows verbatim.
+// The AST proof is on the renderer's switch: the "user" case must call the
+// verbatim writer, and must NOT call the budgeted writer.
+func TestFoldMegacaveNeverTouchesUserRows(t *testing.T) {
+	g := installLLMGuard(t)
+	fd := g.funcs["MachineExcerptMegacaveCapped"]
+	if fd == nil || fd.Body == nil {
+		t.Fatal("MachineExcerptMegacaveCapped not found for the user-row guard")
+	}
+	userCase := ""
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		cs, ok := n.(*ast.CaseClause)
+		if !ok {
+			return true
+		}
+		lit, ok := cs.List[0].(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		if strings.Trim(lit.Value, `"`) != "user" {
+			return true
+		}
+		if callsNamed(cs, "writeMegacaveContentVerbatim") && !callsNamed(cs, "writeMegacaveContent(") && !callsAny(cs, "writeMegacaveContent", "writeMegacaveText") {
+			userCase = "ok"
+		}
+		return true
+	})
+	if userCase == "" {
+		t.Fatal("the renderer's user case does not use writeMegacaveContentVerbatim exclusively: megacave is touching user rows, which rewrites what the user asked for")
+	}
+	// The budget split must exclude the verbatim rows, or the verbatim rows
+	// starve the tool rows (they never spend their share). Checked on the FOLD,
+	// which owns the budget arithmetic.
+	fold := g.funcs["durableFold"]
+	if fold == nil || fold.Body == nil {
+		t.Fatal("durableFold not found for the budget-split assertion")
+	}
+	if !callsNamed(fold.Body, "MegacaveIncompressibleChars") || !callsNamed(fold.Body, "MegacaveCompressibleRows") {
+		t.Fatal("the fold does not split the per-row budget over the COMPRESSIBLE rows after paying for the verbatim user rows: the budget arithmetic is lying about the agentic shape")
+	}
+}
+
 // TestFoldClockIsAlwaysStripped pins rule 3: the fold path builds the clock (the
 // replayed builder attaches it) ONLY to strip it. If the path reaches
 // appendCurrentTimeTail it MUST also reach stripCurrentTimeTail; the strip is
@@ -290,74 +407,18 @@ func TestFoldClockIsAlwaysStripped(t *testing.T) {
 	if !g.reached["stripCurrentTimeTail"] {
 		t.Fatal("the fold path reaches the clock WITHOUT stripCurrentTimeTail: a timestamp would enter the stored roll-up and the replay would not be byte-identical")
 	}
-	if !g.reached["buildSummaryRequestFromView"] {
-		t.Fatal("the fold does not replay the chat request (buildSummaryRequestFromView): the summariser is hand-rolling a payload and paying a full prefill")
+	if !g.reached["buildSummaryRequestFromMegacave"] {
+		t.Fatal("the fold does not build stage 2 from the megacaved history: stage 2 is reading raw rows again")
 	}
 	if !g.reached["buildChatRequestParts"] {
 		t.Fatal("the fold summary does not use the SHARED request builder, so its prompt can drift from the chat request's")
 	}
 }
 
-// TestFoldSummariserFailureFallsBackToMachineRenderer is the AST proof of "the
-// LLM's failure can never lose a fold": durableFold's summariser call site sits
-// in a branch, the success branch renders the megacaved LLM text, and the
-// failure path calls the machine-only renderer AND folds.
-func TestFoldSummariserFailureFallsBackToMachineRenderer(t *testing.T) {
-	g := installLLMGuard(t)
-	fd := g.funcs["durableFold"]
-	if fd == nil || fd.Body == nil {
-		t.Fatal("durableFold not found")
-	}
-
-	var summariserIf *ast.IfStmt
-	ast.Inspect(fd.Body, func(n ast.Node) bool {
-		is, ok := n.(*ast.IfStmt)
-		if !ok || summariserIf != nil {
-			return true
-		}
-		// The summariser call site: in the if's Init (the
-		// `if x, err := attempt(...); err == nil` shape) or in its Cond.
-		if callsSummariser(is.Init) || callsSummariser(is.Cond) {
-			summariserIf = is
-		}
-		return true
-	})
-	if summariserIf == nil {
-		t.Fatal("durableFold has no branch on a summariser call: the LLM is not the FIRST attempt with a failure branch")
-	}
-
-	// The success branch must render through the LLM renderer (which megacaves
-	// the LLM text), so the stored section is a megacaved LLM summary.
-	if !callsNamed(summariserIf.Body, "llmFoldSummaryRenderer") {
-		t.Fatal("the summariser's success branch does not use llmFoldSummaryRenderer: the LLM text would be stored un-megacaved, breaking the chain contract")
-	}
-
-	// THE FAILURE PATH: an explicit else-branch, or the fall-through after the
-	// if (the `if ok { return ... }` shape). The machine-only renderer must be
-	// reachable on it, and it must be a FOLD, not just a log line.
-	after := statementsAfter(fd.Body.List, summariserIf)
-	onFailure := callsNamed(summariserIf.Else, "machineOnlyFoldRenderer")
-	folds := callsSelectorNamed(summariserIf.Else, "CompactConversationDurable")
-	for _, s := range after {
-		if callsNamed(s, "machineOnlyFoldRenderer") {
-			onFailure = true
-		}
-		if callsSelectorNamed(s, "CompactConversationDurable") {
-			folds = true
-		}
-	}
-	if !onFailure {
-		t.Fatal("durableFold's failure path does not call machineOnlyFoldRenderer: an LLM failure has no machine-only fallback, so a fold CAN be lost to the LLM")
-	}
-	if !folds {
-		t.Fatal("the machine-only fallback path does not call db.CompactConversationDurable: the fallback is not a fold")
-	}
-}
-
 // callsSummariser reports whether the node contains a call to the fold's
 // summariser entry points.
 func callsSummariser(n ast.Node) bool {
-	return callsAny(n, "attemptFoldSummary", "buildSummaryRequestFromView", "GenerateCheckpointSummaryFromRequest")
+	return callsAny(n, "attemptFoldSummaryFromMegacave", "buildSummaryRequestFromMegacave", "GenerateCheckpointSummaryFromRequest")
 }
 
 // callsAny reports whether the node contains a call to any of `names`, in bare
@@ -430,8 +491,9 @@ func statementsAfter(list []ast.Stmt, target ast.Stmt) []ast.Stmt {
 func TestFoldGuardNamesAreNotDeadCode(t *testing.T) {
 	g := installLLMGuard(t)
 	for _, name := range []string{
-		"machineOnlyFoldRenderer", "llmFoldSummaryRenderer", "attemptFoldSummary",
-		"buildSummaryRequestFromView", "GenerateCheckpointSummaryFromRequest",
+		"machineOnlyFoldRenderer", "llmFoldSummaryRenderer", "attemptFoldSummaryFromMegacave",
+		"buildSummaryRequestFromMegacave", "GenerateCheckpointSummaryFromRequest",
+		"MachineExcerptMegacaveCapped", "MegacaveIncompressibleChars", "MegacaveCompressibleRows", "writeMegacaveContentVerbatim",
 		"stripCurrentTimeTail", "MegacaveSummaryChain",
 	} {
 		if g.funcs[name] == nil {
@@ -453,4 +515,17 @@ func TestFoldGuardNamesAreNotDeadCode(t *testing.T) {
 	if !registered {
 		t.Fatal("MegacaveSummaryChain is not registered as db's summary chain compressor: the roll-up chain's escape valve cannot fire")
 	}
+}
+
+// stmtIndexOf returns the index (in the function's top-level statement list) of
+// the FIRST statement whose subtree satisfies pred, or -1. The order guards need
+// this: "megacave before the summariser" is a statement-order property, and a
+// subtree search alone cannot express it.
+func stmtIndexOf(list []ast.Stmt, pred func(ast.Node) bool) int {
+	for i, s := range list {
+		if pred(s) {
+			return i
+		}
+	}
+	return -1
 }

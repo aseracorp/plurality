@@ -388,12 +388,41 @@ func TestDurableWriteContextIsCreatedAfterTheSummariser(t *testing.T) {
 			"which is how the summariser came to consume the write's deadline " +
 			"(live: durable fold failed : context deadline exceeded, 2026-11-21 20:15:19)")
 	}
-	firstWrite := writeCtxPos[0]
-	for _, p := range summariserPos {
-		if firstWrite < p {
-			t.Fatalf("the durable write context is created BEFORE the summariser call (write ctx at %d, summariser at %d): "+
-				"a slow LLM consumes the write's budget and the fold is lost — the root cause of the cache regression",
-				firstWrite, p)
+	// THE RULE, PER BRANCH. A write context may not be created before the
+	// summariser INSIDE A STATEMENT THAT CALLS THE SUMMARISER. A statement that
+	// never calls the summariser is unconstrained: that is the STAGE-1 branch,
+	// which stores the megacave with no model call at all, so it has no LLM
+	// latency to be eaten by. Judging the stage-1 write against the summariser's
+	// position would forbid the fast path the design requires.
+	for _, st := range fd.Body.List {
+		if !callsSummariser(st) {
+			continue
+		}
+		var stSumm, stWrite []tokenPos
+		ast.Inspect(st, func(n ast.Node) bool {
+			ce, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if callsSummariser(ce) {
+				stSumm = append(stSumm, tokenPos(ce.Pos()))
+			}
+			if id, ok := ce.Fun.(*ast.Ident); ok && id.Name == "durableWriteContext" {
+				stWrite = append(stWrite, tokenPos(ce.Pos()))
+			}
+			return true
+		})
+		if len(stWrite) == 0 {
+			t.Fatal("a summariser branch of durableFold has no durableWriteContext: its write ctx is inline")
+		}
+		for _, w := range stWrite {
+			for _, sm := range stSumm {
+				if w < sm {
+					t.Fatalf("the durable write context is created BEFORE the summariser call (write ctx at %d, summariser at %d): "+
+						"a slow LLM consumes the write's budget and the fold is lost — the root cause of the cache regression",
+						w, sm)
+				}
+			}
 		}
 	}
 	if len(writeCtxPos) < 2 {
