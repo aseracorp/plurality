@@ -125,18 +125,26 @@ var summaryHTTPClient = &http.Client{
 // transport is ever not an *http.Transport, fall back to a fresh one with the
 // same bounds rather than inheriting a 90s header budget we cannot control.
 func summaryTransport() http.RoundTripper {
+	return summaryTransportWithHeaderTimeout(summaryHTTPTimeout)
+}
+
+// summaryTransportWithHeaderTimeout is summaryTransport with the header budget
+// as a parameter, so the end-to-end test can exercise the SAME wiring (clone +
+// raise) against a slow server on a second scale. Production passes
+// summaryHTTPTimeout.
+func summaryTransportWithHeaderTimeout(headerBudget time.Duration) *http.Transport {
 	if shared, ok := utils.HTTPClient.Transport.(*http.Transport); ok {
 		t := shared.Clone()
 		// For a one-shot (Stream:false) call, "time to headers" IS "time to the
 		// complete answer", so the header budget must equal the round-trip
 		// budget. Inheriting the shared 90s shot every summary.
-		t.ResponseHeaderTimeout = summaryHTTPTimeout
+		t.ResponseHeaderTimeout = headerBudget
 		return t
 	}
 	return &http.Transport{
 		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: summaryHTTPTimeout,
+		ResponseHeaderTimeout: headerBudget,
 		IdleConnTimeout:       90 * time.Second,
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   8,
