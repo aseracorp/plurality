@@ -1,8 +1,7 @@
 package ai
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"bytes"
 	"encoding/json"
 	"os"
 	"sync"
@@ -13,31 +12,37 @@ import (
 // prefix_watch — the instrument that ends the guessing.
 //
 // WHY. The deployed signature of the cache bug is a cache_read FROZEN at one
-// value (54289) across 15 consecutive turns while prompt_tokens grew
-// 162615 -> 195999. A frozen cache_read is not a cold cache and not a moved
-// tail: it means every request shares a prefix of EXACTLY the same length and
-// then diverges at the same offset. Six rounds of fixes (#197..#205) each
-// changed a plausible suspect — clock tail, request pacing, tail budget, fold
-// identity, truncation idempotence — and each left the frozen offset
-// untouched, because every theory was reasoned about in the abstract and none
-// was measured against the wire bytes of two consecutive requests.
+// value across consecutive turns while prompt_tokens grows. A frozen
+// cache_read is not a cold cache: every request shares a prefix of EXACTLY the
+// same length and diverges at the same offset. Six rounds of fixes
+// (#197..#206) each changed a plausible suspect, and none was measured against
+// the wire bytes of two consecutive requests.
 //
-// WHAT IT DOES. It keeps the outgoing request bytes of the previous turn per
-// conversation (bounded, and only the head is retained since that is where
-// divergence is reported) and reports the byte offset where this request stops
-// sharing a prefix with it, attributed to a region of the request. That names
-// the mutation instead of guessing at it.
+// WHAT IT DOES. Keeps the outgoing request bytes of the previous turn per
+// conversation and reports the byte offset where this request stops sharing a
+// prefix with it — then LOCATES that offset: which history row contains it,
+// its role, its tool name and its leading bytes. That names the mutation
+// instead of reasoning about it.
+//
+// LAYOUT, measured, not assumed. StandardChatRequest marshals in struct order:
+// model, messages, max_tokens, ... , stream, tools, reasoning_effort,
+// cache_prompt, n_keep. The tools block is therefore at the END of the body,
+// not after the system prompt. The first version of this file attributed a
+// divergence to "TOOL SCHEMAS" when the offset fell in the first
+// systemBytes+toolsBytes of the body — which is the SYSTEM PROMPT and the
+// FIRST HISTORY ROWS, not the schemas. Every break was reported as "history"
+// by that arithmetic. Region is now derived from the real offsets: the body is
+// scanned for the messages array, rows are walked in order, and the trailing
+// fields (including the schemas) are located by their own byte spans.
 //
 // Pure observer: it never alters the request. Enabled with PREFIX_WATCH=1.
 
-// prefixWatchKeep is how many leading bytes of the previous request are
-// retained for byte-exact comparison. The cache break is a prefix property, so
-// the head is all that is needed, and this bounds memory.
-const prefixWatchKeep = 1 << 20
+// prefixWatchKeep bounds the retained head of the previous request.
+const prefixWatchKeep = 1 << 21
 
 type prefixWatchEntry struct {
-	head []byte // leading bytes of the previous request
-	len  int    // its full length
+	head []byte
+	len  int
 }
 
 var (
@@ -46,9 +51,8 @@ var (
 	prefixWatchOn    = os.Getenv("PREFIX_WATCH") == "1"
 )
 
-// prefixWatchPartSize marshals a slice of the request and returns its byte
-// size, used to attribute a divergence offset to a region of the prompt.
-// Returns 0 on failure so the observer can never break the request path.
+// prefixWatchPartSize marshals v, returning 0 on failure so the observer can
+// never break the request path.
 func prefixWatchPartSize(v interface{}) int {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -57,13 +61,89 @@ func prefixWatchPartSize(v interface{}) int {
 	return len(b)
 }
 
+// messagesArrayOffset returns the byte offset just past `"messages":[` in the
+// marshalled body, or -1. This is the anchor the row walk needs; assuming it
+// is what broke the first version.
+func messagesArrayOffset(request []byte) int {
+	i := bytes.Index(request, []byte(`"messages":[`))
+	if i < 0 {
+		return -1
+	}
+	return i + len(`"messages":[`)
+}
+
+// prefixWatchLocate walks the history rows from the start of the messages
+// array and returns a description of the row containing `div`, plus the byte
+// offset where the history ends. Row sizes are the marshalled row plus the
+// separating comma, which is exactly how encoding/json lays the array out.
+func prefixWatchLocate(rows []StandardMessageReq, request []byte, div int) (string, int) {
+	off := messagesArrayOffset(request)
+	if off < 0 {
+		return "messages array not found", -1
+	}
+	for i, r := range rows {
+		b, err := json.Marshal(r)
+		if err != nil {
+			break
+		}
+		n := len(b)
+		if i < len(rows)-1 {
+			n++ // the comma between array elements
+		}
+		if div < off+n {
+			head := ""
+			if s, ok := r.Content.(string); ok {
+				head = s
+			} else if parts, ok := r.Content.([]StandardContentReq); ok {
+				for _, p := range parts {
+					head += p.Text
+				}
+			}
+			if len(head) > 90 {
+				head = head[:90]
+			}
+			return "row #" + pwItoa(i) + " role=" + r.Role + " name=" + r.Name +
+				" row_bytes=" + pwItoa(len(b)) + " row_starts_at=" + pwItoa(off) +
+				" head=" + pwQuoteOneLine(head), off + n
+		}
+		off += n
+	}
+	return "offset is past the history (trailing fields / tool schemas)", off
+}
+
+func pwQuoteOneLine(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return "?"
+	}
+	return string(b)
+}
+
+func pwItoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [24]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
 // prefixWatchCompare reports where this request stops sharing a prefix with
-// the previous request for the same conversation. systemBytes and toolsBytes
-// are the marshalled sizes of the parts built before the history, so the
-// offset is attributed to a region: a break inside the system prompt or the
-// tool schemas is a per-turn mutation of the stable prefix; a break in the
-// history means a stored row was rewritten.
-func prefixWatchCompare(convID string, request []byte, systemBytes, toolsBytes int) {
+// the previous request for the same conversation, and which row that is.
+func prefixWatchCompare(convID string, request []byte, rows []StandardMessageReq, systemBytes int) {
 	if !prefixWatchOn || convID == "" {
 		return
 	}
@@ -80,7 +160,8 @@ func prefixWatchCompare(convID string, request []byte, systemBytes, toolsBytes i
 	prefixWatchMu.Unlock()
 
 	if !had {
-		utils.Log("[PrefixWatch] %s baseline: %d bytes (system %d, tools %d)", convID, len(request), systemBytes, toolsBytes)
+		utils.Log("[PrefixWatch] %s baseline: %d bytes (system %d, %d history rows)",
+			convID, len(request), systemBytes, len(rows))
 		return
 	}
 
@@ -100,19 +181,13 @@ func prefixWatchCompare(convID string, request []byte, systemBytes, toolsBytes i
 		return
 	}
 
-	region := "history"
-	switch {
-	case div <= systemBytes:
+	where, histEnd := prefixWatchLocate(rows, request, div)
+	region := "HISTORY"
+	if div <= systemBytes {
 		region = "SYSTEM PROMPT"
-	case div <= systemBytes+toolsBytes:
-		region = "TOOL SCHEMAS"
+	} else if histEnd >= 0 && div >= histEnd {
+		region = "TRAILING FIELDS / TOOL SCHEMAS"
 	}
-	utils.Log("[PrefixWatch] %s CACHE BREAK at byte %d (region: %s; system=%d, tools=%d) prev=%d bytes now=%d bytes",
-		convID, div, region, systemBytes, toolsBytes, prev.len, len(request))
-}
-
-// prefixWatchHashes is used by tests to fingerprint a byte slice.
-func prefixWatchHashes(b []byte) string {
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:8])
+	utils.Log("[PrefixWatch] %s CACHE BREAK at byte %d (region: %s; %d bytes from the END of the previous %d-byte request) -> %s",
+		convID, div, region, prev.len-div, prev.len, where)
 }
