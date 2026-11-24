@@ -371,14 +371,32 @@ func marshalNoEscape(v interface{}) []byte {
 // proxy, non-200, empty answer, deadline — is returned to the caller, which
 // MUST fall back to the machine-only render. The fold never fails because the
 // LLM failed.
+// attemptFoldSummary is the fold's LLM-first attempt: build the replayed
+// summary request and ask the chat model for the checkpoint. Any error — no
+// proxy, non-200, empty answer, deadline — is returned to the caller, which
+// MUST fall back to the machine-only render. The fold never fails because the
+// LLM failed.
+//
+// The budget-collapsed case is NOT a real failure and must not fall back: it
+// means the replayed prefix fills the window, i.e. the conversation is exactly
+// the size that needs a checkpoint most. Measured on the deployed box, that is
+// the COMMON case — every fold of a long conversation reported
+//
+//	summary budget collapsed (max_tokens=1024 for a 262144-token window)
+//
+// and folded 2.8 MB of history into the machine-only roll-up without ever
+// asking the model. So the collapse routes to the bounded recovery path
+// (summariseEvictedInBatches), which ships no tool schemas and no live tail and
+// therefore cannot collapse.
 func attemptFoldSummary(ctx context.Context, conv utils.Conversation, model utils.Model, evicted []utils.Message, payload ...ChatPayload) (string, error) {
 	req, err := buildSummaryRequestFromView(ctx, conv, model, evicted, payload...)
 	if err != nil {
 		return "", err
 	}
 	if req.MaxTokens != nil && *req.MaxTokens <= minSummaryOutputTokens {
-		return "", fmt.Errorf("summary budget collapsed (max_tokens=%d for a %d-token window): the prefix already fills it",
-			*req.MaxTokens, Models.MaxContextTokensForPrefixed(req.Model))
+		utils.Log("[EcoSummary] replayed prefix fills the window (max_tokens=%d for a %d-token window); %d evicted rows — using the bounded recovery path",
+			*req.MaxTokens, Models.MaxContextTokensForPrefixed(req.Model), len(evicted))
+		return summariseEvictedInBatches(ctx, conv, model, evicted, payload...)
 	}
 	return GenerateCheckpointSummaryFromRequest(ctx, req)
 }

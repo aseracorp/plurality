@@ -83,6 +83,27 @@ type llmGuard struct {
 func (g *llmGuard) llmHits() int          { return len(g.hits) }
 func (g *llmGuard) destructive() []string { return g.checks }
 
+// wireEntries lists the DISTINCT summarisation wire entries the fold path
+// reaches, i.e. the callee names of g.hits. The count is entries, not call
+// sites: the fold reaches GenerateCheckpointSummaryFromRequest from two sites —
+// the replay path and the bounded recovery path it falls back to when the
+// replayed prefix fills the window — and both are the same entry, posting to
+// the same route. Pinning site-count would forbid the recovery path, which is
+// the defect that made every fold of a long conversation machine-only.
+func (g *llmGuard) wireEntries() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, h := range g.hits {
+		parts := strings.Split(h, " -> ")
+		name := parts[len(parts)-1]
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // ucGuardSources: every non-test .go file of package ai. The fold path now
 // crosses files (eco.go -> eco_summarize.go -> index.go -> clock_tail.go), so a
 // single-file sweep silently under-counts reachability — which is exactly how a
