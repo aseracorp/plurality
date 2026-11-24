@@ -254,6 +254,8 @@ func TestBootstrapHeadIsMonotoneAboveTheBudget(t *testing.T) {
 	bound := budget + maxKeepTailChars + truncationBannerChars
 	prevStart := -1
 	drops := 0
+	growth := 0
+	const turnChars = 2_500 + 200 // the appended turn's shipped size, with slack
 	for turn := 0; turn < 20; turn++ {
 		out := capTail(hist, budget)
 		if len(out) == 0 {
@@ -281,10 +283,6 @@ func TestBootstrapHeadIsMonotoneAboveTheBudget(t *testing.T) {
 					"rewrites the prefix behind the head (live: start idx 701 -> 702 -> 701, cache_read pinned at 16384)",
 					turn, prevStart, start)
 			}
-			if start > prevStart+3 {
-				t.Fatalf("turn %d: the head jumped %d rows for a 2-row append — it is sliding the whole window every turn, "+
-					"not advancing in turn quanta", turn, start-prevStart)
-			}
 			if start > prevStart {
 				drops++
 			}
@@ -292,11 +290,24 @@ func TestBootstrapHeadIsMonotoneAboveTheBudget(t *testing.T) {
 		prevStart = start
 
 		hist = append(hist, ucTurn(140+turn, "system_tools__shell_exec", "out "+strings.Repeat("m", 2_500))...)
+		growth += turnChars
 	}
 	if drops == 0 {
 		t.Fatal("the cap never dropped rows on a fixture past the budget — the cap is not bounding anything")
 	}
-	t.Logf("head advanced %d/20 turns, bound %d chars", drops, bound)
+	// The head must be PINNED for most turns and move at most once per chunk
+	// of growth. 20 turns of ~2.5k appends is ~50k of growth on a 50k chunk:
+	// one cut, not twenty.
+	maxMoves := growth/tailCutChunkChars() + 1
+	if drops > maxMoves {
+		t.Fatalf("head moved %d times for %d chars of growth on a %d-char chunk: expected at most %d. "+
+			"The cut is rolling, not chunked.", drops, growth, tailCutChunkChars(), maxMoves)
+	}
+	if pinned := 20 - drops; pinned < drops {
+		t.Fatalf("the head moved on %d/20 turns and stayed put on %d — a rolling tail moves more than it pins", drops, pinned)
+	}
+	t.Logf("head pinned %d/20, cut %d times for %d chars of growth (chunk %d), bound %d chars",
+		20-drops, drops, growth, tailCutChunkChars(), bound)
 }
 
 // TestCapTailShipsWithinTheBoundOnLiveShapes replays the live log shapes: fat

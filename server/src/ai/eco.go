@@ -169,6 +169,24 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool, windowTok
 // durable compaction (the eco trigger/target) is what bounds that view.
 const maxTailChars = 100_000
 
+// tailCutChunkTokens is the QUANTUM of a tail cut, in the model's TOKENS: when
+// the live window outgrows its budget, the cap removes whole chunks of this
+// size, not the minimum needed to refit. The window lands in
+// (budget-chunk, budget] and the head is pinned for the next chunk of
+// conversation.
+//
+// Tokens, not chars, because the budget, the window, the eco trigger and the
+// provider's limit are all token numbers; a char constant would be a fourth
+// unit in a subsystem that already had to unify three.
+//
+// The deployed alternative is worse on both counts — a minimal cut moved the
+// head 68-246 rows (median 158) at a time, every time the window crossed the
+// budget, and each move invalidated the provider's KV prefix from that byte.
+const tailCutChunkTokens = 50_000
+
+// tailCutChunkChars is that quantum in the char unit the cap budgets in.
+func tailCutChunkChars() int { return tailCutChunkTokens * charsPerToken }
+
 // charsPerToken is the estimator divisor used across the eco path
 // (SentViewTokens divides by it), so a char budget built with it is consistent
 // with the token math the preemptive guard and the eco trigger use.
@@ -377,61 +395,42 @@ func shippedRowChars(m utils.Message) int {
 	return c
 }
 
-// capTailWindow picks the START index of the live window capTail keeps: the
-// OLDEST user row whose shipped suffix (the sum of shippedRowChars) fits
-// `budget`. Returns 0 when the whole slice fits.
+// capTailWindowChunk picks the START index of the live window: it removes
+// whole `chunk`s of the overflow, so the head is pinned for a chunk of
+// conversation instead of advancing every turn.
 //
-// Anchoring on the OLDEST fitting user row is what makes the head STABLE, and
-// head stability IS prompt caching: appending rows keeps the suffix from the
-// current head within the budget, so the head does not move, the sent view
-// stays a byte PREFIX of the next request, and the provider's KV prefix cache
-// GROWS every turn. The head advances only when the window genuinely outgrows
-// the budget, and then it drops whole turns at the FAR end, never the newest
-// work.
-//
-// A head anchored on "the newest rows that fit" moves on EVERY append (the
-// window grows by a turn, a row falls off the front), so the first byte of the
-// sent history changes every turn and the provider can only reuse the bytes in
-// front of the change. Measured: cache_read pinned at a constant floor (24137
-// across 8 turns, 73289 across 20, 16384 on the #202 build) while tok_before
-// grew 31949 -> 107780 and ttfb_ms climbed 4475 -> 74034.
-//
-// The accounting is shippedRowChars — the row's cost AT THE PROVIDER, content
-// cap + banner + tool-call arguments. That makes "BUDGET = WHAT SHIPS" true by
-// construction: the walker sums the same bound truncateOversizedTail applies,
-// in the same order, so the window the log reports is the window the request
-// carries. The pre-fix walker summed content-only, PRE-truncation sizes, so
-// the log claimed a 100k budget while the window shipped 1189684 chars, and
-// one 890KB tool result pushed the walker past every older row, evicting 98
-// rows of context in one turn (idx 1509 -> 1607). Fat rows are not
-// special-cased: a 300k dump costs maxKeepTailChars+banner, so the window
-// keeps whatever normal rows still fit beside it.
-//
-// Pure function of the stored slice: same rows in, same start out, every turn.
-// Falls back to the newest row when NO user row's suffix fits (a single
-// oversized newest turn): it ships bounded, and an empty window answers nothing.
-func capTailWindow(tail []utils.Message, budget ...int) int {
-	allowed := maxTailChars
-	if len(budget) > 0 && budget[0] >= 0 {
-		allowed = budget[0]
-	}
-	chars := 0
-	best := -1
-	for i := len(tail) - 1; i >= 0; i-- {
-		chars += shippedRowChars(tail[i])
-		if chars > allowed {
-			// Past the budget: nothing further left can be a legal head.
-			break
-		}
-		if tail[i].Role == "user" {
-			best = i
-		}
-	}
-	if best >= 0 {
-		return best
-	}
+// Production passes tailCutChunk(allowed); the tests pass a chunk scaled to a
+// fixture, so they exercise THIS function's arithmetic rather than a copy of
+// it. A chunk the tests invent and this function ignores pins nothing.
+func capTailWindowChunk(tail []utils.Message, chunk int, allowed int) int {
 	if len(tail) == 0 {
 		return 0
+	}
+	if chunk <= 0 {
+		chunk = tailCutChunkChars()
+	}
+
+	total := 0
+	for _, m := range tail {
+		total += shippedRowChars(m)
+	}
+	if total <= allowed {
+		// The whole slice fits: no cut, head at the oldest row.
+		return 0
+	}
+
+	// Whole chunks, so the window refits with a chunk of slack and the head
+	// stays pinned until the conversation grows by another chunk.
+	over := total - allowed
+	cut := ((over + chunk - 1) / chunk) * chunk
+
+	// The smallest index whose shipped PREFIX has reached the cut amount.
+	prefix := 0
+	for i := 0; i < len(tail); i++ {
+		if prefix >= cut {
+			return i
+		}
+		prefix += shippedRowChars(tail[i])
 	}
 	return len(tail) - 1
 }
@@ -445,7 +444,7 @@ func capTailWindow(tail []utils.Message, budget ...int) int {
 // over and this cap must NOT run (it moves the prompt head and kills KV
 // prefix reuse — the contract pinned by ultracave_prefix_test.go).
 //
-// The window is what capTailWindow picked, then the head is made LEGAL:
+// The window is what capTailWindowChunk picked, then the head is made LEGAL:
 //
 //  1. snap FORWARD over leading tool rows — a window must not open on a tool
 //     result whose parent assistant call sits in the dropped section (a hard
@@ -486,6 +485,35 @@ func capTailWindow(tail []utils.Message, budget ...int) int {
 // cache_read pinned FLAT (24137 across 8 turns; 73289 across 20) while
 // tok_before grew 31949 -> 107780 and ttfb_ms climbed 4475 -> 74034.
 func capTail(tail []utils.Message, budget ...int) []utils.Message {
+	allowed := maxTailChars
+	if len(budget) > 0 && budget[0] >= 0 {
+		allowed = budget[0]
+	}
+	return capTailChunk(tail, tailCutChunk(allowed), budget...)
+}
+
+// tailCutChunk is the cut quantum for a given budget: tailCutChunkChars,
+// bounded to a quarter of the budget.
+//
+// The bound is what makes the chunk safe on small windows. A 50K-token chunk
+// against a 65536-token model's 58176-char budget is 258% of it: the FIRST cut
+// would drop the whole context. Capping at a quarter means a cut is always a
+// real amount of headroom and never the whole window.
+//
+// On this deployment (262144 tokens, a 648000-char budget) the quarter is
+// 162000, so the 50K-token chunk (150000 chars) stands: 19.1% of the window
+// per cut, and 4.3 cuts across the whole budget.
+func tailCutChunk(allowed int) int {
+	chunk := tailCutChunkChars()
+	if quarter := allowed / 4; quarter > 0 && quarter < chunk {
+		return quarter
+	}
+	return chunk
+}
+
+// capTailChunk is capTail with the cut quantum as a parameter (see
+// capTailWindowChunk). Production passes tailCutChunk(allowed).
+func capTailChunk(tail []utils.Message, chunk int, budget ...int) []utils.Message {
 	if len(tail) == 0 {
 		return tail
 	}
@@ -493,7 +521,7 @@ func capTail(tail []utils.Message, budget ...int) []utils.Message {
 	if len(budget) > 0 && budget[0] >= 0 {
 		allowed = budget[0]
 	}
-	start := capTailWindow(tail, allowed)
+	start := capTailWindowChunk(tail, chunk, allowed)
 	if start > 0 {
 		// (1) Snap the head FORWARD off an orphan tool result. Forward only
 		// shrinks the window, so the budget bound survives; stop before the
