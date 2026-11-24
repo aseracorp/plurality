@@ -62,8 +62,10 @@ func TestUltracaveFrozenPathStillBoundsOversizedRows(t *testing.T) {
 }
 
 // TestUltracaveBootstrapStaysBounded: a conversation with NO pair yet (the
-// bootstrap case, "WordPress Security Review") keeps the budget-capped tail,
-// so a never-compacted history is bounded on every request.
+// bootstrap case, "WordPress Security Review"). The sent view keeps EVERY row
+// - capTail's budget-capped tail was silent history loss, and it is gone -
+// so what bounds the request is the per-message cap plus the preemptive
+// guard, which converts an oversized view into a durable fold.
 func TestUltracaveBootstrapStaysBounded(t *testing.T) {
 	var msgs []utils.Message
 	for i := 0; i < 1_900; i++ {
@@ -87,12 +89,16 @@ func TestUltracaveBootstrapStaysBounded(t *testing.T) {
 	if len(got) == 0 {
 		t.Fatal("empty bootstrap tail")
 	}
-	total := 0
-	for _, m := range got {
-		total += m.Content.TotalContentChars()
+	if len(got) != len(msgs) {
+		t.Fatalf("bootstrap view dropped %d of %d rows: silent history loss",
+			len(msgs)-len(got), len(msgs))
 	}
-	if total > maxTailChars+100_000+200_000 {
-		t.Fatalf("bootstrap tail is not bounded: %d chars", total)
+	for _, m := range got {
+		if c := m.Content.TotalContentChars(); c > maxKeepTailChars+truncationBannerChars {
+			t.Fatalf("row ships %d chars, over the per-message bound %d - "+
+				"one blob can blow the window on its own",
+				c, maxKeepTailChars+truncationBannerChars)
+		}
 	}
 	// The overflow path is what mints the pair for this conversation: the
 	// boundary arithmetic must return a fold point > 0.

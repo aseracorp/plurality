@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"go/ast"
@@ -9,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/utils"
 )
 
@@ -78,62 +76,6 @@ func ucRenderWireWindow(t *testing.T, msgs []utils.Message, windowTokens int) []
 	return out
 }
 
-// TestBootstrapBudgetTracksModelWindow pins that the budget is DENOMINATED IN
-// THE MODEL'S WINDOW, not a global constant — the defect behind the user's
-// "200k is still low/wrong: 200k chars are below the 150k token trigger".
-func TestBootstrapBudgetTracksModelWindow(t *testing.T) {
-	prev := 0
-	for _, c := range []struct {
-		window int
-		name   string
-	}{
-		{262_144, "this deployment (kimi-k3)"},
-		{131_072, "a 128k model (deepseek-v4, glm-5, qwen-3)"},
-		{32_000, "a small model"},
-		{0, "unknown window"},
-	} {
-		got := bootstrapBudgetChars(c.window)
-		toks := got / charsPerToken
-		if got < 0 {
-			t.Fatalf("%s: budget %d must never be negative", c.name, got)
-		}
-		if c.window > 0 && c.window <= promptOverheadTokens+guardReplyReserve && got != 0 {
-			t.Fatalf("%s: a window of %d cannot fit the %d-token prompt overhead plus the %d-token reply reserve, "+
-				"so the honest history budget is 0, got %d — inventing history room is how the cap ships a request "+
-				"the provider rejects", c.name, c.window, promptOverheadTokens, guardReplyReserve, got)
-		}
-		if c.window > promptOverheadTokens+guardReplyReserve && got <= 0 {
-			t.Fatalf("%s: budget %d must be positive when the window has room for history", c.name, got)
-		}
-		if c.window == 0 && got != maxTailChars {
-			t.Fatalf("unknown window: budget %d, want the fallback %d", got, maxTailChars)
-		}
-		if c.window > 0 && c.window < 100_000 && got >= maxTailChars {
-			t.Fatalf("%s: a small window must buy a budget BELOW the fallback (%d >= %d) — clamping up to the floor is "+
-				"what produced the '100k chars is safe for any 128k model' comment on models where it was not safe",
-				c.name, got, maxTailChars)
-		}
-		if c.window > 0 && got > 0 && toks+promptOverheadTokens+guardReplyReserve > c.window {
-			t.Fatalf("%s: history budget %d tokens + %d prompt overhead + %d reply reserve exceeds the window %d — "+
-				"the cap would be the thing that busts the context",
-				c.name, toks, promptOverheadTokens, guardReplyReserve, c.window)
-		}
-		// THE RULE: on a real model the history budget must sit ABOVE the eco
-		// trigger, so compaction (trigger/target) governs the context and the
-		// cap stays the safety net it claims to be. Every global char constant
-		// tried (100k, 200k) violated this and became the context policy.
-		if c.window == 262_144 && toks <= 150_000 {
-			t.Fatalf("%s: history budget is %d tokens, at/below the 150000 eco trigger — the cap binds before compaction "+
-				"governs, so the model answers from a fragment the user can see is full", c.name, toks)
-		}
-		if c.window == 262_144 && prev > 0 && got <= prev {
-			t.Fatalf("a larger window must buy a larger budget: %d -> %d", prev, got)
-		}
-		prev = got
-		t.Logf("%-40s window=%7d -> budget %7d chars (~%d tokens)", c.name, c.window, got, toks)
-	}
-}
-
 // TestToolCallArgumentsAreCountedInMeasures is the unit fix underneath
 // everything above. The char measures summed CONTENT ONLY, so an agent turn —
 // whose payload IS the assistant's tool-call arguments (file writes, shell
@@ -161,186 +103,13 @@ func TestToolCallArgumentsAreCountedInMeasures(t *testing.T) {
 		t.Fatalf("fixture: arguments (%d) must dominate the content (%d) — that is what an agent turn looks like",
 			len(args), contentOnly)
 	}
-	if got := shippedRowChars(row); got < contentOnly+len(args) {
-		t.Fatalf("shippedRowChars = %d, must count the tool-call arguments (%d chars): the row ships them, the cap must see them",
-			got, len(args))
-	}
+	// shippedRowChars (the measure the bootstrap cap budgeted against) is gone
+	// with the cap; SentViewRowChars below is the surviving measure.
 	if got := SentViewRowChars(row); got < contentOnly+len(args) {
 		t.Fatalf("SentViewRowChars = %d, must count the tool-call arguments (%d chars): the preemptive guard sizes the request "+
 			"from this measure, so undercounting lets a context-busting request ship un-flagged (live: 117987 chars logged, tok_before=177562)",
 			got, len(args))
 	}
-}
-
-// TestBootstrapUnderModelBudgetShipsEverything is the regime this deployment
-// actually runs in and the one the user measured. The model is 262144 tokens;
-// bootstrapBudgetChars derives ~696k chars from it, and the eco trigger fires
-// long before the cap binds — so on a normal conversation the cap NEVER RUNS,
-// the whole history ships, and the sent view is a byte PREFIX that GROWS every
-// turn. That is #196's behaviour (tok_before=177562, cache_read=176045, 99 %
-// warm) and it is what every char-capped "fix" destroyed.
-func TestBootstrapUnderModelBudgetShipsEverything(t *testing.T) {
-	const window = 262_144
-	budget := bootstrapBudgetChars(window)
-
-	hist := ucHistory("ship the cache fix", 70, 3_000) // ~210k chars
-	liveChars := 0
-	for _, m := range hist {
-		liveChars += shippedRowChars(m)
-	}
-	if liveChars <= 2*maxTailChars {
-		t.Fatalf("fixture is %d chars; must exceed the historical 200k budget to prove the cap no longer runs", liveChars)
-	}
-	if liveChars >= budget {
-		t.Fatalf("fixture is %d chars, must stay under the model budget %d", liveChars, budget)
-	}
-	for _, m := range hist {
-		if db.IsCheckpointMessage(m) {
-			t.Fatal("fixture must not carry a checkpoint pair — this is the bootstrap (capTail) path")
-		}
-	}
-
-	prev := ucRenderWireWindow(t, hist, window)
-	if len(prev) == 0 {
-		t.Fatal("empty render")
-	}
-	for turn := 0; turn < 8; turn++ {
-		hist = append(hist, ucTurn(600+turn, "system_tools__shell_exec",
-			"output "+strings.Repeat("k", 1_000))...)
-		next := ucRenderWireWindow(t, hist, window)
-		if len(next) <= len(prev) {
-			t.Fatalf("turn %d: sent view did not grow (%d -> %d) — under the model budget the cap must not drop anything",
-				turn, len(prev), len(next))
-		}
-		if !bytes.HasPrefix(next, prev) {
-			t.Fatalf("turn %d: the sent view is not a byte prefix of the next request (divergence at byte %d of %d) — "+
-				"the prefix cache dies at the head and the whole prompt re-prefills",
-				turn, firstDivergence(prev, next), len(next))
-		}
-		prev = next
-	}
-}
-
-// TestBootstrapHeadIsMonotoneAboveTheBudget pins the safety-net regime: a
-// never-compacted conversation that has outgrown the model budget. A binding
-// cap must eventually drop rows — what makes it cache-safe, and what the
-// #199-#201 walk-back destroyed, is the SHAPE of the drop:
-//
-//   - the head is MONOTONE: never re-ships a row it dropped. Re-shipping
-//     rewrites the prefix behind the head, which is the churn that pinned
-//     cache_read at 16384-24137 (live: start idx 655 -> 702 -> 701 -> 702);
-//   - the head never opens on a tool result (hard provider error);
-//   - the newest row ALWAYS ships — dropping the newest work answers nothing;
-//   - the shipped total stays within capTailWalkBackBound, so the window can
-//     never force the fold churn (production shipped 178176 / 340693 chars on a
-//     100000 budget);
-//   - the head advances only by what the append costs (a 2-row append moves it
-//     at most a few rows), so the prefix rewrites a SLIVER per turn, not the
-//     whole window — the #199-#201 walk-back rewrote it every turn.
-//
-// Uses a 131072 window so the cap binds on a small fixture.
-func TestBootstrapHeadIsMonotoneAboveTheBudget(t *testing.T) {
-	const window = 131_072
-	budget := bootstrapBudgetChars(window)
-
-	var hist []utils.Message
-	for i := 0; i < 140; i++ {
-		hist = append(hist, ucTurn(i, "system_tools__shell_exec", "out "+strings.Repeat("m", 2_500))...)
-	}
-	if shipped := shippedChars(hist); shipped <= budget {
-		t.Fatalf("fixture is %d chars, must exceed the %d budget to exercise the cap", shipped, budget)
-	}
-
-	bound := budget + maxKeepTailChars + truncationBannerChars
-	prevStart := -1
-	drops := 0
-	for turn := 0; turn < 20; turn++ {
-		out := capTail(hist, budget)
-		if len(out) == 0 {
-			t.Fatalf("turn %d: capTail shipped an empty window", turn)
-		}
-		if out[0].Role == "tool" {
-			t.Fatalf("turn %d: window opens on an orphaned tool result", turn)
-		}
-		got := shippedChars(out)
-		if got > bound {
-			t.Fatalf("turn %d: shipped %d chars on a %d budget (bound %d) — production shipped 178176/100000 this way; "+
-				"every over-budget window forces a fold and rewrites the prompt head", turn, got, budget, bound)
-		}
-		tail := hist[len(hist)-1]
-		last := out[len(out)-1]
-		if last.ToolCallID != tail.ToolCallID || last.Role != tail.Role {
-			t.Fatalf("turn %d: newest row evicted (want role %q id %q, got role %q id %q) — dropping the newest work answers nothing",
-				turn, tail.Role, tail.ToolCallID, last.Role, last.ToolCallID)
-		}
-
-		start := len(hist) - len(out)
-		if prevStart >= 0 {
-			if start < prevStart {
-				t.Fatalf("turn %d: the window head moved BACKWARD (%d -> %d) — rows already dropped were re-shipped, which "+
-					"rewrites the prefix behind the head (live: start idx 701 -> 702 -> 701, cache_read pinned at 16384)",
-					turn, prevStart, start)
-			}
-			if start > prevStart+3 {
-				t.Fatalf("turn %d: the head jumped %d rows for a 2-row append — it is sliding the whole window every turn, "+
-					"not advancing in turn quanta", turn, start-prevStart)
-			}
-			if start > prevStart {
-				drops++
-			}
-		}
-		prevStart = start
-
-		hist = append(hist, ucTurn(140+turn, "system_tools__shell_exec", "out "+strings.Repeat("m", 2_500))...)
-	}
-	if drops == 0 {
-		t.Fatal("the cap never dropped rows on a fixture past the budget — the cap is not bounding anything")
-	}
-	t.Logf("head advanced %d/20 turns, bound %d chars", drops, bound)
-}
-
-// TestCapTailShipsWithinTheBoundOnLiveShapes replays the live log shapes: fat
-// rows (at/over the per-message cap) mixed with normal rows, ending in the
-// tool/assistant wall that is the NORMAL mid-turn shape of an agent chat.
-//
-// RED on #199/#200/#201: the walk-back's budget base SKIPPED rows at the
-// per-message cap (`if c >= maxCompactMessageChars { addedFat++; continue }`),
-// so the bound was a lie and the cap shipped 158005, 178176 and 340693 chars
-// against a 100000 budget. Every over-budget window fires the preemptive
-// guard, forces a fold, and rewrites the prompt head.
-func TestCapTailShipsWithinTheBoundOnLiveShapes(t *testing.T) {
-	var msgs []utils.Message
-	for i := 0; i < 20; i++ {
-		msgs = append(msgs, bootTurn(i, 3_000)...)
-	}
-	msgs = append(msgs, bootGiant(90, 300_000)...) // the 890KB tool-result shape
-	for i := 91; i < 100; i++ {
-		msgs = append(msgs, bootTurn(i, 4_000)...)
-	}
-	for i := 0; i < 12; i++ { // the tool wall: live 10:23:51 / 10:39:56 shape
-		msgs = append(msgs, wallTurn2(200+i, 30_000)...)
-	}
-
-	out := capTail(msgs)
-	if len(out) == 0 {
-		t.Fatal("capTail shipped an empty window")
-	}
-	kept := shippedChars(out)
-	bound := capTailWalkBackBound()
-	if kept > bound {
-		t.Fatalf("capTail shipped %d chars on a %d budget (%d rows) — production shipped 178176/100000 this way",
-			kept, maxTailChars, len(out))
-	}
-	if out[0].Role == "tool" {
-		t.Fatal("window opens on an orphaned tool result")
-	}
-	last := out[len(out)-1]
-	if last.Role != "tool" || last.ToolCallID != "wall2_211" {
-		t.Fatalf("newest wall row evicted (role %q, id %q) — dropping the newest work answers nothing",
-			last.Role, last.ToolCallID)
-	}
-	t.Logf("live shape: kept %d/%d rows, %d chars (budget %d, bound %d)",
-		len(out), len(msgs), kept, maxTailChars, bound)
 }
 
 // TestDurableWriteContextIsCreatedAfterTheSummariser pins the fold-deadline
@@ -582,34 +351,5 @@ func TestEcoConversationWindowMatchesTheRequestPath(t *testing.T) {
 	// and a panic there kills the compaction subsystem.
 	if got := ecoConversationWindow(nil); got != 0 {
 		t.Fatalf("nil conversation: window %d, want 0", got)
-	}
-}
-
-// TestBootstrapGateIgnoresTheFallbackFloorOnABigWindow: the self-locking gate
-// compared the sent view against the GLOBAL 100000-char fallback (~33333
-// tokens), a FIFTH of the trigger on this 262144-token model. A ~90k-token
-// view passed the gate, folded toward the 50000 target, and the model answered
-// from ~27k tokens of history. With the model-derived budget (696000 chars) the
-// same view must stay quiet: folding early is not compacting safely, it is
-// losing context the window had room for.
-func TestBootstrapGateIgnoresTheFallbackFloorOnABigWindow(t *testing.T) {
-	const window = 262_144
-	budget := bootstrapBudgetChars(window)
-
-	// Live #202 shape: no pair, lastPT ~90k (below the configured 150000
-	// trigger), sent view ~90k tokens / ~270k chars.
-	sentView := 270_000 / 3
-	if !bootstrapFoldNeeded(-1, 90_000, 150_000, sentView, maxTailChars) {
-		t.Fatal("the pre-fix gate must fold this view — that is the defect being pinned")
-	}
-	if bootstrapFoldNeeded(-1, 90_000, 150_000, sentView, budget) {
-		t.Fatalf("on a %d-token window a %d-token view must NOT fold (model budget %d chars): folding here "+
-			"throws away context the window can hold, which is the 27K-token request the user reported",
-			window, sentView, budget)
-	}
-	// Past the model budget the gate must still fire: the cap is a safety net,
-	// and a view over it is a context-busting request (the 1866-message shape).
-	if !bootstrapFoldNeeded(-1, 90_000, 150_000, (budget+3000)/3, budget) {
-		t.Fatal("a view over the model budget must fold durably (mints the pair, hands off to the frozen path)")
 	}
 }

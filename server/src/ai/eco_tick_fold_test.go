@@ -58,47 +58,6 @@ func wallTurn2(n, chars int) []utils.Message {
 	return []utils.Message{asst, tool}
 }
 
-// TestCapTailToolWallBoundedByBudget pins the fix for the 12:35:19 line: on a
-// tail ENDING in a tool/assistant wall (the normal shape mid-turn, so the
-// common anchor branch, not the rare one) the fallback anchor must never push
-// the window over maxTailChars.
-//
-// RED on 83aa917: the pre-fix fallback `for start > 0 && tail[start].Role !=
-// "user" { start-- }` has no bound — this fixture ships ~209k chars on a
-// 100000 budget (production shipped 221162).
-// GREEN after: the bounded walk-back stops the moment the next chain row would
-// bust the budget, and the head snap keeps the window off an orphan tool row.
-func TestCapTailToolWallBoundedByBudget(t *testing.T) {
-	var msgs []utils.Message
-	for i := 0; i < 30; i++ {
-		msgs = append(msgs, bootTurn(i, 2_000)...)
-	}
-	msgs = append(msgs, utils.Message{Role: "user", Content: utils.NewTextContent("deploy " + itoa(99))})
-	for i := 0; i < 20; i++ {
-		msgs = append(msgs, wallTurn2(i, 11_000)...)
-	}
-
-	out := capTail(msgs)
-	if len(out) == 0 {
-		t.Fatal("capTail shipped an empty window")
-	}
-	if out[0].Role == "tool" {
-		t.Fatal("window opens on an orphaned tool result — its parent call was dropped")
-	}
-	kept := shippedChars(out)
-	// These rows are all under maxKeepTailChars, so NOTHING is truncated:
-	// BUDGET = WHAT SHIPS exactly, no maxKeepTailChars slack in this shape.
-	if kept > maxTailChars+truncationBannerSlack {
-		t.Fatalf("tool-wall cap shipped %d chars on a %d budget — the fallback anchor is unbounded "+
-			"(live: kept 15 msgs / 221162 chars, budget 100000, conv a44a43258742259a60be242d, 2026-11-21 12:35:19)",
-			kept, maxTailChars)
-	}
-	if last := out[len(out)-1]; last.Role != "tool" || last.ToolCallID != "wall2_19" {
-		t.Fatalf("newest wall row evicted (last kept role %q) — capTail that drops the newest work answers nothing", last.Role)
-	}
-	t.Logf("tool wall bounded: kept %d/%d rows, %d chars (budget %d)", len(out), len(msgs), kept, maxTailChars)
-}
-
 // liveSubagentShape builds the exact storage shape of the live conversation:
 // the ONLY user row is seq 0 (the sub-agent task), every later row is
 // assistant/tool, the newest assistant carries maxPT as prompt_tokens.
@@ -127,14 +86,28 @@ func liveSubagentShape(rows, chars, maxPT int) []utils.Message {
 	return msgs
 }
 
+// bootTurn: user -> assistant(tool_call) -> tool(result), one complete turn.
+// LIVES HERE since the bootstrap-cap tests were removed; the no-pair fold
+// fixtures below are its only users.
+func bootTurn(n int, toolChars int) []utils.Message {
+	callID := "call_" + itoa(n)
+	user := utils.Message{Role: "user", Content: utils.NewTextContent("turn " + itoa(n))}
+	asst := utils.Message{Role: "assistant", Content: utils.NewTextContent("run " + itoa(n))}
+	asst.ToolCalls = []utils.ToolCall{{ID: callID, Type: "function",
+		Function: utils.FunctionCall{Name: "system_tools__shell_exec", Arguments: "{}"}}}
+	tool := mkMsg("tool", strings.Repeat("r", toolChars), "system_tools__shell_exec")
+	tool.ToolCallID = callID
+	return []utils.Message{user, asst, tool}
+}
+
 // TestTickFoldBoundarySubagentShapeRefuses: the live 68-row shape (user row
 // ONLY at 0). The newest-user-row FLOOR leaves no legal live window, so the
 // boundary is refused LOUDLY. Pre-fix this shape walked into findCutoffIndex,
 // produced cutoff=67 of 68, and the fold died silently at the storage layer.
 func TestTickFoldBoundarySubagentShapeRefuses(t *testing.T) {
 	msgs := liveSubagentShape(100, 2_100, 52_709)
-	if SentViewTokens(msgs)*3 <= maxTailChars {
-		t.Fatalf("fixture must be over the tail budget: %d tokens", SentViewTokens(msgs))
+	if SentViewTokens(msgs) <= 50_000 {
+		t.Fatalf("fixture must be over the fold target: %d tokens", SentViewTokens(msgs))
 	}
 	if got := tickFoldBoundary(msgs, 52_709, 50_000, -1); got != -1 {
 		t.Fatalf("sub-agent shape (only user row at 0) gave boundary %d, want -1 — the newest user row is the FLOOR", got)
@@ -147,13 +120,19 @@ func TestTickFoldBoundarySubagentShapeRefuses(t *testing.T) {
 //
 // RED on 83aa917: the tick logs "cutoff=67 (of 68 messages)" then "durable
 // fold removed 0 rows" with NO reason — "tick fold refused" is absent.
+//
+// lastPT is above the trigger on purpose. The tick used to reach the boundary
+// of a no-pair conversation through a second gate arm (bootstrapFoldNeeded:
+// fold when the view outgrows the budget capTail would apply). That arm is
+// gone with the cap, so the only way in is the real trigger — which is the
+// point: with the cap removed, lastPT measures the view that actually ships.
 func TestEcoTickRefusesSubagentBootstrapFold(t *testing.T) {
 	ctx, d, convID := ucDB(t)
 	if _, err := d.Exec(`UPDATE conversations SET model_selected = ? WHERE id = ?`,
 		`{"eco_mode":true}`, convID); err != nil {
 		t.Fatalf("set eco mode: %v", err)
 	}
-	ucPush(t, ctx, convID, liveSubagentShape(100, 2_100, 52_709)...)
+	ucPush(t, ctx, convID, liveSubagentShape(100, 2_100, 120_000)...)
 
 	buf := captureStdlibLog(t)
 	runEcoSummary(ctx, convID)
