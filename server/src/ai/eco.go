@@ -1042,14 +1042,19 @@ func SentViewTokens(messages []utils.Message) int {
 //     TruncateOversizedMessages applies, and eco's tail bound
 //     (maxKeepTailChars) is the same number. A test pins that equality.
 //
-// It deliberately does NOT subtract the stored caveman projection.
+// It counts the RAW stored body, not the stored caveman projection.
 // convertMessagesToOpenAI ships that projection only for caveman-enabled
-// models (cavemanCompressApplies), so subtracting it would make the trigger
+// models (cavemanCompressApplies), so subtracting it would make the TRIGGER
 // measure model-dependent, and the eco trigger is evaluated per conversation
 // (whose next turn may use any model). Counting the raw body is the
-// conservative direction: a compressed model folds marginally early, and the
-// estimator can never under-count and let an oversized request ship.
+// conservative direction for the trigger: a compressed model folds marginally
+// early, and the estimator can never under-count and let an oversized request
+// ship.
 //
+// The preemptive context guard is NOT that estimator. It decides, per request,
+// whether THIS request fits THIS model's window, and it has the model in
+// hand — so it must measure what that request ships. See
+// SentViewTokensShipped.
 // It is a pure function of the stored row: no clock, no slice position, no
 // total-size dependence. Same row in, same number out, every turn.
 func SentViewRowChars(m utils.Message) int {
@@ -1069,6 +1074,59 @@ func SentViewRowChars(m utils.Message) int {
 		chars += len(tc.Function.Arguments) + len(tc.Function.Name) + len(tc.ID)
 	}
 	return chars
+}
+
+// SentViewRowCharsShipped is SentViewRowChars measured on the bytes THIS model
+// ships: a tool row with a stored caveman projection ships the projection
+// (index.go substitutes msg.CompressedContent for the raw body when
+// cavemanCompressApplies), so the raw body must not be counted for it.
+//
+// The min() matters. The projection is a compression, so it is normally
+// shorter, but the transform ADDS labels and an elision banner and on a short
+// row it can come out LONGER (measured ratio ~1.045 on prose+tool content).
+// Taking the smaller of the two keeps this measure an under-count of the raw
+// measure and never an over-count of the wire, which is the direction that can
+// ship a context-busting request un-flagged.
+func SentViewRowCharsShipped(m utils.Message, st cavemanStoneSet) int {
+	chars := m.Content.TotalContentChars()
+	if m.Role == "tool" && m.CompressedContent != "" && cavemanCompressApplies(st, m.Name) {
+		if n := len(m.CompressedContent); n < chars {
+			chars = n
+		}
+	}
+	if chars > maxCompactMessageChars {
+		chars = maxCompactMessageChars
+	}
+	for _, tc := range m.ToolCalls {
+		chars += len(tc.Function.Arguments) + len(tc.Function.Name) + len(tc.ID)
+	}
+	return chars
+}
+
+// SentViewTokensShipped is SentViewTokens for a model whose caveman stones are
+// known — the measure the preemptive context guard must use.
+//
+// WHY THE GUARD NEEDS IT (2026-11-25, conversation 9f0ab2352bf2bdc40e77384b):
+// the guard fired on a sent view of 679333 tokens against a 262144 window, and
+// the fold it forced left the provider measuring the NEXT request at 24683
+// prompt_tokens, of which ~21521 is the system block and tool schemas. The
+// model received ~3160 tokens of history and 1196 rows of conversation were
+// gone. The raw measure counts tool bodies the wire never carries, so it
+// over-counts the very request the guard is measuring, and it fires a fold on
+// a request that fits.
+//
+// The eco TRIGGER keeps the raw measure on purpose (see SentViewRowChars): it
+// is per-conversation and model-agnostic. This function is per-request and
+// takes the stones as an argument, so the caller must have the model.
+func SentViewTokensShipped(messages []utils.Message, st cavemanStoneSet) int {
+	chars := 0
+	for i := range messages {
+		if messages[i].Compacted {
+			continue
+		}
+		chars += SentViewRowCharsShipped(messages[i], st)
+	}
+	return chars / 3
 }
 
 // megacaveFitsCeiling is STAGE 1's fit test: is the machine megacave enough, so
@@ -1129,6 +1187,22 @@ func PriorSummaryFromView(messages []utils.Message) string {
 	return ""
 }
 
+// durableFoldRoomChars is the roll-up's room in CHARS for one fold: the part
+// of the fold budget the live tail did not spend, at summaryCharsPerToken
+// chars/token, minus the prior roll-up it must carry forward and the label
+// overhead the renderer adds per row.
+//
+// THE COUPLING IS THE WHOLE POINT. The boundary and the excerpt budget come
+// from ONE number (overflowFoldBudgetTokens), so a boundary that leaves a fat
+// live tail leaves the roll-up the rest of the window, and a fold that
+// summarises hard leaves the tail room to grow. Denominating the two
+// separately is what produced the 2026-11-25 collapse: the caller cut toward
+// 72000 while the summariser budgeted against 144000, the room went negative,
+// and the stored checkpoint lost everything it summarised.
+func durableFoldRoomChars(budgetTokens, tailTokens, priorChars, overheadChars int) int {
+	return overflowFoldRollupRoomChars(budgetTokens, tailTokens) - priorChars - 2*overheadChars
+}
+
 // durableFold is the single durable fold entry point, shared by the eco
 // trigger and the context-length recovery path in tool_loop.go.
 //
@@ -1166,14 +1240,30 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 	// toward 154666, the roll-up summarises away 100K tokens of context the
 	// window can hold — the "not containing any real history" complaint,
 	// reproduced by the summariser instead of the cap.
-	target := ecoFoldTarget(model.Name)
+	// The fold's CEILING, in the CHAT model's window. durableFold must agree
+	// with its caller (UltracaveOverflowFoldFrom computes the boundary from
+	// overflowFoldBudgetTokens): if the caller leaves a live tail at 2/3 of
+	// the window budget while the summariser sizes the excerpt against
+	// ecoTargetTokens, the room below goes NEGATIVE the moment the tail
+	// reaches the target, `chars` collapses to 0, the ceiling collapses to
+	// the per-row floor, and the stored roll-up is marker mush — the
+	// "not containing any real history" complaint, reproduced by the
+	// summariser instead of the cap.
+	budget := overflowFoldBudgetTokens(Models.MaxContextTokensFor(model.Name))
+	if budget <= 0 {
+		// No DECLARED window (unknown model, or the tick's no-selection path):
+		// MaxContextTokensForPrefixed would invent defaultContextWindow and
+		// inflate the roll-up room for a model that may be far smaller, so the
+		// configured policy governs, unchanged.
+		budget = ecoFoldTarget(model.Name)
+	}
 	// Live tail this fold leaves in place, and the roll-up it carries
 	// forward, both in chars — the budget is what is LEFT for the new
 	// excerpt after both are paid for.
 	tailTokens := SentViewTokens(messages[foldFrom:])
 	priorChars := len(priorSummary)
 	overhead := megacaveLabelOverheadChars
-	room := (target-tailTokens)*3 - priorChars - 2*overhead
+	room := durableFoldRoomChars(budget, tailTokens, priorChars, overhead)
 
 	foldable := messages[:foldFrom]
 	// The room is a CEILING, not a licence. A fold that renders the folded
@@ -1533,6 +1623,115 @@ func ultracaveFoldProgressTokens(messages []utils.Message, foldFrom int) int {
 	return removed / 3
 }
 
+// windowTokensOr unwraps the variadic window argument (0 = unknown).
+func windowTokensOr(windowTokens []int) int {
+	if len(windowTokens) > 0 {
+		return windowTokens[0]
+	}
+	return 0
+}
+
+// overflowFoldBudgetTokens is the CEILING on everything a fold leaves in the
+// prompt: live tail + roll-up, in tokens, for a model with this window.
+//
+// WHY THE WINDOW AND NOT THE ECO TARGET (2026-11-25, conversation
+// 9f0ab2352bf2bdc40e77384b): the overflow fold's arithmetic was denominated in
+// ecoTargetTokens (144000 on this deployment) and then HALVED for the tail
+// (72000), and durableFold's roll-up room was (target - live tail) * 3. With a
+// prior roll-up already at 105805 chars the room went NEGATIVE, `chars`
+// collapsed to 0, the ceiling collapsed to the per-row floor, and the stored
+// roll-up was clamped to the 100000-char global constant (~33333 tokens) —
+// which is the "34K" the owner named (the fold logged a 34042-token view). The
+// window never entered the arithmetic at all, so a 262144-token model was
+// compacted as if it had 72000.
+//
+// The budget reserves the prompt overhead (system block + tool schemas,
+// measured 21521-28395 tokens live, bounded by promptOverheadTokens) and the
+// reply reservation, so the post-fold request fits the window with room for
+// the answer.
+func overflowFoldBudgetTokens(windowTokens int) int {
+	if windowTokens <= 0 {
+		return 0
+	}
+	budget := windowTokens - promptOverheadTokens - guardReplyReserve
+	if budget <= 0 {
+		return 0
+	}
+	return budget
+}
+
+// overflowFoldTailBudgetTokens is the live-tail share of the fold budget. The
+// remaining third is what the roll-up summarises, so the split is what keeps
+// durableFold's room positive: a tail at the FULL budget leaves the roll-up
+// nothing, the render collapses to its per-row floor, and the stored
+// checkpoint loses everything it summarised.
+func overflowFoldTailBudgetTokens(budgetTokens int) int {
+	if budgetTokens <= 0 {
+		return 0
+	}
+	return budgetTokens * 2 / 3
+}
+
+// overflowFoldRollupRoomChars is durableFold's roll-up room in CHARS for a
+// fold that leaves this live tail: the third of the budget the tail did not
+// use, at summaryCharsPerToken chars/token. It must clear
+// db.MaxDurableSummaryChars, the global clamp — when the clamp binds, the
+// stored roll-up is ~33333 tokens on a 262144-token window, which is the
+// 2026-11-25 failure.
+func overflowFoldRollupRoomChars(budgetTokens, tailTokens int) int {
+	if budgetTokens <= 0 || tailTokens >= budgetTokens {
+		return 0
+	}
+	return (budgetTokens - tailTokens) * summaryCharsPerToken
+}
+
+// bootstrapCutoffRefined cuts INSIDE the newest user turn when no user
+// boundary fits.
+//
+// bootstrapCutoff's contract is "cut at a user row", and in an agent
+// conversation a user turn is ONE user row followed by hundreds of tool rows.
+// Measured on the live conversation, the sent-view suffix at user boundaries:
+//
+//	idx 2677  249602 tokens
+//	idx 2690  233063 tokens
+//	idx 2793   53273 tokens   <- ~100 rows, no user row in between
+//	idx 2818   30797 tokens
+//
+// There is no boundary between 233063 and 53273, so a target of 72000 has no
+// legal cut and bootstrapCutoff returns the newest user row: the fold takes
+// the ENTIRE conversation (observed: 1196 rows folded, history 2439 -> 5
+// messages). Cutting at a tool row is legal for the window (the sender's
+// tool_call backfill repairs the orphaned call), so the refinement walks to
+// the first index of ANY role whose suffix fits, then snaps FORWARD to a legal
+// window start — forward, because that only shrinks the tail and can never
+// break the fit.
+//
+// Returns -1 when there is nothing to refine: the view already fits, the fit
+// point is the newest user row itself, or no legal start exists below it.
+func bootstrapCutoffRefined(messages []utils.Message, targetTokens int, lu int) int {
+	if lu <= 0 || targetTokens <= 0 {
+		return -1
+	}
+	suffix := 0
+	for i := range messages {
+		suffix += SentViewRowChars(messages[i])
+	}
+	for i := 0; i < lu; i++ {
+		if suffix/summaryCharsPerToken <= targetTokens {
+			b := i
+			for b < lu && (messages[b].Role == "tool" || db.IsCheckpointMessage(messages[b])) {
+				b++
+			}
+			if b <= 0 || b >= lu {
+				return -1
+			}
+			return b
+		}
+		suffix -= SentViewRowChars(messages[i])
+	}
+	return -1
+}
+
 // UltracaveOverflowFoldFrom picks the durable fold boundary for the
 // context-length overflow path (tool_loop.go), using the SAME arithmetic the
 // eco trigger uses: findCutoffIndex walks PromptTokens toward
@@ -1568,10 +1767,16 @@ func ultracaveFoldProgressTokens(messages []utils.Message, foldFrom int) int {
 //     legal boundaries.
 //
 // `windowTokens` (variadic, so existing call sites keep the configured
-// semantics) is the conversation model's context window: it sizes the fold
-// target, which bounds the live tail at half of it. Production passes the
+// semantics) is the conversation model's context window. It sizes the fold
+// BUDGET (see overflowFoldBudgetTokens), which bounds the live tail and,
+// through the same number, the roll-up the fold writes. Production passes the
 // model's window so the tail bound and durableFold's excerpt budget are drawn
-// from the SAME target (see ecoFoldTarget).
+// from ONE number.
+//
+// When no user boundary leaves a tail inside that budget — the agent-turn
+// cliff, see bootstrapCutoffRefined — the boundary is refined INSIDE the
+// newest turn rather than folding the whole conversation.
+
 func UltracaveOverflowFoldFrom(messages []utils.Message, keep int, windowTokens ...int) int {
 	if len(messages) == 0 {
 		return -1
@@ -1594,6 +1799,7 @@ func UltracaveOverflowFoldFrom(messages []utils.Message, keep int, windowTokens 
 	if len(windowTokens) > 0 {
 		_, target = ecoWindowPolicy(ecoConfiguredTrigger(), target, windowTokens[0])
 	}
+
 	// The SENT VIEW, the measure the frozen path ships and the measure the
 	// hysteresis floor is a fraction of. `overTarget` is the churn regime: the
 	// view is already bigger than compaction's target, so a fold here must buy
@@ -1629,7 +1835,34 @@ func UltracaveOverflowFoldFrom(messages []utils.Message, keep int, windowTokens 
 		// tail under half the target and the roll-up under the other
 		// half, which is the split the eco config itself implies
 		// (TriggerTokens = 2 x TargetTokens).
-		cand = bootstrapCutoff(messages, target/2)
+		// The tail budget is the window's, not half the eco target. Halving
+		// the target was a proxy for "leave the roll-up room", and on a
+		// 262144-token window it asked for a 72000-token tail: the fold cut
+		// to a FIFTH of the window and the model answered from a fragment
+		// (observed: 24683 prompt_tokens, ~3160 of them history). The split
+		// is now explicit and window-derived: tail = 2/3 of the fold budget,
+		// roll-up = the rest (see overflowFoldTailBudgetTokens).
+		tailBudget := overflowFoldTailBudgetTokens(overflowFoldBudgetTokens(windowTokensOr(windowTokens)))
+		if tailBudget <= 0 {
+			// No window known: keep the configured semantics, unchanged —
+			// half the eco target, the split the config itself implies
+			// (TriggerTokens = 2 x TargetTokens).
+			tailBudget = target / 2
+		}
+		cand = bootstrapCutoff(messages, tailBudget)
+		if cand >= lu && lu > 0 {
+			// THE CLIFF. bootstrapCutoff cuts only at user rows, and an agent
+			// turn is one user row followed by hundreds of tool rows: the
+			// suffix jumps from 233063 tokens straight to 53273 across one
+			// boundary, so NOTHING up to the newest user row fits and the
+			// cutoff lands on the floor — a fold of the WHOLE conversation.
+			// Refine inside the turn instead.
+			if refined := bootstrapCutoffRefined(messages, tailBudget, lu); refined > 0 {
+				utils.Log("[Eco] overflow fold: no user boundary fits %d tokens (cliff at the newest user row %d) — refining inside the turn to %d",
+					tailBudget, lu, refined)
+				cand = refined
+			}
+		}
 	}
 	if cand <= 0 {
 		// The view is NOT over target and the token arithmetic gave nothing:
