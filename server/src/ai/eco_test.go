@@ -13,7 +13,7 @@ import (
 // synthetic assistant message whose only tool call is the checkpoint tool.
 func checkpointMsg() utils.Message {
 	return utils.Message{
-		Role: "assistant",
+		Role:    "assistant",
 		Content: utils.MessageContent{},
 		ToolCalls: []utils.ToolCall{{
 			ID:   "eco_regression",
@@ -36,74 +36,84 @@ func toolMsg() utils.Message {
 	}
 }
 
-// TestFilterCheckpointsForRequest_BudgetCapLastElementIsPanicRegression
-// reproduces the crash that killed the server whenever "Debug WordPress
-// Slowness" hit the eco tail-cap path:
-//
-//	panic: runtime error: index out of range [N] with length N
-//	github.com/azukaar/plurality/src/ai.filterCheckpointsForRequest
-//	    server/src/ai/eco.go:89
-//
-// The budget walker runs backwards from the end and, when the LAST message
-// alone tips the budget over maxTailChars, increments start one past the
-// end (== len(tail)). That is a valid *slice* start but an invalid index,
-// and the subsequent "back up to a user boundary" loop dereferenced
-// tail[start] before the fix. This test pins the scenario: tail length is
-// not huge (the bug is about position, not size).
-func TestFilterCheckpointsForRequest_BudgetCapLastElementIsPanicRegression(t *testing.T) {
+// renderRequestView flattens the provider-facing view to a single string so
+// prefix/append-only properties can be asserted byte-for-byte.
+func renderRequestView(msgs []utils.Message) string {
+	var b strings.Builder
+	for _, m := range filterCheckpointsForRequest(msgs, true) {
+		b.WriteString(m.Role)
+		b.WriteByte(0)
+		b.WriteString(m.TextContent())
+		b.WriteByte(0)
+	}
+	return b.String()
+}
+
+// TestFilterCheckpointsForRequest_LastElementOversizedKeepsEverything pins the
+// shape that used to panic in the budget walker (index out of range [N] with
+// length N, eco.go:89). The walker is gone; the contract that remains is the
+// append-only one: every row from the checkpoint forward is kept, and the
+// oversized user row is bounded by the per-message cap, never dropped.
+func TestFilterCheckpointsForRequest_LastElementOversizedKeepsEverything(t *testing.T) {
 	msgs := []utils.Message{
-		// One checkpoint pair (assistant + tool half).
 		checkpointMsg(),
 		toolMsg(),
-		// One live user turn that alone exceeds the 100k-char budget.
 		{Role: "user", Content: utils.NewTextContent(strings.Repeat("x", 150_000))},
 	}
 
-	// Must not panic. With eco ON the tail after the checkpoint is the
-	// single oversized user message: the walker breaks at start==1, then
-	// increments to start==2 == len(tail) (one-past-end), clamps down to
-	// the last element, stays on the user boundary, and keeps the message.
 	got := filterCheckpointsForRequest(msgs, true)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 kept message (the oversized user turn), got %d", len(got))
+	if len(got) != 3 {
+		t.Fatalf("expected all 3 rows kept (checkpoint + summary + user turn), got %d", len(got))
 	}
-	if got[0].Role != "user" {
-		t.Fatalf("expected kept role user, got %q", got[0].Role)
+	if got[0].Role != "assistant" || !db.IsCheckpointMessage(got[0]) {
+		t.Fatalf("expected the view to start at the checkpoint, got %q", got[0].Role)
+	}
+	text := got[2].TextContent()
+	if len(text) >= 150_000 {
+		t.Fatalf("expected the oversized user row to be bounded, got %d chars", len(text))
+	}
+	if !strings.Contains(text, "truncated by Plurality") {
+		t.Fatalf("expected truncation banner in the bounded user row")
 	}
 }
 
-// TestFilterCheckpointsForRequest_BudgetCapLongTail exercises the normal
-// capping path: a long tail where the budget is exceeded somewhere in the
-// middle must back up to a user boundary and keep the suffix.
-func TestFilterCheckpointsForRequest_BudgetCapLongTail(t *testing.T) {
+// TestFilterCheckpointsForRequest_IsAppendOnlyAcrossTurns is the load-bearing
+// contract: the provider-facing view must be byte-stable and ONLY EVER
+// APPENDED TO. Appending turns may never change a byte before the append
+// point, because a KV prefix cache matches the longest COMMON PREFIX — a view
+// whose head moves every turn (a sliding tail cap) forces a full re-prefill
+// every turn and destroys prompt caching.
+//
+// Mutation check: restore any per-request window cap that walks back from the
+// newest row and this test fails, because the earlier render stops being a
+// prefix of the later one.
+func TestFilterCheckpointsForRequest_IsAppendOnlyAcrossTurns(t *testing.T) {
 	var msgs []utils.Message
 	msgs = append(msgs, checkpointMsg(), toolMsg())
-	// 30 alternating user/assistant turns of ~5k chars each (~150k total),
-	// so the cap triggers mid-tail and must resync to a user boundary.
-	for i := 0; i < 30; i++ {
+	msgs = append(msgs, utils.Message{Role: "user", Content: utils.NewTextContent("start")})
+
+	// Grow the conversation well past any plausible tail budget: 60 turns of
+	// ~5k chars each ≈ 300k chars, i.e. 3x the 100k budget the old cap used.
+	prev := renderRequestView(msgs)
+	for i := 0; i < 60; i++ {
 		msgs = append(msgs,
 			utils.Message{Role: "user", Content: utils.NewTextContent(fmt.Sprintf("user %d %s", i, strings.Repeat("a", 5_000)))},
 			utils.Message{Role: "assistant", Content: utils.NewTextContent(fmt.Sprintf("assistant %d %s", i, strings.Repeat("b", 5_000)))},
 		)
+		cur := renderRequestView(msgs)
+		if !strings.HasPrefix(cur, prev) {
+			t.Fatalf("turn %d: the provider view is not append-only — the render of the "+
+				"previous turn is not a byte prefix of this one, so the KV prefix cache "+
+				"diverges and the whole prompt is re-prefilled", i)
+		}
+		prev = cur
 	}
 
-	got := filterCheckpointsForRequest(msgs, true)
-	if len(got) == 0 {
-		t.Fatal("expected a non-empty tail")
-	}
-	// The kept tail must start exactly on a user boundary so tool results
-	// never get orphaned.
-	if got[0].Role != "user" {
-		t.Fatalf("expected kept tail to start with a user message, got %q", got[0].Role)
-	}
-	// Total kept chars must respect the budget (plus up to one boundary
-	// message of slack).
-	total := 0
-	for _, m := range got {
-		total += len(m.TextContent())
-	}
-	if total > 100_000+5_100 {
-		t.Fatalf("kept tail %d chars exceeds budget", total)
+	// Nothing may be hidden from the model: every row from the checkpoint
+	// forward is in the view.
+	final := filterCheckpointsForRequest(msgs, true)
+	if len(final) != len(msgs)-0 {
+		t.Fatalf("expected every row from the checkpoint forward (%d), got %d", len(msgs), len(final))
 	}
 }
 
@@ -134,6 +144,10 @@ func TestFilterCheckpointsForRequest_EcoOff(t *testing.T) {
 // "WordPress Security Review" conversation (1858 msgs, ~4.2MB Cosmos dump
 // inline) shipped the blob on every resume and dead-ended with
 // context_length_exceeded.
+//
+// Append-only: the checkpoint rows stay in the view (the old sliding cap
+// dropped them), so all three rows are kept and the oversized user row is
+// bounded in place.
 func TestFilterCheckpointsForRequest_TruncatesOversizedSingleMessage(t *testing.T) {
 	msgs := []utils.Message{
 		checkpointMsg(),
@@ -141,13 +155,13 @@ func TestFilterCheckpointsForRequest_TruncatesOversizedSingleMessage(t *testing.
 		{Role: "user", Content: utils.NewTextContent(strings.Repeat("x", 150_000))},
 	}
 	got := filterCheckpointsForRequest(msgs, true)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 kept message, got %d", len(got))
+	if len(got) != 3 {
+		t.Fatalf("expected 3 kept messages, got %d", len(got))
 	}
-	if got[0].Role != "user" {
-		t.Fatalf("expected kept role user, got %q", got[0].Role)
+	if got[2].Role != "user" {
+		t.Fatalf("expected kept role user, got %q", got[2].Role)
 	}
-	text := got[0].TextContent()
+	text := got[2].TextContent()
 	if len(text) < 90_000 || len(text) >= 150_000 {
 		t.Fatalf("expected oversized user message truncated (head kept), got %d chars", len(text))
 	}
@@ -176,8 +190,10 @@ func TestFilterCheckpointsForRequest_TruncatesOversizedToolResult(t *testing.T) 
 		t.Fatalf("expected a non-empty tail")
 	}
 	for _, m := range got {
-		if m.Role == "tool" && (len(m.TextContent()) < 90_000 || len(m.TextContent()) >= 150_000) {
-			t.Fatalf("expected oversized tool result truncated (head kept), got %d chars", len(m.TextContent()))
+		if m.Role == "tool" && m.ToolCallID == "call_big" {
+			if len(m.TextContent()) < 90_000 || len(m.TextContent()) >= 150_000 {
+				t.Fatalf("expected oversized tool result truncated (head kept), got %d chars", len(m.TextContent()))
+			}
 		}
 	}
 	// The tool call must still have its result (truncated, never dropped).
@@ -246,7 +262,6 @@ func TestCompactConversationForContext_TruncatesOversizedMessage(t *testing.T) {
 		}
 	}
 }
-
 
 // TestFilterCheckpointsForRequest_TruncatesOversizedMultipartMessage guards
 // the case TextContent() misses: a multi-part tool result whose FIRST part

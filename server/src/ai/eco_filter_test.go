@@ -52,12 +52,15 @@ func TestFilterCheckpointsNoOOB(t *testing.T) {
 		if len(out) == 0 {
 			t.Fatalf("empty tail returned")
 		}
-		total := 0
+		// No sliding window: the whole history from the checkpoint forward is
+		// kept, so the total is NOT bounded. What must be bounded is each
+		// individual row (the per-message cap is a pure function of a stored
+		// row, so it renders identically every turn and cannot move the
+		// prompt prefix).
 		for _, m := range out {
-			total += len(m.TextContent())
-		}
-		if total > 160*1024+(200*1024) {
-			t.Fatalf("tail chars too big: %d", total)
+			if len(m.TextContent()) > 100_000+200 {
+				t.Fatalf("row not bounded by the per-message cap: %d chars", len(m.TextContent()))
+			}
 		}
 	}
 	out := filterCheckpointsForRequest(msgs, false)
@@ -80,10 +83,14 @@ func TestFilterCheckpointsTiny(t *testing.T) {
 // TestFilterNoCheckpointHugeHistory_WordPressRegression pins the exact
 // failure mode of the "WordPress Security Review" conversation: eco on, NO
 // checkpoint ever written (all eco summaries 500'd on the 131k fast model),
-// and a ~770k-token raw history. Before the fix, filterCheckpointsForRequest
-// returned the WHOLE history when no checkpoint existed, so every turn died
-// with context_length_exceeded. After the fix it must return a bounded tail
-// (<= maxTailChars + one truncated oversized message).
+// and a ~770k-token raw history containing one ~4.2MB inline blob.
+//
+// The per-message bound is what saves this conversation, NOT a sliding tail
+// cap: the blob is truncated to the per-row bound so it can never blow the
+// window on its own, and the whole history is kept so the prompt prefix stays
+// byte-identical turn to turn. Oversized rows are bounded; nothing is slid
+// out of the view. Context-window pressure is answered by the preemptive
+// guard + durable compaction (rare), not by hiding history every turn.
 func TestFilterNoCheckpointHugeHistory_WordPressRegression(t *testing.T) {
 	var msgs []utils.Message
 	// 1900 tool results ~50k chars each ≈ 95M chars ≈ 24M tokens — far
@@ -115,10 +122,11 @@ func TestFilterNoCheckpointHugeHistory_WordPressRegression(t *testing.T) {
 		}
 	}
 	t.Logf("filtered %d msgs -> %d msgs, %d chars, max msg %d", len(msgs), len(out), total, max)
-	// Budget + one truncated 100k bound (capTail's truncateOversizedTail).
-	if total > maxTailChars+100_000+200_000 {
-		t.Fatalf("tail chars too big for context: %d", total)
+	// Append-only: every row survives, so the total is not bounded.
+	if len(out) != len(msgs) {
+		t.Fatalf("expected every row kept, got %d of %d", len(out), len(msgs))
 	}
+	// The per-row bound is the context-safety mechanism.
 	if max > 100_000 {
 		t.Fatalf("oversized message not truncated: %d", max)
 	}

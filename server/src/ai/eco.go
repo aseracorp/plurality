@@ -12,8 +12,8 @@ import (
 	"github.com/azukaar/plurality/src/auth"
 	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/docsupport"
-	"github.com/azukaar/plurality/src/utils"
 	"github.com/azukaar/plurality/src/textsafe"
+	"github.com/azukaar/plurality/src/utils"
 )
 
 // summaryInFlight is the global single-flight gate for eco-mode summary
@@ -31,12 +31,34 @@ func userContextFor(userID string) context.Context {
 // filterCheckpointsForRequest applies the eco-mode visibility rules to the
 // message slice that's about to be sent to the LLM.
 //
-//   - ecoOn=false: drop every checkpoint pair entirely; the LLM sees the
-//     full pre-summary history. Use when the user has explicitly disabled
-//     eco for this conversation.
-//   - ecoOn=true: keep the checkpoint pair and drop every message before
-//     it. The LLM sees a system prompt, the checkpoint summary, and the
-//     live tail. There is at most one checkpoint per conversation.
+//   - ecoOn=false: drop every checkpoint row entirely; the LLM sees the full
+//     pre-summary history. Use when the user has explicitly disabled eco for
+//     this conversation.
+//   - ecoOn=true: keep the checkpoint row and drop every message before it. The
+//     LLM sees a system prompt, the checkpoint summary, and every live row after
+//     it. There is at most one checkpoint per conversation.
+//
+// NO SLIDING WINDOW IS APPLIED HERE, AND THAT IS THE ENTIRE POINT. The prompt
+// sent to the provider must be byte-stable and only ever APPENDED TO. A
+// budget-capped tail walks backwards from the newest row, so its start index
+// moves on (almost) every turn: that mutates the HEAD of the prompt, and a KV
+// prefix cache only matches a COMMON PREFIX, so every turn re-prefills
+// everything after the divergence point. A rolling tail is not a safety net
+// here, it is the defect — it is the single biggest cache-killer in this
+// subsystem, and it also silently hides history from the model every turn.
+//
+// Context-window safety lives where it belongs: RARELY, not per turn.
+//   - The per-message bound (truncateOversizedTail, below) is a pure function
+//     of a single stored row, so it renders identically on every request and
+//     can never move the prefix. It stays.
+//   - The preemptive compression-aware guard in SendChatCompletion estimates
+//     the view and returns a context-length error.
+//   - The LLM loop answers that with durable compaction ONCE, which rewrites
+//     history and pays the one-time cache miss; the new prefix is frozen from
+//     then on.
+//
+// So history is rewritten only when eco actually compacts — rarely — and never
+// on every turn.
 //
 // The system prompt is prepended elsewhere (in SendChatCompletion) and is
 // not part of `messages` here.
@@ -45,107 +67,26 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool) []utils.M
 		return db.FilterOutCheckpoints(messages)
 	}
 
-	// Find the LAST checkpoint pair (assistant half) — the rolling design
-	// keeps only one, but defensive against any stale extras.
+	// Find the LAST checkpoint row — the rolling design keeps only one, but be
+	// defensive against any stale extras.
 	lastCheckpointIdx := -1
 	for i, m := range messages {
 		if m.Role == "assistant" && db.IsCheckpointMessage(m) {
 			lastCheckpointIdx = i
 		}
 	}
-	// No checkpoint yet (eco never successfully compacted this conversation):
-	// a giant raw history must NOT be shipped whole — that is exactly how
-	// "WordPress Security Review" (1866 msgs, ~770k tokens) kept dying with
-	// context_length_exceeded. Fall through to the same budget-capped tail
-	// so even a never-compacted conversation is bounded on every request.
 	if lastCheckpointIdx < 0 {
-		return capTail(messages)
+		// No checkpoint yet (eco has never successfully compacted this
+		// conversation): send the whole history. It is append-only, so the
+		// prefix stays byte-identical and the cache keeps growing; when it
+		// outgrows the window the guard above triggers durable compaction,
+		// which is the only thing allowed to rewrite history.
+		return messages
 	}
-	tail := messages[lastCheckpointIdx:]
 
-	// Safety net: even with eco on, the live tail after the last checkpoint
-	// can grow unbounded. Never ship a context-busting tail to the provider.
-	// Message-count caps are not enough: observed a 600-message tail that was
-	// ~400k tokens because every tool result is huge (this conversation: avg
-	// 2.5k chars/tool msg). Cap by BUDGET (sum of content length) instead,
-	// always starting on a user message so the model still has a complete turn
-	// boundary to respond to. The checkpoint summary before the cap keeps the
-	// dropped middle coherent.
-	return capTail(tail)
-}
-
-// maxTailChars is the character budget for the live tail that is sent to
-// the provider (after any checkpoint summary). ~100k chars ≈ 25-30k tokens,
-// safe for any 128k-context model, leaving room for system + output.
-const maxTailChars = 100_000
-
-// capTail bounds a message slice to the live-tail budget so a conversation
-// can never ship a context-busting history to the provider. It walks
-// backwards from the end, accumulating the total content size, and keeps
-// the newest messages that fit the budget, always starting on a user
-// message (so the model still has a complete turn boundary to respond to
-// and tool results whose parent call is dropped are never orphaned).
-// Individual oversized messages are then truncated/dropped by
-// truncateOversizedTail.
-//
-// This is applied BOTH when a checkpoint exists (live tail after it) and
-// when there is NO checkpoint yet — a never-compacted conversation with a
-// huge raw history must still be bounded on every request, or every turn
-// dies with context_length_exceeded (observed: "WordPress Security
-// Review", 1866 msgs / ~770k tokens / no checkpoint, eco on).
-func capTail(tail []utils.Message) []utils.Message {
-	if len(tail) == 0 {
-		return tail
-	}
-	count := 0
-	chars := 0
-	var start int
-	start = len(tail) - 1
-	for start >= 0 {
-		chars += tail[start].Content.TotalContentChars()
-		count++
-		if chars > maxTailChars {
-			start++
-			break
-		}
-		if start == 0 {
-			break
-		}
-		start--
-	}
-	if start < 0 {
-		start = 0
-	}
-	// The budget walker can break with start == len(tail) (it incremented
-	// past the last in-range index to mark "cap from here"). That is a
-	// VALID slice start — tail[len:] is the empty slice — but it is NOT a
-	// valid index to dereference. Clamp it down to the last element first
-	// so the boundary back-up loop below can never index out of range.
-	// (Observed panic: "index out of range [N] with length N" on this
-	// conversation's ~3500-message tail.)
-	if start > len(tail)-1 {
-		start = len(tail) - 1
-	}
-	// Always back up to a user boundary so we never start mid-turn (which
-	// would orphan tool results whose parent is in the dropped section).
-	for start > 0 && tail[start].Role != "user" {
-		start--
-	}
-	// The budget must also bound INDIVIDUAL oversized messages. A single
-	// huge message (a multi-MB pasted blob, a giant tool result, an inline
-	// attachment dump) cannot be removed by the tail cap above — the walker
-	// breaks at it and then re-includes it via the user-boundary back-up —
-	// so a conversation that contains one keeps shipping it on every turn
-	// and eventually dies with context_length_exceeded (observed: the
-	// "WordPress Security Review" conversation, 1858 msgs, with a ~4.2MB
-	// Cosmos config dump inline; every "continue" resumed into a provider
-	// context error and the workflow dead-ended mid-work). Apply per-message
-	// bounds to whatever tail is actually kept below.
-	if start > 0 {
-		utils.Log("[Eco] capping tail by budget: kept %d msgs / %d chars (start idx %d) for context safety", len(tail)-start, chars, start)
-		tail = tail[start:]
-	}
-	return truncateOversizedTail(tail)
+	// Everything from the checkpoint forward, uncapped. Only the per-message
+	// bound is applied, because that one is byte-stable per stored row.
+	return truncateOversizedTail(messages[lastCheckpointIdx:])
 }
 
 // maxKeepTailChars bounds how many characters of a tail message are kept
