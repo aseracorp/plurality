@@ -335,6 +335,43 @@ func bootstrapCutoff(messages []utils.Message, targetTokens int) int {
 	return lu
 }
 
+// tickNeedsFold is the eco tick's gate, as a pure decision so it is testable.
+//
+// It fires on EITHER measure: the provider's own count (lastPT) or the sent
+// view. lastPT alone cannot gate this path.
+//
+// lastPT is the provider's prompt count of the last SUCCESSFUL request. The
+// preemptive guard in index.go refuses an oversized request BEFORE it is sent,
+// so the provider never counts it, so lastPT stays pinned at the last small
+// request while the view that will not fit keeps growing. The trigger can never
+// fire. Live, conv 9f0ab2352bf2bdc40e77384b, /app/data/server.log, 2026-11-25,
+// on the build that removed the sliding tail cap:
+//
+//	06:13:52 preemptive context guard: estimated 707728 tokens (sent view
+//	         679333 + schemas 28395) vs window 262144, 1201 live rows
+//	06:13:52 durable fold: 1196 rows folded, history 2439 -> 5 messages
+//	         (view ~34042 tokens, fold #1)
+//	06:55:10 lastPT=94602  below trigger=216000 (sent view 98148)  - skip
+//	08:00:21 lastPT=111325 below trigger=216000 (sent view 131383) - skip
+//
+// That is the self-lock the tail cap used to cause, moved: the cap used to
+// clamp the prompt so lastPT could not climb to the trigger; now the guard
+// refuses the request so lastPT is never recorded. Same lock, same gate.
+//
+// The tick is the path that folds at the TARGET, on the policy's cadence, and
+// tells the user. Skipping it hands compaction to overflow recovery, which must
+// fit the WINDOW and leave room for the roll-up it writes (durableFold budgets
+// the roll-up at (target - liveTail) * 3), so it cuts toward half the target —
+// from 679333 tokens that is a 95 % shed in one turn, with no pair minted by
+// the tick and no warning until the collapse.
+//
+// The sent view is the honest measure for a conversation whose requests the
+// guard blocks: SentViewTokens skips folded rows and caps each row at the
+// per-message bound, so it is what the frozen path ships.
+func tickNeedsFold(lastPT, sentViewTokens, triggerTokens int) bool {
+	return lastPT > triggerTokens || sentViewTokens > triggerTokens
+}
+
 // maxKeepTailChars bounds how many characters of a tail message are kept
 // when a single message is too large to fit the budget whole. It preserves
 // the head of the message so the model still sees what the text was about.
@@ -875,9 +912,9 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	// and raises the context-length error the LLM loop answers with a durable
 	// fold, so a conversation that jumps the window in one turn is compacted
 	// durably at the moment it happens, with the user told.
-	if lastPT <= ecoTrigger {
-		utils.Log("[Eco] conv %s lastPT=%d below trigger=%d (sent view %d tokens) - skip",
-			conversationID, lastPT, ecoTrigger, sentView)
+	if !tickNeedsFold(lastPT, sentView, ecoTrigger) {
+		utils.Log("[Eco] conv %s lastPT=%d and sent view %d tokens both below trigger=%d - skip",
+			conversationID, lastPT, sentView, ecoTrigger)
 		return
 	}
 	if existingCheckpointEndIdx < 0 {
