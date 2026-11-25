@@ -197,3 +197,36 @@ func itoaTest(n int) string {
 	}
 	return string(buf[i:])
 }
+
+// TestAttachmentTailKeepsSingleLargeAttachment pins the eviction floor. The
+// budget bounds the AGGREGATE of a long run, not one attachment: a single
+// large attachment is the file the user (or the loop) just produced, and the
+// model must see it. The floor counts BILLABLE entries, so an exempt image
+// riding alongside does not let the snippet be evicted.
+func TestAttachmentTailKeepsSingleLargeAttachment(t *testing.T) {
+	model := attActionModel(t, "att-budget-floor")
+
+	msgs := []utils.Message{
+		{Role: "system", Content: utils.NewTextContent("SYSTEM PROMPT")},
+		{Role: "user", Content: utils.NewPartsContent([]utils.ContentPart{
+			{Type: "text", Text: "read the report"},
+			attSnippet(0, 40*1024), // over the 32 KB budget on its own
+		})},
+	}
+	out, has, _ := PrepareMessagesForAI(msgs, model)
+	if !has {
+		t.Fatalf("attachments must be detected")
+	}
+	row := trailingAttachmentRow(out)
+	if row == nil {
+		t.Fatalf("expected a trailing attachment row")
+	}
+	body := attBytes(t, *row)
+	if !strings.Contains(body, "S0000S0000S0000") {
+		t.Errorf("the only attachment was evicted by the budget: the model is left with a "+
+			"placeholder for the file it was just given (row=%d bytes)", len(body))
+	}
+	if !strings.Contains(body, "att_0") {
+		t.Errorf("the trailing row must reference the attachment it is showing: %s", body[:attMin(len(body), 300)])
+	}
+}

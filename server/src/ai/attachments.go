@@ -531,13 +531,21 @@ const attachmentTailBudgetChars = 32 * kb
 // budget is a cost, an empty row is a missing attachment.
 func budgetAttachmentTail(entries []tailEntry, budget int) ([]utils.ContentPart, []string) {
 	keep := entries
-	billed := 0
+	billed, billable := 0, 0
 	for _, e := range keep {
 		if !e.exempt {
 			billed += e.size
+			billable++
 		}
 	}
-	for len(keep) > 1 && billed > budget {
+	// Evict the OLDEST billable entry while over budget AND more than one
+	// billable entry remains. The floor is ONE billable entry, not one entry:
+	// exempt images do not count, so a row of [40 KB snippet, fresh image]
+	// must keep the snippet. Evicting it left the model with a placeholder for
+	// the file the user had just attached — caught by the race gate on
+	// TestRecallResultStripIsStable, which pins that the trailing row
+	// references the fresh snippet.
+	for billed > budget && billable > 1 {
 		idx := -1
 		for j, e := range keep {
 			if !e.exempt {
@@ -549,6 +557,7 @@ func budgetAttachmentTail(entries []tailEntry, budget int) ([]utils.ContentPart,
 			break // only exempt entries left: images are not evictable
 		}
 		billed -= keep[idx].size
+		billable--
 		keep = append(keep[:idx], keep[idx+1:]...)
 	}
 
