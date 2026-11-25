@@ -414,9 +414,13 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// discounted — NOT the marshalled body: see that helper for why.
 	//
 	// viewTokens is the eco view's own size (folded rows skipped, per-message
-	// cap applied) — the same measure the eco trigger gate uses, so the two
-	// agree about what is being sent.
-	viewTokens := SentViewTokens(visibleMessages)
+	// cap applied) measured on the bytes THIS request ships: a tool row with a
+	// stored caveman projection ships the projection, so the raw body must not
+	// be counted here. The eco trigger keeps the raw measure (it is
+	// per-conversation and model-agnostic); the guard has the model in hand and
+	// must agree with the wire, or it over-counts and folds conversations that
+	// fit. See SentViewTokensShipped for the 2026-11-25 trace.
+	viewTokens := SentViewTokensShipped(visibleMessages, activeCavemanStones(model))
 	if err := preemptiveContextGuard(model.Name, viewTokens, requestData.Tools, len(jsonData), windowTokens, len(visibleMessages)); err != nil {
 		return nil, nil, err
 	}
