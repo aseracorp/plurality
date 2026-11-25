@@ -302,7 +302,7 @@ const truncationBannerChars = 256
 func bootstrapCutoff(messages []utils.Message, targetTokens int) int {
 	lu := -1
 	for i, m := range messages {
-		if m.Role == "user" {
+		if m.Role == "user" && !m.Compacted && !db.IsCheckpointMessage(m) {
 			lu = i
 		}
 	}
@@ -314,10 +314,10 @@ func bootstrapCutoff(messages []utils.Message, targetTokens int) int {
 	// the 30k-row conversations this path exists for.
 	suffix := 0
 	for i := range messages {
-		suffix += SentViewRowChars(messages[i])
+		suffix += sentViewRowCharsLive(messages[i])
 	}
 	for i := 0; i <= lu; i++ {
-		if messages[i].Role == "user" {
+		if messages[i].Role == "user" && !messages[i].Compacted {
 			fits := suffix/3 <= targetTokens
 			if i == 0 {
 				if fits {
@@ -327,7 +327,7 @@ func bootstrapCutoff(messages []utils.Message, targetTokens int) int {
 				return i
 			}
 		}
-		suffix -= SentViewRowChars(messages[i])
+		suffix -= sentViewRowCharsLive(messages[i])
 	}
 	// Nothing up to the newest user row fits: fold everything older than it.
 	// A fold that leaves only the newest user turn is the floor; the storage
@@ -1076,6 +1076,43 @@ func SentViewRowChars(m utils.Message) int {
 	return chars
 }
 
+// sentViewRowCharsLive is SentViewRowChars for a row the wire ACTUALLY carries.
+//
+// A row an earlier fold marked compacted is NOT on the wire: the LLM-facing
+// view is loaded with `AND compacted = 0` (db.getConversationFromDB), so the
+// row exists only in the raw slice the fold indexes positionally. Counting it
+// measures history the request stopped shipping turns ago.
+//
+// Returning 0 (rather than skipping the index) keeps the suffix walks in
+// bootstrapCutoff / bootstrapCutoffRefined exact: a compacted row adds 0 to
+// the running suffix and subtracts 0 from it, so suffix at index i is the
+// live sent view of messages[i:] — the number the wire ships.
+func sentViewRowCharsLive(m utils.Message) int {
+	if m.Compacted {
+		return 0
+	}
+	return SentViewRowChars(m)
+}
+
+// liveFoldSet is the render set of a fold starting at foldFrom: the rows the
+// stored roll-up will actually represent.
+//
+// db.CompactConversationDurable builds this same set internally (skip rows an
+// earlier fold marked compacted, skip the checkpoint pair) and renders exactly
+// it. The ai layer sized its budget off messages[:foldFrom] instead, so the
+// two layers disagreed about how many rows one fold covered — see
+// durableFoldBudget.
+func liveFoldSet(messages []utils.Message) []utils.Message {
+	out := make([]utils.Message, 0, len(messages))
+	for i := range messages {
+		if messages[i].Compacted || db.IsCheckpointMessage(messages[i]) {
+			continue
+		}
+		out = append(out, messages[i])
+	}
+	return out
+}
+
 // SentViewRowCharsShipped is SentViewRowChars measured on the bytes THIS model
 // ships: a tool row with a stored caveman projection ships the projection
 // (index.go substitutes msg.CompressedContent for the raw body when
@@ -1199,8 +1236,40 @@ func PriorSummaryFromView(messages []utils.Message) string {
 // separately is what produced the 2026-11-25 collapse: the caller cut toward
 // 72000 while the summariser budgeted against 144000, the room went negative,
 // and the stored checkpoint lost everything it summarised.
+//
+// The chain's own markers are paid for too (durableChainOverheadChars). The
+// storage layer enforces the bound on prior + excerpt + markers, so an excerpt
+// ceiling that ignores the markers leaves a roll-up that overshoots the bound
+// by exactly that much — and an overshoot is what fires the escape valve.
 func durableFoldRoomChars(budgetTokens, tailTokens, priorChars, overheadChars int) int {
-	return overflowFoldRollupRoomChars(budgetTokens, tailTokens) - priorChars - 2*overheadChars
+	return overflowFoldRollupRoomChars(budgetTokens, tailTokens) - priorChars - 2*overheadChars - durableChainOverheadChars
+}
+
+// durableChainOverheadChars is what db.composeDurableSummary reserves on top of
+// the prior text and this fold's excerpt: the ONE section banner, the blank line
+// around it, and the escape-valve marker (its digits plus the storage layer's
+// own slack). The constants live in db; reading them here keeps the two layers
+// on one number instead of two hand-copied guesses.
+const durableChainOverheadChars = len(db.NewerHistoryBanner) + 4 + 64 + 128
+
+// durableRollupBound is the bound on the WHOLE stored roll-up (prior + this
+// fold's excerpt), in chars — the number handed to db.CompactConversationDurable
+// as summaryBound, which is what db.composeDurableSummary enforces.
+//
+// It is the roll-up's share of the fold budget BEFORE the prior is subtracted.
+// durableFoldRoomChars subtracts the prior because it answers a different
+// question: how much room the NEW excerpt has. The two are not the same number
+// and passing the second as the bound is a self-inflicted escape valve: the
+// excerpt is rendered up to the full limit, so prior + excerpt always exceeds
+// it, so the prior is megacaved and re-emitted on EVERY fold. The prior sits at
+// the head of the prompt, so the KV prefix diverges there every fold — the
+// rolling summary, and the cache_read=0 that follows it.
+func durableRollupBound(budgetTokens, tailTokens int) int {
+	room := overflowFoldRollupRoomChars(budgetTokens, tailTokens)
+	if room < 0 {
+		return 0
+	}
+	return room
 }
 
 // durableFold is the single durable fold entry point, shared by the eco
@@ -1265,7 +1334,12 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 	overhead := megacaveLabelOverheadChars
 	room := durableFoldRoomChars(budget, tailTokens, priorChars, overhead)
 
-	foldable := messages[:foldFrom]
+	// The render set, NOT messages[:foldFrom]. db.CompactConversationDurable
+	// builds its fold set by skipping rows an earlier fold marked compacted
+	// and the checkpoint pair, and renders EXACTLY that set — so every number
+	// the ai layer derives here must be measured on the same set, or the
+	// caller budgets for rows the fold will never represent.
+	foldable := liveFoldSet(messages[:foldFrom])
 	// The room is a CEILING, not a licence. A fold that renders the folded
 	// rows at their own size is not a compaction: the megacave transform
 	// runs at ratio ~1.045 on prose+tool content (it ADDS labels and the
@@ -1277,6 +1351,13 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 	// wire size of the rows it replaces: every fold then provably shrinks the
 	// representation, on any content shape, and the per-row budget lands
 	// near the average row size so large rows are the ones elided.
+	// Measuring the whole prefix counts history the wire stopped shipping
+	// turns ago: live, conv 9f0ab2352bf2bdc40e77384b at 14:13:09 logged
+	// folded=7052851 chars for a fold that rendered 112 rows / ~900000 chars —
+	// a 7.8x over-count. That number IS the excerpt's ceiling
+	// (chars = min(room, foldedChars/2)), so the over-count inflates the
+	// ceiling the roll-up is capped at, and the same measure is the
+	// hysteresis floor, so it lets a fold that removes nothing pass.
 	foldedChars := 0
 	for i := range foldable {
 		foldedChars += SentViewRowChars(foldable[i])
@@ -1314,7 +1395,20 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 	// 21521). The bound stays a CEILING: room is bounded by the model's window,
 	// so the write can still never grow the roll-up without limit.
 	floor := (minMegacaveRowShowChars + megacaveLabelOverheadChars) * len(foldable)
-	summaryBound := chars
+	// THE ROLL-UP BOUND IS NOT THE EXCERPT CEILING. `chars` bounds THIS fold's
+	// excerpt. The stored roll-up is prior + excerpt, and db.composeDurableSummary
+	// truncates the PRIOR to `limit - excerpt` when prior + excerpt > limit — the
+	// escape valve, whose marker is the "rolling summary" the owner named.
+	// Passing the excerpt ceiling as the roll-up bound therefore guarantees the
+	// valve fires: the excerpt is rendered up to the whole limit, so the prior can
+	// never fit next to it, and every fold rewrites the head of the prompt.
+	//
+	// Live, conv 9f0ab2352bf2bdc40e77384b, 2026-11-25 14:13:09: room=545051,
+	// prior=102805, excerpt rendered at 545051 -> 647856 > 545051 -> valve ->
+	// 14:14:06 cache_read=0, then 14:17:22 [PrefixWatch] CACHE BREAK at byte 6001
+	// (region: HISTORY). The bound is the room the ROLL-UP has, and the excerpt
+	// ceiling is what is left of it after the prior is paid for.
+	summaryBound := durableRollupBound(budget, tailTokens)
 	if summaryBound < floor {
 		// No room: the renderer lands on its floor, so the bound must cover the
 		// floor, or the storage layer truncates text its own renderer produced.
@@ -1615,7 +1709,7 @@ func ultracaveMinFoldProgressTokens(target ...int) int {
 func ultracaveFoldProgressTokens(messages []utils.Message, foldFrom int) int {
 	removed := 0
 	for i := 0; i < foldFrom && i < len(messages); i++ {
-		if db.IsCheckpointMessage(messages[i]) {
+		if db.IsCheckpointMessage(messages[i]) || messages[i].Compacted {
 			continue
 		}
 		removed += SentViewRowChars(messages[i])
@@ -1719,7 +1813,7 @@ func bootstrapCutoffRefined(messages []utils.Message, targetTokens int, lu int) 
 	for i := 0; i < lu; i++ {
 		if suffix/summaryCharsPerToken <= targetTokens {
 			b := i
-			for b < lu && (messages[b].Role == "tool" || db.IsCheckpointMessage(messages[b])) {
+			for b < lu && (messages[b].Role == "tool" || messages[b].Compacted || db.IsCheckpointMessage(messages[b])) {
 				b++
 			}
 			if b <= 0 || b >= lu {
@@ -1727,7 +1821,7 @@ func bootstrapCutoffRefined(messages []utils.Message, targetTokens int, lu int) 
 			}
 			return b
 		}
-		suffix -= SentViewRowChars(messages[i])
+		suffix -= sentViewRowCharsLive(messages[i])
 	}
 	return -1
 }
