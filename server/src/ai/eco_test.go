@@ -36,39 +36,20 @@ func toolMsg() utils.Message {
 	}
 }
 
-// TestFilterCheckpointsForRequest_BudgetCapLastElementIsPanicRegression
-// reproduces the crash that killed the server whenever "Debug WordPress
-// Slowness" hit the eco tail-cap path:
-//
-//	panic: runtime error: index out of range [N] with length N
-//	github.com/azukaar/plurality/src/ai.filterCheckpointsForRequest
-//	    server/src/ai/eco.go:89
-//
-// The budget walker runs backwards from the end and, when the LAST message
-// alone tips the budget over maxTailChars, increments start one past the
-// end (== len(tail)). That is a valid *slice* start but an invalid index,
-// and the subsequent "back up to a user boundary" loop dereferenced
-// tail[start] before the fix. This test pins the scenario: tail length is
-// not huge (the bug is about position, not size).
-func TestFilterCheckpointsForRequest_BudgetCapLastElementIsPanicRegression(t *testing.T) {
+// TestFilterCheckpointsForRequest_OversizedLastRowNoPanic: the walker that
+// used to cap the tail could compute a one-past-end index and panic. The
+// cap is deleted, so the panic path is gone with it; the test stays as the
+// regression pin for "a single oversized live row after the pair must not
+// panic and must not be dropped".
+func TestFilterCheckpointsForRequest_OversizedLastRowNoPanic(t *testing.T) {
 	msgs := []utils.Message{
 		// One checkpoint pair (assistant + tool half).
 		checkpointMsg(),
 		toolMsg(),
-		// One live user turn that alone exceeds the 100k-char budget.
+		// One live user turn that alone exceeds the budget the deleted cap used.
 		{Role: "user", Content: utils.NewTextContent(strings.Repeat("x", 150_000))},
 	}
 
-	// Must not panic. With eco ON the tail after the checkpoint is the
-	// single oversized user message: the walker breaks at start==1, then
-	// increments to start==2 == len(tail) (one-past-end), clamps down to
-	// the last element, stays on the user boundary, and keeps the message.
-	// The contract this test pins is "must not panic". The 1-row window it used
-	// to assert was the sliding tail-cap, REMOVED from the eco-on path: sliding
-	// the head is what destroyed the KV prompt-cache prefix. The frozen-prefix
-	// contract is pair + every live row, so the oversized user row is kept
-	// (bounded per-message) and the walker's one-past-end index is never
-	// dereferenced.
 	got := filterCheckpointsForRequest(msgs, true)
 	if len(got) != 3 {
 		t.Fatalf("expected 3 messages (checkpoint pair + the live user turn), got %d", len(got))
@@ -77,15 +58,22 @@ func TestFilterCheckpointsForRequest_BudgetCapLastElementIsPanicRegression(t *te
 	if last.Role != "user" {
 		t.Fatalf("expected last role user, got %q", last.Role)
 	}
-	if n := len(last.TextContent()); n >= 150_000 {
-		t.Fatalf("expected the oversized user row bounded per-message, got %d chars", n)
+	// Ships at its stored size: the request path rewrites nothing. Bounding
+	// this view is the preemptive guard's job (it fires on this measure), and
+	// the durable fold is what shrinks it.
+	if n := last.Content.TotalContentChars(); n != 150_000 {
+		t.Fatalf("oversized user row shipped %d chars, want the stored 150000 — "+
+			"a rewritten row changes bytes between turns and drops the KV prefix", n)
 	}
 }
 
-// TestFilterCheckpointsForRequest_BudgetCapLongTail exercises the normal
-// capping path: a long tail where the budget is exceeded somewhere in the
-// middle must back up to a user boundary and keep the suffix.
-func TestFilterCheckpointsForRequest_BudgetCapLongTail(t *testing.T) {
+// TestFilterCheckpointsForRequest_LongTailKeepsEveryRow: a long tail (30 turns
+// of ~5k chars, past the budget the deleted cap enforced) ships every row. It
+// used to assert "the kept tail starts on a user message and respects
+// maxTailChars" — that sliding window re-picked its start index on almost every
+// turn, so the first bytes of the prompt moved every turn and the provider's
+// prefix cache was invalidated from the head.
+func TestFilterCheckpointsForRequest_LongTailKeepsEveryRow(t *testing.T) {
 	var msgs []utils.Message
 	msgs = append(msgs, checkpointMsg(), toolMsg())
 	// 30 alternating user/assistant turns of ~5k chars each (~150k total),
@@ -118,11 +106,15 @@ func TestFilterCheckpointsForRequest_BudgetCapLongTail(t *testing.T) {
 }
 
 // TestFilterCheckpointsForRequest_EcoOff drops checkpoint pairs entirely.
-func TestFilterCheckpointsForRequest_EcoOff(t *testing.T) {
+// TestFilterCheckpointsForRequest_EcoOff: auto-compaction OFF means the user
+// asked for the raw history, so the pair is dropped and every stored row ships.
+// Here the fixture carries a pair, and that case has its own rule (see
+// TestFilterCheckpointsForRequest_EcoOffWithFoldedRows): dropping a pair whose
+// rows the loader has already excluded would delete the folded history with
+// nothing to replace it.
+func TestFilterCheckpointsForRequest_EcoOffNoPair(t *testing.T) {
 	msgs := []utils.Message{
 		{Role: "user", Content: utils.NewTextContent("hi")},
-		checkpointMsg(),
-		toolMsg(),
 		{Role: "assistant", Content: utils.NewTextContent("hello")},
 	}
 	got := filterCheckpointsForRequest(msgs, false)
@@ -136,22 +128,64 @@ func TestFilterCheckpointsForRequest_EcoOff(t *testing.T) {
 	}
 }
 
-// TestFilterCheckpointsForRequest_TruncatesOversizedSingleMessage ensures a
-// single oversized message in the tail (e.g. a multi-MB pasted blob or a
-// giant inline attachment dump) is truncated to the per-message bound
-// instead of being shipped in full. Before this fix, the tail-cap walker
-// re-included the whole message via the user-boundary back-up, so the
-// "WordPress Security Review" conversation (1858 msgs, ~4.2MB Cosmos dump
-// inline) shipped the blob on every resume and dead-ended with
-// context_length_exceeded.
-func TestFilterCheckpointsForRequest_TruncatesOversizedSingleMessage(t *testing.T) {
+// TestFilterCheckpointsForRequest_EcoOffWithFoldedRows: eco OFF, and a pair
+// EXISTS (it was minted by the context-overflow fallback, which fires
+// regardless of the setting because the alternative is a provider 400 on every
+// turn). The LLM loader excludes rows flagged compacted, so dropping the pair
+// here removes the ONLY record of those rows: the model answers with the
+// folded history simply gone. Silent context loss, exactly what this subsystem
+// exists to prevent. So the pair ships, and the view is lossless.
+func TestFilterCheckpointsForRequest_EcoOffWithFoldedRows(t *testing.T) {
+	// Realistic layout: durable compaction mints the pair at the NEWEST seq, so
+	// every live row follows it. Rows before it are the folded ones, which the
+	// LLM loader already excludes.
+	msgs := []utils.Message{
+		checkpointMsg(),
+		toolMsg(),
+		{Role: "user", Content: utils.NewTextContent("ask")},
+		{Role: "assistant", Content: utils.NewTextContent("hello")},
+	}
+	got := filterCheckpointsForRequest(msgs, false)
+	pair := 0
+	for _, m := range got {
+		if db.IsCheckpointMessage(m) {
+			pair++
+		}
+	}
+	if pair != 2 {
+		t.Fatalf("eco off with an existing fold shipped %d pair rows, want 2: "+
+			"the pair is the only representation of the compacted rows, and the "+
+			"loader already excluded those rows", pair)
+	}
+	if len(got) != len(msgs) {
+		t.Fatalf("eco off with a fold shipped %d rows, want all %d", len(got), len(msgs))
+	}
+}
+
+// The size caps this file used to test (a per-message truncation to
+// maxKeepTailChars and a drop rule for oversized orphan tool results) are
+// DELETED: a truncated row changes bytes between passes (the banner made the
+// row oversized on its own output: 100000 + a 104-char banner = 100104, over
+// its own bound), so every later pass re-truncated it and rewrote the banner —
+// 332 stored rows carried the banner and 6 carried it nested twice. The tests
+// below pin the replacement contract: rows ship as stored.
+
+// TestFilterCheckpointsForRequest_ShipsOversizedSingleMessage: the per-message
+// truncation this test used to pin is DELETED. It was the prefix-killer: the
+// banner was appended AFTER cutting to the bound (100000 + a 104-char banner =
+// 100104, over the bound the function claimed to enforce), so the row was
+// oversized on its own output and every later pass re-truncated it and rewrote
+// the banner's "original length". Live evidence: 332 stored rows carried the
+// banner, 6 carried it nested twice, the inner length equal to the outer cut.
+//
+// The contract now: rows ship as stored, the guard bounds the view, and a
+// durable fold is what makes the view smaller.
+func TestFilterCheckpointsForRequest_ShipsOversizedSingleMessage(t *testing.T) {
 	msgs := []utils.Message{
 		checkpointMsg(),
 		toolMsg(),
 		{Role: "user", Content: utils.NewTextContent(strings.Repeat("x", 150_000))},
 	}
-	// Eco-on sends the pair + every live row (no sliding window), so the
-	// oversized user row SURVIVES the filter and must be bounded in place.
 	got := filterCheckpointsForRequest(msgs, true)
 	if len(got) != 3 {
 		t.Fatalf("expected 3 messages (pair + live user turn), got %d", len(got))
@@ -160,20 +194,33 @@ func TestFilterCheckpointsForRequest_TruncatesOversizedSingleMessage(t *testing.
 		t.Fatalf("expected kept role user, got %q", got[2].Role)
 	}
 	text := got[2].TextContent()
-	if len(text) < 90_000 || len(text) >= 150_000 {
-		t.Fatalf("expected oversized user message truncated (head kept), got %d chars", len(text))
+	if len(text) != 150_000 {
+		t.Fatalf("oversized user row shipped %d chars, want the stored 150000", len(text))
 	}
-	if !strings.Contains(text, "truncated by Plurality") {
-		t.Fatalf("expected truncation banner in retained content")
+	if strings.Contains(text, "truncated by Plurality") {
+		t.Fatal("a truncation banner is present in the sent view: the request path must not rewrite rows")
+	}
+	// 150k chars ~ 50k tokens, which FITS a 128k window, so the guard must NOT
+	// fire here: firing on a view that fits is the ~20x false positive that
+	// forced a fold every turn (conv c363b2b3, live rows 1830 -> 1855).
+	if err := preemptiveContextGuard("gpt-4o", SentViewTokens(got), nil, 0, 128_000, len(got)); err != nil {
+		t.Fatalf("guard fired on a %d-token view that fits a 128k window (false positive forces "+
+			"a fold every turn): %v", SentViewTokens(got), err)
+	}
+	// Give it a window the view genuinely exceeds and the refusal must appear:
+	// with no per-message cap, the guard is the ONLY bound on this path.
+	if err := preemptiveContextGuard("gpt-4o", SentViewTokens(got), nil, 0, 32_000, len(got)); err == nil {
+		t.Fatalf("guard accepted a %d-token view on a 32k window", SentViewTokens(got))
 	}
 }
 
-// TestFilterCheckpointsForRequest_TruncatesOversizedToolResult ensures a
-// huge tool result whose parent assistant call is STILL present in the tail
-// is truncated (not dropped), so the OpenAI tool_calls/result pairing stays
-// valid. Before this fix the giant result was shipped whole and blew the
-// context window.
-func TestFilterCheckpointsForRequest_TruncatesOversizedToolResult(t *testing.T) {
+// TestFilterCheckpointsForRequest_KeepsOversizedToolResultWithItsCall: a huge
+// tool result whose parent assistant call is present ships WHOLE. It is not
+// dropped (the OpenAI tool_calls/result pairing must stay legal: dropping the
+// result of a surviving call is a 400 on every later request) and it is not
+// truncated (a truncated row changes bytes between passes, which discards the
+// KV prefix behind it).
+func TestFilterCheckpointsForRequest_KeepsOversizedToolResultWithItsCall(t *testing.T) {
 	msgs := []utils.Message{
 		checkpointMsg(),
 		toolMsg(),
@@ -187,17 +234,20 @@ func TestFilterCheckpointsForRequest_TruncatesOversizedToolResult(t *testing.T) 
 	if len(got) == 0 {
 		t.Fatalf("expected a non-empty tail")
 	}
+	if len(got) != len(msgs) {
+		t.Fatalf("sent view dropped %d of %d rows", len(msgs)-len(got), len(msgs))
+	}
+	var shipped int
 	for _, m := range got {
-		if db.IsCheckpointMessage(m) {
-			continue // the pair's summary row is not a tool result under test
-		}
-		if m.Role == "tool" && (len(m.TextContent()) < 90_000 || len(m.TextContent()) >= 150_000) {
-			t.Fatalf("expected oversized tool result truncated (head kept), got %d chars", len(m.TextContent()))
+		if m.Role == "tool" && m.ToolCallID == "call_big" {
+			shipped = m.Content.TotalContentChars()
 		}
 	}
-	// The tool call must still have its result (truncated, never dropped).
-	foundCall := false
-	foundResult := false
+	if shipped != 120_000 {
+		t.Fatalf("tool result shipped %d chars, want the stored 120000", shipped)
+	}
+	// Pairing intact: the call and its result are both present.
+	var foundCall, foundResult bool
 	for _, m := range got {
 		if m.Role == "assistant" {
 			for _, tc := range m.ToolCalls {
@@ -211,7 +261,7 @@ func TestFilterCheckpointsForRequest_TruncatesOversizedToolResult(t *testing.T) 
 		}
 	}
 	if !foundCall || !foundResult {
-		t.Fatalf("expected kept tool call call_big AND its truncated result (call=%v result=%v)", foundCall, foundResult)
+		t.Fatalf("tool call/result pairing must survive (call=%v result=%v)", foundCall, foundResult)
 	}
 }
 
@@ -236,45 +286,29 @@ func TestFilterCheckpointsForRequest_DropsDanglingOversizedToolResult(t *testing
 	}
 }
 
-// TestCompactConversationForContext_TruncatesOversizedMessage ensures the
-// context-overflow recovery path (CompactConversationForContext +
-// TruncateOversizedMessages) also bounds a single oversized message that
-// sits inside the newest keep-window, so the retry cannot fail again with
-// context_length_exceeded on the same giant blob.
-func TestCompactConversationForContext_TruncatesOversizedMessage(t *testing.T) {
-	msgs := []utils.Message{
-		{Role: "system", Content: utils.NewTextContent("sys")},
-		{Role: "user", Content: utils.NewTextContent("hi")},
-		{Role: "user", Content: utils.NewTextContent(strings.Repeat("q", 250_000))}, // monster inline blob
-		{Role: "assistant", Content: utils.NewTextContent("ok")},
-	}
-	got := CompactConversationForContext(msgs, 30)
-	if len(got) != 4 {
-		t.Fatalf("expected all 4 messages preserved (truncated, not dropped), got %d", len(got))
-	}
-	for _, m := range got {
-		if m.Role == "user" && len(m.TextContent()) >= 250_000 {
-			t.Fatalf("expected oversized user message truncated, got %d chars", len(m.TextContent()))
-		}
-		if len(m.TextContent()) > 150_000 {
-			t.Fatalf("message still oversized after compaction: %d chars", len(m.TextContent()))
-		}
-	}
-}
+// The compacting-then-truncating recovery path this file used to test
+// (CompactConversationForContext + TruncateOversizedMessages) is DELETED: it
+// dropped whole live turns from the request and truncated rows the sender
+// stores, i.e. history loss and a churning KV prefix. Its replacement is the
+// durable fold (stage-1 render + the model's checkpoint) and, when nothing
+// can be folded, the durable roll-up refine. See
+// TestRefinedRollupShrinksTheArchive in eco_rollup_refine_test.go.
 
-// TestFilterCheckpointsForRequest_TruncatesOversizedMultipartMessage guards
-// the case TextContent() misses: a multi-part tool result whose FIRST part
-// is a short preamble and whose LATER text part carries a multi-MB blob.
-// Before TotalContentChars existed, truncation sized against the first part
-// only and shipped the hidden megabyte payload (the actual "New Chat stops
-// working" bug). It must now truncate to the bound and drop the blob part.
-func TestFilterCheckpointsForRequest_TruncatesOversizedMultipartMessage(t *testing.T) {
+// TestFilterCheckpointsForRequest_ShipsOversizedMultipartMessage guards the
+// case TextContent() used to miss: a multi-part tool result whose FIRST part
+// is a short preamble and whose LATER text part carries a multi-MB blob. The
+// estimator must size it by TotalContentChars (the whole payload), so the
+// guard sees the hidden megabyte and refuses the request instead of shipping
+// it. The row ships whole — nothing on this path rewrites stored bytes.
+func TestFilterCheckpointsForRequest_ShipsOversizedMultipartMessage(t *testing.T) {
 	preamble := "[Attachment att_99, bytes 0-50000 of 4901042]"
 	blob := strings.Repeat("B", 4_900_000)
 	msgs := []utils.Message{
 		checkpointMsg(),
 		toolMsg(),
 		{Role: "user", Content: utils.NewTextContent("continue")},
+		{Role: "assistant", Content: utils.NewTextContent("reading"),
+			ToolCalls: []utils.ToolCall{{ID: "call_huge", Type: "function", Function: utils.FunctionCall{Name: "conversations__retrieve_conversation", Arguments: "{}"}}}},
 		{Role: "tool", ToolCallID: "call_huge", Name: "conversations__retrieve_conversation",
 			Content: utils.NewPartsContent([]utils.ContentPart{
 				{Type: "text", Text: preamble},
@@ -282,17 +316,27 @@ func TestFilterCheckpointsForRequest_TruncatesOversizedMultipartMessage(t *testi
 			})},
 	}
 	got := filterCheckpointsForRequest(msgs, true)
+	var total int
 	for _, m := range got {
-		if m.Role != "tool" || m.ToolCallID != "call_huge" {
-			continue
+		if m.Role == "tool" && m.ToolCallID == "call_huge" {
+			total = m.Content.TotalContentChars()
 		}
-		// The giant later part must be gone: total retained text stays <= bound+a little.
-		total := m.Content.TotalContentChars()
-		if total >= 100_000+200 {
-			t.Fatalf("expected multi-part oversized tool result truncated, got %d total chars", total)
-		}
-		if !strings.Contains(m.TextContent(), "truncated by Plurality") {
-			t.Fatalf("expected truncation banner in multi-part result")
-		}
+	}
+	if total != len(preamble)+len(blob) {
+		t.Fatalf("multi-part tool result shipped %d chars, want the stored %d "+
+			"(the hidden later part must be counted AND shipped, not hidden by TextContent)",
+			total, len(preamble)+len(blob))
+	}
+	if strings.Contains(got[len(got)-1].TextContent(), "truncated by Plurality") {
+		t.Fatal("a truncation banner is present: the request path must not rewrite rows")
+	}
+	// The estimator sees the megabyte, so the guard fires: that refusal is the
+	// durable fold, which bounds this row inside the fold render.
+	est := SentViewTokens(got)
+	if est < 1_600_000 {
+		t.Fatalf("estimator counted %d tokens for a 4.9MB row: it sized only the first part", est)
+	}
+	if err := preemptiveContextGuard("gpt-4o", est, nil, 0, 128_000, len(got)); err == nil {
+		t.Fatal("guard accepted a 4.9MB view on a 128k window")
 	}
 }

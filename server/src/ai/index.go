@@ -185,7 +185,7 @@ func buildChatRequestParts(ctx context.Context, model utils.Model, conv utils.Co
 	// loop's recovery trim in memory.
 	// When eco is off: drop the checkpoint pair entirely and send the raw
 	// history.
-	windowTokens := Models.MaxContextTokensForPrefixed(model.Name)
+	windowTokens := Models.DeclaredContextWindow(model.Name)
 	visibleMessages := filterCheckpointsForRequest(conv.Messages, conv.ModelSelected.EcoMode, windowTokens)
 	allMessages := append([]utils.Message{systemMsg}, visibleMessages...)
 	optimizedMessages, hasAttachments, hasDocAttachments := PrepareMessagesForAI(allMessages, model)
@@ -421,8 +421,17 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// must agree with the wire, or it over-counts and folds conversations that
 	// fit. See SentViewTokensShipped for the 2026-11-25 trace.
 	viewTokens := SentViewTokensShipped(visibleMessages, activeCavemanStones(model))
-	if err := preemptiveContextGuard(model.Name, viewTokens, requestData.Tools, len(jsonData), windowTokens, len(visibleMessages)); err != nil {
-		return nil, nil, err
+	// The preemptive guard is AUTO compaction: it turns "this view is about to
+	// exceed the window" into a context-length error, which the loop answers with
+	// a durable fold. With auto-compaction off the user chose raw history, so the
+	// guard must not fire — no fold, no summary, no rewriting of the model's
+	// context behind the user's back. The real overflow path in the loop is
+	// unaffected: it fires on the provider's own context-length error, which is
+	// a true known overflow, not a projection.
+	if conv.ModelSelected.EcoMode {
+		if err := preemptiveContextGuard(model.Name, viewTokens, requestData.Tools, len(jsonData), windowTokens, len(visibleMessages)); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	// Resolve the target once so we know whether this request is routed

@@ -221,9 +221,10 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 				//   2. Reload via db.GetConversationByIdInternal, which is the
 				//      LLM-facing view (folded rows already excluded).
 				//   3. Only if the durable fold folded 0 rows (boundary refused:
-				//      everything foldable is already folded, or the conversation
-				//      is one giant turn) fall back to the in-memory trim, so a
-				//      single oversized message can still be bounded for the retry.
+				//      everything foldable is already folded) refine the roll-up
+				//      with the model, in place — see RefineRollupSummary. There is
+				//      no in-memory trim any more: a lossy per-request trim is the
+				//      silent history loss this subsystem exists to prevent.
 				utils.Error("[LLMLoop] context length exceeded — compacting history durably and retrying", err)
 				before := len(conversation.Messages)
 				// The fold's LLM-first summary needs the CONVERSATION'S CHAT MODEL and
@@ -245,27 +246,58 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 						ar.ConversationID, foldedRows, before, after, SentViewTokens(conversation.Messages), ultracaveFoldsThisTurn)
 					ar.Broadcast(SSEEvent{
 						Type:           "text",
-						Content:        fmt.Sprintf("(The conversation was too long for the model's context window — %d older messages were compacted into the rolling summary. Retrying …)", foldedRows),
+						Content:        fmt.Sprintf("(The conversation was too long for the model's context window — %d of its oldest messages were archived into the durable summary, which replaces them in new requests. The full transcript stays in your history. Retrying …)", foldedRows),
 						ConversationID: ar.ConversationID,
 					})
 					continue
 				}
-				// Nothing durable could be folded (0 rows): last resort, bound THIS
-				// request in memory. Documented tradeoff — this trim is ephemeral
-				// and moves the head of the sent history, so it costs KV prefix
-				// reuse; that is acceptable exactly because it is the last resort
-				// and not the per-request default.
-				conversation.Messages = CompactConversationForContext(conversation.Messages, 24)
-				after := len(conversation.Messages)
-				utils.Log("[LLMLoop] durable fold removed 0 rows — ephemeral in-memory trim %d -> %d messages (unpersisted, next reload re-inflates)", before, after)
-				if after < before {
-					ar.Broadcast(SSEEvent{
-						Type:           "text",
-						Content:        "(The conversation was too long for the model's context window — older messages were compacted. Retrying …)",
-						ConversationID: ar.ConversationID,
-					})
-					continue
+				// Nothing durable could be folded (0 rows): every foldable row is
+				// already folded, so the ONLY thing left that can shrink the view
+				// is the roll-up itself. Refine it with the model — one more
+				// summariser pass over the existing checkpoint, asked to drop what
+				// is no longer in active use — and rewrite that text IN PLACE.
+				//
+				// This replaces the ephemeral in-memory trim that used to sit here.
+				// That trim dropped whole live turns from the request without
+				// recording it: the user kept the full transcript in the client and
+				// the model answered from a fragment, and the announced text claimed
+				// a compaction that the next DB reload undid. A roll-up refine is
+				// durable, it summarises text that already stands in for rows the
+				// DB has marked compacted (so no live turn is touched), and it keeps
+				// the pair's row ids and seq layout — the prompt head's identity
+				// survives, only its content changes, and it changes once.
+				refined, refineErr := RefineRollupSummary(userContextFor(ar.UserID), ar.ConversationID, conversation.Messages, foldTarget.model, foldTarget.payload)
+				if refineErr != nil {
+					utils.Error("[LLMLoop] roll-up refine failed", refineErr)
 				}
+				if refined {
+					reloaded2, rlErr := db.GetConversationByIdInternal(userContextFor(ar.UserID), ar.ConversationID)
+					if rlErr == nil && reloaded2 != nil {
+						after := len(reloaded2.Messages)
+						utils.Log("[LLMLoop] roll-up refined durably: view %d -> %d messages (≈%d tokens)", before, after, SentViewTokens(reloaded2.Messages))
+						ar.Broadcast(SSEEvent{
+							Type:           "text",
+							Content:        "(The conversation was too long for the model's context window — the summary of its earlier, already-archived turns was rewritten to a shorter one. Retrying …)",
+							ConversationID: ar.ConversationID,
+						})
+						conversation.Messages = reloaded2.Messages
+						continue
+					}
+				}
+				// Both durable moves are exhausted: the rows that could be folded
+				// are folded, and the roll-up cannot be shortened (no pair, no room
+				// in the window for a summariser round-trip, or the model refused).
+				// Say so and fail the turn. The in-memory trim is gone: a request
+				// built from a silently shortened history answers from a fragment
+				// while the user watches the full transcript, which is the failure
+				// this subsystem exists to make impossible.
+				utils.Error("[LLMLoop] context length exceeded and no durable shrink is available", nil)
+				ar.Broadcast(SSEEvent{
+					Type:           "text",
+					Content:        "(The conversation is too long for this model's context window and it cannot be shortened further: every foldable turn is already archived and the archive summary cannot shrink inside this window. Start a new conversation, or switch to a model with a larger context window.)",
+					ConversationID: ar.ConversationID,
+				})
+				return
 				// Compaction left the history unchanged — fall through to the
 				// error path rather than looping forever.
 			}

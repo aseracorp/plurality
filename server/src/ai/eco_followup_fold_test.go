@@ -105,7 +105,7 @@ func TestOverflowFoldHysteresisRefusesATinyFold(t *testing.T) {
 	// The newest user turn, then a huge tail: the tail alone puts the SENT
 	// VIEW over target, which is the churn regime, while the rows the boundary
 	// could fold are almost free.
-	big := strings.Repeat("b", maxCompactMessageChars)
+	big := strings.Repeat("b", 100_000)
 	msgs = append(msgs,
 		utils.Message{Role: "user", Content: utils.NewTextContent("the live ask")},
 		// lastPT just over target, so findCutoffIndex DOES run and picks a

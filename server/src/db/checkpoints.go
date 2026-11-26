@@ -1020,6 +1020,56 @@ func insertCheckpointPairInTx(ctx context.Context, tx *sql.Tx, conversationID st
 	return nil
 }
 
+// RewriteCheckpointSummary replaces the summary text of the conversation's
+// EXISTING checkpoint pair, in place, leaving every other row untouched.
+//
+// Why this exists: the durable fold's roll-up is the only representation of
+// the rows it flagged compacted, so when the roll-up itself outgrows the
+// window the only honest move is to rewrite THAT TEXT (an LLM pass over the
+// chain, keeping what is in active use). The alternative was the ephemeral
+// in-memory trim, which drops whole live turns from the request without
+// recording it — the model answers from a fragment and the user, watching the
+// full transcript in the client, has no way to know.
+//
+// In place, not re-minted: the pair sits at the head of the sent history, so
+// a fold that appends a NEW pair at the newest seq rewrites the prompt head
+// and collapses backend KV prefix reuse to the system block. Updating the
+// tool row's content keeps the assistant half, the seq layout, the row ids
+// and every other row byte-identical. Only the summary text changes, and it
+// changes exactly once per refine.
+//
+// Refuses (nil) when there is no live pair: a refine without a pair would
+// summarise rows nothing has recorded as folded, i.e. pure loss.
+func RewriteCheckpointSummary(ctx context.Context, conversationID string, summary string) error {
+	if strings.TrimSpace(summary) == "" {
+		return errors.New("refuse to write an empty checkpoint summary: it would erase the only record of the folded rows")
+	}
+	userID, ok := ctx.Value("userID").(string)
+	if !ok {
+		return errors.New("user ID not found in request context")
+	}
+	d, err := GetUserDB(userID)
+	if err != nil {
+		return err
+	}
+	toolRowID, _, rawContent := findLiveCheckpoint(ctx, d, conversationID)
+	if toolRowID == 0 {
+		return errors.New("no live checkpoint pair: a roll-up refine needs the pair that records the folded rows")
+	}
+	_ = rawContent
+	content := marshalMessageContent(utils.NewTextContent(summary))
+	res, err := d.ExecContext(ctx,
+		`UPDATE messages SET content = ? WHERE conversation_id = ? AND id = ?`,
+		content, conversationID, toolRowID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("checkpoint summary update touched %d rows, want 1", n)
+	}
+	return nil
+}
+
 // foldSetRowIDs maps the fold set (the rows the stored summary renders) to
 // their DB row ids, in the slice's chronological order. Rows without a DB id
 // are skipped — they cannot be addressed, and a positional fallback is exactly

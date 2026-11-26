@@ -331,7 +331,7 @@ func TestEcoConversationWindowMatchesTheRequestPath(t *testing.T) {
 	convVision := &utils.Conversation{ModelSelected: utils.ModelSelected{
 		Vision: &utils.Model{Name: visionName},
 	}}
-	want := Models.MaxContextTokensForPrefixed(visionName)
+	want := Models.DeclaredContextWindow(visionName)
 	if got := ecoConversationWindow(convVision); got != want {
 		t.Fatalf("vision-only selection: window %d, want %d (SelectModel resolves Vision; a 0 here arms the "+
 			"configured 150000/50000 pair — the 27K-token fold on a 262144-token model)", got, want)
