@@ -290,12 +290,41 @@ const promptOverheadTokens = 40_000
 //     overflow path (the context_length_exceeded death spiral of the
 //     1866-message conversation, 1830 -> 1855 live rows, every turn).
 //
-// target: the view kept AFTER a fold is 2/3 of the trigger, so one fold buys
-// ~1/3 of the window in headroom before the next fold is needed. That
-// hysteresis is what keeps folds RARE — and fold frequency is what controls
-// checkpoint churn, since rewriting the pair rewrites the prompt head and
-// zeroes the KV prefix cache (measured: cache_read pinned at 16384 through
-// back-to-back forced folds).
+// target: the view kept AFTER a fold. The 2/3 applies to the part of the
+// prompt compaction can actually shrink — the HISTORY — and the prompt overhead
+// is added back whole:
+//
+//	target = (trigger - promptOverheadTokens) * 2/3 + promptOverheadTokens
+//
+// The pre-fix form was `trigger * 2/3`, which spends the two-thirds against a
+// budget that includes the system prompt and the tool schemas — 20-40K tokens
+// of system block, 16K of schemas, measured live on this deployment, and every
+// one of them rides on every request. History cannot pay for them: folding
+// cannot shrink a byte of the system prompt, so charging history for those
+// tokens makes the ratio a fiction and folds far harder than intended. At the
+// live 262144 window (trigger 216000, overhead 40000) the old form asks for
+// 144000 where the honest arithmetic asks for 157333, and the fold's tail
+// budget is derived from the same target — so a 147K conversation got folded
+// to a fragment of the history the window had room for.
+//
+// Worked example, a 150000-token window and a 30000-token system prompt:
+//
+//	target = (150000 - 30000) * 2/3 + 30000 = 110000
+//
+// so the fold keeps 80000 tokens of HISTORY plus the 30000 the request costs
+// by itself, and the next stage fires when the prompt is above 110000 again —
+// findCutoffIndex folds precisely when lastPT exceeds the target, so the
+// target is the bar the conversation has to cross before compaction recurs.
+//
+// The 2/3 split is what keeps folds RARE — the fold keeps 2/3 of the shrinkable
+// window, so one fold buys 1/3 of it in headroom before the next is needed.
+// Fold frequency is what controls checkpoint churn, since rewriting the pair
+// rewrites the prompt head and zeroes the KV prefix cache (measured:
+// cache_read pinned at 16384 through back-to-back forced folds).
+//
+// When the trigger does not exceed the overhead (a tiny window), the history
+// share is not positive and the split is meaningless: the target falls back to
+// 2/3 of the trigger, and the floor at the configured target stays below it.
 //
 // Returns the configured pair unchanged for an unknown window (<= 0): with no
 // window there is no basis to invent a policy.
@@ -321,7 +350,7 @@ func ecoWindowPolicy(cfgTrigger, cfgTarget, windowTokens int) (trigger, target i
 	if trigger > headroom {
 		trigger = headroom
 	}
-	if t := trigger * 2 / 3; t > target {
+	if t := windowPolicyTargetTokens(trigger); t > target {
 		target = t
 	}
 	if target <= 0 || target >= trigger {
@@ -331,6 +360,31 @@ func ecoWindowPolicy(cfgTrigger, cfgTarget, windowTokens int) (trigger, target i
 		target = trigger * 2 / 3
 	}
 	return
+}
+
+// windowPolicyTargetTokens is the compaction target for a trigger: two thirds
+// of what compaction can SHRINK, plus the prompt overhead whole.
+//
+//	target = (trigger - promptOverheadTokens) * 2/3 + promptOverheadTokens
+//
+// The overhead is the system block plus the tool schemas (see
+// promptOverheadTokens): 20-40K tokens of system prompt and 16K of schemas on
+// the live deployment. It rides on every request, and folding cannot shrink a
+// byte of it, so a target of `trigger * 2/3` charges history for tokens only
+// history cannot pay for — the ratio is then 2/3 of a number that is not the
+// history budget, and on the live 262144 window it asks the fold for 144000
+// where the honest arithmetic asks for 157333.
+//
+// A trigger at or below the overhead has no positive history share, so the
+// split degenerates to 2/3 of the trigger.
+func windowPolicyTargetTokens(trigger int) int {
+	if trigger <= 0 {
+		return 0
+	}
+	if trigger <= promptOverheadTokens {
+		return trigger * 2 / 3
+	}
+	return (trigger-promptOverheadTokens)*2/3 + promptOverheadTokens
 }
 
 // ecoConversationWindow resolves the context window of the model a
@@ -449,8 +503,43 @@ func bootstrapCutoff(messages []utils.Message, targetTokens int) int {
 // The sent view is the honest measure for a conversation whose requests the
 // guard blocks: SentViewTokens skips folded rows and caps each row at the
 // per-message bound, so it is what the frozen path ships.
-func tickNeedsFold(lastPT, sentViewTokens, triggerTokens int) bool {
-	return lastPT > triggerTokens || sentViewTokens > triggerTokens
+// tickNeedsFold is the eco tick's gate: lastPT, or the sent view, over the
+// trigger — or, for a conversation that already has a checkpoint pair, the sent
+// view over compaction's TARGET.
+//
+// The target arm is the fold's own contract. A fold aims at the target; when it
+// lands ABOVE it, the conversation is in the state compaction exists to leave,
+// and nothing in the trigger gate can notice: lastPT after the fold sits near
+// the target, far below the trigger, so a conversation that failed to reach its
+// target never compacts again and grows toward the window on every turn. That
+// is the "the next stage has to trigger when the target is NOT reached" case:
+// the target is the bar, so a view above the bar is the trigger.
+//
+// The arm is bounded by the fold's hysteresis floor: it fires only when the
+// view exceeds the target by at least the progress a fold must buy
+// (ultracaveMinFoldProgressTokens — 5 % of the target). Below that the fold
+// cannot pay for the write, and firing the tick would only produce a refused
+// fold and a log line every turn. With the floor, a fold that lands
+// target+epsilon stops firing the tick, so the gate converges.
+//
+// The arm applies only to a conversation WITH a pair: a conversation with no
+// pair has no archive to shrink and its first fold is bounded by the trigger
+// (folding a new conversation toward the target on its first turns is the
+// bootstrap fold, gated by the bootstrap budget, not here).
+func tickNeedsFold(lastPT, sentViewTokens, triggerTokens int, target ...int) bool {
+	if lastPT > triggerTokens || sentViewTokens > triggerTokens {
+		return true
+	}
+	if len(target) == 0 || target[0] <= 0 {
+		return false
+	}
+	tgt := target[0]
+	if sentViewTokens <= tgt {
+		return false
+	}
+	// Target arm: the pair exists (the caller passes a target only then) and
+	// the view is over the bar by at least the progress floor.
+	return sentViewTokens-tgt >= ultracaveMinFoldProgressTokens(tgt)
 }
 
 // lastAssistantPromptTokens scans the conversation backwards and returns
@@ -888,10 +977,24 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	// and raises the context-length error the LLM loop answers with a durable
 	// fold, so a conversation that jumps the window in one turn is compacted
 	// durably at the moment it happens, with the user told.
-	if !tickNeedsFold(lastPT, sentView, ecoTrigger) {
+	// The target arm is passed only when a checkpoint pair exists, which is
+	// what the arm means (see tickNeedsFold): a conversation with no pair has
+	// no archive to shrink, and its first fold is the bootstrap fold.
+	tickTarget := 0
+	if existingCheckpointEndIdx >= 0 {
+		tickTarget = ecoTarget
+	}
+	if !tickNeedsFold(lastPT, sentView, ecoTrigger, tickTarget) {
 		utils.Log("[Eco] conv %s lastPT=%d and sent view %d tokens both below trigger=%d - skip",
 			conversationID, lastPT, sentView, ecoTrigger)
 		return
+	}
+	if lastPT <= ecoTrigger && sentView <= ecoTrigger {
+		// The target arm: the conversation has a pair and its view is over the
+		// bar the last fold was supposed to land on. Loud, because this is the
+		// shape where the fold keeps missing its target.
+		utils.Log("[Eco] conv %s sent view %d tokens is over compaction's target=%d (trigger=%d not reached) — the last fold missed its target, compacting again",
+			conversationID, sentView, ecoTarget, ecoTrigger)
 	}
 	if existingCheckpointEndIdx < 0 {
 		utils.Log("[Eco] conv %s lastPT=%d > trigger=%d - compacting toward target=%d (this fold mints the first checkpoint pair)",
