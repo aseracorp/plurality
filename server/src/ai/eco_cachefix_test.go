@@ -112,10 +112,9 @@ func TestToolCallArgumentsAreCountedInMeasures(t *testing.T) {
 	}
 }
 
-// TestDurableWriteContextIsCreatedAfterTheSummariser pins the fold-deadline
-// fix as a structural contract (the style of ultracave_llm_guard_test.go):
-// the durable write's context must be created AFTER the summariser call, in
-// every branch, so the LLM's latency can never consume the write's budget.
+// TestDurableWriteContextIsCreatedAfterTheSummariser: durableFold creates the
+// DB write context AFTER the summariser round-trip, on every store path, so the
+// LLM's latency can never consume the write's budget.
 //
 // RED pre-fix: the write ctx was derived from the eco goroutine's 45s DB
 // budget BEFORE the summariser started, and production proved the cost — 45s
@@ -157,46 +156,37 @@ func TestDurableWriteContextIsCreatedAfterTheSummariser(t *testing.T) {
 			"which is how the summariser came to consume the write's deadline " +
 			"(live: durable fold failed : context deadline exceeded, 2026-11-21 20:15:19)")
 	}
-	// THE RULE, PER BRANCH. A write context may not be created before the
-	// summariser INSIDE A STATEMENT THAT CALLS THE SUMMARISER. A statement that
-	// never calls the summariser is unconstrained: that is the STAGE-1 branch,
-	// which stores the megacave with no model call at all, so it has no LLM
-	// latency to be eaten by. Judging the stage-1 write against the summariser's
-	// position would forbid the fast path the design requires.
-	for _, st := range fd.Body.List {
-		if !callsSummariser(st) {
-			continue
-		}
-		var stSumm, stWrite []tokenPos
-		ast.Inspect(st, func(n ast.Node) bool {
-			ce, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			if callsSummariser(ce) {
-				stSumm = append(stSumm, tokenPos(ce.Pos()))
-			}
-			if id, ok := ce.Fun.(*ast.Ident); ok && id.Name == "durableWriteContext" {
-				stWrite = append(stWrite, tokenPos(ce.Pos()))
-			}
-			return true
-		})
-		if len(stWrite) == 0 {
-			t.Fatal("a summariser branch of durableFold has no durableWriteContext: its write ctx is inline")
-		}
-		for _, w := range stWrite {
-			for _, sm := range stSumm {
-				if w < sm {
-					t.Fatalf("the durable write context is created BEFORE the summariser call (write ctx at %d, summariser at %d): "+
-						"a slow LLM consumes the write's budget and the fold is lost — the root cause of the cache regression",
-						w, sm)
-				}
-			}
+
+	// THE RULE, STATED AS ORDER, not per statement. Stage 1's call site is a
+	// plain assignment (the answer is stored by the following branch), so
+	// demanding a write ctx inside every summariser STATEMENT would forbid the
+	// shape. What is forbidden is the live defect's shape: a write context
+	// created BEFORE the summariser, so the ~3.5 min round-trip eats the
+	// write's fresh 45s bound and the fold dies at the write.
+	firstSumm := summariserPos[0]
+	for _, w := range writeCtxPos {
+		if w < firstSumm {
+			t.Fatalf("a durable write context is created BEFORE the first summariser call (write ctx at %d, summariser at %d): "+
+				"a slow LLM consumes the write's budget and the fold is lost — the root cause of the cache regression",
+				w, firstSumm)
 		}
 	}
-	if len(writeCtxPos) < 2 {
-		t.Fatalf("durableWriteContext is created %d time(s) in durableFold: the LLM and the machine-only "+
-			"fallback branches each need their own post-summariser write context", len(writeCtxPos))
+	// Every summariser call must be followed by a write context, so each store
+	// path (stage 1, stage 2, the machine fallback) gets its own fresh bound.
+	for _, sm := range summariserPos {
+		after := false
+		for _, w := range writeCtxPos {
+			if w > sm {
+				after = true
+			}
+		}
+		if !after {
+			t.Fatalf("the summariser call at %d has no durableWriteContext after it: its store runs on an inherited deadline", sm)
+		}
+	}
+	if len(writeCtxPos) < 3 {
+		t.Fatalf("durableWriteContext is created %d time(s) in durableFold: the stage-1 store, the stage-2 store "+
+			"and the machine-only fallback each need their own post-summariser write context", len(writeCtxPos))
 	}
 }
 

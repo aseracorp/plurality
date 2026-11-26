@@ -278,19 +278,21 @@ func TestUltracaveCompactionPathUsesExactlyOneChatModelSummariser(t *testing.T) 
 	}
 }
 
-// TestFoldIsMegacaveFirst pins THE ORDER the owner specified: stage 1 is the
-// machine megacave, and the model is asked ONLY when that render is not enough.
+// TestFoldIsLLMFirst pins THE ORDER the owner specified, and it is the inverse
+// of the order this guard used to pin: STAGE 1 IS THE MODEL, and the machine
+// render is only the fail-closed fallback.
 //
-// Asserted on the AST of durableFold, in statement order:
+// Asserted on the AST of durableFold:
 //
-//	a. the stage-1 render (MachineExcerptMegacaveCapped) is reached BEFORE any
-//	   summariser call — the fold renders first, it does not ask first;
-//	b. the branch that stores the stage-1 render calls NO summariser at all —
-//	   when the megacave fits, the model is never called, so the fold costs zero
-//	   inference and the stored bytes stay deterministic;
-//	c. the summariser call site comes AFTER the stage-1 render, and its failure
-//	   path stores the machine render and folds (a fold is never lost to stage 2).
-func TestFoldIsMegacaveFirst(t *testing.T) {
+//	a. the summariser is reached BEFORE durableFold renders any machine
+//	   megacave — the fold asks first, it does not render first;
+//	b. the machine render sits in the ELSE of an if-statement that itself calls
+//	   the summariser — a model that is down, slow, non-200 or empty must still
+//	   produce a fold, because the rows are being evicted and writing nothing
+//	   loses them outright;
+//	c. a model answer is stored through llmFoldSummaryRenderer, so stage 1's
+//	   compression is what lands in the durable roll-up.
+func TestFoldIsLLMFirst(t *testing.T) {
 	g := installLLMGuard(t)
 	fd := g.funcs["durableFold"]
 	if fd == nil || fd.Body == nil {
@@ -298,57 +300,42 @@ func TestFoldIsMegacaveFirst(t *testing.T) {
 	}
 	list := fd.Body.List
 
-	stage1 := stmtIndexOf(list, func(n ast.Node) bool { return callsNamed(n, "MachineExcerptMegacaveCapped") })
+	machine := stmtIndexOf(list, func(n ast.Node) bool { return callsNamed(n, "machineOnlyFoldRenderer") })
 	summ := stmtIndexOf(list, callsSummariser)
-	if stage1 < 0 {
-		t.Fatal("durableFold never renders a megacave: there is no stage 1, so the fold is LLM-first")
-	}
 	if summ < 0 {
-		t.Fatal("durableFold never reaches the summariser: stage 2 does not exist")
+		t.Fatal("durableFold never reaches the summariser: stage 1 is not an LLM call")
 	}
-	if stage1 > summ {
-		t.Fatalf("the megacave render (statement %d) comes AFTER the summariser call (statement %d): the fold is LLM-first, not megacave-first", stage1, summ)
+	if machine < 0 {
+		t.Fatal("durableFold has no machine render: with both LLM stages unavailable the fold would store nothing and lose the evicted rows")
+	}
+	if machine < summ {
+		t.Fatalf("the machine render (statement %d) comes BEFORE the summariser call (statement %d): the fold is megacave-first, not LLM-first", machine, summ)
 	}
 
-	// (b) The stage-1 store branch must not touch the model.
-	stage1Store := -1
+	// (b) The machine render must be on a summariser branch's failure path.
+	onFailure := false
+	var foldOnFailure bool
 	ast.Inspect(fd.Body, func(n ast.Node) bool {
 		is, ok := n.(*ast.IfStmt)
-		if !ok {
+		if !ok || is.Else == nil {
 			return true
 		}
-		if callsSelectorNamed(is.Body, "CompactConversationDurable") && callsNamed(is.Body, "machineOnlyFoldRenderer") && !callsSummariser(is.Body) {
-			stage1Store = stmtIndexOf(list, func(x ast.Node) bool { return x == is })
+		if callsSummariser(is.Init) && callsNamed(is.Else, "machineOnlyFoldRenderer") {
+			onFailure = true
+			foldOnFailure = callsSelectorNamed(is.Else, "CompactConversationDurable")
 		}
 		return true
 	})
-	if stage1Store < 0 {
-		t.Fatal("durableFold has no branch that stores the stage-1 megacave WITHOUT calling the summariser: a fold that fits the megacave still pays for inference")
+	if !onFailure {
+		t.Fatal("the machine render is not on a summariser branch's failure path: a model failure would lose the fold")
 	}
-	if stage1Store > summ {
-		t.Fatalf("the stage-1 store branch (statement %d) sits after the summariser call (statement %d): the fit test cannot short-circuit the model", stage1Store, summ)
+	if !foldOnFailure {
+		t.Fatal("the machine-render failure path does not call db.CompactConversationDurable: the fallback is not a fold")
 	}
 
-	// (c) Stage 2's failure path stores the machine render and folds.
-	summIf, _ := list[summ].(*ast.IfStmt)
-	if summIf == nil {
-		t.Fatal("the summariser call is not in an if-statement: its failure has no branch")
-	}
-	onFailure := callsNamed(summIf.Else, "machineOnlyFoldRenderer")
-	folds := callsSelectorNamed(summIf.Else, "CompactConversationDurable")
-	for _, s := range statementsAfter(list, summIf) {
-		if callsNamed(s, "machineOnlyFoldRenderer") {
-			onFailure = true
-		}
-		if callsSelectorNamed(s, "CompactConversationDurable") {
-			folds = true
-		}
-	}
-	if !onFailure {
-		t.Fatal("stage 2's failure path does not call machineOnlyFoldRenderer: a stage-2 failure would lose the fold")
-	}
-	if !folds {
-		t.Fatal("stage 2's failure path does not call db.CompactConversationDurable: the fallback is not a fold")
+	// (c) A model answer is stored through the LLM renderer.
+	if !callsNamed(fd.Body, "llmFoldSummaryRenderer") {
+		t.Fatal("durableFold never stores a model answer via llmFoldSummaryRenderer: stage 1's compression is discarded")
 	}
 }
 
@@ -395,10 +382,15 @@ func TestFoldMegacaveNeverTouchesUserRows(t *testing.T) {
 	}
 }
 
-// TestFoldClockIsAlwaysStripped pins rule 3: the fold path builds the clock (the
-// replayed builder attaches it) ONLY to strip it. If the path reaches
-// appendCurrentTimeTail it MUST also reach stripCurrentTimeTail; the strip is
-// proven the exact inverse by TestStripCurrentTimeTailIsTheInverseOfAppend.
+// TestFoldClockIsAlwaysStripped: the fold's request replay MUST go through the
+// production request builder (so its prompt is the chat prompt, byte for byte,
+// and the KV prefix is the cached one), and the clock it builds must be taken
+// back off with stripCurrentTimeTail, the documented inverse.
+//
+// STAGE 1 is now the prefix replay (buildSummaryRequestFromView): the whole
+// conversation, brief appended. Stage 2's budgeted render
+// (buildSummaryRequestFromMegacave) must stay reachable as the shape that fits
+// a prefix too large for the window.
 func TestFoldClockIsAlwaysStripped(t *testing.T) {
 	g := installLLMGuard(t)
 	if !g.reached["appendCurrentTimeTail"] {
@@ -407,8 +399,11 @@ func TestFoldClockIsAlwaysStripped(t *testing.T) {
 	if !g.reached["stripCurrentTimeTail"] {
 		t.Fatal("the fold path reaches the clock WITHOUT stripCurrentTimeTail: a timestamp would enter the stored roll-up and the replay would not be byte-identical")
 	}
-	if !g.reached["buildSummaryRequestFromMegacave"] {
-		t.Fatal("the fold does not build stage 2 from the megacaved history: stage 2 is reading raw rows again")
+	if !g.reached["buildSummaryRequestFromView"] {
+		t.Fatal("the fold does not build stage 1 from the replayed conversation: the model is no longer asked on the cached prefix (the prefill is re-paid for nothing)")
+	}
+	if !g.reached["buildSummaryRequestMegacaveStage"] {
+		t.Fatal("the fold has no budgeted request shape: when the prefix replay does not fit the window there is no LLM path left, so the fold would fall to the machine render on every large conversation")
 	}
 	if !g.reached["buildChatRequestParts"] {
 		t.Fatal("the fold summary does not use the SHARED request builder, so its prompt can drift from the chat request's")
@@ -418,7 +413,11 @@ func TestFoldClockIsAlwaysStripped(t *testing.T) {
 // callsSummariser reports whether the node contains a call to the fold's
 // summariser entry points.
 func callsSummariser(n ast.Node) bool {
-	return callsAny(n, "attemptFoldSummaryFromMegacave", "buildSummaryRequestFromMegacave", "GenerateCheckpointSummaryFromRequest")
+	return callsAny(n,
+		"attemptFoldCompress", "attemptFoldSummaryFromView", "buildSummaryRequestFromView",
+		"attemptFoldSummaryMegacaveStage", "attemptFoldSummaryFromMegacave",
+		"buildSummaryRequestMegacaveStage", "buildSummaryRequestFromMegacave",
+		"GenerateCheckpointSummaryFromRequest")
 }
 
 // callsAny reports whether the node contains a call to any of `names`, in bare
@@ -493,6 +492,9 @@ func TestFoldGuardNamesAreNotDeadCode(t *testing.T) {
 	for _, name := range []string{
 		"machineOnlyFoldRenderer", "llmFoldSummaryRenderer", "attemptFoldSummaryFromMegacave",
 		"buildSummaryRequestFromMegacave", "GenerateCheckpointSummaryFromRequest",
+		"buildSummaryRequestFromView", "attemptFoldSummaryFromView", "attemptFoldCompress",
+		"buildSummaryRequestMegacaveStage", "attemptFoldSummaryMegacaveStage",
+		"foldInstruction", "stage1CompressInstruction", "stage2SummarizeInstruction",
 		"MachineExcerptMegacaveCapped", "MegacaveIncompressibleChars", "MegacaveCompressibleRows", "writeMegacaveContentVerbatim",
 		"stripCurrentTimeTail", "MegacaveSummaryChain",
 	} {

@@ -188,7 +188,7 @@ func TestSummaryRequestHeadIsByteIdenticalToChatRequest(t *testing.T) {
 		t.Fatalf("the body row is %q, want user — the assistant can only answer a user turn", last.Role)
 	}
 	body, _ := last.Content.(string)
-	if !strings.Contains(body, "evicted") {
+	if !strings.Contains(body, "EVICTED") {
 		t.Fatal("the instruction does not name the eviction")
 	}
 	if !strings.Contains(body, "TOOL_RESULT ") {
@@ -628,7 +628,7 @@ func TestFoldSummaryRequestShapeAgainstFakeProxy(t *testing.T) {
 	if last.Role != "user" {
 		t.Fatalf("the megacave+instruction row is a %q message; the assistant can only answer a user turn", last.Role)
 	}
-	if s, _ := last.Content.(string); !strings.Contains(s, "evicted") {
+	if s, _ := last.Content.(string); !strings.Contains(s, "EVICTED") {
 		t.Fatal("the instruction does not name the eviction")
 	}
 	a, _ := json.Marshal(chat.request.Tools)
@@ -645,21 +645,23 @@ func TestFoldSummaryRequestShapeAgainstFakeProxy(t *testing.T) {
 	}
 }
 
-// TestFoldFitsTheMegacaveAndNeverCallsTheModel is the runtime proof of the
-// ORDER, on the opposite fixture: a WIDE window gives the fold room, the
-// stage-1 megacave fits, and the summariser must post NOTHING. A proxy that is
-// up and answering, and never gets a request, is the assertion — the fold costs
-// zero inference whenever the machine render is enough, and the stored roll-up
-// is the deterministic megacave (it carries the folded rows' own file paths,
-// which an LLM summary would not reproduce verbatim).
-func TestFoldFitsTheMegacaveAndNeverCallsTheModel(t *testing.T) {
+// TestFoldCallsTheModelFirst pins the owner's order on the wire: STAGE 1 IS THE
+// MODEL. A fold on a conversation whose machine render would fit its ceiling
+// STILL asks the model first — the machine render is only the fail-closed
+// fallback, never the primary path.
+//
+// This is the inverse of the invariant this file used to pin ("a fold that fits
+// its megacave costs zero inference"). That order is retired: the rows the fold
+// evicts are the last thing the chat model will ever read, so compressing them
+// on the request that replays the cached prefix is the cheapest possible use of
+// that context, and the machine render at 64 chars per row is not readable.
+func TestFoldCallsTheModelFirst(t *testing.T) {
 	ctx, _, convID := ucDB(t)
-	model := ucSeedActionModel(t, "uc-stage1-no-call", 262_144, map[string]string{"system_tools__shell_exec": "on"})
+	model := ucSeedActionModel(t, "uc-stage1-llm-first", 262_144, map[string]string{"system_tools__shell_exec": "on"})
 
 	var gotBody []byte
 	var gotPath string
-	srv := newFakeSummaryProxy(t, &gotBody, &gotPath,
-		"MUST-NOT-APPEAR-9d21: the model was called on a fold that fits its megacave")
+	srv := newFakeSummaryProxy(t, &gotBody, &gotPath, "STAGE1-COMPRESSED-4c88 module_0.go")
 	oldBase := LiteLLMBaseURL
 	LiteLLMBaseURL = srv.URL
 	prevReady := litellmReady.Load()
@@ -669,7 +671,7 @@ func TestFoldFitsTheMegacaveAndNeverCallsTheModel(t *testing.T) {
 		litellmReady.Store(prevReady)
 	})
 
-	hist := ucHistory("stage 1 only", 10, 1_200)
+	hist := ucHistory("stage 1 is the model", 10, 1_200)
 	ucPush(t, ctx, convID, hist...)
 	view := ucLLMView(t, ctx, convID)
 	conv := ucConvOf(t, ctx, convID, view, model)
@@ -681,18 +683,52 @@ func TestFoldFitsTheMegacaveAndNeverCallsTheModel(t *testing.T) {
 	if folded == 0 {
 		t.Fatal("fold removed 0 rows")
 	}
-	if gotPath != "" {
-		t.Fatalf("the fold posted to the summariser (%q) on a fixture whose megacave fits: stage 1 is not the first attempt", gotPath)
+	if gotPath == "" {
+		t.Fatal("the fold never posted to the model: stage 1 is not the LLM call")
 	}
 	stored := ucSummaryText(t, ctx, convID)
 	if stored == "" {
 		t.Fatal("no roll-up stored")
 	}
-	if strings.Contains(stored, "MUST-NOT-APPEAR-9d21") {
-		t.Fatal("the model's answer is in the stored roll-up: stage 2 ran on a fold that fits")
+	if !strings.Contains(stored, "STAGE1-COMPRESSED-4c88") {
+		t.Fatalf("the stored roll-up is not the model's compression:\n%s", headRunes([]byte(stored), 300))
+	}
+}
+
+// TestFoldFallsBackToTheMachineRenderWhenTheModelFails: the fail-closed path.
+// With no model reachable, the fold must still write a roll-up — the rows are
+// being evicted, and storing nothing loses them outright.
+func TestFoldFallsBackToTheMachineRenderWhenTheModelFails(t *testing.T) {
+	ctx, _, convID := ucDB(t)
+	model := ucSeedActionModel(t, "uc-stage1-fallback", 262_144, map[string]string{"system_tools__shell_exec": "on"})
+
+	oldBase := LiteLLMBaseURL
+	LiteLLMBaseURL = "http://127.0.0.1:1/v1" // nothing listening: every stage fails
+	prevReady := litellmReady.Load()
+	litellmReady.Store(true)
+	t.Cleanup(func() {
+		LiteLLMBaseURL = oldBase
+		litellmReady.Store(prevReady)
+	})
+
+	hist := ucHistory("fallback", 10, 1_200)
+	ucPush(t, ctx, convID, hist...)
+	view := ucLLMView(t, ctx, convID)
+	conv := ucConvOf(t, ctx, convID, view, model)
+
+	folded, err := CompactConversationMachineOnly(ctx, convID, view, PriorSummaryFromView(view), 8, ucTarget(conv, model))
+	if err != nil {
+		t.Fatalf("fold: %v", err)
+	}
+	if folded == 0 {
+		t.Fatal("a model failure lost the fold")
+	}
+	stored := ucSummaryText(t, ctx, convID)
+	if stored == "" {
+		t.Fatal("the fold stored nothing after the model failed")
 	}
 	if !strings.Contains(stored, "module_0.go") {
-		t.Fatalf("the stored roll-up is not the machine megacave of the folded rows:\n%s", headRunes([]byte(stored), 300))
+		t.Fatalf("the fallback roll-up does not carry the folded rows' own paths:\n%s", headRunes([]byte(stored), 300))
 	}
 }
 

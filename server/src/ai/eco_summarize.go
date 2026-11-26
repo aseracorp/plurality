@@ -280,7 +280,7 @@ func summaryInstruction(priorSummary string, evictedRows int) string {
 //
 // ctx carries the per-user claim the builder needs for the important_memory
 // block and the MCP/skill appends — the system prompt must be the same bytes.
-func buildSummaryRequestFromMegacave(ctx context.Context, conv utils.Conversation, model utils.Model, foldable []utils.Message, payload ...ChatPayload) (StandardChatRequest, error) {
+func buildSummaryRequestMegacaveStage(ctx context.Context, conv utils.Conversation, model utils.Model, foldable []utils.Message, stage foldStage, payload ...ChatPayload) (StandardChatRequest, error) {
 	if model.Name == "" {
 		model = chatModelForConversation(conv)
 	}
@@ -308,7 +308,7 @@ func buildSummaryRequestFromMegacave(ctx context.Context, conv utils.Conversatio
 	full := stripCurrentTimeTail(append([]StandardMessageReq(nil), parts.request.Messages...))
 	head := append([]StandardMessageReq(nil), full[:leadingSystemRows(full)]...)
 
-	instruction := summaryInstruction(PriorSummaryFromView(conv.Messages), len(foldable))
+	instruction := foldInstruction(stage, PriorSummaryFromView(conv.Messages), len(foldable))
 	window := Models.DeclaredContextWindow(model.Name)
 	schemaTokens := len(marshalNoEscape(parts.request.Tools)) / summaryCharsPerToken
 	headTokens := renderedRowsTokens(head)
@@ -372,8 +372,8 @@ func buildSummaryRequestFromMegacave(ctx context.Context, conv utils.Conversatio
 // compact the megacaved history further. Any error — no proxy, non-200, empty
 // answer, deadline, no room — is returned to the caller, which MUST keep the
 // stage-1 machine render. The fold is never lost because stage 2 failed.
-func attemptFoldSummaryFromMegacave(ctx context.Context, conv utils.Conversation, model utils.Model, foldable []utils.Message, payload ...ChatPayload) (string, error) {
-	req, err := buildSummaryRequestFromMegacave(ctx, conv, model, foldable, payload...)
+func attemptFoldSummaryMegacaveStage(ctx context.Context, conv utils.Conversation, model utils.Model, foldable []utils.Message, stage foldStage, payload ...ChatPayload) (string, error) {
+	req, err := buildSummaryRequestMegacaveStage(ctx, conv, model, foldable, stage, payload...)
 	if err != nil {
 		return "", err
 	}
@@ -382,6 +382,19 @@ func attemptFoldSummaryFromMegacave(ctx context.Context, conv utils.Conversation
 			*req.MaxTokens, Models.DeclaredContextWindow(req.Model))
 	}
 	return GenerateCheckpointSummaryFromRequest(ctx, req)
+}
+
+// buildSummaryRequestFromMegacave is the STAGE-2 megacave request (summarise +
+// drop completed context), kept under its name so the AST guard's assertions
+// and the existing budget/strip tests keep their meaning. Stage 1's fallback
+// uses buildSummaryRequestMegacaveStage with foldStageCompress.
+func buildSummaryRequestFromMegacave(ctx context.Context, conv utils.Conversation, model utils.Model, foldable []utils.Message, payload ...ChatPayload) (StandardChatRequest, error) {
+	return buildSummaryRequestMegacaveStage(ctx, conv, model, foldable, foldStageSummarize, payload...)
+}
+
+// attemptFoldSummaryFromMegacave is stage 2's entry point, named for the guard.
+func attemptFoldSummaryFromMegacave(ctx context.Context, conv utils.Conversation, model utils.Model, foldable []utils.Message, payload ...ChatPayload) (string, error) {
+	return attemptFoldSummaryMegacaveStage(ctx, conv, model, foldable, foldStageSummarize, payload...)
 }
 
 // renderedRowsTokens counts the rendered rows of a summary request in the
