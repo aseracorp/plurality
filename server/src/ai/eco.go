@@ -133,7 +133,7 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool, windowTok
 	// keeps only one, but defensive against any stale extras.
 	lastCheckpointIdx := -1
 	for i, m := range messages {
-		if m.Role == "assistant" && db.IsCheckpointMessage(m) {
+		if m.Role == "assistant" && db.IsFoldCheckpointMessage(m) {
 			lastCheckpointIdx = i
 		}
 	}
@@ -941,7 +941,7 @@ func runEcoSummary(ctx context.Context, conversationID string) {
 	existingCheckpointEndIdx := -1
 	var priorSummary string
 	for i, m := range conv.Messages {
-		if !db.IsCheckpointMessage(m) {
+		if !db.IsFoldCheckpointMessage(m) {
 			continue
 		}
 		if m.Role == "tool" {
@@ -1287,7 +1287,7 @@ func megacaveFitsCeiling(megacaved string, ceiling int, atRowFloor bool) bool {
 // an earlier fold marked compacted).
 func PriorSummaryFromView(messages []utils.Message) string {
 	for _, m := range messages {
-		if m.Role == "tool" && db.IsCheckpointMessage(m) {
+		if m.Role == "tool" && db.IsFoldCheckpointMessage(m) {
 			return m.TextContent()
 		}
 	}
@@ -2083,7 +2083,7 @@ func UltracaveOverflowFoldFrom(messages []utils.Message, keep int, windowTokens 
 	if lastPT := lastAssistantPromptTokens(messages); lastPT > 0 {
 		ckptEnd := -1
 		for i, m := range messages {
-			if m.Role == "assistant" && db.IsCheckpointMessage(m) {
+			if m.Role == "assistant" && db.IsFoldCheckpointMessage(m) {
 				ckptEnd = i + 1
 				break
 			}
@@ -2323,7 +2323,7 @@ func randomHex(nBytes int) string {
 // hasCheckpointPair reports whether the slice carries an eco checkpoint pair.
 func hasCheckpointPair(messages []utils.Message) bool {
 	for i := range messages {
-		if messages[i].Role == "assistant" && db.IsCheckpointMessage(messages[i]) {
+		if messages[i].Role == "assistant" && db.IsFoldCheckpointMessage(messages[i]) {
 			return true
 		}
 	}
