@@ -45,7 +45,7 @@ func TestFoldPrefixReplayIsTheChatRequestPlusOneRow(t *testing.T) {
 	}
 	chatNoClock := stripCurrentTimeTail(append([]StandardMessageReq(nil), chat.request.Messages...))
 
-	req, err := buildSummaryRequestFromView(ctx, conv, model, payload, foldStageCompress)
+	req, err := buildSummaryRequestFromView(ctx, conv, model, payload, foldStageCompress, 60000, 9000)
 	if err != nil {
 		t.Fatalf("stage 1 request: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestFoldPrefixReplayIsTheChatRequestPlusOneRow(t *testing.T) {
 // TestFoldStage2BriefHasTheTwoInstructions: the owner's two extra instructions,
 // stated on the wire.
 func TestFoldStage2BriefHasTheTwoInstructions(t *testing.T) {
-	brief := stage2SummarizeInstruction("PRIOR-ROLLUP-MARKER", 42)
+	brief := stage2SummarizeInstruction("PRIOR-ROLLUP-MARKER", 42, false)
 	for _, want := range []string{"SUMMARISE", "NO LONGER IN ACTIVE USE", "PAYLOAD FLOOR", "PRIOR-ROLLUP-MARKER", "42"} {
 		if !strings.Contains(brief, want) {
 			t.Fatalf("the stage-2 brief is missing %q:\n%s", want, headRunes([]byte(brief), 400))
@@ -100,7 +100,7 @@ func TestFoldStage2BriefHasTheTwoInstructions(t *testing.T) {
 
 // TestFoldStage1BriefForbidsJudgement: stage 1 compresses, it does not rank.
 func TestFoldStage1BriefForbidsJudgement(t *testing.T) {
-	brief := stage1CompressInstruction("", 7)
+	brief := stage1CompressInstruction("", 7, false)
 	for _, want := range []string{"COMPRESS", "Do NOT summarise", "PAYLOAD FLOOR", "last reader"} {
 		if !strings.Contains(brief, want) {
 			t.Fatalf("the stage-1 brief is missing %q:\n%s", want, headRunes([]byte(brief), 400))
@@ -122,7 +122,7 @@ func TestFoldPrefixReplayRefusesWhenThePrefixDoesNotFit(t *testing.T) {
 	conv := ucConvOf(t, ctx, convID, view, model)
 	payload := ChatPayload{ConversationID: convID, ModelSelected: conv.ModelSelected}
 
-	_, err := buildSummaryRequestFromView(ctx, conv, model, payload, foldStageCompress)
+	_, err := buildSummaryRequestFromView(ctx, conv, model, payload, foldStageCompress, 60000, 9000)
 	if err == nil {
 		t.Fatal("the prefix replay accepted a prefix that cannot fit the declared window")
 	}

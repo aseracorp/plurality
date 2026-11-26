@@ -308,7 +308,7 @@ func buildSummaryRequestMegacaveStage(ctx context.Context, conv utils.Conversati
 	full := stripCurrentTimeTail(append([]StandardMessageReq(nil), parts.request.Messages...))
 	head := append([]StandardMessageReq(nil), full[:leadingSystemRows(full)]...)
 
-	instruction := foldInstruction(stage, PriorSummaryFromView(conv.Messages), len(foldable))
+	instruction := foldInstruction(stage, PriorSummaryFromView(conv.Messages), len(foldable), false)
 	window := Models.DeclaredContextWindow(model.Name)
 	schemaTokens := len(marshalNoEscape(parts.request.Tools)) / summaryCharsPerToken
 	headTokens := renderedRowsTokens(head)
@@ -362,6 +362,15 @@ func buildSummaryRequestMegacaveStage(ctx context.Context, conv utils.Conversati
 		NKeep:       parts.request.NKeep,
 	}
 	maxTokens := summaryOutputTokens(model.Name, headTokens+schemaTokens+bodyTokens, nil)
+	// APPEND-ONLY, ENFORCED BY THE CAP. A fold payload carries a bound on the
+	// ANSWER (deltaOutputTokens): the append-only contract says the model writes
+	// only what is new, and at ~40 tokens/second a window-sized budget is an open
+	// invitation to replay the roll-up the server already stores - 100k tokens of
+	// replay is 40 minutes, ~95% of it the server copying its own database to
+	// itself. 0 means no fold cap (a normal chat-shaped call).
+	if len(payload) > 0 && payload[0].FoldAnswerCap > 0 && payload[0].FoldAnswerCap < maxTokens {
+		maxTokens = payload[0].FoldAnswerCap
+	}
 	req.MaxTokens = &maxTokens
 	utils.Log("[EcoSummary] stage 2: %d rows megacaved to %d chars (~%d tokens, per-row show %d, verbatim user rows %d chars) for a %d-token room, head %d + schemas %d, output budget %d, window %d",
 		len(foldable), len(megacaved), bodyTokens, show, incompressible, roomTokens, headTokens, schemaTokens, maxTokens, window)
@@ -496,33 +505,6 @@ func marshalNoEscape(v interface{}) []byte {
 	return bytes.TrimRight(buf.Bytes(), "\n")
 }
 
-// refineRollupInstruction asks the model to shorten an EXISTING roll-up, which
-// is a different task from stage 2: stage 2 writes a checkpoint for rows about
-// to be evicted, this pass has no rows to evict — the rows are already archived
-// and their only remaining representation is this text. So the instruction
-// forbids compression for its own sake and names the thing that actually frees
-// room: topics the conversation has finished with.
-func refineRollupInstruction(priorSummary string) string {
-	var b strings.Builder
-	b.WriteString("SYSTEM TASK — SHORTEN THE ARCHIVE SUMMARY (not a reply to the user)\n\n")
-	b.WriteString("The text below is this conversation's archive of turns that no longer fit in the context window. " +
-		"It is the ONLY record of those turns: they are gone. The archive has itself grown too large, so it must shrink.\n\n")
-	b.WriteString("Rewrite it, keeping the archive's job: let the conversation continue correctly.\n")
-	b.WriteString("1. DROP what the conversation has finished with: superseded attempts, work that was later redone, " +
-		"investigations that reached a conclusion, dead ends, stale file contents, output that only mattered to a step that is done.\n")
-	b.WriteString("2. KEEP everything still in play: the task being worked on now, decisions and their reasons, " +
-		"file paths and identifiers that exist, invariants and constraints the user stated, open questions, " +
-		"exact commands and their results, numbers, URLs, error messages, and the user's requests in their own words.\n")
-	b.WriteString("3. Prefer deleting whole entries over rewording them. Merge duplicated notes. " +
-		"Do NOT compress into vaguer language: an entry that loses its specifics is worse than a deleted entry.\n")
-	b.WriteString("4. Output the new archive only — no preamble, no closing remarks, no note about what you removed. " +
-		"Aim for roughly half the input length; go lower only where the material is genuinely finished.\n\n")
-	b.WriteString("THE ARCHIVE TO SHORTEN:\n")
-	b.WriteString(priorSummary)
-	b.WriteString("\n")
-	return b.String()
-}
-
 // RefineRollupSummary is the last durable move against a context overflow, for
 // the case where a fold can no longer shrink the view: every foldable row is
 // already flagged compacted, so the only text left that can be made smaller is
@@ -587,8 +569,10 @@ func RefineRollupSummary(ctx context.Context, conversationID string, messages []
 
 	// The roll-up gets the room the head does not take, and the refine output
 	// must fit below it, so the request is bounded by construction.
-	instruction := refineRollupInstruction("")
-	instrTokens := len(instruction) / summaryCharsPerToken
+	// The brief cost is sized with a nominal target: the room does not exist
+	// until the brief cost is known, and the brief is a fixed-shape block, so its
+	// size barely moves with the number in it.
+	instrTokens := len(stage3AddendumInstruction(0)) / summaryCharsPerToken
 	room := window - headTokens - schemaTokens - instrTokens - guardSafetyReserve - minSummaryOutputTokens
 	if room < minSummaryOutputTokens {
 		utils.Log("[Eco] roll-up refine refused: no room in the window (head %d + schemas %d + instruction %d + safety %d + output floor %d vs %d)",
@@ -603,7 +587,12 @@ func RefineRollupSummary(ctx context.Context, conversationID string, messages []
 	if strings.TrimSpace(chain) == "" {
 		return false, nil
 	}
-	body := chain + "\n\n" + refineRollupInstruction(chain)
+	// STAGE 3 IS AN EDIT, NOT A TRANSCRIPT. The brief asks for a '-'+'+ addendum
+	// (stage3AddendumInstruction) and the server applies it (applyCompactionAddendum),
+	// so untouched archive entries cost ZERO output tokens. The brief this replaces
+	// demanded "the new archive only": at ~40 tokens/second a 50k-token archive is a
+	// 20-minute refine, and ~95% of those bytes are a replay of what the server has.
+	body := chain + "\n\n" + stage3AddendumInstruction(room*summaryCharsPerToken/2)
 	bodyTokens := len(body) / summaryCharsPerToken
 	if headTokens+schemaTokens+bodyTokens+guardSafetyReserve+minSummaryOutputTokens > window {
 		return false, nil
@@ -618,6 +607,11 @@ func RefineRollupSummary(ctx context.Context, conversationID string, messages []
 		NKeep:       parts.request.NKeep,
 	}
 	maxTokens := summaryOutputTokens(model.Name, headTokens+schemaTokens+bodyTokens, nil)
+	// The answer is an edit list, not an archive: cap it to the archive size, so a
+	// replay of the archive cannot be paid for in output tokens at ~40 tokens/second.
+	if editCap := len(chain) / summaryCharsPerToken; editCap > 0 && editCap < maxTokens {
+		maxTokens = editCap
+	}
 	req.MaxTokens = &maxTokens
 
 	summariserCtx, cancel := summariserCallContext(ctx)
@@ -626,11 +620,20 @@ func RefineRollupSummary(ctx context.Context, conversationID string, messages []
 	if err != nil {
 		return false, err
 	}
-	refined := strings.TrimSpace(text)
+	res, ok := applyCompactionAddendum(chain, text, room*summaryCharsPerToken)
+	if !ok {
+		// No edits, nothing matched, or the runaway guard refused it. The archive is
+		// the ONLY record of rows that no longer exist, so a refusal leaves it
+		// untouched - never a partial rewrite, never a silent shrink.
+		utils.Log("[Eco] roll-up refine refused the addendum (no usable edits, or the runaway guard): archive left unchanged")
+		return false, nil
+	}
+	refined := strings.TrimSpace(res.Compacted)
 	if refined == "" {
 		return false, nil
 	}
-	// The refined text is stored, so it must obey the same ceiling the fold's
+	utils.Log("[Eco] roll-up addendum applied: -%d entries, +%d entries, %d entries kept (%d -> %d chars)",
+		res.Removed, res.Added, res.Kept, len(prior), len(refined)) // The refined text is stored, so it must obey the same ceiling the fold's
 	// own renderers do: an unbounded roll-up re-inflates the next reload above
 	// the eco trigger and rewrites the prompt head every turn.
 	bound := durableRollupBound(overflowFoldBudgetTokens(window), SentViewTokens(messages))

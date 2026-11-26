@@ -116,6 +116,24 @@ func ucLLMView(t *testing.T, ctx context.Context, convID string) []utils.Message
 // issues its second query while the first result set is still open, which
 // wedges the single-connection pool (SetMaxOpenConns(1)) forever once a pair
 // exists — the fold then hangs at the prior-summary lookup.
+
+// ucUserTexts returns the text of every user row in `rows`, in order. A fold's
+// checkpoint must carry them VERBATIM (the owner's rule, and durableFold's
+// gate: a paraphrase of "no, do NOT restart the service" destroys the fact that
+// matters, and after the fold the source row is gone). A fake proxy that answers
+// a fold therefore has to echo them, exactly as a model obeying the brief does.
+func ucUserTexts(rows []utils.Message) []string {
+	var out []string
+	for _, m := range rows {
+		if m.Role == "user" {
+			if t := strings.TrimSpace(m.Content.TextContent()); t != "" {
+				out = append(out, t)
+			}
+		}
+	}
+	return out
+}
+
 func ucSummaryText(t *testing.T, ctx context.Context, convID string) string {
 	t.Helper()
 	return PriorSummaryFromView(ucLLMView(t, ctx, convID))

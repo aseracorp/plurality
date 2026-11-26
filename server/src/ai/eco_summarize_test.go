@@ -528,10 +528,14 @@ func TestFoldSummaryRequestShapeAgainstFakeProxy(t *testing.T) {
 	ctx, _, convID := ucDB(t)
 	model := ucSeedActionModel(t, "uc-fake-proxy-chat", window, map[string]string{"system_tools__shell_exec": "on"})
 
+	hist := ucHistory("proxy-backed fold", 10, 1_200)
+	ucPush(t, ctx, convID, hist...)
+	view := ucLLMView(t, ctx, convID)
+
 	var gotBody []byte
 	var gotPath string
 	srv := newFakeSummaryProxy(t, &gotBody, &gotPath,
-		"CHECKPOINT-TEXT-7f3a: file=/srv/app/module_0.go status=ok, verbatim user ask preserved")
+		"CHECKPOINT-TEXT-7f3a: file=/srv/app/module_0.go status=ok", ucUserTexts(view)...)
 	oldBase := LiteLLMBaseURL
 	LiteLLMBaseURL = srv.URL
 	prevReady := litellmReady.Load()
@@ -541,9 +545,6 @@ func TestFoldSummaryRequestShapeAgainstFakeProxy(t *testing.T) {
 		litellmReady.Store(prevReady)
 	})
 
-	hist := ucHistory("proxy-backed fold", 10, 1_200)
-	ucPush(t, ctx, convID, hist...)
-	view := ucLLMView(t, ctx, convID)
 	conv := ucConvOf(t, ctx, convID, view, model)
 	payload := ChatPayload{ConversationID: convID, ModelSelected: conv.ModelSelected}
 
@@ -659,9 +660,13 @@ func TestFoldCallsTheModelFirst(t *testing.T) {
 	ctx, _, convID := ucDB(t)
 	model := ucSeedActionModel(t, "uc-stage1-llm-first", 262_144, map[string]string{"system_tools__shell_exec": "on"})
 
+	hist := ucHistory("stage 1 is the model", 10, 1_200)
+	ucPush(t, ctx, convID, hist...)
+	view := ucLLMView(t, ctx, convID)
+
 	var gotBody []byte
 	var gotPath string
-	srv := newFakeSummaryProxy(t, &gotBody, &gotPath, "STAGE1-COMPRESSED-4c88 module_0.go")
+	srv := newFakeSummaryProxy(t, &gotBody, &gotPath, "STAGE1-COMPRESSED-4c88 module_0.go", ucUserTexts(view)...)
 	oldBase := LiteLLMBaseURL
 	LiteLLMBaseURL = srv.URL
 	prevReady := litellmReady.Load()
@@ -671,9 +676,6 @@ func TestFoldCallsTheModelFirst(t *testing.T) {
 		litellmReady.Store(prevReady)
 	})
 
-	hist := ucHistory("stage 1 is the model", 10, 1_200)
-	ucPush(t, ctx, convID, hist...)
-	view := ucLLMView(t, ctx, convID)
 	conv := ucConvOf(t, ctx, convID, view, model)
 
 	folded, err := CompactConversationMachineOnly(ctx, convID, view, PriorSummaryFromView(view), 8, ucTarget(conv, model))
@@ -734,15 +736,87 @@ func TestFoldFallsBackToTheMachineRenderWhenTheModelFails(t *testing.T) {
 
 // newFakeSummaryProxy stands in for the model endpoint: it records the posted
 // body/path and replies with one chat-completion choice carrying `text`.
-func newFakeSummaryProxy(t *testing.T, gotBody *[]byte, gotPath *string, text string) *httptest.Server {
+
+// ucWireUserTexts decodes a posted chat request and returns the text of its
+// user rows, in order. Content is interface{} on the wire - a bare string for a
+// text row, a parts array for a rich one - so both shapes are read.
+
+// isServerAuthoredRow reports whether a wire user row is the fold brief or a
+// rendered megacave body rather than a turn the user actually typed.
+func isServerAuthoredRow(content json.RawMessage) bool {
+	var s string
+	if err := json.Unmarshal(content, &s); err == nil {
+		return strings.Contains(s, "SYSTEM TASK") || strings.Contains(s, "TOOL_RESULT ")
+	}
+	return strings.Contains(string(content), "SYSTEM TASK") || strings.Contains(string(content), "TOOL_RESULT ")
+}
+
+func ucWireUserTexts(body []byte) []string {
+	var req struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil
+	}
+	var out []string
+	for _, m := range req.Messages {
+		if m.Role != "user" {
+			continue
+		}
+		// Skip SERVER-AUTHORED user rows: the fold brief and the rendered
+		// megacave body are user rows on the wire (only a user row can append to
+		// a prefix ending on a user turn), and echoing one back would make the
+		// fixture answer with the render it was given - megabytes of text, over
+		// the fold ceiling, and not what a model echoes.
+		if isServerAuthoredRow(m.Content) {
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(m.Content, &s); err == nil {
+			if t := strings.TrimSpace(s); t != "" {
+				out = append(out, t)
+			}
+			continue
+		}
+		var parts []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(m.Content, &parts); err == nil {
+			var b strings.Builder
+			for _, p := range parts {
+				if p.Type == "text" || p.Type == "snippet" {
+					b.WriteString(p.Text)
+				}
+			}
+			if t := strings.TrimSpace(b.String()); t != "" {
+				out = append(out, t)
+			}
+		}
+	}
+	return out
+}
+
+func newFakeSummaryProxy(t *testing.T, gotBody *[]byte, gotPath *string, text string, userRows ...string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		*gotBody = body
 		*gotPath = r.URL.Path
+		// A COMPLIANT MODEL. durableFold rejects a checkpoint that does not carry
+		// the fold set user rows verbatim, and the append-only contract makes the
+		// answer the new section, so the fixture answers with its marker plus the
+		// user rows it was shown, copied exactly, and nothing from the roll-up.
+		answer := text
+		for _, u := range userRows {
+			answer += "\n" + u
+		}
 		resp := map[string]interface{}{
 			"choices": []map[string]interface{}{
-				{"message": map[string]interface{}{"role": "assistant", "content": text}},
+				{"message": map[string]interface{}{"role": "assistant", "content": answer}},
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")

@@ -34,6 +34,12 @@ type ChatPayload struct {
 	IsCall          bool                         `json:"is_call"`
 	ClientSideTools []utils.FunctionToolsRequest `json:"client_side_tools"`
 	AvailableSkills []string                     `json:"available_skills,omitempty"`
+	// FoldAnswerCap bounds the ANSWER of a fold summariser call to the size of
+	// the new material. The append-only contract says the model writes only what
+	// is new; the cap is what makes a full-chain replay impossible, and at ~40
+	// tokens/second the cap IS the wall-clock of the fold. json:"-" because it is
+	// server-internal: a client must not be able to set it.
+	FoldAnswerCap int `json:"-"`
 }
 
 // --- Provider Request Types ---
