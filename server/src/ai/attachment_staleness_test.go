@@ -96,7 +96,7 @@ func trailingAttachmentRow(msgs []utils.Message) *utils.Message {
 	if last.Role != "user" {
 		return nil
 	}
-	if !strings.HasPrefix(last.TextContent(), "[Attachments attached for this turn") {
+	if !strings.HasPrefix(last.TextContent(), attachmentTailHeader) {
 		return nil
 	}
 	return &last
@@ -288,10 +288,13 @@ func TestAssistantSideImageIsPlaceholderPlusTrailingRow(t *testing.T) {
 	}
 }
 
-// The conversation_attachments tool-result strip stays (its placeholder is
-// fixed), and a FRESH recall result's images move to the trailing row — images
-// cannot ship inside a tool row.
-func TestRecallResultStripIsStable(t *testing.T) {
+// A conversation_attachments tool result stays IN PLACE at every age. Its
+// content is what the model asked for; replacing it with "call the tool again"
+// once a turn passes is an age term on a history row, and an age term flips a
+// row mid-prefix, which discards the conversation's cached KV. Its IMAGES move
+// to the trailing row (a tool row cannot legally carry an image part) and the
+// tool row keeps a stable text pointer.
+func TestRecallResultIsStableAtEveryAge(t *testing.T) {
 	model := attActionModel(t, "att-recall-model")
 
 	build := func(turns int) []utils.Message {
@@ -317,10 +320,8 @@ func TestRecallResultStripIsStable(t *testing.T) {
 		return msgs
 	}
 
-	const stripText = "Attachment tool result omitted. Call conversation_attachments again if needed."
-
-	// Fresh recall (no user message after it): the text body stays in the tool
-	// row, the image moves to the trailing row.
+	// Fresh recall: the text body stays in the tool row, the image moves to the
+	// trailing row, and the 40 KB snippet is readable in its own row.
 	fresh, _ := attRender(build(0), model)
 	freshHist := stripTrailingAttachmentRow(fresh)
 	freshTool := attBytes(t, freshHist[3])
@@ -334,33 +335,36 @@ func TestRecallResultStripIsStable(t *testing.T) {
 	if tail == nil || !strings.Contains(attBytes(t, *tail), "data:image/png") {
 		t.Fatalf("fresh recall image must ride the trailing row")
 	}
-	if !strings.Contains(attBytes(t, *tail), "att_0") {
-		t.Fatalf("trailing row must reference the fresh snippet: %.300s", attBytes(t, *tail))
+	if !strings.Contains(attBytes(t, freshHist[1]), "S0000S0000S0000") {
+		t.Fatalf("the 40 KB snippet must be readable in its own row: in place it is paid once, "+
+			"then cached: %s", attSnip(attBytes(t, freshHist[1]), 0))
 	}
 
-	// Aged: the recall result carries the FIXED strip placeholder, the 40KB
-	// snippet has dropped out of the trailing row (its window is 2), and the
-	// strip bytes never move again — compare two aged renders.
+	// Aged: the recall row is STILL there and byte-identical at age 3 and age 6.
+	// The old strip placeholder gave stability by replacing content with a fixed
+	// string; keeping the content gives the same stability and drops the
+	// re-fetch the strip forced on every later turn.
 	aged3, _ := attRender(build(3), model)
 	aged6, _ := attRender(build(6), model)
 	agedHist3, agedHist6 := stripTrailingAttachmentRow(aged3), stripTrailingAttachmentRow(aged6)
-	if !strings.Contains(attBytes(t, agedHist3[3]), stripText) {
-		t.Fatalf("aged recall result must carry the fixed strip placeholder: %.200s", attBytes(t, agedHist3[3]))
+	if attBytes(t, agedHist3[3]) != attBytes(t, agedHist6[3]) {
+		t.Fatalf("the recall row churns with age (an age term on a history row): %q -> %q",
+			attSnip(attBytes(t, agedHist3[3]), 0), attSnip(attBytes(t, agedHist6[3]), 0))
 	}
-	for i := 0; i <= 3; i++ {
-		if attBytes(t, agedHist3[i]) != attBytes(t, agedHist6[i]) {
-			t.Fatalf("prefix break at row %d between two aged renders: the strip/placeholder churned", i)
-		}
+	if !strings.Contains(attBytes(t, agedHist6[3]), strings.Repeat("R", 200)) {
+		t.Fatalf("aged recall content was stripped; the model must not have to re-fetch what it "+
+			"already asked for: %s", attSnip(attBytes(t, agedHist6[3]), 0))
 	}
-	// The 40KB snippet is a placeholder in place from the FIRST render, and its
-	// row is byte-identical in all three renders.
-	for i, hist := range [3][]utils.Message{freshHist, agedHist3, agedHist6} {
-		if !strings.Contains(attBytes(t, hist[1]), "Attachment omitted") {
-			t.Fatalf("render %d: the 40KB snippet must be a placeholder in place, not inline", i)
-		}
-		if attBytes(t, hist[1]) != attBytes(t, freshHist[1]) {
-			t.Fatalf("render %d: the attachment row churned", i)
-		}
+	if attBytes(t, agedHist3[1]) != attBytes(t, agedHist6[1]) {
+		t.Fatalf("the attachment row churns with age: %q -> %q",
+			attSnip(attBytes(t, agedHist3[1]), 0), attSnip(attBytes(t, agedHist6[1]), 0))
+	}
+	// Images are tail bytes: the recall image ages OUT of the trailing row,
+	// which is the only per-turn change, and it is at the END of the request.
+	if row := trailingAttachmentRow(aged6); row != nil &&
+		strings.Contains(attBytes(t, *row), "data:image/png") {
+		t.Fatalf("the aged recall image is still riding the trailing row; windows gate the "+
+			"tail only: %s", attSnip(attBytes(t, *row), 0))
 	}
 }
 

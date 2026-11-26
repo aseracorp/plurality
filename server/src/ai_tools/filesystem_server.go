@@ -232,7 +232,7 @@ func execFsServerWrite(ctx context.Context, input string, conv utils.Conversatio
 	case "save_attach":
 		attachmentID, _ := parsed["attachment_id"].(string)
 		overwrite := strings.EqualFold(asString(parsed["overwrite"]), "true")
-		return utils.NewTextContent(fsSaveAttach(path, attachmentID, overwrite, conv))
+		return utils.NewTextContent(fsSaveAttach(ctx, path, attachmentID, overwrite, conv))
 	default:
 		return utils.NewTextContent(fmt.Sprintf("Error: unknown op %q", op))
 	}
@@ -678,12 +678,12 @@ func fsReadAttach(path string, conv utils.Conversation) utils.MessageContent {
 // attachment is resolved by ID via ResolveAttachment, which returns either a
 // data: URI (for binaries / images / documents) or plain text (for snippets).
 // Refuses to overwrite an existing file unless overwrite=true.
-func fsSaveAttach(path, attachmentID string, overwrite bool, conv utils.Conversation) string {
+func fsSaveAttach(ctx context.Context, path, attachmentID string, overwrite bool, conv utils.Conversation) string {
 	if attachmentID == "" {
 		return "Error: 'attachment_id' is required for save_attach"
 	}
 
-	content, meta, err := ResolveAttachment(attachmentID, conv)
+	content, meta, err := ResolveAttachment(ctx, attachmentID, conv)
 	if err != nil {
 		return fmt.Sprintf("Error: %s", err)
 	}

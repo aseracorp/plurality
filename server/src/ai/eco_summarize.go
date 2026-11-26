@@ -336,7 +336,7 @@ func buildSummaryRequestFromMegacave(ctx context.Context, conv utils.Conversatio
 	// is the room itself, so the body this request ships is bounded by
 	// construction.
 	roomChars := roomTokens * summaryCharsPerToken
-	incompressible := MegacaveIncompressibleChars(foldable)
+	incompressible := MegacaveIncompressibleChars(foldable) + MegacaveAttachmentPointerChars(foldable)
 	show := MegacaveRowBudget(roomChars-incompressible, MegacaveCompressibleRows(foldable))
 	megacaved := MachineExcerptMegacaveCapped(foldable, show, roomChars)
 

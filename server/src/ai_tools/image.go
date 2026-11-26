@@ -99,7 +99,7 @@ var ImageGenTool = utils.AITool{
 			inputImageURI = uri
 			width, height = computeOutputDims(ratio)
 		} else if attachmentID != "" {
-			uri, ratio, resolveErr := ResolveAttachmentImage(attachmentID, conv)
+			uri, ratio, resolveErr := ResolveAttachmentImage(ctx, attachmentID, conv)
 			if resolveErr != nil {
 				return utils.NewTextContent(fmt.Sprintf("Error resolving image attachment: %s", resolveErr.Error()))
 			}

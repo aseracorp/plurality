@@ -12,6 +12,35 @@ import (
 
 const kb = 1024
 
+// attachmentInlineCapBytes bounds how much content ONE attachment part ships IN
+// PLACE at its own row. Above it the row is a fetch placeholder from its very
+// first turn.
+//
+// In-place content is prompt prefix: paid once, then cached. That is the whole
+// point of the in-place design — the trailing row cost ~10K tokens EVERY turn
+// (deployed: uncached 10693-12361 vs 149-1715 added by the turn), and the same
+// bytes in place cost them once.
+//
+// The cap exists only for the pathological part, and it is deliberately
+// GENEROUS. It does not try to bound the conversation: the bound on the total
+// is compaction, which is the mechanism this design defers ageing to. A
+// per-conversation byte budget in the renderer would need a term over the whole
+// history, and any term over the whole history moves as the history grows — the
+// age-window defect in a different shape.
+//
+// 100 KB is the floor of the pathological case. Under it, content is what the
+// model was just handed and must be able to READ: #217 pinned exactly this
+// (a single 40 KB report evicted by an aggregate budget left "a placeholder for
+// the file it was just given"), and 40 KB of file is a normal prompt. A part
+// over 100 KB is a bulk dump, and bulk is what retrieval tools exist for.
+const attachmentInlineCapBytes = 100 * kb
+
+// attachmentTailHeader opens the synthetic trailing row. Exported to tests
+// through the same constant on purpose: the tests that assert the row exists
+// (and the helper that strips it before comparing history) must key on the
+// production string, not a copy that goes stale the moment the wording changes.
+const attachmentTailHeader = "[Images attached for this turn"
+
 // attachmentDelivery is the delivery rule for ONE attachment part: what its
 // row ships in place, and whether its real content is fresh enough to ride in
 // the trailing attachment row.
@@ -36,8 +65,10 @@ type attachmentDelivery struct {
 	// "drop the part entirely" (images for a non-action model, which has no
 	// tool with which to retrieve them).
 	placeholder string
-	// showWindow: how many user messages may follow the attachment's row
-	// before its real content drops out of the trailing row. 0 = never shown.
+	// showWindow: for an IMAGE only — how many user messages may follow the
+	// attachment's row before its pixels drop out of the trailing row. Text
+	// attachments have no window at all (see attachmentDeliveryFor). 0 = never
+	// shown.
 	showWindow int
 }
 
@@ -96,30 +127,34 @@ func attachmentDeliveryFor(part utils.ContentPart, att utils.AttachmentMeta, isA
 		return d
 	}
 
-	// The "tiny attachments are always cheap to keep inline" guard: pure
-	// (size only), stable, so it stays an in-place rule.
-	if att.Size < 3*kb {
+	// Text-based, non-document: the content ships IN PLACE, in the row that
+	// produced it, and stays there until durable compaction folds that row.
+	//
+	// There is deliberately no freshness window here. A window is a term that
+	// GROWS with the conversation, so it flips a row from real content to
+	// placeholder in the MIDDLE of an already-sent prefix, and KV prompt
+	// caching — which matches the longest common prefix — discards the whole
+	// conversation's cached KV at that byte. Upstream (azukaar/Plurality)
+	// ships content in place with exactly such a window (>50KB→1, >25KB→2,
+	// else 3 user messages); this fork added a trailing attachment row to stop
+	// the churn it caused, and paid for it with a ~10K-token re-prefill on
+	// every turn of an agentic loop, because a row appended at the END of the
+	// slice sits behind the append point. In-place + no age term is the fix:
+	// the in-place view is a pure function of stored state, so the prefix only
+	// ever extends, and the tail carries only what the newest turn adds.
+	//
+	// The size cap replaces the window: size is immutable, so the cap is a
+	// stable in-place rule. Content above it becomes a retrieval the first
+	// time it is seen, never mid-history.
+	if !isAction {
+		// No function calling → no tool to retrieve with. Ship it inline
+		// forever, whatever the size.
 		return attachmentDelivery{inline: true}
 	}
-
-	// Size-based freshness window, kept from the previous behaviour, but now
-	// applied ONLY to the trailing row.
-	window := 3
-	if att.Size > 50*kb {
-		window = 1
-	} else if att.Size > 25*kb {
-		window = 2
+	if att.Size <= attachmentInlineCapBytes {
+		return attachmentDelivery{inline: true}
 	}
-	d := attachmentDelivery{showWindow: window}
-	if isAction {
-		d.placeholder = attachmentPlaceholder(att)
-	} else {
-		// Non-action model: snippets/files stay inline forever (no retrieval
-		// tool), so there is nothing to append.
-		d.inline = true
-		d.showWindow = 0
-	}
-	return d
+	return attachmentDelivery{placeholder: attachmentPlaceholder(att)}
 }
 
 // appendTrailingAttachment copies an attachment's REAL content into the
@@ -158,32 +193,38 @@ func appendTrailingAttachment(out []utils.ContentPart, part utils.ContentPart, a
 }
 
 // PrepareMessagesForAI processes conversation messages before sending them to
-// an AI provider. Attachments do NOT ship in the row that stored them: every
-// attachment part is replaced IN PLACE by its stable placeholder (or dropped,
-// for a non-action model's images), and the REAL content of the attachments
-// that are fresh enough to show is injected as ONE synthetic user message
-// appended at the END of the outgoing slice.
+// an AI provider. TEXT attachment content ships IN PLACE, in the row that
+// stored it, and stays there for the life of the row: the row is real content,
+// not a pointer to content that lives somewhere else in the request.
 //
-// Why the append-only trailing row: the in-place view is the prompt PREFIX,
-// and prefix bytes must be monotone — a row that is real content on turn k and
-// a placeholder on turn k+5 breaks KV prompt-cache reuse for the entire
-// conversation (the defect this fixes: staleness used to be decided by
-// userMessagesSince, i.e. user messages counted FROM THE END, so every old
-// attachment flipped mid-history). With the in-place view a pure function of
-// stored state and the real content confined to the tail, everything from the
-// start of the request up to the trailing row is byte-identical across turns,
-// exactly like the clock tail (see clock_tail.go: everything before the append
-// point stays byte-identical).
+// Only content that cannot live in its own row moves: images (providers accept
+// image parts in user rows, not tool rows) go to the synthetic trailing row
+// while they are fresh.
 //
-// Ageing is monotone in the only place it is allowed: as turns accumulate an
-// attachment's msgsSince grows past its window and it drops OUT of the
-// trailing row (the trailing region is tail bytes, expected to change). Its
-// in-place placeholder never changes, and its content stays retrievable
-// through conversation_attachments / read_document.
+// Why in place, and why there is no age term: KV prompt caching matches the
+// longest common PREFIX, so the prefix must be byte-monotone. Upstream
+// (azukaar/Plurality) ships content in place with a staleness window measured
+// in user messages since the row; that term GROWS every turn, so it flips a
+// history row from content to placeholder in the middle of an already-sent
+// prefix and discards the whole conversation's cached KV. This fork answered
+// that by relocating the content into a trailing row — which fixed the churn
+// and created a worse one: a row appended at the END of the array sits behind
+// the append point, so every turn re-prefills it. Deployed numbers: 149-1715
+// tokens added per turn against an uncached cost pinned at 10693-12361, i.e.
+// the row itself (32521 bytes / 3.0 = ~10.8K tokens) was re-sent every turn.
+//
+// Dropping the age term is what makes in-place safe. Size decides in-place
+// delivery and size is immutable, so a row renders identically the turn it is
+// written, the next turn, and a hundred turns later. The prefix only extends.
+// Ageing out is compaction's job: durable folding removes the row from the
+// LLM-facing view and the summary carries the attachment's ID, so the model can
+// fetch the content back on demand — the placeholder's promise stays honoured
+// because attachment IDs are stable (see utils.attachmentID) and the retrieval
+// tools read the FULL history, folded rows included.
 //
 // Non-action models (no function calling) get no placeholder — they have no
 // tool with which to retrieve anything: images are stripped, text-based
-// attachments stay inline.
+// attachments stay inline at any size.
 //
 // Returns the processed messages, whether the conversation has any attachments,
 // and whether any of them are document attachments (PDF, etc.).
@@ -336,25 +377,17 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 		}
 	}
 
-	// Strip conversation_attachments tool results — always threshold 1
-	// (they are re-fetched on demand, keeping them duplicates the data)
-	for i, msg := range result {
-		if msg.Role != "tool" || msg.Name != "conversation_attachments" {
-			continue
-		}
-		if userMessagesSince[i] >= 1 {
-			contentSize := len(msg.TextContent())
-			removedCount++
-			savedBytes += contentSize
-			result[i] = utils.Message{
-				Role:       msg.Role,
-				Content:    utils.NewTextContent("Attachment tool result omitted. Call conversation_attachments again if needed."),
-				ToolCallID: msg.ToolCallID,
-				Name:       msg.Name,
-				Timestamp:  msg.Timestamp,
-			}
-		}
-	}
+	// A conversation_attachments tool result stays IN PLACE, forever, like any
+	// other attachment: it is the content the model asked for, and replacing it
+	// with "call the tool again" once the turn passes is an age term on a
+	// history row — the same mid-prefix rewrite that breaks KV reuse. Ageing is
+	// compaction's job (durable folding removes the row and the summary carries
+	// its attachment ID), not the per-request renderer's.
+	//
+	// The duplicate-data argument for stripping it still holds, but only for
+	// BULK: a recall repeats bytes the original row already carries. That is
+	// what the fetch tools' paging limits and the megacave row budget bound at
+	// compaction time, which is the place where shrinking is free.
 
 	// The single synthetic trailing row. Appended at the END, after the
 	// history, so the prefix (system prompt + every history row) is untouched:
@@ -363,12 +396,17 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 	// image-carrying tool result, which inserted bytes mid-history on every
 	// turn (and re-shipped old tool images forever, since the injection had no
 	// staleness gate at all).
+	// Images only, by construction: a text attachment is either inline in its
+	// own row (≤ attachmentInlineCapBytes) or a placeholder with showWindow 0,
+	// so it never reaches `tail`. Images are here because providers accept image
+	// parts in a user row and not in a tool row — this row is the only legal
+	// place for them, and it is append-only tail bytes.
 	trailing, trailingIDs := budgetAttachmentTail(tail, attachmentTailBudgetChars)
 	if len(trailing) > 0 {
-		head := "[Attachments attached for this turn: " + strings.Join(trailingIDs, ", ") +
-			"]. The history rows above show placeholders for them; the full content is here, and can be re-read later with the attachment tools."
+		head := attachmentTailHeader + ": " + strings.Join(trailingIDs, ", ") +
+			"]. The history rows above show placeholders for them; they can be re-read later with the attachment tools."
 		if len(trailingIDs) == 0 {
-			head = "[Attachments attached for this turn]. The full content is here, and can be re-read later with the attachment tools."
+			head = attachmentTailHeader + "]. The content is here, and can be re-read later with the attachment tools."
 		}
 		parts := make([]utils.ContentPart, 0, len(trailing)+1)
 		parts = append(parts, utils.ContentPart{Type: "text", Text: head})

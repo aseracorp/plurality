@@ -49,7 +49,7 @@ type readDocumentParams struct {
 	MaxChars     float64 `json:"max_chars"`
 }
 
-func execReadDocument(_ context.Context, input string, conv utils.Conversation) utils.MessageContent {
+func execReadDocument(ctx context.Context, input string, conv utils.Conversation) utils.MessageContent {
 	var params readDocumentParams
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
 		return utils.NewTextContent(fmt.Sprintf("Error parsing parameters: %s", err.Error()))
@@ -59,7 +59,7 @@ func execReadDocument(_ context.Context, input string, conv utils.Conversation) 
 		return utils.NewTextContent("Error: attachment_id is required.")
 	}
 
-	att, data, errContent := resolveDocumentAttachment(conv, params.AttachmentID)
+	att, data, errContent := resolveDocumentAttachment(ctx, conv, params.AttachmentID)
 	if errContent != nil {
 		return *errContent
 	}

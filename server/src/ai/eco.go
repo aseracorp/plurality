@@ -1450,7 +1450,7 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 	// content-free, and the failure mode the live incident produced. A fold whose
 	// rows sit at the floor has no room for content, so it escalates: the model
 	// can compress 1240 rows into a checkpoint that is short AND meaningful.
-	verbatim := MegacaveIncompressibleChars(foldable)
+	verbatim := MegacaveIncompressibleChars(foldable) + MegacaveAttachmentPointerChars(foldable)
 	show := MegacaveRowBudget(chars-verbatim, MegacaveCompressibleRows(foldable))
 	megacaved := MachineExcerptMegacaveCapped(foldable, show, 0)
 	stage1Fits := megacaveFitsCeiling(megacaved, ceiling, show == minMegacaveRowShowChars)

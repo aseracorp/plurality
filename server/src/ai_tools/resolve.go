@@ -2,6 +2,7 @@ package ai_tools
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"image"
@@ -10,17 +11,37 @@ import (
 	_ "image/png"
 	"strings"
 
+	"github.com/azukaar/plurality/src/db"
 	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/utils"
 )
+
+// attachmentMessages is the message slice the attachment index must be built
+// over: EVERY stored row, folded (compacted) rows included.
+//
+// Why not the slice the tool loop hands in: that is the LLM-facing view, which
+// omits folded rows so a compacted conversation does not re-inflate every
+// request. Using it for FETCH would make the fetch placeholder a promise the
+// server cannot keep — an attachment whose row got folded is not in that index,
+// so "call conversation_attachments to read it again" would answer "not
+// found" for exactly the content compaction promised to keep available.
+// Retrieval is the one path that must see the whole history.
+func attachmentMessages(ctx context.Context, conv utils.Conversation) []utils.Message {
+	if full, err := db.GetConversationById(ctx, conv.ID); err == nil && full != nil && len(full.Messages) > 0 {
+		return full.Messages
+	}
+	// Unsaved/in-memory conversation, or a context without a user: the caller's
+	// slice is all there is.
+	return conv.Messages
+}
 
 // ResolveAttachment resolves an attachment ID (e.g. "att_0") from a conversation
 // to its content. For binary attachments (images, documents) stored with internal
 // URLs, the content is returned as a data URI. For text-based attachments
 // (snippets, files), the plain text is returned. The attachment metadata is also
 // returned so callers can inspect the type.
-func ResolveAttachment(attachmentID string, conv utils.Conversation) (content string, meta *utils.AttachmentMeta, err error) {
-	index := utils.BuildAttachmentIndex(conv.Messages, storage.FileSizeFromURL)
+func ResolveAttachment(ctx context.Context, attachmentID string, conv utils.Conversation) (content string, meta *utils.AttachmentMeta, err error) {
+	index := utils.BuildAttachmentIndex(attachmentMessages(ctx, conv), storage.FileSizeFromURL)
 
 	raw, ok := index.ContentMap[attachmentID]
 	if !ok {
@@ -51,8 +72,8 @@ func ResolveAttachment(attachmentID string, conv utils.Conversation) (content st
 // ResolveAttachmentImage resolves an image attachment and returns its data URI
 // plus aspect ratio (width / height). Returns an error if the attachment is not
 // an image.
-func ResolveAttachmentImage(attachmentID string, conv utils.Conversation) (dataURI string, aspectRatio float64, err error) {
-	content, meta, err := ResolveAttachment(attachmentID, conv)
+func ResolveAttachmentImage(ctx context.Context, attachmentID string, conv utils.Conversation) (dataURI string, aspectRatio float64, err error) {
+	content, meta, err := ResolveAttachment(ctx, attachmentID, conv)
 	if err != nil {
 		return "", 0, err
 	}

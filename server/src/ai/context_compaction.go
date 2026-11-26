@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/azukaar/plurality/src/storage"
 	"github.com/azukaar/plurality/src/textsafe"
 	"github.com/azukaar/plurality/src/utils"
 )
@@ -332,6 +333,16 @@ func MachineExcerptMegacaveBudget(messages []utils.Message, showChars int) strin
 // machineSummary callbacks that ignore it. Both bounds are the same number on
 // the production path.
 func MachineExcerptMegacaveCapped(messages []utils.Message, showChars, maxTotalChars int) string {
+	// Reserve room for the attachment pointer block BEFORE capping, so the
+	// block (which is the roll-up's retrieval index) survives the cut instead
+	// of being the first thing it removes.
+	block := megacaveAttachmentBlock(messages)
+	if maxTotalChars > 0 && block != "" {
+		maxTotalChars -= len(block) + 1
+		if maxTotalChars < 0 {
+			maxTotalChars = 0
+		}
+	}
 	var b strings.Builder
 
 	writeLine := func(s string) {
@@ -369,7 +380,73 @@ func MachineExcerptMegacaveCapped(messages []utils.Message, showChars, maxTotalC
 			writeLine("")
 		}
 	}
-	return capMegacaveExcerpt(strings.TrimSpace(b.String()), maxTotalChars)
+	excerpt := capMegacaveExcerpt(strings.TrimSpace(b.String()), maxTotalChars)
+	if block == "" {
+		return excerpt
+	}
+	return excerpt + "\n\n" + block
+}
+
+// megacaveAttachmentBlock is the roll-up's retrieval index: ONE bounded block
+// naming the attachments the folded history carried, by the ID
+// conversation_attachments / read_document accept.
+//
+// This is the compaction half of in-place attachments. Content ships at its own
+// row and stays there; the durable fold is what ages it out. For that removal to
+// cost the model nothing, the fold must leave the addresses behind, so the
+// summary says "this content exists, and here is how to read it" instead of
+// "it is gone".
+//
+// ONE block per fold, capped at megacaveAttachmentBlockMax ids. Emitting the
+// pointer per row — the obvious shape, and what this replaces — added ~264 KB of
+// metadata to a 1467-row fold: the fold stopped converging (62810 tokens left
+// against a 50000 target), stage 1 escalated to the chat model because the
+// render no longer fit its ceiling, and the truncated roll-up lost the file
+// paths it exists to preserve. Per-row metadata on a fold this big is the defect
+// #216 exists to prevent; a capped block is bounded by construction.
+//
+// The ids come from BuildAttachmentIndex, so they are the same names the fetch
+// tools resolve: row-derived (utils.StableAttachmentID) for stored rows, and
+// stable for the life of the row, since folded rows are flagged, never deleted,
+// and seq is never renumbered. In-memory conversations with no DB ids get
+// positional names and no block requirement; the block is capped either way.
+func megacaveAttachmentBlock(messages []utils.Message) string {
+	index := utils.BuildAttachmentIndex(messages, storage.FileSizeFromURL)
+	if len(index.Items) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, megacaveAttachmentBlockMax)
+	hidden := 0
+	for _, item := range index.Items {
+		if len(ids) < megacaveAttachmentBlockMax {
+			ids = append(ids, item.ID)
+		} else {
+			hidden++
+		}
+	}
+	block := "[Folded attachments: " + strings.Join(ids, ", ")
+	if hidden > 0 {
+		block += fmt.Sprintf(", ... (+%d more)", hidden)
+	}
+	block += "]. Their content is not in this summary. Call conversation_attachments with mode=list for the full set, or mode=get with one of these ids to read one.]"
+	return block
+}
+
+// megacaveAttachmentBlockMax bounds the retrieval index. 40 ids cost ~600 bytes;
+// a fold carrying more lists its first 40 and points at mode=list for the rest,
+// which is a lookup the model can always do.
+const megacaveAttachmentBlockMax = 40
+
+// MegacaveAttachmentPointerChars is the render cost of the retrieval block,
+// which the fold's budget must pay for up front: it is incompressible, in the
+// same way the verbatim user rows are, because dropping it silently deletes the
+// only pointer to the content the fold removed.
+func MegacaveAttachmentPointerChars(messages []utils.Message) int {
+	block := megacaveAttachmentBlock(messages)
+	if block == "" {
+		return 0
+	}
+	return len(block) + 2
 }
 
 // MegacaveIncompressibleChars is the render cost of the rows megacave CANNOT
