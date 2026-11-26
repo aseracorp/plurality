@@ -41,11 +41,16 @@ const (
 	foldStageCompress foldStage = iota
 	// foldStageSummarize is STAGE 2: summarise, and drop completed/unused context.
 	foldStageSummarize
+	// foldStageCompact is STAGE 3: edit-list compaction of the archive itself.
+	foldStageCompact
 )
 
 func (s foldStage) String() string {
-	if s == foldStageSummarize {
+	switch s {
+	case foldStageSummarize:
 		return "2"
+	case foldStageCompact:
+		return "3"
 	}
 	return "1"
 }
@@ -82,7 +87,7 @@ const ultracaveVoice = "COMPRESSION STYLE (prose only; the floor outranks it):\n
 // judges unimportant, and on the eve of an eviction it has no standing to
 // judge: the range leaving the context is gone from every future request, and
 // this text is the only record of it. Stage 2 is where judgement belongs.
-func stage1CompressInstruction(priorSummary string, rows int) string {
+func stage1CompressInstruction(priorSummary string, rows int, priorVisible bool) string {
 	var b strings.Builder
 	b.WriteString("SYSTEM TASK - DURABLE CONTEXT COMPRESSION (not a reply to the user)\n\n")
 	b.WriteString("The " + itoaRows(rows) + " oldest messages above are about to be EVICTED from your live " +
@@ -96,10 +101,10 @@ func stage1CompressInstruction(priorSummary string, rows int) string {
 		"(files written, values returned, errors raised).\n")
 	b.WriteString("Length: as short as the floor allows, and no shorter. Match the density of the source; " +
 		"there is no target length.\n")
-	if blk := priorRollupBlock(priorSummary); blk != "" {
-		b.WriteString(blk)
-	}
+	b.WriteString(deltaRules)
+	b.WriteString(existingRollupForDelta(priorSummary, priorVisible))
 	b.WriteString("Cover the NEWEST evicted rows first (the freshest work), then the older ones.\n")
+	b.WriteString("Emit the NEW section now.\n")
 	return b.String()
 }
 
@@ -110,7 +115,7 @@ func stage1CompressInstruction(priorSummary string, rows int) string {
 // Stage 1 is forbidden from the second act. Stage 2 is where it belongs: by
 // then the compression has already run and the conversation is still over its
 // window, so keeping finished work is what makes the fold loop non-convergent.
-func stage2SummarizeInstruction(priorSummary string, rows int) string {
+func stage2SummarizeInstruction(priorSummary string, rows int, priorVisible bool) string {
 	var b strings.Builder
 	b.WriteString("SYSTEM TASK - DURABLE CONTEXT SUMMARY (not a reply to the user)\n\n")
 	b.WriteString("The " + itoaRows(rows) + " oldest messages above are about to be EVICTED from your live " +
@@ -127,18 +132,29 @@ func stage2SummarizeInstruction(priorSummary string, rows int) string {
 		"identifiers and paths needed to continue the work, or anything you are unsure about.\n\n")
 	b.WriteString(ultracaveFloor)
 	b.WriteString(ultracaveVoice)
-	if blk := priorRollupBlock(priorSummary); blk != "" {
-		b.WriteString(blk)
-	}
+	b.WriteString(deltaRules)
+	b.WriteString(existingRollupForDelta(priorSummary, priorVisible))
+	b.WriteString("Emit the NEW summary section now.\n")
 	return b.String()
 }
 
 // foldInstruction is the brief for one fold stage.
-func foldInstruction(stage foldStage, priorSummary string, rows int) string {
-	if stage == foldStageSummarize {
-		return stage2SummarizeInstruction(priorSummary, rows)
+// foldInstruction builds the brief. priorVisible tells it whether the model can
+// already read the stored chain in the rows above the brief: the prefix replay
+// ships the checkpoint pair as the first content of the history, so quoting the
+// chain there is pure duplication and pure prefill cost; a rendered megacave
+// body shows no chain, and there an unquoted "do not copy it" is an instruction
+// about something the model cannot see, which is what produces a re-emission.
+func foldInstruction(stage foldStage, priorSummary string, rows int, priorVisible bool) string {
+	switch stage {
+	case foldStageSummarize:
+		return stage2SummarizeInstruction(priorSummary, rows, priorVisible)
+	case foldStageCompact:
+		// Stage 3: `rows` is the archive budget in chars, and the archive itself
+		// rides the request, so the brief needs neither the prior nor its visibility.
+		return stage3AddendumInstruction(rows)
 	}
-	return stage1CompressInstruction(priorSummary, rows)
+	return stage1CompressInstruction(priorSummary, rows, priorVisible)
 }
 
 // buildSummaryRequestFromView is STAGE 1's request shape, and the owner's
@@ -168,7 +184,7 @@ func foldInstruction(stage foldStage, priorSummary string, rows int) string {
 // record them. The caller then uses buildSummaryRequestFromMegacave (head +
 // schemas + a budgeted machine render), which fits by construction and is still
 // an LLM call - the model is not skipped, only the prefix is not reused.
-func buildSummaryRequestFromView(ctx context.Context, conv utils.Conversation, model utils.Model, payload ChatPayload, stage foldStage) (StandardChatRequest, error) {
+func buildSummaryRequestFromView(ctx context.Context, conv utils.Conversation, model utils.Model, payload ChatPayload, stage foldStage, ceiling, foldedChars int) (StandardChatRequest, error) {
 	if model.Name == "" {
 		model = chatModelForConversation(conv)
 	}
@@ -189,7 +205,7 @@ func buildSummaryRequestFromView(ctx context.Context, conv utils.Conversation, m
 		return StandardChatRequest{}, fmt.Errorf("the replayed request has no history rows for conversation %s", conv.ID)
 	}
 
-	instruction := foldInstruction(stage, PriorSummaryFromView(conv.Messages), len(rows)-headRows)
+	instruction := foldInstruction(stage, PriorSummaryFromView(conv.Messages), len(rows)-headRows, true)
 
 	window := Models.DeclaredContextWindow(model.Name)
 	schemaTokens := len(marshalNoEscape(parts.request.Tools)) / summaryCharsPerToken
@@ -214,7 +230,13 @@ func buildSummaryRequestFromView(ctx context.Context, conv utils.Conversation, m
 		CachePrompt: parts.request.CachePrompt,
 		NKeep:       parts.request.NKeep,
 	}
+	// The ANSWER is bounded to the new material (deltaOutputTokens), not to the
+	// window: at ~40 t/s a window-sized budget is an open invitation to replay
+	// the chain, and a replay is 40 minutes of copying the database to itself.
 	maxTokens := summaryOutputTokens(model.Name, prefixTokens+schemaTokens+instrTokens, nil)
+	if delta := deltaOutputTokens(foldedChars, ceiling); delta < maxTokens {
+		maxTokens = delta
+	}
 	req.MaxTokens = &maxTokens
 	utils.Log("[EcoSummary] stage %s prefix replay: %d history rows kept verbatim (~%d tokens) + schemas %d + brief %d, output budget %d, window %d",
 		stage, len(rows)-headRows, prefixTokens, schemaTokens, instrTokens, maxTokens, window)
@@ -225,8 +247,8 @@ func buildSummaryRequestFromView(ctx context.Context, conv utils.Conversation, m
 // Any error (no proxy, non-200, empty answer, no room, deadline) is returned to
 // the caller, which MUST keep a deterministic render: a fold is never lost
 // because a model failed.
-func attemptFoldSummaryFromView(ctx context.Context, conv utils.Conversation, model utils.Model, payload ChatPayload, stage foldStage) (string, error) {
-	req, err := buildSummaryRequestFromView(ctx, conv, model, payload, stage)
+func attemptFoldSummaryFromView(ctx context.Context, conv utils.Conversation, model utils.Model, payload ChatPayload, stage foldStage, ceiling, foldedChars int) (string, error) {
+	req, err := buildSummaryRequestFromView(ctx, conv, model, payload, stage, ceiling, foldedChars)
 	if err != nil {
 		return "", err
 	}
@@ -251,8 +273,8 @@ func attemptFoldSummaryFromView(ctx context.Context, conv utils.Conversation, mo
 //
 // The stage-1 errors from both shapes are returned joined, so the caller's log
 // names why the model was unavailable.
-func attemptFoldCompress(ctx context.Context, conv utils.Conversation, model utils.Model, foldable []utils.Message, payload ChatPayload) (string, error) {
-	txt, replayErr := attemptFoldSummaryFromView(ctx, conv, model, payload, foldStageCompress)
+func attemptFoldCompress(ctx context.Context, conv utils.Conversation, model utils.Model, foldable []utils.Message, payload ChatPayload, ceiling, foldedChars int) (string, error) {
+	txt, replayErr := attemptFoldSummaryFromView(ctx, conv, model, payload, foldStageCompress, ceiling, foldedChars)
 	if replayErr == nil && strings.TrimSpace(txt) != "" {
 		return txt, nil
 	}
@@ -260,7 +282,12 @@ func attemptFoldCompress(ctx context.Context, conv utils.Conversation, model uti
 	if reason == nil {
 		reason = fmt.Errorf("the prefix replay answered with an empty checkpoint")
 	}
-	txt2, bodyErr := attemptFoldSummaryMegacaveStage(ctx, conv, model, foldable, foldStageCompress, payload)
+	// The megacave-body fallback caps its ANSWER the same way the prefix replay
+	// does: the cap rides the payload, so the guard-named builders keep their
+	// signatures.
+	capped := payload
+	capped.FoldAnswerCap = deltaOutputTokens(foldedChars, ceiling)
+	txt2, bodyErr := attemptFoldSummaryMegacaveStage(ctx, conv, model, foldable, foldStageCompress, capped)
 	if bodyErr == nil && strings.TrimSpace(txt2) != "" {
 		return txt2, nil
 	}

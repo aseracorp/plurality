@@ -1397,33 +1397,39 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 	verbatim := MegacaveIncompressibleChars(foldable) + MegacaveAttachmentPointerChars(foldable)
 	show := MegacaveRowBudget(chars-verbatim, MegacaveCompressibleRows(foldable))
 
-	// ---- STAGE 1: LLM COMPRESSION, the primary path -------------------------
+	// ---- THE LADDER: stage 1 compress, stage 2 summarise, stage 3 compact ----
 	//
-	// THE ORDER IS LLM-FIRST. The rows this fold evicts are the last thing the
-	// chat model will ever read, so they are COMPRESSED by that model, on a
-	// request that replays the conversation's own cached prefix
-	// (buildSummaryRequestFromView) and APPENDS the brief as a new trailing row.
-	// The cache is spent exactly once, here; the compacted answer is stored in
-	// the DB, so the requests after the fold re-prefill from zero on the new,
-	// smaller context. That break is the one this subsystem pays on purpose,
-	// because the context was running out and the fold is the event that fixes it.
+	// ONE LLM CALL PER STAGE, ONE PREFIX FOR ALL THREE. Every stage sends the
+	// same bytes - the conversation's own sent view, clock stripped, from
+	// buildSummaryRequestFromView - and appends only its brief. Stage 1 warms the
+	// KV prefix; stages 2 and 3 resend it with a different tail, so they are
+	// cache hits on the stage-1 prompt. The cache break lands AFTER a success, at
+	// the pair write, by design.
 	//
-	// STAGE 1 MUST NOT JUDGE THE HISTORY. It compresses it and drops nothing:
-	// deciding what is "no longer needed" is stage 2's job, and stage 2 only runs
-	// when compression alone left the conversation over its window. A model asked
-	// to summarise on the eve of an eviction drops detail it cannot see the
-	// consequences of — the rows are gone from every future request, and this
-	// text is all that remains of them.
+	// APPEND-ONLY, ENFORCED THREE WAYS. The brief forbids reproducing the prior
+	// roll-up; max_tokens is sized to the NEW section (deltaOutputTokens), so a
+	// full-chain replay is physically impossible at ~40 tokens/second; and
+	// stitchDelta detects and strips an emitted replay. Only the new bytes cost
+	// time: db.composeDurableSummary carries the prior VERBATIM and appends the
+	// new section at the tail, which is why the stored pair grows by append and
+	// the KV prefix extends instead of diverging.
 	//
-	// THE SUMMARISER'S OWN DEADLINE. durableFold is handed the tick's dbCtx,
-	// whose 45s bound exists to keep the SQLite path off a wedged
-	// single-connection pool. That budget is DB work ONLY: the summariser is a
-	// chat round-trip on a large prompt, measured at ~3.5 min. Inheriting the 45s
-	// bound killed it on every fold of the live incident, so no conversation ever
-	// got an LLM checkpoint. context.WithoutCancel keeps the userID claim (the
-	// write path needs it) and detaches the caller's deadline; summaryHTTPTimeout
-	// is the summariser's own hard ceiling. The DB write keeps its own fresh
-	// bound (durableWriteContext, created AFTER this call).
+	// ESCALATION IS MEASURED, NOT ASSUMED.
+	//
+	//	stage 1: the fold set buys at least the hysteresis floor (its own gate)
+	//	stage 2: the projected post-fold view is still over the target
+	//	stage 3: the projected post-stage-2 roll-up is still over the target
+	//
+	// STAGE 3 IS AN EDIT, NOT A TRANSCRIPT. It speaks the '-'/'+ addendum
+	// protocol (stage3AddendumInstruction) and the server applies it
+	// (applyCompactionAddendum), so untouched archive entries cost ZERO output
+	// tokens. A runaway addendum (delete most, add little) is refused: the
+	// archive is the only record of rows that no longer exist.
+	//
+	// FAIL-CLOSED, PER STAGE. Stage 1's failure stores the deterministic machine
+	// render (rows are evicting; writing nothing loses them). Stage 2/3 failure
+	// stores NOTHING: a summary has no deterministic equivalent, and a pair
+	// rewrite is a cache break you do not pay for a failed attempt.
 	summariserCtx, cancelSummariser := summariserCallContext(ctx)
 	defer cancelSummariser()
 	convForSummary := utils.Conversation{
@@ -1435,59 +1441,161 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 		convForSummary.UserID = uid
 	}
 
-	// Stage 1 tries the prefix replay first (cache hit, the model reads the real
-	// rows) and falls back to the budgeted machine render (fits by construction)
-	// when the replayed prefix cannot fit the declared window — the common case,
-	// since the fold runs because the context is large. Both are LLM calls.
-	llmText, llmErr := attemptFoldCompress(summariserCtx, convForSummary, model, foldable, payload)
-
-	// ---- STAGE 2: SUMMARISE + DROP, when compression is not enough ----------
-	//
-	// Stage 2 carries the owner's two extra instructions: (1) summarise the
-	// context, (2) drop context that is completed and no longer in active use.
-	// It runs when stage 1 produced nothing, or a checkpoint that does not fit
-	// the fold's ceiling - i.e. the conversation is over its window even
-	// compressed, so finished work is what has to go.
-	if llmErr == nil && strings.TrimSpace(llmText) != "" && len(llmText) <= ceiling {
-		utils.Log("[Eco] stage 1 LLM compression: %d rows, folded %d chars -> checkpoint %d chars (ceiling %d, per-row show %d, chat model %s)",
-			len(foldable), foldedChars, len(llmText), ceiling, show, model.Name)
-		dbWriteCtx, cancelWrite := durableWriteContext(ctx)
-		defer cancelWrite()
-		return db.CompactConversationDurable(dbWriteCtx, conversationID, messages, foldFrom,
-			llmFoldSummaryRenderer(llmText, ceiling), summaryBound)
+	// "Acceptable size": the projected post-fold view, in the same chars/3
+	// measure the trigger uses, against the configured target. A fold whose new
+	// section costs `added` chars leaves a view of (live tail)+(prior)+(added).
+	targetChars := ecoFoldTarget(model.Name) * summaryCharsPerToken
+	tailChars := 0
+	for i := range messages[foldFrom:] {
+		tailChars += SentViewRowChars(messages[foldFrom+i])
 	}
 
-	stage1Reason := llmErr
-	if stage1Reason == nil {
-		stage1Reason = fmt.Errorf("the stage-1 checkpoint is %d chars, over the %d-char ceiling", len(llmText), ceiling)
-	}
-	utils.Log("[Eco] stage 1 not enough (%v) - escalating to stage 2 SUMMARY+DROP", stage1Reason)
-
-	if txt2, err2 := attemptFoldSummaryFromMegacave(summariserCtx, convForSummary, model, foldable, payload); err2 == nil && strings.TrimSpace(txt2) != "" {
-		utils.Log("[Eco] stage 2 LLM summary (summarise + drop completed): %d rows -> checkpoint %d chars (ceiling %d, chat model %s)",
-			len(foldable), len(txt2), ceiling, model.Name)
-		dbWriteCtx, cancelWrite := durableWriteContext(ctx)
-		defer cancelWrite()
-		return db.CompactConversationDurable(dbWriteCtx, conversationID, messages, foldFrom,
-			llmFoldSummaryRenderer(txt2, ceiling), summaryBound)
-	} else {
-		stage2Reason := err2
-		if stage2Reason == nil {
-			stage2Reason = fmt.Errorf("the summariser answered with an empty checkpoint")
+	// STAGE 1, with the machine render as its ELSE: the fold is LLM-first, and
+	// the deterministic render is the branch a model failure takes. This
+	// if-init / else shape is what ultracave_llm_guard_test pins - the guard
+	// exists because earlier rounds of this subsystem kept regressing the fold to
+	// megacave-first, which pays for a render nobody asked for.
+	if llmText, llmErr := attemptFoldCompress(summariserCtx, convForSummary, model, foldable, payload, ceiling, foldedChars); llmErr == nil && strings.TrimSpace(llmText) != "" {
+		_, added, replayed := stitchDelta(priorSummary, llmText)
+		if reason := stage1Accept(added, replayed, llmText, foldable, ceiling); reason != "" {
+			// The answer is not usable: it replayed the chain, paraphrased a user
+			// turn, added nothing, or overflowed the ceiling. Treated exactly like
+			// a model failure - the rows are evicting, so the machine render goes.
+			utils.Log("[Eco] stage 1 answer rejected (%s) - storing the machine render: %d rows, ceiling=%d, per-row show=%d",
+				reason, len(foldable), ceiling, show)
+			dbWriteCtx, cancelWrite := durableWriteContext(ctx)
+			defer cancelWrite()
+			return db.CompactConversationDurable(dbWriteCtx, conversationID, messages, foldFrom,
+				machineOnlyFoldRenderer(show, ceiling), summaryBound)
 		}
-		// FAIL-CLOSED, and it is load-bearing: the rows are being evicted, so
-		// writing nothing loses them outright. With both model paths unavailable
-		// (proxy down, non-200, deadline, empty answer) the fold stores the
-		// deterministic machine render, bounded by the same ceiling and
-		// announcing any truncation. Lower quality than a model checkpoint;
-		// never a lost fold.
-		utils.Log("[Eco] BOTH LLM STAGES FAILED, storing the machine render (stage1: %v; stage2: %v): %d rows, room=%d chars, folded=%d chars, ceiling=%d, per-row show=%d",
-			stage1Reason, stage2Reason, len(foldable), room, foldedChars, ceiling, show)
+		newView := tailChars + len(priorSummary) + added
+		utils.Log("[Eco] stage 1 LLM compression (delta): %d rows, folded %d chars -> +%d chars, projected view %d chars vs target %d (chat model %s)",
+			len(foldable), foldedChars, added, newView, targetChars, model.Name)
+		// The DELTA is the excerpt: the storage layer appends it after the prior,
+		// so the stored pair keeps its bytes and grows at the tail.
+		dbWriteCtx, cancelWrite := durableWriteContext(ctx)
+		defer cancelWrite()
+		if _, ferr := db.CompactConversationDurable(dbWriteCtx, conversationID, messages, foldFrom,
+			llmFoldSummaryRenderer(llmText, ceiling), summaryBound); ferr != nil {
+			return 0, ferr
+		}
+		if newView <= targetChars {
+			// Acceptable size: the ladder stops. This is the common case.
+			return 1, nil
+		}
+		// Stage 1 compressed everything it was given and the view is STILL over
+		// target: folding more rows cannot help, so escalate - one call, in this
+		// pass, because the rows are already evicted and shipping a view over
+		// target costs the next turn a context error.
+		utils.Log("[Eco] stage 1 left the view at %d chars > target %d - escalating to stage 2 (one call)", newView, targetChars)
+		return escalateSummarise(summariserCtx, conversationID, messages, foldFrom, model, payload,
+			priorSummary, ceiling, foldedChars, tailChars, targetChars)
+	} else {
+		if llmErr == nil {
+			llmErr = fmt.Errorf("the summariser answered with an empty checkpoint")
+		}
+		utils.Log("[Eco] stage 1 unavailable (%v) - storing the machine render: %d rows, room=%d chars, folded=%d chars, ceiling=%d, per-row show=%d",
+			llmErr, len(foldable), room, foldedChars, ceiling, show)
 		dbWriteCtx, cancelWrite := durableWriteContext(ctx)
 		defer cancelWrite()
 		return db.CompactConversationDurable(dbWriteCtx, conversationID, messages, foldFrom,
 			machineOnlyFoldRenderer(show, ceiling), summaryBound)
 	}
+}
+
+// stage1Accept validates a stage-1 answer: "" when it may be stored, else the
+// reason it may not. A named function because every rule in it is a rule the
+// owner stated, and the reason goes in the log that names why the machine
+// render replaced a model answer.
+//
+// The verbatim-user-row check is the load-bearing one. Terse output that
+// paraphrases "no, do NOT restart the service" into "the user discussed a
+// restart" destroys the fact that matters, and on a fold the source row is
+// gone, so the paraphrase is all that survives.
+func stage1Accept(added, replayed int, llmText string, foldable []utils.Message, ceiling int) string {
+	if added == 0 {
+		if replayed > 0 {
+			return fmt.Sprintf("the answer was a %d-char replay of the existing roll-up", replayed)
+		}
+		return "the answer added nothing to the roll-up"
+	}
+	if !userRowsVerbatimOK(llmText, foldable) {
+		return "the checkpoint does not carry the user rows verbatim"
+	}
+	if added > ceiling {
+		return fmt.Sprintf("the new section is %d chars, over the %d-char ceiling", added, ceiling)
+	}
+	return ""
+}
+
+// escalateSummarise is STAGE 2, and the stage 3 gate.
+//
+// Stage 2 sends the SAME prefix (the fold-start replay, cache-hot from stage
+// 1's call) with its own brief, and its answer is the delta appended to the
+// chain. It is written with RewriteCheckpointSummary: a summary is a full-state
+// replacement by definition, so it is the one write that intentionally breaks
+// the cache - once, after success.
+//
+// If the roll-up is STILL over target after stage 2, stage 3 compacts the
+// archive by edit (addendum protocol), in this same pass, one call. Neither
+// stage chains further: each returns, and the next tick re-evaluates.
+func escalateSummarise(ctx context.Context, conversationID string, messages []utils.Message, foldFrom int, model utils.Model, payload ChatPayload, priorSummary string, ceiling, foldedChars, tailChars, targetChars int) (int, error) {
+	convForSummary := utils.Conversation{ID: conversationID, Messages: messages, ModelSelected: payload.ModelSelected}
+	if uid, ok := ctx.Value("userID").(string); ok {
+		convForSummary.UserID = uid
+	}
+	txt2, err2 := attemptFoldSummaryFromView(ctx, convForSummary, model, payload, foldStageSummarize, ceiling, foldedChars)
+	if err2 != nil {
+		utils.Log("[Eco] stage 2 failed (%v): keeping the stage-1 roll-up", err2)
+		return 1, nil
+	}
+	chain, added2, rep2 := stitchDelta(priorSummary, txt2)
+	if strings.TrimSpace(chain) == "" || added2 == 0 {
+		utils.Log("[Eco] stage 2 added nothing (replay %d chars): keeping the stage-1 roll-up", rep2)
+		return 1, nil
+	}
+	writeCtx, cancelWrite := durableWriteContext(ctx)
+	defer cancelWrite()
+	if err := db.RewriteCheckpointSummary(writeCtx, conversationID, chain); err != nil {
+		// The writer refuses an empty summary by design; any other failure
+		// leaves stage 1's chain in place.
+		utils.Log("[Eco] stage 2 rewrite refused (%v): keeping the stage-1 roll-up", err)
+		return 1, nil
+	}
+	utils.Log("[Eco] stage 2 LLM summary (delta): +%d chars (replay stripped %d) -> roll-up %d chars vs target %d",
+		added2, rep2, len(chain), targetChars)
+	if tailChars+len(chain) <= targetChars {
+		return 1, nil
+	}
+	// STAGE 3: the archive is the fat part. Compact it by edit, one call.
+	utils.Log("[Eco] roll-up %d chars > target %d - escalating to stage 3 (archive edit)", len(chain), targetChars)
+	ok3, why := compactArchive(ctx, conversationID, convForSummary, model, payload, chain, targetChars)
+	if ok3 {
+		return 1, nil
+	}
+	utils.Log("[Eco] stage 3 refused or failed (%s): keeping the stage-2 roll-up", why)
+	return 1, nil
+}
+
+// compactArchive runs STAGE 3: an edit-list pass over the archive, applied
+// server-side. Returns (applied, reason-when-not).
+func compactArchive(ctx context.Context, conversationID string, conv utils.Conversation, model utils.Model, payload ChatPayload, chain string, targetChars int) (bool, string) {
+	addendum, err := attemptFoldSummaryFromView(ctx, conv, model, payload, foldStageCompact, targetChars/2, len(chain))
+	if err != nil {
+		return false, fmt.Sprintf("%v", err)
+	}
+	res, ok := applyCompactionAddendum(chain, addendum, targetChars)
+	if !ok {
+		return false, "addendum refused (runaway guard, no edits, or empty result)"
+	}
+	writeCtx, cancelWrite := durableWriteContext(ctx)
+	defer cancelWrite()
+	if err := db.RewriteCheckpointSummary(writeCtx, conversationID, res.Compacted); err != nil {
+		return false, fmt.Sprintf("rewrite: %v", err)
+	}
+	utils.Log("[Eco] stage 3 archive edit: -%d entries +%d entries, kept %d, archive %d -> %d chars (target %d)",
+		res.Removed, res.Added, res.Kept, len(chain), len(res.Compacted), targetChars)
+	return true, ""
 }
 
 // durableWriteContext is the durable fold's DB-write context: detached from
