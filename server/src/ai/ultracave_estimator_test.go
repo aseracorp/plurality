@@ -220,7 +220,11 @@ func TestUltracaveDurableFoldForLoopStopsAfterBudget(t *testing.T) {
 // string content is immutable and attachClock builds a NEW parts slice
 // rather than writing into the old one).
 func TestUltracaveClockTailStaysAtTheEnd(t *testing.T) {
-	msgs := ucHistory("clock check", 6, 800)
+	// End on a user row: appendCurrentTimeTail attaches only to a text-bearing
+	// USER tail row (a tool-tailed request skips the clock), so this is the
+	// shape in which the tail mutation must be at the very END.
+	msgs := append(ucHistory("clock check", 6, 800),
+		utils.Message{Role: "user", Content: utils.NewTextContent("and now?")})
 	_, rows := ucRenderWire(t, msgs)
 	pre := append([]StandardMessageReq(nil), rows...)
 	preBytes := make([][]byte, len(pre))
@@ -246,8 +250,8 @@ func TestUltracaveClockTailStaysAtTheEnd(t *testing.T) {
 	// It must be at the END: the newest row, or the row just before a
 	// trailing assistant tool_calls row (assistant rows are skipped by
 	// design — the clock must never read as the model's own past speech).
-	if idx < len(withClock)-3 {
-		t.Fatalf("clock attached at %d of %d rows — it must be at the END", idx, len(withClock))
+	if idx != len(withClock)-1 {
+		t.Fatalf("clock attached at %d of %d rows — it must be the LAST row", idx, len(withClock))
 	}
 	if withClock[idx].Role == "assistant" {
 		t.Fatal("clock landed on an assistant row (the model narrates the timestamp)")

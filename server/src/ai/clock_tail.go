@@ -139,20 +139,35 @@ func appendCurrentTimeTail(msgs []StandardMessageReq) []StandardMessageReq {
 		return append(msgs, StandardMessageReq{Role: "system", Content: strings.TrimSpace(clock)})
 	}
 
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "assistant" {
-			// The clock must never read as the model's own past speech.
-			continue
-		}
-		if attachClock(&msgs[i], clock) {
-			return msgs
-		}
+	// Only the LAST row can carry the clock, and only when it is a text-bearing
+	// "user" row. Anything else is skipped for this turn:
+	//
+	//   - a trailing "tool" row is the agentic case (the request ends on tool
+	//     results mid-loop). The clock appended there renders as a bare
+	//     sentence at the end of a tool result, and the agent reads it as a new
+	//     turn addressed to it: observed live, repeatedly, as the assistant
+	//     replying to "The current time is ..." as if the user had sent it,
+	//     and as tool output stored with the sentence appended to it.
+	//   - a trailing "assistant" row is the model's own speech (the clock there
+	//     is the narrating-the-clock defect this file exists for).
+	//   - a trailing "system" row is the HEAD of the request: mutating it is a
+	//     per-turn rewrite of the cached prefix, which is what prompt caching
+	//     exists to prevent.
+	//
+	// There is deliberately NO walk-back to an older row. Walking back is what
+	// put the clock in the middle of the request (on an older user turn while
+	// newer tool rows follow), and a clock that far from the end is not
+	// time-awareness — it is content inside history, and it gets summarised,
+	// imitated and stored. A turn without a clock is a turn with no
+	// time-awareness, which is the cheap and honest failure.
+	if last := msgs[len(msgs)-1]; last.Role == "user" && attachClock(&msgs[len(msgs)-1], clock) {
+		return msgs
 	}
 
-	// Nothing in the request carries text (tool schemas only, image-only
-	// rows): skip the clock for this turn. There is no content to attach it
-	// to, and inventing a row is one of the known-bad shapes above.
-	utils.Log("[clock_tail] no text-bearing message in this request; skipping the current-time tail this turn")
+	// The tail cannot carry the clock. Skip it for this turn rather than invent
+	// a row (trailing system/user/tool each break a chat template, and a
+	// synthetic tool row needs a tool_call_id strict providers reject).
+	utils.Log("[clock_tail] request ends on a %s row; skipping the current-time tail this turn", msgs[len(msgs)-1].Role)
 	return msgs
 }
 

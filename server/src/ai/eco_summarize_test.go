@@ -276,13 +276,18 @@ func TestSummaryRequestMaxTokensIsWindowBounded(t *testing.T) {
 // clock text appendCurrentTimeTail added — nothing else, in both wire shapes
 // (string content and content parts).
 func TestStripCurrentTimeTailIsTheInverseOfAppend(t *testing.T) {
-	msgs := ucHistory("strip the clock", 6, 800)
+	// The request must end on a text-bearing USER row: that is the only shape
+	// appendCurrentTimeTail attaches to (a tool-tailed request skips the clock
+	// for the turn — TestAppendCurrentTimeTailNeverLandsOnToolRow), and this
+	// test needs a clock to exist in order to prove the strip is exact.
+	msgs := append(ucHistory("strip the clock", 6, 800),
+		utils.Message{Role: "user", Content: utils.NewTextContent("now summarise this")})
 	_, rows := ucRenderWire(t, msgs)
 	before := ucRowsBytes(t, rows)
 
 	clocked := appendCurrentTimeTail(append([]StandardMessageReq(nil), rows...))
 	if bytes.Equal(ucRowsBytes(t, clocked), before) {
-		t.Fatal("appendCurrentTimeTail attached nothing — the fixture has no text-bearing row")
+		t.Fatal("appendCurrentTimeTail attached nothing — the fixture must end on a text-bearing user row")
 	}
 	stripped := stripCurrentTimeTail(clocked)
 	if !bytes.Equal(ucRowsBytes(t, stripped), before) {
