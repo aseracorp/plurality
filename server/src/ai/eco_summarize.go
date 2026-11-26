@@ -309,7 +309,7 @@ func buildSummaryRequestFromMegacave(ctx context.Context, conv utils.Conversatio
 	head := append([]StandardMessageReq(nil), full[:leadingSystemRows(full)]...)
 
 	instruction := summaryInstruction(PriorSummaryFromView(conv.Messages), len(foldable))
-	window := Models.MaxContextTokensForPrefixed(model.Name)
+	window := Models.DeclaredContextWindow(model.Name)
 	schemaTokens := len(marshalNoEscape(parts.request.Tools)) / summaryCharsPerToken
 	headTokens := renderedRowsTokens(head)
 	instrTokens := len(instruction) / summaryCharsPerToken
@@ -379,7 +379,7 @@ func attemptFoldSummaryFromMegacave(ctx context.Context, conv utils.Conversation
 	}
 	if req.MaxTokens != nil && *req.MaxTokens <= minSummaryOutputTokens {
 		return "", fmt.Errorf("summary budget collapsed (max_tokens=%d for a %d-token window): the prefix already fills it",
-			*req.MaxTokens, Models.MaxContextTokensForPrefixed(req.Model))
+			*req.MaxTokens, Models.DeclaredContextWindow(req.Model))
 	}
 	return GenerateCheckpointSummaryFromRequest(ctx, req)
 }
@@ -455,7 +455,7 @@ func commonRenderedPrefixRows(a, b []StandardMessageReq) int {
 // summary cannot be written in this shape and the fold falls back to the
 // machine-only render, which costs no prefill at all.
 func summaryOutputTokens(modelName string, viewTokens int, tools []utils.ToolsRequest) int {
-	window := Models.MaxContextTokensForPrefixed(modelName)
+	window := Models.DeclaredContextWindow(modelName)
 	schemaTokens := len(marshalNoEscape(tools)) / summaryCharsPerToken
 	prefixTokens := viewTokens + schemaTokens
 	budget := window - prefixTokens
@@ -483,17 +483,191 @@ func marshalNoEscape(v interface{}) []byte {
 	return bytes.TrimRight(buf.Bytes(), "\n")
 }
 
+// refineRollupInstruction asks the model to shorten an EXISTING roll-up, which
+// is a different task from stage 2: stage 2 writes a checkpoint for rows about
+// to be evicted, this pass has no rows to evict — the rows are already archived
+// and their only remaining representation is this text. So the instruction
+// forbids compression for its own sake and names the thing that actually frees
+// room: topics the conversation has finished with.
+func refineRollupInstruction(priorSummary string) string {
+	var b strings.Builder
+	b.WriteString("SYSTEM TASK — SHORTEN THE ARCHIVE SUMMARY (not a reply to the user)\n\n")
+	b.WriteString("The text below is this conversation's archive of turns that no longer fit in the context window. " +
+		"It is the ONLY record of those turns: they are gone. The archive has itself grown too large, so it must shrink.\n\n")
+	b.WriteString("Rewrite it, keeping the archive's job: let the conversation continue correctly.\n")
+	b.WriteString("1. DROP what the conversation has finished with: superseded attempts, work that was later redone, " +
+		"investigations that reached a conclusion, dead ends, stale file contents, output that only mattered to a step that is done.\n")
+	b.WriteString("2. KEEP everything still in play: the task being worked on now, decisions and their reasons, " +
+		"file paths and identifiers that exist, invariants and constraints the user stated, open questions, " +
+		"exact commands and their results, numbers, URLs, error messages, and the user's requests in their own words.\n")
+	b.WriteString("3. Prefer deleting whole entries over rewording them. Merge duplicated notes. " +
+		"Do NOT compress into vaguer language: an entry that loses its specifics is worse than a deleted entry.\n")
+	b.WriteString("4. Output the new archive only — no preamble, no closing remarks, no note about what you removed. " +
+		"Aim for roughly half the input length; go lower only where the material is genuinely finished.\n\n")
+	b.WriteString("THE ARCHIVE TO SHORTEN:\n")
+	b.WriteString(priorSummary)
+	b.WriteString("\n")
+	return b.String()
+}
+
+// RefineRollupSummary is the last durable move against a context overflow, for
+// the case where a fold can no longer shrink the view: every foldable row is
+// already flagged compacted, so the only text left that can be made smaller is
+// the roll-up standing in for them.
+//
+// It is an LLM pass over the roll-up (see refineRollupInstruction), sent on the
+// conversation's own chat model through the same route as its real requests,
+// and the answer REPLACES the roll-up IN PLACE (db.RewriteCheckpointSummary):
+// same pair, same row ids, same seq layout, only the summary text changes. The
+// rows behind it are already marked compacted, so no live turn is touched, and
+// nothing is dropped from the request without being recorded.
+//
+// Returns (refined, err). false with a nil error means "cannot help here":
+// no pair, no declared window to size the request against, no room in that
+// window for a summariser round-trip, or the model answered empty. The caller
+// must then fail the turn honestly — the previous behaviour, an in-memory trim,
+// silently shortened the history and is deleted.
+func RefineRollupSummary(ctx context.Context, conversationID string, messages []utils.Message, model utils.Model, payload ChatPayload) (bool, error) {
+	prior := strings.TrimSpace(PriorSummaryFromView(messages))
+	if prior == "" {
+		return false, nil
+	}
+	if model.Name == "" {
+		return false, nil
+	}
+	window := Models.DeclaredContextWindow(model.Name)
+	if window <= 0 {
+		// No declared window: the summariser's max_tokens cannot be sized, and
+		// guessing one is the assumption this path refuses.
+		utils.Log("[Eco] roll-up refine refused: model %s declares no context window", model.Name)
+		return false, nil
+	}
+
+	// Replay the conversation's own head (system prompt + tool schemas), so the
+	// prefill the backend already has is reused, then strip the clock: it is the
+	// only per-turn mutation of the prefix and the roll-up must not narrate a
+	// timestamp.
+	// ModelSelected comes from the payload the loop's requests carried, exactly
+	// as durableFold builds its summariser conversation: buildChatRequestParts
+	// resolves the model through it (including the vision swap), so the replayed
+	// head matches the head of the conversation's real requests and the backend
+	// prefix hits.
+	p := payload
+	p.ConversationID = conversationID
+	// ModelSelected comes from the payload the loop's requests carried, exactly
+	// as durableFold builds its summariser conversation: buildChatRequestParts
+	// resolves the model through it (including the vision swap), so the replayed
+	// head matches the head of the conversation's real requests and the backend
+	// prefix hits.
+	conv := utils.Conversation{ID: conversationID, Messages: messages, ModelSelected: p.ModelSelected}
+	if uid, ok := ctx.Value("userID").(string); ok {
+		conv.UserID = uid
+	}
+	parts, err := buildChatRequestParts(ctx, model, conv, p)
+	if err != nil {
+		return false, fmt.Errorf("cannot replay the chat request for the roll-up refine: %w", err)
+	}
+	head := append([]StandardMessageReq(nil), parts.request.Messages[:leadingSystemRows(parts.request.Messages)]...)
+	head = stripCurrentTimeTail(head)
+	schemaTokens := len(marshalNoEscape(parts.request.Tools)) / summaryCharsPerToken
+	headTokens := renderedRowsTokens(head)
+
+	// The roll-up gets the room the head does not take, and the refine output
+	// must fit below it, so the request is bounded by construction.
+	instruction := refineRollupInstruction("")
+	instrTokens := len(instruction) / summaryCharsPerToken
+	room := window - headTokens - schemaTokens - instrTokens - guardSafetyReserve - minSummaryOutputTokens
+	if room < minSummaryOutputTokens {
+		utils.Log("[Eco] roll-up refine refused: no room in the window (head %d + schemas %d + instruction %d + safety %d + output floor %d vs %d)",
+			headTokens, schemaTokens, instrTokens, guardSafetyReserve, minSummaryOutputTokens, window)
+		return false, nil
+	}
+	// Cap the roll-up going in, so a roll-up already over the window cannot make
+	// this request itself the one the provider rejects. The megacave chain
+	// compressor is the same bounded, idempotent render the fold uses.
+	roomChars := room * summaryCharsPerToken
+	chain := MegacaveSummaryChain(prior, roomChars)
+	if strings.TrimSpace(chain) == "" {
+		return false, nil
+	}
+	body := chain + "\n\n" + refineRollupInstruction(chain)
+	bodyTokens := len(body) / summaryCharsPerToken
+	if headTokens+schemaTokens+bodyTokens+guardSafetyReserve+minSummaryOutputTokens > window {
+		return false, nil
+	}
+
+	req := StandardChatRequest{
+		Model:       model.Name,
+		Messages:    append(head, StandardMessageReq{Role: "user", Content: body}),
+		Stream:      false,
+		Tools:       parts.request.Tools,
+		CachePrompt: parts.request.CachePrompt,
+		NKeep:       parts.request.NKeep,
+	}
+	maxTokens := summaryOutputTokens(model.Name, headTokens+schemaTokens+bodyTokens, nil)
+	req.MaxTokens = &maxTokens
+
+	summariserCtx, cancel := summariserCallContext(ctx)
+	defer cancel()
+	text, err := GenerateCheckpointSummaryFromRequest(summariserCtx, req)
+	if err != nil {
+		return false, err
+	}
+	refined := strings.TrimSpace(text)
+	if refined == "" {
+		return false, nil
+	}
+	// The refined text is stored, so it must obey the same ceiling the fold's
+	// own renderers do: an unbounded roll-up re-inflates the next reload above
+	// the eco trigger and rewrites the prompt head every turn.
+	bound := durableRollupBound(overflowFoldBudgetTokens(window), SentViewTokens(messages))
+	if bound > 0 {
+		refined = MegacaveSummaryChain(refined, bound)
+	}
+	if strings.TrimSpace(refined) == "" || len(refined) >= len(prior) {
+		// No shrink: writing it would pay a prompt-head content change for
+		// nothing. Leave the archive alone and let the caller fail the turn.
+		utils.Log("[Eco] roll-up refine made no progress (%d chars -> %d chars): archive left unchanged", len(prior), len(refined))
+		return false, nil
+	}
+	dbWriteCtx, cancelWrite := durableWriteContext(ctx)
+	defer cancelWrite()
+	if err := db.RewriteCheckpointSummary(dbWriteCtx, conversationID, refined); err != nil {
+		return false, err
+	}
+	utils.Log("[Eco] roll-up refined durably: %d chars -> %d chars (window %d, output budget %d)", len(prior), len(refined), window, maxTokens)
+	return true, nil
+}
+
 // llmFoldSummaryRenderer is the SUCCESS path of the fold: the LLM's checkpoint
 // text is itself megacaved, so the stored roll-up stays a chain of megacaved
 // summaries and stays inside the same ceiling the machine render respects.
+//
+// The attachment retrieval block is appended HERE, from the fold set the
+// storage layer hands in, and NOT taken from the model's prose. The machine
+// renderer gets its block from MachineExcerptMegacaveCapped; on this path the
+// summariser is asked for a checkpoint of the text, so copying the ids would
+// be up to the model, and a checkpoint that drops them silently breaks the
+// promise the block makes — "call conversation_attachments with one of these
+// ids" is only a promise while the ids are in the text. The ids are row-derived
+// and stable (att_<db row id>_<part>), the folded rows are flagged not deleted,
+// so the block written at fold time keeps resolving for the life of the
+// conversation.
 func llmFoldSummaryRenderer(llmText string, ceiling int) func([]utils.Message) string {
-	return func([]utils.Message) string {
+	return func(folded []utils.Message) string {
 		text := MegacaveSummaryChain(llmText, ceiling)
 		if text == "" {
 			// Defensive: an empty render must not store an empty section.
 			return ""
 		}
-		return text
+		block := megacaveAttachmentBlock(folded)
+		if block == "" {
+			return text
+		}
+		// Stay inside the ceiling the caller was asked to respect. The block is
+		// bounded (<=40 ids) and costed as incompressible by the fold's own
+		// budget arithmetic, so this is the same ceiling, not a second one.
+		return capMegacaveExcerpt(text+"\n"+block, ceiling)
 	}
 }
 

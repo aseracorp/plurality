@@ -56,8 +56,17 @@ func TestFilterCheckpointsNoOOB(t *testing.T) {
 		for _, m := range out {
 			total += len(m.TextContent())
 		}
-		if total > 160*1024+(200*1024) {
-			t.Fatalf("tail chars too big: %d", total)
+		// NO CHAR BUDGET: the deleted capTail bounded the view by slicing it,
+		// which was silent history loss, and the deleted per-message truncation
+		// rewrote stored rows, which killed the KV prefix. The sent view is the
+		// stored rows; bounding it is the preemptive guard's job.
+		if len(out) != len(msgs) {
+			t.Fatalf("sent view dropped %d of %d rows", len(msgs)-len(out), len(msgs))
+		}
+		for i := range out {
+			if out[i].Content.TotalContentChars() != msgs[i].Content.TotalContentChars() {
+				t.Fatalf("pass %d rewrote row %d: the view builder must be a no-op on content", i, i)
+			}
 		}
 	}
 	out := filterCheckpointsForRequest(msgs, false)
@@ -120,10 +129,11 @@ func TestFilterNoCheckpointHugeHistory_WordPressRegression(t *testing.T) {
 		}
 	}
 	t.Logf("sent view %d msgs, max msg %d chars", len(out), max)
-	// The per-message bound: a 200k blob ships truncated, so no single row can
-	// exceed the window by itself.
-	if max > maxKeepTailChars+truncationBannerChars {
-		t.Fatalf("oversized message not truncated: %d", max)
+	// Every row ships at its stored size: nothing on this path rewrites a row.
+	for i := range out {
+		if out[i].Content.TotalContentChars() != msgs[i].Content.TotalContentChars() {
+			t.Fatalf("row %d rewritten by the request path", i)
+		}
 	}
 	// The whole view is unbounded by design; the guard is what bounds it, by
 	// raising the context-length error the loop folds durably in response.

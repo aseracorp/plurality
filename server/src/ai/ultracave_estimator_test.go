@@ -44,26 +44,24 @@ func TestUltracaveSentViewTokensSkipsFoldedRows(t *testing.T) {
 	}
 }
 
-// TestUltracaveSentViewRowCapMatchesTheSender: the estimator clamps a row at
-// the per-message cap the sender applies, so the guard never over-counts a
-// blob the request path bounds anyway. The clamp constant must be the SAME
-// number the tail/overflow bounds use — if those constants drift, this test
-// fails, which is the point.
-func TestUltracaveSentViewRowCapMatchesTheSender(t *testing.T) {
-	if maxCompactMessageChars != maxKeepTailChars {
-		t.Fatalf("estimator cap (%d) and eco tail cap (%d) diverged — estimator and sender no longer agree",
-			maxCompactMessageChars, maxKeepTailChars)
-	}
-	blob := strings.Repeat("B", maxCompactMessageChars*3)
+// TestUltracaveSentViewCountsRowsWhole: the estimator counts every row at its
+// FULL stored size, because the request path now ships the stored bytes
+// whole — the per-message caps it used to apply (maxKeepTailChars /
+// maxCompactMessageChars) are deleted, so an estimator that clamped would
+// under-count the wire and let an oversized request ship un-flagged.
+//
+// The clamps were also the reason the guard and the wire disagreed: a row
+// counted at the cap while the sender truncated it to cap+banner is a
+// measure of a request nobody ships.
+func TestUltracaveSentViewCountsRowsWhole(t *testing.T) {
+	blob := strings.Repeat("B", 300_000)
 	row := utils.Message{Role: "user", Content: utils.NewTextContent(blob)}
-	want := maxCompactMessageChars / 3
-	if got := SentViewRowChars(row); got != maxCompactMessageChars {
-		t.Fatalf("oversized row counted at %d chars, want the sender cap %d", got, maxCompactMessageChars)
+	if got := SentViewRowChars(row); got != 300_000 {
+		t.Fatalf("oversized row counted at %d chars, want its full 300000 (the sender ships it whole)", got)
 	}
-	if SentViewTokens([]utils.Message{row}) != want {
+	if SentViewTokens([]utils.Message{row}) != 100_000 {
 		t.Fatalf("estimator over/under-counted the oversized row")
 	}
-	// A row under the cap is counted whole (no compression of the estimate).
 	small := utils.Message{Role: "user", Content: utils.NewTextContent("hello")}
 	if SentViewRowChars(small) != len("hello") {
 		t.Fatalf("small row mis-sized: %d", SentViewRowChars(small))
@@ -72,23 +70,25 @@ func TestUltracaveSentViewRowCapMatchesTheSender(t *testing.T) {
 	if SentViewTokens([]utils.Message{blob2msg(), small}) != SentViewTokens([]utils.Message{blob2msg(), small}) {
 		t.Fatal("estimator is not deterministic")
 	}
-	// The stored caveman projection is NOT subtracted: the sender ships it
-	// only for caveman-enabled models (cavemanCompressApplies), so counting
-	// it would make the trigger measure model-dependent, and the eco trigger
-	// is evaluated per conversation. Counting the raw body is the
-	// conservative direction — the context guard folds a little early on a
-	// compressed model, it can never under-count and ship an oversized
-	// request. This test pins that choice.
+	// The stored caveman projection is NOT subtracted from SentViewRowChars:
+	// the sender ships it only for caveman-enabled models
+	// (cavemanCompressApplies), so counting it would make the TRIGGER measure
+	// model-dependent, and the trigger is evaluated per conversation whose
+	// next turn may use any model. Counting the raw body is the conservative
+	// direction: the guard folds marginally early on a compressed model, and
+	// can never under-count and ship an oversized request. The model-aware
+	// measure the guard itself uses is SentViewRowCharsShipped, which is what
+	// takes the projection into account.
 	proj := utils.Message{Role: "tool", Name: "system_tools__shell_exec",
 		Content:           utils.NewTextContent(strings.Repeat("r", 400_000)),
 		CompressedContent: strings.Repeat("p", 1_000)}
-	if got := SentViewRowChars(proj); got != maxCompactMessageChars {
-		t.Fatalf("projection-aware estimate: got %d, want the raw body clamped at %d", got, maxCompactMessageChars)
+	if got := SentViewRowChars(proj); got != 400_000 {
+		t.Fatalf("trigger measure: got %d, want the raw body counted whole", got)
 	}
 }
 
 func blob2msg() utils.Message {
-	return utils.Message{Role: "assistant", Content: utils.NewTextContent(strings.Repeat("Z", maxCompactMessageChars+10))}
+	return utils.Message{Role: "assistant", Content: utils.NewTextContent(strings.Repeat("Z", 100_010))}
 }
 
 // TestUltracaveOverflowFoldFromGuards: the overflow boundary must be > 0,
@@ -310,28 +310,40 @@ func mustRowBytes(t *testing.T, m StandardMessageReq) []byte {
 	return b
 }
 
-// TestUltracaveEcoOffKeepsFullHistory: eco off keeps the pre-existing
-// behaviour — drop the pair, ship the full history.
+// TestUltracaveEcoOffKeepsFullHistory: auto-compaction OFF ships the raw
+// history. Two cases, because an existing pair changes the arithmetic:
+//
+//   - no pair: every stored row ships, nothing dropped;
+//   - a pair EXISTS (minted by the context-overflow fallback, which fires
+//     whatever the setting is, because the alternative is a provider 400 on
+//     every turn): the LLM loader excludes rows flagged compacted, so dropping
+//     the pair removes the only record of those rows and the folded history is
+//     silently gone. The pair ships, and the view stays lossless.
 func TestUltracaveEcoOffKeepsFullHistory(t *testing.T) {
-	msgs := []utils.Message{checkpointMsg(), toolMsg()}
-	msgs = append(msgs, ucHistory("raw", 30, 5_000)...)
-	got := filterCheckpointsForRequest(msgs, false)
+	raw := ucHistory("raw", 30, 5_000)
+	got := filterCheckpointsForRequest(raw, false)
+	if len(got) != len(raw) {
+		t.Fatalf("eco off must send the full history: %d rows, want %d", len(got), len(raw))
+	}
 	for _, m := range got {
 		if db.IsCheckpointMessage(m) {
 			t.Fatal("checkpoint leaked with eco off")
 		}
 	}
-	if len(got) != len(msgs)-2 {
-		t.Fatalf("eco off must send the full history: %d rows, want %d", len(got), len(msgs)-2)
+
+	msgs := []utils.Message{checkpointMsg(), toolMsg()}
+	msgs = append(msgs, ucHistory("raw", 30, 5_000)...)
+	off := filterCheckpointsForRequest(msgs, false)
+	if len(off) != len(msgs) {
+		t.Fatalf("eco off with an existing fold shipped %d rows, want all %d: the pair "+
+			"stands in for rows the loader already excluded", len(off), len(msgs))
 	}
 	// eco ON with the same rows: the pair is kept and NOTHING is dropped, so
 	// the frozen view is the pair + the same live rows.
 	on := filterCheckpointsForRequest(msgs, true)
 	if len(on) != len(msgs) {
-		t.Fatalf("eco on dropped %d rows (frozen path must keep everything)", len(msgs)-len(on))
-	}
-	if !db.IsCheckpointMessage(on[0]) {
-		t.Fatal("eco on does not start on the checkpoint pair")
+		t.Fatalf("eco on dropped %d of %d rows: the frozen view is the pair + every live row",
+			len(msgs)-len(on), len(msgs))
 	}
 }
 

@@ -23,10 +23,12 @@ import (
 // window) is not dropped: the per-MESSAGE bound survives, and it is the
 // byte-stable one. These tests pin that, on the same fixtures.
 
-// TestUltracaveFrozenPathStillBoundsOversizedRows: with eco on and a pair
-// present, NOTHING is dropped from the head (frozen prefix) and every
-// oversized row is still bounded per-message, so a 4.9MB inline blob can
-// never ship whole.
+// TestUltracaveFrozenPathShipsRowsWhole: with eco on and a pair present, the
+// frozen path keeps the pair and EVERY live row, and rewrites NOTHING — the
+// per-message truncation it used to apply is deleted, because a truncated
+// row changes bytes between passes and a row whose bytes change discards the
+// KV prefix behind it. The request is bounded by the preemptive guard, which
+// fires on this exact measure and converts the overflow into a durable fold.
 func TestUltracaveFrozenPathStillBoundsOversizedRows(t *testing.T) {
 	blob := strings.Repeat("B", 4_900_000)
 	msgs := []utils.Message{checkpointMsg(), toolMsg()}
@@ -49,23 +51,32 @@ func TestUltracaveFrozenPathStillBoundsOversizedRows(t *testing.T) {
 	if len(got) != len(msgs) {
 		t.Fatalf("frozen path dropped %d rows; it must keep the pair + every live row", len(msgs)-len(got))
 	}
-	for _, m := range got {
-		if total := m.Content.TotalContentChars(); total > maxKeepTailChars+2_000 {
-			t.Fatalf("row over the per-message bound shipped: %d chars (cap %d)", total, maxKeepTailChars)
+	for i := range got {
+		// LOSSLESS AND BYTE-IDENTICAL: the sent row is the stored row.
+		if got[i].Content.TotalContentChars() != msgs[i].Content.TotalContentChars() {
+			t.Fatalf("row %d was rewritten by the request path: %d chars stored, %d shipped",
+				i, msgs[i].Content.TotalContentChars(), got[i].Content.TotalContentChars())
 		}
 	}
-	// The estimator agrees with the sender on exactly this shape: the blob
-	// counts at the cap, not at 4.9MB.
-	if est := SentViewTokens(got); est > 6*(maxKeepTailChars/3) {
-		t.Fatalf("estimator over-counted a bounded tail: %d tokens", est)
+	// The estimator counts the blob whole, so the guard sees ~1.7M tokens and
+	// MUST refuse the request — that refusal is the durable fold, the honest
+	// way to bound this view.
+	est := SentViewTokens(got)
+	if est < 1_500_000 {
+		t.Fatalf("estimator under-counted an unbounded tail: %d tokens (a 4.9MB blob is in it)", est)
+	}
+	if err := preemptiveContextGuard("gpt-4o", est, nil, 0, 128_000, len(got)); err == nil {
+		t.Fatal("preemptive guard accepted a ~1.7M-token view on a 128k window — " +
+			"with no per-message cap the guard is the ONLY bound, so it cannot miss")
 	}
 }
 
 // TestUltracaveBootstrapStaysBounded: a conversation with NO pair yet (the
 // bootstrap case, "WordPress Security Review"). The sent view keeps EVERY row
-// - capTail's budget-capped tail was silent history loss, and it is gone -
-// so what bounds the request is the per-message cap plus the preemptive
-// guard, which converts an oversized view into a durable fold.
+// - capTail's budget-capped tail was silent history loss, and the
+// per-message truncation was silent context loss, and both are gone - so the
+// ONLY thing bounding the request is the preemptive guard, which converts an
+// oversized view into a durable fold.
 func TestUltracaveBootstrapStaysBounded(t *testing.T) {
 	var msgs []utils.Message
 	for i := 0; i < 1_900; i++ {
@@ -93,12 +104,16 @@ func TestUltracaveBootstrapStaysBounded(t *testing.T) {
 		t.Fatalf("bootstrap view dropped %d of %d rows: silent history loss",
 			len(msgs)-len(got), len(msgs))
 	}
-	for _, m := range got {
-		if c := m.Content.TotalContentChars(); c > maxKeepTailChars+truncationBannerChars {
-			t.Fatalf("row ships %d chars, over the per-message bound %d - "+
-				"one blob can blow the window on its own",
-				c, maxKeepTailChars+truncationBannerChars)
+	for i, m := range got {
+		if m.Content.TotalContentChars() != msgs[i].Content.TotalContentChars() {
+			t.Fatalf("bootstrap view rewrote row %d: the request path must ship stored bytes", i)
 		}
+	}
+	// With no per-message cap, the guard is the only bound on this view, so
+	// firing on it is not optional: it is what turns an oversized view into a
+	// durable fold (which mints this conversation's pair).
+	if err := preemptiveContextGuard("gpt-4o", SentViewTokens(got), nil, 0, 128_000, len(got)); err == nil {
+		t.Fatal("preemptive guard accepted a ~32M-char bootstrap view on a 128k window")
 	}
 	// The overflow path is what mints the pair for this conversation: the
 	// boundary arithmetic must return a fold point > 0.

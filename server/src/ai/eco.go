@@ -50,7 +50,8 @@ func userContextFor(userID string) context.Context {
 // unbounded, is what makes the prefix stable: rows are only ever APPENDED
 // between folds, and a fold is a durable, infrequent, machine-written event.
 //
-// The only transform left on the normal path is truncateOversizedTail's
+// The only transform left on the normal path is the per-row bound inside the
+// fold render — the request path applies none:
 // PER-MESSAGE bound: each row is bounded as a pure function of that stored
 // row (its own length + its own truncation banner), never of the slice
 // total or a window position, so it is byte-stable across turns.
@@ -62,8 +63,28 @@ func userContextFor(userID string) context.Context {
 // sizes a per-request cap: the sent view is bounded per MESSAGE here, and the
 // guard turns "this view no longer fits the window" into a durable fold.
 func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool, windowTokens ...int) []utils.Message {
+	// AUTO-COMPACTION OFF: the user asked for the raw history, so the pair is
+	// dropped and the model reads every stored row. Compaction is off — no tick,
+	// no preemptive guard.
+	//
+	// One exception, and it is data loss: a pair EXISTS only if this conversation
+	// has already been folded, and it gets folded even with auto-compaction off,
+	// because the context-overflow fallback must fire on a request the provider
+	// rejects (the alternative is a dead turn, every turn). The LLM loader excludes
+	// rows flagged compacted, so dropping the pair here removes the ONLY record of
+	// those rows: the sent view shrinks by the size of the fold and the model
+	// answers with the folded history simply gone, no summary replacing it. That
+	// is silent context loss — the exact failure this subsystem exists to prevent.
+	//
+	// So: no pair -> raw history, as asked. Pair -> ship the frozen view
+	// (pair + live rows), because that pair is what the folded rows became.
 	if !ecoOn {
-		return db.FilterOutCheckpoints(messages)
+		if !hasCheckpointPair(messages) {
+			return dropOrphanToolRows(db.FilterOutCheckpoints(messages))
+		}
+		utils.Log("[Eco] conv has eco mode off but a durable fold exists: shipping the frozen view, "+
+			"because the %d rows that fold flagged compacted are excluded by the loader and the pair is "+
+			"their only remaining representation", countCompactedRows(messages))
 	}
 
 	// THE SLICE IS NOT THE LLM VIEW. Every caller of this function hands it a
@@ -129,17 +150,20 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool, windowTok
 	// the trigger forever, so the conversation that most needed compaction was
 	// the one the trigger could never see.
 	//
-	// The no-pair path is now the frozen path with no pair: every live row,
-	// bounded PER MESSAGE by truncateOversizedTail, a pure and idempotent
-	// function of the stored row, so the KV prefix survives. "This view no
-	// longer fits the window" is handled where it belongs: the preemptive
-	// guard in index.go measures this exact slice (SentViewTokens of the value
-	// returned here) and returns the context-length error the LLM loop
+	// The no-pair path is the frozen path with no pair: EVERY live row, whole.
+	// Nothing on this path rewrites a row any more. The per-message truncation
+	// it used to apply is deleted: a truncated row's bytes change between passes
+	// (the banner re-counts the banner, measured 100000+104=100104 over its own
+	// bound), and a row whose bytes change discards the KV prefix behind it.
+	//
+	// "This view no longer fits the window" is handled where it belongs: the
+	// preemptive guard in index.go measures this exact slice (SentViewTokens of
+	// the value returned here) and returns the context-length error the LLM loop
 	// recovers from with a DURABLE fold. That fold mints the pair, bounds the
-	// view losslessly, and tells the user it happened. Bounded, lossless, and
-	// the head never slides.
+	// view through the fold render + the model's checkpoint, and tells the user
+	// it happened. Nothing is silently cut and the head never slides.
 	if lastCheckpointIdx < 0 {
-		return truncateOversizedTail(messages)
+		return dropOrphanToolRows(messages)
 	}
 
 	// Frozen prefix: the pair, then every live row after it. No window, no
@@ -147,11 +171,66 @@ func filterCheckpointsForRequest(messages []utils.Message, ecoOn bool, windowTok
 	// explicit: an unbounded tail CAN exceed the model's window. That is not
 	// recovered per-request by sliding the head (which would destroy the
 	// cache); it is recovered by a DURABLE fold from the context-length error
-	// path (tool_loop.go), and only as a last resort by the in-memory trim
-	// there. The preemptive guard in index.go (SentViewTokens / estTokens)
+	// path (tool_loop.go), and only as a last resort by the durable roll-up
+	// refine there. The preemptive guard in index.go (SentViewTokens / estTokens)
 	// turns "about to exceed" into that durable fold before shipping.
-	tail := messages[lastCheckpointIdx:]
-	return truncateOversizedTail(tail)
+	return dropOrphanToolRows(messages[lastCheckpointIdx:])
+}
+
+// dropOrphanToolRows removes "tool" rows whose ToolCallID has no surviving
+// assistant tool_call in the shipped slice.
+//
+// This is NOT the size-based capping this file deleted: it fires at any size,
+// and what it removes is not context the model can use. OpenAI-compatible
+// providers reject a tool message with no preceding tool_call, so shipping one
+// costs a hard 400 on EVERY later request — a durable fold cannot fix a
+// legality error, so the conversation is dead until someone edits the rows by
+// hand. An orphan (left by an interrupted stream, a cancelled tool, a partial
+// flush) carries no call, no arguments and no turn boundary: it is a malformed
+// row, not information.
+//
+// Pure and idempotent on the stored slice — the decision depends only on which
+// assistant calls are in the slice, so the row set is byte-stable across passes
+// and the KV prefix behind it survives.
+func dropOrphanToolRows(msgs []utils.Message) []utils.Message {
+	calls := make(map[string]bool, 8)
+	for i := range msgs {
+		if msgs[i].Role == "assistant" {
+			for _, tc := range msgs[i].ToolCalls {
+				calls[tc.ID] = true
+			}
+		}
+	}
+	out := make([]utils.Message, 0, len(msgs))
+	for i := range msgs {
+		m := msgs[i]
+		if m.Role == "tool" && m.ToolCallID != "" && !calls[m.ToolCallID] {
+			utils.Log("[Eco] dropping orphan tool row (%s, %d chars): no surviving assistant call, so the provider would reject the request",
+				m.Name, m.Content.TotalContentChars())
+			continue
+		}
+		out = append(out, m)
+	}
+	// THE WINDOW MUST NEVER BE EMPTY. Every row in the slice can be an orphan at
+	// once — an interrupted stream leaves a run of tool results with no
+	// assistant half. An empty view is not a degraded request: the model gets the
+	// system prompt, the tool schemas and nothing else, appendCurrentTimeTail
+	// takes its len(msgs)==0 branch and invents a clock-only prompt. Observed
+	// live: a turn arrived as ONLY "The current time is ...", and one stored tool
+	// row carried 18 copies of it, the model narrating the timestamp into its own
+	// tool output.
+	//
+	// So the legality repair yields to the history invariant: keep the newest
+	// row. A malformed row is a 400 someone can fix by folding; a history-less
+	// prompt is a conversation answering from thin air while the user watches the
+	// full transcript.
+	if len(out) == 0 && len(msgs) > 0 {
+		last := msgs[len(msgs)-1]
+		out = append(out, last)
+		utils.Log("[Eco] every row was an orphan tool result — keeping the newest row (role=%s, %d chars) so the request is never history-less",
+			last.Role, last.Content.TotalContentChars())
+	}
+	return out
 }
 
 // charsPerToken is the estimator divisor used across the eco path
@@ -223,6 +302,13 @@ const promptOverheadTokens = 40_000
 func ecoWindowPolicy(cfgTrigger, cfgTarget, windowTokens int) (trigger, target int) {
 	trigger, target = cfgTrigger, cfgTarget
 	if windowTokens <= 0 {
+		// Unknown window: the configured pair governs, unchanged. The ONE thing
+		// that must not survive is target >= trigger, for the same reason the
+		// clamp exists below — a fold with nothing to remove is refused by the
+		// hysteresis floor, so the conversation churns the pair every turn.
+		if target >= trigger || target <= 0 {
+			target = trigger * 2 / 3
+		}
 		return
 	}
 	headroom := windowTokens - guardReplyReserve
@@ -269,13 +355,8 @@ func ecoConversationWindow(conv *utils.Conversation) int {
 	if name == "" {
 		return 0
 	}
-	return Models.MaxContextTokensForPrefixed(name)
+	return Models.DeclaredContextWindow(name)
 }
-
-// truncationBannerChars bounds the banner truncateOversizedTail appends to a
-// row it truncates. The real banner is ~150 chars; the slack is rounded up so
-// the budget bound below is airtight rather than exactly met.
-const truncationBannerChars = 256
 
 // bootstrapCutoff is the char-based fold boundary for a conversation with NO
 // checkpoint pair: the oldest user-anchored boundary whose REMAINING sent
@@ -370,111 +451,6 @@ func bootstrapCutoff(messages []utils.Message, targetTokens int) int {
 // per-message bound, so it is what the frozen path ships.
 func tickNeedsFold(lastPT, sentViewTokens, triggerTokens int) bool {
 	return lastPT > triggerTokens || sentViewTokens > triggerTokens
-}
-
-// maxKeepTailChars bounds how many characters of a tail message are kept
-// when a single message is too large to fit the budget whole. It preserves
-// the head of the message so the model still sees what the text was about.
-// (The tail-cap walker above uses the same overall budget; this is the
-// per-message bound so one giant message can never blow the context window
-// on its own.)
-const maxKeepTailChars = 100_000
-
-// truncateOversizedTail applies per-message bounds to the tail slice before
-// it is shipped to the provider:
-//
-//   - a "tool" message whose body is oversized is DROPPED entirely (its
-//     parent assistant call was already dropped or is itself being
-//     truncated, so a dangling huge result is pure context waste);
-//   - any other oversized message (user/assistant) is truncated to
-//     maxKeepTailChars with a clear banner, so the model still sees the
-//     head of the message and the message role (the turn boundary) is
-//     preserved — a 4MB pasted blob can never exceed the context window by
-//     itself.
-//
-// Returning a NEW slice; the input is not mutated.
-func truncateOversizedTail(tail []utils.Message) []utils.Message {
-	if len(tail) == 0 {
-		return tail
-	}
-	// Which assistant tool_calls survive in the trimmed tail? Only drop an
-	// oversized tool result when NO surviving assistant call references it
-	// (i.e. the call was dropped too). If the call is still present, we must
-	// keep the result (truncated) or OpenAPI rejects the dangling
-	// tool_calls/result pairing.
-	keptCalls := make(map[string]bool)
-	for _, m := range tail {
-		if m.Role == "assistant" {
-			for _, tc := range m.ToolCalls {
-				keptCalls[tc.ID] = true
-			}
-		}
-	}
-	out := make([]utils.Message, 0, len(tail))
-	for i := range tail {
-		m := tail[i]
-		total := m.Content.TotalContentChars()
-		if total <= maxKeepTailChars {
-			out = append(out, m)
-			continue
-		}
-		if m.Role == "tool" && !keptCalls[m.ToolCallID] {
-			utils.Log("[Eco] dropping oversized tool result (%d chars) from tail", total)
-			continue
-		}
-
-		// Multi-part message whose TOTAL size blows the bound. Keep the head
-		// of the text parts (with a banner) and drop the rest, so a hidden
-		// multi-MB later part can never reach the provider.
-		txt := ""
-		for _, p := range m.Content.ContentParts() {
-			if p.Type == "text" {
-				txt += p.Text
-			}
-		}
-		// textsafe.TruncateWithBanner, NOT HeadBytes + banner: the banner's
-		// room is reserved INSIDE maxKeepTailChars, so the shipped row is
-		// within the bound this function claims to enforce, and the result is
-		// a pure function of the stored row (running it again is a no-op).
-		// That is the requirement the prefix-stability tests pin: a row whose
-		// bytes change between turns discards the whole cached KV prefix.
-		trunc, _ := textsafe.TruncateWithBanner(txt, maxKeepTailChars)
-		m.Content = utils.NewTextContent(trunc)
-		out = append(out, m)
-	}
-
-	// THE WINDOW MUST NEVER BE EMPTY. Every drop rule above can fire on the
-	// same conversation at once: a window made only of oversized tool results
-	// whose parent assistant calls were dropped. An empty window is not a
-	// degraded request, it is a request with NO history, and the failure is
-	// not a cache miss — it is the model receiving the system prompt, the tool
-	// schemas and nothing else. appendCurrentTimeTail then takes its
-	// len(msgs)==0 branch and invents a clock-only row, so the last thing in
-	// the prompt is "The current time is ...". Observed live on the deployed
-	// build: a turn arrived as ONLY that clock line, and one stored tool row
-	// carried 18 copies of it, because the model narrated the timestamp back
-	// into its own output.
-	//
-	// Keep the newest row, bounded by the same pure, idempotent truncation the
-	// loop above uses, so the model always has a turn boundary to respond to
-	// and the row is byte-stable on every later pass.
-	if len(out) == 0 {
-		last := tail[len(tail)-1]
-		txt := ""
-		for _, p := range last.Content.ContentParts() {
-			if p.Type == "text" {
-				txt += p.Text
-			}
-		}
-		trunc, _ := textsafe.TruncateWithBanner(txt, maxKeepTailChars)
-		if trunc == "" {
-			trunc = "[content omitted by Plurality: over the per-message context budget]"
-		}
-		last.Content = utils.NewTextContent(trunc)
-		out = append(out, last)
-		utils.Log("[Eco] tail cap emptied the window — kept the newest row (role=%s) so the request is never history-less", last.Role)
-	}
-	return out
 }
 
 // lastAssistantPromptTokens scans the conversation backwards and returns
@@ -1018,10 +994,8 @@ func logFoldResult(dbCtx context.Context, conversationID string, folded, beforeT
 // cache-killer this subsystem exists to prevent. Folding converges only if
 // the measure shrinks by what was folded.
 //
-// The per-message clamp matters for the same reason: it must match what
-// truncateOversizedTail / TruncateOversizedMessages will do to that row, so
-// the estimate never over-counts a blob the sender is going to bound anyway
-// (which would fire the guard on a conversation that fits).
+// The measure is the RAW stored body and the sender ships the RAW stored body:
+// the same bytes, so the guard and the wire cannot disagree.
 func SentViewTokens(messages []utils.Message) int {
 	chars := 0
 	for i := range messages {
@@ -1037,10 +1011,9 @@ func SentViewTokens(messages []utils.Message) int {
 //
 //   - The body is the TOTAL across all text parts (TextContent() sees only
 //     the first part and hid a 4.9MB blob behind a short preamble).
-//   - A row over the per-message cap is counted AT the cap, because that is
-//     what the sender ships: the cap is maxCompactMessageChars, the bound
-//     TruncateOversizedMessages applies, and eco's tail bound
-//     (maxKeepTailChars) is the same number. A test pins that equality.
+//   - A row is counted WHOLE. There is no per-message cap any more: the
+//     request path ships the stored bytes, so counting anything less would
+//     under-count the wire and let an oversized request ship un-flagged.
 //
 // It counts the RAW stored body, not the stored caveman projection.
 // convertMessagesToOpenAI ships that projection only for caveman-enabled
@@ -1059,9 +1032,6 @@ func SentViewTokens(messages []utils.Message) int {
 // total-size dependence. Same row in, same number out, every turn.
 func SentViewRowChars(m utils.Message) int {
 	chars := m.Content.TotalContentChars()
-	if chars > maxCompactMessageChars {
-		chars = maxCompactMessageChars
-	}
 	// The assistant half of a tool round ships its tool_calls: the function
 	// name and the JSON ARGUMENTS (file writes, shell commands, patch bodies).
 	// Content alone undercounts an agent turn by the factor that made every
@@ -1130,9 +1100,6 @@ func SentViewRowCharsShipped(m utils.Message, st cavemanStoneSet) int {
 		if n := len(m.CompressedContent); n < chars {
 			chars = n
 		}
-	}
-	if chars > maxCompactMessageChars {
-		chars = maxCompactMessageChars
 	}
 	for _, tc := range m.ToolCalls {
 		chars += len(tc.Function.Arguments) + len(tc.Function.Name) + len(tc.ID)
@@ -1318,12 +1285,12 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 	// the per-row floor, and the stored roll-up is marker mush — the
 	// "not containing any real history" complaint, reproduced by the
 	// summariser instead of the cap.
-	budget := overflowFoldBudgetTokens(Models.MaxContextTokensFor(model.Name))
+	budget := overflowFoldBudgetTokens(Models.DeclaredContextWindow(model.Name))
 	if budget <= 0 {
 		// No DECLARED window (unknown model, or the tick's no-selection path):
-		// MaxContextTokensForPrefixed would invent defaultContextWindow and
-		// inflate the roll-up room for a model that may be far smaller, so the
-		// configured policy governs, unchanged.
+		// A built-in window table or a 128k default would inflate the roll-up
+		// room for a model that may be far smaller, so the configured policy
+		// governs, unchanged.
 		budget = ecoFoldTarget(model.Name)
 	}
 	// Live tail this fold leaves in place, and the roll-up it carries
@@ -1585,7 +1552,7 @@ func summariserCallContext(ctx context.Context) (context.Context, context.Cancel
 // everywhere, is the fix.
 func ecoFoldTarget(modelName string) int {
 	_, target := ecoWindowPolicy(ecoConfiguredTrigger(), ecoTargetTokens(),
-		Models.MaxContextTokensForPrefixed(modelName))
+		Models.DeclaredContextWindow(modelName))
 	return target
 }
 
@@ -1639,7 +1606,7 @@ func CompactConversationMachineOnly(ctx context.Context, conversationID string, 
 	// 92598 chars against a 75000-char ceiling.
 	foldWindow := 0
 	if len(target) > 0 {
-		foldWindow = Models.MaxContextTokensForPrefixed(target[0].model.Name)
+		foldWindow = Models.DeclaredContextWindow(target[0].model.Name)
 	}
 	foldFrom := UltracaveOverflowFoldFrom(messages, keep, foldWindow)
 	if foldFrom <= 0 {
@@ -2139,4 +2106,27 @@ func randomHex(nBytes int) string {
 	b := make([]byte, nBytes)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// hasCheckpointPair reports whether the slice carries an eco checkpoint pair.
+func hasCheckpointPair(messages []utils.Message) bool {
+	for i := range messages {
+		if messages[i].Role == "assistant" && db.IsCheckpointMessage(messages[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// countCompactedRows counts the rows durable compaction flagged in this slice.
+// Zero when the slice came from the LLM loader (which excludes them), which is
+// itself worth logging: it says whether the caller's slice is the LLM view.
+func countCompactedRows(messages []utils.Message) int {
+	n := 0
+	for i := range messages {
+		if messages[i].Compacted {
+			n++
+		}
+	}
+	return n
 }
