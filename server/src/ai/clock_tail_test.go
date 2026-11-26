@@ -59,12 +59,14 @@ func TestAppendCurrentTimeTailKeepsMessageCount(t *testing.T) {
 	}
 }
 
-// Whatever the newest message is, the clock lands on it and nothing else moves.
-func TestAppendCurrentTimeTailLandsOnTheNewestMessage(t *testing.T) {
+// The clock lands on the newest row ONLY when that row is a text-bearing user
+// row, and then on that row alone: the prefix stays byte-identical (the KV cache
+// contract) and no other row moves. A trailing tool row must NOT receive it
+// (see TestAppendCurrentTimeTailNeverLandsOnToolRow).
+func TestAppendCurrentTimeTailLandsOnTheNewestUserRow(t *testing.T) {
 	cases := []StandardMessageReq{
 		{Role: "user", Content: []StandardContentReq{{Type: "text", Text: "question"}}},
 		{Role: "user", Content: "plain string request"},
-		{Role: "tool", Content: "tool output", ToolCallID: "call_1", Name: "sh"},
 	}
 	for _, last := range cases {
 		msgs := []StandardMessageReq{{Role: "system", Content: "SYSTEM"}, last}
@@ -72,7 +74,7 @@ func TestAppendCurrentTimeTailLandsOnTheNewestMessage(t *testing.T) {
 		if len(got) != 2 {
 			t.Fatalf("role %q: message count became %d", last.Role, len(got))
 		}
-		// The prefix must stay byte-identical — that is what keeps the KV cache
+		// The prefix must stay byte-identical - that is what keeps the KV cache
 		// warm across turns.
 		if got[0].Content != "SYSTEM" {
 			t.Fatalf("role %q: prefix was mutated: %v", last.Role, got[0].Content)
@@ -87,6 +89,49 @@ func TestAppendCurrentTimeTailLandsOnTheNewestMessage(t *testing.T) {
 		if !hasClock(tail.Content) {
 			t.Fatalf("role %q: clock missing from tail: %q", last.Role, tailText(tail.Content))
 		}
+	}
+}
+
+// THE DEFECT THIS PR FIXES. Mid-loop the request ends on TOOL rows, and the
+// old code walked back to the newest non-assistant row and appended the clock
+// THERE - i.e. to the end of a tool result. Rendered, that is a bare sentence
+// at the tail of a tool result, and the agent reads it as a new turn addressed
+// to it: observed live, repeatedly, as the assistant answering "The current
+// time is ..." as if the user had sent it, and as tool output stored with the
+// sentence glued to it. The clock must be SKIPPED for a tool-tailed turn.
+func TestAppendCurrentTimeTailNeverLandsOnToolRow(t *testing.T) {
+	msgs := []StandardMessageReq{
+		{Role: "system", Content: "SYSTEM"},
+		{Role: "user", Content: "run the command"},
+		{Role: "assistant", ToolCalls: []utils.ToolCall{{ID: "c1", Type: "function"}}},
+		{Role: "tool", Content: "the tool output", ToolCallID: "c1", Name: "sh"},
+	}
+	got := appendCurrentTimeTail(msgs)
+	if len(got) != len(msgs) {
+		t.Fatalf("message count changed %d -> %d: the tail must not add a message", len(msgs), len(got))
+	}
+	for i, m := range got {
+		if hasClock(m.Content) {
+			t.Fatalf("message %d (role %q) carries the clock on a tool-tailed turn: %q",
+				i, m.Role, tailText(m.Content))
+		}
+	}
+	// Nothing is rewritten: the whole request is byte-identical to the input.
+	if got[3].Content != "the tool output" {
+		t.Fatalf("tool row mutated: %q", tailText(got[3].Content))
+	}
+	if got[1].Content != "run the command" {
+		t.Fatalf("older user row mutated (the walk-back put the clock mid-request): %q", tailText(got[1].Content))
+	}
+}
+
+// A system row is the HEAD of the request: the clock there is a per-turn
+// rewrite of the cached prefix. Skipped.
+func TestAppendCurrentTimeTailNeverLandsOnSystemRow(t *testing.T) {
+	msgs := []StandardMessageReq{{Role: "system", Content: "SYSTEM ONLY"}}
+	got := appendCurrentTimeTail(msgs)
+	if len(got) != 1 || hasClock(got[0].Content) {
+		t.Fatalf("clock landed on the system head: %+v", got)
 	}
 }
 
@@ -157,12 +202,13 @@ func TestAppendCurrentTimeTailNeverReplacesContent(t *testing.T) {
 	if hasClock(assistant.Content) {
 		t.Fatalf("clock landed inside the assistant row")
 	}
-	// The clock has to ride on the newest NON-assistant message with text.
-	if !hasClock(got[1].Content) {
-		t.Fatalf("clock missing from the newest user row: %q", tailText(got[1].Content))
+	// The tail is an assistant row, so this turn is SKIPPED: the clock must not
+	// be smuggled into an older user row (that is content inside history).
+	if hasClock(got[1].Content) {
+		t.Fatalf("clock walked back into an older row: %q", tailText(got[1].Content))
 	}
 	if firstPartText(got[1].Content) != "run the tool" {
-		t.Fatalf("user content must stay at the head, got %q", tailText(got[1].Content))
+		t.Fatalf("user content must stay untouched, got %q", tailText(got[1].Content))
 	}
 	if got[0].Content != "SYSTEM" {
 		t.Fatalf("system prompt mutated: %v", got[0].Content)
@@ -181,12 +227,10 @@ func TestAppendCurrentTimeTailSkipsAssistantRows(t *testing.T) {
 	}
 	got := appendCurrentTimeTail(msgs)
 	for i, m := range got {
-		if m.Role == "assistant" && hasClock(m.Content) {
-			t.Fatalf("message %d: clock landed in an assistant row: %q", i, tailText(m.Content))
+		if hasClock(m.Content) {
+			t.Fatalf("message %d (role %q) carries the clock on an assistant-tailed turn: %q",
+				i, m.Role, tailText(m.Content))
 		}
-	}
-	if !hasClock(got[3].Content) {
-		t.Fatalf("clock missing from the newest user row: %q", tailText(got[3].Content))
 	}
 }
 
@@ -217,8 +261,10 @@ func TestAppendCurrentTimeTailAppendsToImageOnlyRow(t *testing.T) {
 	}
 }
 
-// A row with nothing to attach to (empty part list) is skipped, walking back to
-// an older message, so the clock never becomes a message's whole content.
+// A tail row with nothing to attach to (empty part list) is SKIPPED for the
+// turn. It must not become the clock line, and the clock must not walk back
+// into an older row: a clock in the middle of history is content that gets
+// summarised and imitated.
 func TestAppendCurrentTimeTailSkipsEmptyRows(t *testing.T) {
 	msgs := []StandardMessageReq{
 		{Role: "system", Content: "SYSTEM"},
@@ -226,11 +272,10 @@ func TestAppendCurrentTimeTailSkipsEmptyRows(t *testing.T) {
 		{Role: "user", Content: []StandardContentReq{}},
 	}
 	got := appendCurrentTimeTail(msgs)
-	if hasClock(got[2].Content) {
-		t.Fatalf("empty row became the clock line: %q", tailText(got[2].Content))
-	}
-	if !hasClock(got[1].Content) {
-		t.Fatalf("clock missing from the newest text row: %q", tailText(got[1].Content))
+	for i, m := range got {
+		if hasClock(m.Content) {
+			t.Fatalf("message %d carries the clock when the tail row has no text: %q", i, tailText(m.Content))
+		}
 	}
 }
 
