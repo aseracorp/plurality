@@ -230,8 +230,9 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 	savedBytes := 0
 
 	// Trailing row: real content of the attachments that are fresh enough.
-	var trailing []utils.ContentPart
-	var trailingIDs []string
+	// Collected per attachment (not flattened) so the budget below can bill
+	// and evict one attachment at a time.
+	var tail []tailEntry
 
 	// Deep copy messages and replace attachment parts with their placeholders.
 	result := make([]utils.Message, len(messages))
@@ -262,10 +263,14 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 						if part.ImageURL != nil {
 							content = part.ImageURL.URL
 						}
-						trailing = append(trailing,
-							utils.ContentPart{Type: "text", Text: "[Retrieved image attached for this turn]"},
-							utils.ContentPart{Type: "image_url", ImageURL: &utils.ContentImageURL{URL: content}},
-						)
+						tail = append(tail, tailEntry{
+							parts: []utils.ContentPart{
+								{Type: "text", Text: "[Retrieved image attached for this turn]"},
+								{Type: "image_url", ImageURL: &utils.ContentImageURL{URL: content}},
+							},
+							size:   len(content),
+							exempt: true,
+						})
 					}
 					continue
 				}
@@ -293,8 +298,11 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 			// window is age-relative, so this is the ONLY per-turn decision,
 			// and it lands in append-only tail bytes.
 			if userMessagesSince[i] < d.showWindow {
-				trailing = appendTrailingAttachment(trailing, part, att, index.ContentMap[att.ID])
-				trailingIDs = append(trailingIDs, att.ID)
+				tail = append(tail, tailEntry{
+					parts: appendTrailingAttachment(nil, part, att, index.ContentMap[att.ID]),
+					id:    att.ID,
+					size:  att.Size,
+				})
 			}
 		}
 
@@ -355,6 +363,7 @@ func PrepareMessagesForAI(messages []utils.Message, model utils.Model) ([]utils.
 	// image-carrying tool result, which inserted bytes mid-history on every
 	// turn (and re-shipped old tool images forever, since the injection had no
 	// staleness gate at all).
+	trailing, trailingIDs := budgetAttachmentTail(tail, attachmentTailBudgetChars)
 	if len(trailing) > 0 {
 		head := "[Attachments attached for this turn: " + strings.Join(trailingIDs, ", ") +
 			"]. The history rows above show placeholders for them; the full content is here, and can be re-read later with the attachment tools."
@@ -476,4 +485,89 @@ func reInflateImageURLs(messages []utils.Message) []utils.Message {
 		}
 	}
 	return messages
+}
+
+// tailEntry is one attachment's real content, queued for the trailing row.
+type tailEntry struct {
+	parts  []utils.ContentPart
+	id     string
+	size   int
+	exempt bool // images: the vision contract, never evicted by the budget
+}
+
+// attachmentTailBudgetChars bounds how much attachment content the trailing
+// row may ship on a turn.
+//
+// WHY A BOUND IS NEEDED. The trailing row re-ships the real content of every
+// attachment the delivery rule calls fresh, and the freshness window is
+// measured in USER messages. An agentic run is ONE user message: the human
+// asks once and the loop runs dozens of assistant/tool rows behind it, so a
+// tool row's userMessagesSince stays 0 for the whole run and every window
+// (1, 2, 3) passes. Nothing ages out, and the row grows with the run.
+//
+// Measured on the deployed build, every turn of one conversation logged
+//
+//	[Attachments] Found 29 attachment(s) in conversation
+//	[Attachments] Indexed and removed 29 attachment(s) (254 KB saved)
+//
+// and the row shipped 28 prior tool outputs (~180 KB of the 254 KB). That is
+// ~55K tokens re-sent on EVERY turn of the loop, on top of the history, for
+// content the model can always re-read through conversation_attachments. It is
+// a token cost, not a cache-bust claim: cache_read advances on a 32768-token
+// block ladder (measured 21541 -> 54309, 33213 -> 65981 -> 98749, every step
+// exactly 32768), so a flat cache_read across turns is quantization and says
+// nothing about this row.
+//
+// 32 KB is ~10K tokens — the size of one large tool result, which is what the
+// row is for. Eviction is oldest-first, so the content the loop just produced
+// is always present; what goes is content from earlier in the run, which the
+// model has already acted on and can re-read.
+const attachmentTailBudgetChars = 32 * kb
+
+// budgetAttachmentTail flattens the queued entries into the trailing row's
+// parts, evicting the OLDEST non-exempt entries until the billed content fits
+// the budget. Entries arrive in row order (oldest first), so eviction is
+// oldest-first by construction. The newest entry always survives: a row over
+// budget is a cost, an empty row is a missing attachment.
+func budgetAttachmentTail(entries []tailEntry, budget int) ([]utils.ContentPart, []string) {
+	keep := entries
+	billed, billable := 0, 0
+	for _, e := range keep {
+		if !e.exempt {
+			billed += e.size
+			billable++
+		}
+	}
+	// Evict the OLDEST billable entry while over budget AND more than one
+	// billable entry remains. The floor is ONE billable entry, not one entry:
+	// exempt images do not count, so a row of [40 KB snippet, fresh image]
+	// must keep the snippet. Evicting it left the model with a placeholder for
+	// the file the user had just attached — caught by the race gate on
+	// TestRecallResultStripIsStable, which pins that the trailing row
+	// references the fresh snippet.
+	for billed > budget && billable > 1 {
+		idx := -1
+		for j, e := range keep {
+			if !e.exempt {
+				idx = j
+				break
+			}
+		}
+		if idx < 0 {
+			break // only exempt entries left: images are not evictable
+		}
+		billed -= keep[idx].size
+		billable--
+		keep = append(keep[:idx], keep[idx+1:]...)
+	}
+
+	parts := make([]utils.ContentPart, 0, len(keep)+1)
+	ids := make([]string, 0, len(keep))
+	for _, e := range keep {
+		parts = append(parts, e.parts...)
+		if e.id != "" {
+			ids = append(ids, e.id)
+		}
+	}
+	return parts, ids
 }
