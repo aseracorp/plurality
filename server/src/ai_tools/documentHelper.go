@@ -1,6 +1,7 @@
 package ai_tools
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/azukaar/plurality/src/docsupport"
@@ -11,8 +12,8 @@ import (
 // resolveDocumentAttachment looks up a document attachment by ID, validates it
 // is a supported document type, and reads its bytes from storage.
 // Returns the attachment metadata, raw bytes, or an error content to return to the AI.
-func resolveDocumentAttachment(conv utils.Conversation, attachmentID string) (*utils.AttachmentMeta, []byte, *utils.MessageContent) {
-	index := utils.BuildAttachmentIndex(conv.Messages, storage.FileSizeFromURL)
+func resolveDocumentAttachment(ctx context.Context, conv utils.Conversation, attachmentID string) (*utils.AttachmentMeta, []byte, *utils.MessageContent) {
+	index := utils.BuildAttachmentIndex(attachmentMessages(ctx, conv), storage.FileSizeFromURL)
 
 	var att *utils.AttachmentMeta
 	for _, item := range index.Items {

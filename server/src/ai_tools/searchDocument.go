@@ -49,7 +49,7 @@ type searchDocumentParams struct {
 	MaxResults   float64 `json:"max_results"`
 }
 
-func execSearchDocument(_ context.Context, input string, conv utils.Conversation) utils.MessageContent {
+func execSearchDocument(ctx context.Context, input string, conv utils.Conversation) utils.MessageContent {
 	var params searchDocumentParams
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
 		return utils.NewTextContent(fmt.Sprintf("Error parsing parameters: %s", err.Error()))
@@ -62,7 +62,7 @@ func execSearchDocument(_ context.Context, input string, conv utils.Conversation
 		return utils.NewTextContent("Error: pattern is required.")
 	}
 
-	att, data, errContent := resolveDocumentAttachment(conv, params.AttachmentID)
+	att, data, errContent := resolveDocumentAttachment(ctx, conv, params.AttachmentID)
 	if errContent != nil {
 		return *errContent
 	}

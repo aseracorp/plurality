@@ -50,7 +50,7 @@ type attachmentGetRequest struct {
 	To   *int   `json:"to,omitempty"`
 }
 
-func execConversationAttachments(_ context.Context, input string, conv utils.Conversation) utils.MessageContent {
+func execConversationAttachments(ctx context.Context, input string, conv utils.Conversation) utils.MessageContent {
 	var params map[string]string
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
 		return utils.NewTextContent(fmt.Sprintf("Error parsing parameters: %s", err.Error()))
@@ -59,7 +59,7 @@ func execConversationAttachments(_ context.Context, input string, conv utils.Con
 	mode := params["mode"]
 	utils.Log("[Attachments] conversation_attachments called with mode=%s", mode)
 
-	index := utils.BuildAttachmentIndex(conv.Messages, storage.FileSizeFromURL)
+	index := utils.BuildAttachmentIndex(attachmentMessages(ctx, conv), storage.FileSizeFromURL)
 
 	if len(index.Items) == 0 {
 		utils.Log("[Attachments] No attachments found")

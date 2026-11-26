@@ -31,6 +31,37 @@ type AttachmentIndex struct {
 // the utils package doesn't depend on the storage package.
 type FileSizeFunc func(urlPath string) int64
 
+// StableAttachmentID names one attachment part from the row that stores it, and
+// returns "" when the row has no stable identity.
+//
+// The name is the address the model uses to get content back
+// (conversation_attachments, read_document), so it must survive compaction.
+// Scan position cannot supply that: durable compaction removes folded rows from
+// the LLM-facing slice, so every later attachment shifts by one, and an id
+// written into a placeholder names a DIFFERENT attachment. Measured: att_0 meant
+// "S0000S" before a fold and "S0003S" after.
+//
+// The DB row id is stable — folded rows are flagged, never deleted, and seq is
+// never renumbered — and both loaders populate Message.ID, so (row id, part) is
+// a pure function of stored state. Rows with no DB id (unsaved, and every
+// in-memory test) have no stable name: the caller falls back to a positional id
+// and must not bake it into anything durable.
+func StableAttachmentID(msg Message, partIdx int) string {
+	if id := strings.TrimSpace(msg.ID); id != "" && isDigits(id) {
+		return fmt.Sprintf("att_%s_%d", id, partIdx)
+	}
+	return ""
+}
+
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
 // BuildAttachmentIndex scans conversation messages and builds an index of all
 // non-text attachments. fileSizeFn is called for internal-URL attachments to
 // get their on-disk size; pass nil if file-backed attachments are not expected.
@@ -81,7 +112,12 @@ func BuildAttachmentIndex(messages []Message, fileSizeFn FileSizeFunc) Attachmen
 				continue
 			}
 
-			id := fmt.Sprintf("att_%d", counter)
+			// Prefer the row-derived name; fall back to scan position only for
+			// rows that have no DB identity.
+			id := StableAttachmentID(msg, partIdx)
+			if id == "" {
+				id = fmt.Sprintf("att_%d", counter)
+			}
 			counter++
 
 			meta := AttachmentMeta{
