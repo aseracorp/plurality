@@ -276,7 +276,9 @@ const promptOverheadTokens = 40_000
 //
 //	headroom = window - replyReserve
 //	trigger  = min(headroom, max(cfgTrigger, window - promptOverhead - replyReserve))
-//	target   = trigger * 2/3, floored at cfgTarget
+//	history  = (trigger - promptOverhead) * 2/3, floored at cfgTarget
+//		(the fixed prompt part is exempt: no fold can shrink it, see
+//		foldTargetForTrigger)
 //
 // trigger:
 //   - RAISES the configured trigger when the window affords it, so a
@@ -290,8 +292,11 @@ const promptOverheadTokens = 40_000
 //     overflow path (the context_length_exceeded death spiral of the
 //     1866-message conversation, 1830 -> 1855 live rows, every turn).
 //
-// target: the view kept AFTER a fold is 2/3 of the trigger, so one fold buys
-// ~1/3 of the window in headroom before the next fold is needed. That
+// target: the view kept AFTER a fold, so one fold buys headroom before the
+// next fold is needed. The 2/3 applies to the FOLDABLE part only, then the
+// fixed part is added back (see foldTargetForTrigger): a fold shrinks the
+// history, it cannot shrink the system prompt and the tool schemas, so
+// discounting the whole trigger asks the fold to absorb the prompt. That
 // hysteresis is what keeps folds RARE — and fold frequency is what controls
 // checkpoint churn, since rewriting the pair rewrites the prompt head and
 // zeroes the KV prefix cache (measured: cache_read pinned at 16384 through
@@ -299,6 +304,54 @@ const promptOverheadTokens = 40_000
 //
 // Returns the configured pair unchanged for an unknown window (<= 0): with no
 // window there is no basis to invent a policy.
+// foldTargetForTrigger is the size of the LIVE HISTORY a fold aims for, for a
+// given trigger. The trigger is a PROMPT size (it gates on the provider's
+// prompt_tokens, which include the system prompt and the tool schemas), while
+// every consumer of the target works in history units: the fold gates add a
+// live tail to a roll-up, and the sent view is history. So the target is the
+// history number UNDER the operator's prompt number:
+//
+//	history_target      = (trigger - fixed) * 2/3
+//	prompt_after_a_fold = fixed + history_target
+//
+// The fixed part is promptOverheadTokens: the system prompt (20-30K tokens in
+// this deployment) plus the tool schemas. That text rides EVERY request and no
+// fold can remove a token of it, so applying 2/3 to the WHOLE trigger charges
+// the fold for the prompt: the history has to absorb the difference, which is
+// the "the fold kept less history than the window affords" failure in a new
+// costume. Exempting it is what the operator's number means: a 150000 trigger
+// with a 30000-token prompt folds toward (150K - 30K) * 2/3 + 30K = 110K, and
+// 110K is the PROMPT - the history target is the 80K underneath it.
+//
+// The axes then agree, which is the point. The trigger fires the NEXT fold at
+// prompt = trigger, i.e. history = trigger - fixed, so the headroom one fold
+// buys is (trigger - fixed)/3 on BOTH axes: 28310 tokens on a 131072 window,
+// 58667 on a 262144 one.
+//
+// The old shape - trigger*2/3 read as a HISTORY target - landed the post-fold
+// prompt at fixed + trigger*2/3, which on a 131072-token window sits 1643
+// tokens under the trigger: a fold that buys almost nothing, on a conversation
+// whose next turn crosses the gate. Refolding buys (trigger-fixed)/3 - 1643
+// tokens at a time, each pass rewriting the checkpoint pair, i.e. the prompt
+// head, and zeroing the KV prefix cache (measured: cache_read pinned at 16384
+// through back-to-back forced folds).
+//
+// Degenerate case: a trigger at or below the fixed part means the window cannot
+// host the prompt itself. There is no foldable part to exempt, so the plain 2/3
+// shape is kept rather than a target of zero - a fold with nothing to remove is
+// refused by the hysteresis floor and the pair churns.
+func foldTargetForTrigger(trigger int) int {
+	if trigger <= 0 {
+		return 0
+	}
+	if trigger <= promptOverheadTokens {
+		return trigger * 2 / 3
+	}
+	return (trigger - promptOverheadTokens) * 2 / 3
+}
+
+// ecoWindowPolicy is the (trigger, target) pair for a window; see
+// foldTargetForTrigger for how the target is sized.
 func ecoWindowPolicy(cfgTrigger, cfgTarget, windowTokens int) (trigger, target int) {
 	trigger, target = cfgTrigger, cfgTarget
 	if windowTokens <= 0 {
@@ -307,7 +360,7 @@ func ecoWindowPolicy(cfgTrigger, cfgTarget, windowTokens int) (trigger, target i
 		// clamp exists below — a fold with nothing to remove is refused by the
 		// hysteresis floor, so the conversation churns the pair every turn.
 		if target >= trigger || target <= 0 {
-			target = trigger * 2 / 3
+			target = foldTargetForTrigger(trigger)
 		}
 		return
 	}
@@ -321,14 +374,14 @@ func ecoWindowPolicy(cfgTrigger, cfgTarget, windowTokens int) (trigger, target i
 	if trigger > headroom {
 		trigger = headroom
 	}
-	if t := trigger * 2 / 3; t > target {
+	if t := foldTargetForTrigger(trigger); t > target {
 		target = t
 	}
 	if target <= 0 || target >= trigger {
 		// A target at/above the trigger leaves the fold nothing to remove:
 		// every fold is refused by the hysteresis floor and the conversation
 		// churns the pair every turn.
-		target = trigger * 2 / 3
+		target = foldTargetForTrigger(trigger)
 	}
 	return
 }
