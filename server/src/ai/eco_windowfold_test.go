@@ -98,12 +98,12 @@ func TestGuardDoesNotFoldARequestThatFitsOnceCompressionIsCounted(t *testing.T) 
 	msgs := wfToolRows(68, 30_000, 2_000) // raw ~680000 tok, shipped ~45333 tok
 	const window = 262_144
 
-	if err := preemptiveContextGuard("strata-swift", SentViewTokens(msgs), nil, 0, window, len(msgs)); err == nil {
+	if err := preemptiveContextGuard("strata-swift", SentViewTokens(msgs), 0, nil, 0, window, len(msgs)); err == nil {
 		t.Fatalf("raw measure %d vs window %d: expected the guard to fire - that is the live behaviour",
 			SentViewTokens(msgs), window)
 	}
 	shipped := SentViewTokensShipped(msgs, cavemanStoneSet{readLess: true})
-	if err := preemptiveContextGuard("strata-swift", shipped, nil, 0, window, len(msgs)); err != nil {
+	if err := preemptiveContextGuard("strata-swift", shipped, 0, nil, 0, window, len(msgs)); err != nil {
 		t.Fatalf("shipped measure %d vs window %d: guard must NOT fire, the request fits: %v",
 			shipped, window, err)
 	}

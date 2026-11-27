@@ -203,13 +203,13 @@ func TestFilterCheckpointsForRequest_ShipsOversizedSingleMessage(t *testing.T) {
 	// 150k chars ~ 50k tokens, which FITS a 128k window, so the guard must NOT
 	// fire here: firing on a view that fits is the ~20x false positive that
 	// forced a fold every turn (conv c363b2b3, live rows 1830 -> 1855).
-	if err := preemptiveContextGuard("gpt-4o", SentViewTokens(got), nil, 0, 128_000, len(got)); err != nil {
+	if err := preemptiveContextGuard("gpt-4o", SentViewTokens(got), 0, nil, 0, 128_000, len(got)); err != nil {
 		t.Fatalf("guard fired on a %d-token view that fits a 128k window (false positive forces "+
 			"a fold every turn): %v", SentViewTokens(got), err)
 	}
 	// Give it a window the view genuinely exceeds and the refusal must appear:
 	// with no per-message cap, the guard is the ONLY bound on this path.
-	if err := preemptiveContextGuard("gpt-4o", SentViewTokens(got), nil, 0, 32_000, len(got)); err == nil {
+	if err := preemptiveContextGuard("gpt-4o", SentViewTokens(got), 0, nil, 0, 32_000, len(got)); err == nil {
 		t.Fatalf("guard accepted a %d-token view on a 32k window", SentViewTokens(got))
 	}
 }
@@ -336,7 +336,7 @@ func TestFilterCheckpointsForRequest_ShipsOversizedMultipartMessage(t *testing.T
 	if est < 1_600_000 {
 		t.Fatalf("estimator counted %d tokens for a 4.9MB row: it sized only the first part", est)
 	}
-	if err := preemptiveContextGuard("gpt-4o", est, nil, 0, 128_000, len(got)); err == nil {
+	if err := preemptiveContextGuard("gpt-4o", est, 0, nil, 0, 128_000, len(got)); err == nil {
 		t.Fatal("guard accepted a 4.9MB view on a 128k window")
 	}
 }

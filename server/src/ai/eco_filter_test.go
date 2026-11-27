@@ -138,7 +138,7 @@ func TestFilterNoCheckpointHugeHistory_WordPressRegression(t *testing.T) {
 	// The whole view is unbounded by design; the guard is what bounds it, by
 	// raising the context-length error the loop folds durably in response.
 	// This fixture is ~95M chars, so the guard MUST fire on a normal window.
-	if err := preemptiveContextGuard("gpt-4o", SentViewTokens(out), nil, 0, 128_000, len(out)); err == nil {
+	if err := preemptiveContextGuard("gpt-4o", SentViewTokens(out), 0, nil, 0, 128_000, len(out)); err == nil {
 		t.Fatal("preemptive guard accepted a ~95M-char view on a 128k window - " +
 			"the unbounded no-pair path would ship it and die at the provider")
 	}
