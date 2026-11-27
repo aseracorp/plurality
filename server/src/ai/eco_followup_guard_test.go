@@ -62,7 +62,7 @@ func TestPreemptiveGuardProdShapeDoesNotFire(t *testing.T) {
 		t.Fatalf("SentViewTokens(nil) = %d, want 0", got)
 	}
 
-	err := preemptiveContextGuard("eco-guard-test-prod", prodViewTokens, nil, prodBodyBytes, window262k, 1855)
+	err := preemptiveContextGuard("eco-guard-test-prod", prodViewTokens, 0, nil, prodBodyBytes, window262k, 1855)
 	if err != nil {
 		t.Fatalf("guard fired on the prod shape (view %d tokens, window %d): %v — a fold can never shrink a body dominated by attachments",
 			prodViewTokens, window262k, err)
@@ -75,7 +75,7 @@ func TestPreemptiveGuardProdShapeDoesNotFire(t *testing.T) {
 func TestPreemptiveGuardFiresWhenTheViewIsGenuinelyOverWindow(t *testing.T) {
 	// The view alone is 60k tokens over the usable ceiling.
 	over := window262k - guardReplyReserve + 60_000
-	err := preemptiveContextGuard("eco-guard-test-over", over, nil, 1_000, window262k, 1855)
+	err := preemptiveContextGuard("eco-guard-test-over", over, 0, nil, 1_000, window262k, 1855)
 	if err == nil {
 		t.Fatalf("guard did not fire on a %d-token view against a %d window", over, window262k)
 	}
@@ -93,7 +93,7 @@ func TestPreemptiveGuardFiresWhenTheViewIsGenuinelyOverWindow(t *testing.T) {
 	// nil tools array): no fire, so the guard does not fold a request that fits
 	// with room for the reply.
 	fits := window262k - guardReplyReserve - 1
-	if err := preemptiveContextGuard("eco-guard-test-fits", fits, nil, 1_000, window262k, 10); err != nil {
+	if err := preemptiveContextGuard("eco-guard-test-fits", fits, 0, nil, 1_000, window262k, 10); err != nil {
 		t.Fatalf("guard fired just under the ceiling (%d tokens, window %d): %v", fits, window262k, err)
 	}
 }
@@ -109,7 +109,7 @@ func TestPreemptiveGuardCountsBigToolSchemasAgainstASmallView(t *testing.T) {
 	if schemaTokens <= window262k-guardReplyReserve {
 		t.Fatalf("fixture schemas measure %d tokens, want over %d", schemaTokens, window262k-guardReplyReserve)
 	}
-	err := preemptiveContextGuard("eco-guard-test-schemas", 1_000, tools, 1_000, window262k, 10)
+	err := preemptiveContextGuard("eco-guard-test-schemas", 1_000, 0, tools, 1_000, window262k, 10)
 	if err == nil {
 		t.Fatalf("guard ignored %d tokens of tool schemas (view 1000, window %d) — schemas must count", schemaTokens, window262k)
 	}
@@ -117,7 +117,7 @@ func TestPreemptiveGuardCountsBigToolSchemasAgainstASmallView(t *testing.T) {
 		t.Fatalf("schema-driven guard error is not matched by isContextLengthError: %v", err)
 	}
 	// Same view, NO schemas: fits. So the schemas are what fired the guard.
-	if err := preemptiveContextGuard("eco-guard-test-schemas", 1_000, nil, 1_000, window262k, 10); err != nil {
+	if err := preemptiveContextGuard("eco-guard-test-schemas", 1_000, 0, nil, 1_000, window262k, 10); err != nil {
 		t.Fatalf("guard fired on a 1000-token view with no schemas (window %d): %v", window262k, err)
 	}
 }
@@ -128,15 +128,15 @@ func TestPreemptiveGuardCountsBigToolSchemasAgainstASmallView(t *testing.T) {
 // an oversized request ship.
 func TestPreemptiveGuardFallsBackToBodyWhenTheViewIsGone(t *testing.T) {
 	// Body over the window, no view -> fires (conservative).
-	if err := preemptiveContextGuard("eco-guard-test-fallback", 0, nil, prodBodyBytes, window262k, 0); err == nil {
+	if err := preemptiveContextGuard("eco-guard-test-fallback", 0, 0, nil, prodBodyBytes, window262k, 0); err == nil {
 		t.Fatal("no-view fallback did not fire on a body over the window — the fallback must never narrow")
 	}
 	// Small body, no view -> fits.
-	if err := preemptiveContextGuard("eco-guard-test-fallback", 0, nil, 30_000, window262k, 0); err != nil {
+	if err := preemptiveContextGuard("eco-guard-test-fallback", 0, 0, nil, 30_000, window262k, 0); err != nil {
 		t.Fatalf("no-view fallback fired on a %d-byte body against a %d window: %v", 30_000, window262k, err)
 	}
 	// A window of 0 (unknown) disables the guard entirely.
-	if err := preemptiveContextGuard("eco-guard-test-fallback", prodViewTokens, bigSchemaTools(500_000), prodBodyBytes, 0, 1855); err != nil {
+	if err := preemptiveContextGuard("eco-guard-test-fallback", prodViewTokens, 0, bigSchemaTools(500_000), prodBodyBytes, 0, 1855); err != nil {
 		t.Fatalf("guard must not fire when the window is unknown: %v", err)
 	}
 }
@@ -150,14 +150,14 @@ func TestPreemptiveGuardEstimateAppliesTheCompressionFactor(t *testing.T) {
 	if factor <= 1 {
 		t.Fatalf("test model factor %v, want >1", factor)
 	}
-	est := preemptiveGuardEstimate(prodViewTokens, nil, model, prodBodyBytes)
+	est := preemptiveGuardEstimate(prodViewTokens, 0, nil, model, prodBodyBytes)
 	want := int(float64(prodViewTokens) / factor)
 	if est < want-2 || est > want+2 {
 		t.Fatalf("estimate with factor: got %d, want ~%d (view %d / %.2f)", est, want, prodViewTokens, factor)
 	}
 	// The whole-body number must NOT survive the discount: prod shape, 4x
 	// compressed, still fits — and it fits because of the VIEW, not the body.
-	if err := preemptiveContextGuard(model, prodViewTokens, nil, prodBodyBytes, window262k, 1855); err != nil {
+	if err := preemptiveContextGuard(model, prodViewTokens, 0, nil, prodBodyBytes, window262k, 1855); err != nil {
 		t.Fatalf("compressed prod model still false-positives: %v", err)
 	}
 }

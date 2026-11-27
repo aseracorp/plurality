@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -307,10 +308,26 @@ const guardReplyReserve = 4096 + guardSafetyReserve
 // whole-body bytes. Deliberately conservative — the fallback can only WIDEN
 // the estimate, never narrow it, so a missing view never lets an oversized
 // request ship.
-func preemptiveGuardEstimate(viewTokens int, tools []utils.ToolsRequest, modelName string, bodyBytes int) int {
-	estTokens := viewTokens + len(marshalNoEscape(tools))/summaryCharsPerToken
+//
+// imageTokens is added on top of BOTH measures, never measured in bytes: it
+// comes from estimateImageTokens (see requestShippedTokens), which packs each
+// base64 image the way a vision encoder prices it.
+//
+// WHY THE MEASURE IS THE SHIPPED REQUEST (2026-11-27, conversation
+// 6021687a5770b7afbb6d47f1): the guard estimated 523348 tokens for a brand-new
+// 6-row conversation whose wire request the proxy measured at 33645 — 15x the
+// window, on a 27K-token turn. One tool row stores 4282658 chars (a scraped
+// page); the wire ships an attachment PLACEHOLDER, ~110 chars. The SENT-VIEW
+// measure counts stored row chars, so it counted 1.4MB of text the request never
+// carries. The guard then raised a context-length error, the fold refused (the
+// newest user row is seq 0 — the floor), the roll-up refine had no pair, and the
+// loop killed the turn. A 27K conversation is told it does not fit a 262K window
+// and dies. Measuring the rows that ship removes the whole class: what the
+// request carries is what the guard charges for.
+func preemptiveGuardEstimate(viewTokens int, imageTokens int, tools []utils.ToolsRequest, modelName string, bodyBytes int) int {
+	estTokens := viewTokens + imageTokens + len(marshalNoEscape(tools))/summaryCharsPerToken
 	if viewTokens <= 0 {
-		estTokens = bodyBytes / summaryCharsPerToken
+		estTokens = bodyBytes/summaryCharsPerToken + imageTokens
 	}
 	if factor := CompressionFactor(modelName); factor > 1 {
 		utils.Log("[Eco] compression-aware guard: est %d tokens / factor %.2f = %d post-compression", estTokens, factor, int(float64(estTokens)/factor))
@@ -331,19 +348,91 @@ func preemptiveGuardEstimate(viewTokens int, tools []utils.ToolsRequest, modelNa
 // ~20x false positive that fired a context-length error EVERY turn (live rows
 // climbed 1830 -> 1855). Every forced fold rewrites the checkpoint pair at the
 // HEAD of the prompt, pinning cache_read at 16384 (measured).
-func preemptiveContextGuard(modelName string, viewTokens int, tools []utils.ToolsRequest, bodyBytes, windowTokens, liveRows int) error {
+func preemptiveContextGuard(modelName string, viewTokens int, imageTokens int, tools []utils.ToolsRequest, bodyBytes, windowTokens, liveRows int) error {
 	if windowTokens <= 0 {
 		return nil
 	}
 	schemaTokens := len(marshalNoEscape(tools)) / summaryCharsPerToken
-	estTokens := preemptiveGuardEstimate(viewTokens, tools, modelName, bodyBytes)
+	estTokens := preemptiveGuardEstimate(viewTokens, imageTokens, tools, modelName, bodyBytes)
 	if estTokens <= windowTokens-guardReplyReserve {
 		return nil
 	}
-	utils.Log("[Eco] preemptive context guard: estimated %d tokens (sent view %d + schemas %d, marshalled body %d) vs window %d, %d live rows — returning context-length error so the loop compacts and retries",
-		estTokens, viewTokens, schemaTokens, bodyBytes/summaryCharsPerToken, windowTokens, liveRows)
-	return fmt.Errorf("request estimated to exceed the context window: ~%d tokens vs %d (max %d) — compacting history and retrying",
+	utils.Log("[Eco] preemptive context guard: estimated %d tokens (shipped rows %d + images %d + schemas %d, marshalled body %d) vs window %d, %d live rows — returning context-length error so the loop compacts and retries",
+		estTokens, viewTokens, imageTokens, schemaTokens, bodyBytes/summaryCharsPerToken, windowTokens, liveRows)
+	return guardProjectionErrorf("request estimated to exceed the context window: ~%d tokens vs %d (max %d) — compacting history and retrying",
 		estTokens, windowTokens, windowTokens-guardReplyReserve)
+}
+
+// guardProjectionError marks an error as the guard's PROJECTION: an estimate
+// said the request will not fit, the provider has said nothing. The distinction
+// is load-bearing at the recovery site — see contextRecoveryExhausted. The
+// provider's own context_length_exceeded is a true, known overflow; the guard's
+// is a forecast, and a forecast that finds nothing left to shrink must not end
+// a conversation the provider would have served.
+type guardProjectionError struct{ error }
+
+func guardProjectionErrorf(format string, a ...interface{}) error {
+	return guardProjectionError{fmt.Errorf(format, a...)}
+}
+
+// isGuardProjection reports whether an error came from the preemptive guard.
+func isGuardProjection(err error) bool {
+	var g guardProjectionError
+	return errors.As(err, &g)
+}
+
+// requestShippedTokens measures the request that is about to ship: text rows at
+// the same chars/3 the estimator uses everywhere, images at the vision price
+// (estimateImageTokens), never at bytes/3.
+//
+// It measures the SHIPPED rows, not the stored ones: an attachment row stores
+// the full bytes and ships a placeholder, and the gap is exactly the 15x
+// over-count documented on preemptiveGuardEstimate.
+func requestShippedTokens(rows []StandardMessageReq) (textTokens int, imageTokens int) {
+	for _, r := range rows {
+		switch c := r.Content.(type) {
+		case string:
+			textTokens += len(c) / summaryCharsPerToken
+		case []StandardContentReq:
+			for _, p := range c {
+				if p.Type == "image_url" && p.ImageURL != nil {
+					imageTokens += shippedImageTokens(p.ImageURL.URL)
+					continue
+				}
+				textTokens += len(p.Text) / summaryCharsPerToken
+			}
+		default:
+			textTokens += len(marshalNoEscape(c)) / summaryCharsPerToken
+		}
+		for _, tc := range r.ToolCalls {
+			textTokens += (len(tc.Function.Arguments) + len(tc.Function.Name) + len(tc.ID)) / summaryCharsPerToken
+		}
+	}
+	return textTokens, imageTokens
+}
+
+// shippedImageTokens is estimateImageTokens' pricing for one image URL: a base64
+// payload is ~4 chars per 3 bytes and ~1 token per 4 chars.
+func shippedImageTokens(u string) int {
+	if i := strings.Index(u, ";base64,"); i >= 0 {
+		return (len(u) - i - len(";base64,")) / 4
+	}
+	return len(u) / 4
+}
+
+// contextRecoveryExhausted decides what the loop does when a context-length
+// error is answered by NOTHING: no row could be folded, the roll-up cannot
+// shrink. For the guard's PROJECTION the answer is ship the request: the guard
+// is a forecast, the provider has not refused anything, and the fold has
+// already been given its chance. For the provider's own overflow the answer is
+// stop — the overflow is a measured fact and the honest message is the one the
+// loop already sends.
+//
+// overrideUsed bounds the override to ONE per loop: the request ships once
+// un-shrunken; if the provider then refuses, the recovery runs with a true
+// overflow and takes the honest terminal path.
+func contextRecoveryExhausted(err error, overrideUsed bool) bool {
+	return isGuardProjection(err) && !overrideUsed
 }
 
 // SendChatCompletion sends a chat completion request to the LiteLLM proxy,
@@ -413,14 +502,14 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// preemptiveGuardEstimate — sent view + schema allowance, compression-factor
 	// discounted — NOT the marshalled body: see that helper for why.
 	//
-	// viewTokens is the eco view's own size (folded rows skipped, per-message
-	// cap applied) measured on the bytes THIS request ships: a tool row with a
-	// stored caveman projection ships the projection, so the raw body must not
-	// be counted here. The eco trigger keeps the raw measure (it is
-	// per-conversation and model-agnostic); the guard has the model in hand and
-	// must agree with the wire, or it over-counts and folds conversations that
-	// fit. See SentViewTokensShipped for the 2026-11-25 trace.
-	viewTokens := SentViewTokensShipped(visibleMessages, activeCavemanStones(model))
+	// The measure is the SHIPPED request (requestShippedTokens): the rows that
+	// go on the wire, at chars/3, with images priced as images. The eco view
+	// measure (SentViewTokensShipped) counts STORED row chars, and a stored
+	// attachment row ships a placeholder, so it over-counts grossly — see
+	// preemptiveGuardEstimate for the 2026-11-27 trace (523348 estimated against
+	// a 33645-token request). The eco trigger keeps the stored measure (it is
+	// per-conversation and model-agnostic); the guard has the built request in
+	// hand and must agree with the wire, or it folds conversations that fit.
 	// The preemptive guard is AUTO compaction: it turns "this view is about to
 	// exceed the window" into a context-length error, which the loop answers with
 	// a durable fold. With auto-compaction off the user chose raw history, so the
@@ -428,8 +517,13 @@ func SendChatCompletion(ctx context.Context, model utils.Model, conv utils.Conve
 	// context behind the user's back. The real overflow path in the loop is
 	// unaffected: it fires on the provider's own context-length error, which is
 	// a true known overflow, not a projection.
-	if conv.ModelSelected.EcoMode {
-		if err := preemptiveContextGuard(model.Name, viewTokens, requestData.Tools, len(jsonData), windowTokens, len(visibleMessages)); err != nil {
+	// The override (contextRecoveryExhausted): the guard's projection already
+	// triggered one compaction attempt this loop, nothing could shrink, and the
+	// loop chose to ship. Sending the guard's forecast back to the loop a second
+	// time is how a conversation dies on an estimate.
+	if conv.ModelSelected.EcoMode && !payload.GuardOverride {
+		shippedText, shippedImages := requestShippedTokens(requestData.Messages)
+		if err := preemptiveContextGuard(model.Name, shippedText, shippedImages, requestData.Tools, len(jsonData), windowTokens, len(visibleMessages)); err != nil {
 			return nil, nil, err
 		}
 	}

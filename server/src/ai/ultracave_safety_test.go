@@ -65,7 +65,7 @@ func TestUltracaveFrozenPathStillBoundsOversizedRows(t *testing.T) {
 	if est < 1_500_000 {
 		t.Fatalf("estimator under-counted an unbounded tail: %d tokens (a 4.9MB blob is in it)", est)
 	}
-	if err := preemptiveContextGuard("gpt-4o", est, nil, 0, 128_000, len(got)); err == nil {
+	if err := preemptiveContextGuard("gpt-4o", est, 0, nil, 0, 128_000, len(got)); err == nil {
 		t.Fatal("preemptive guard accepted a ~1.7M-token view on a 128k window — " +
 			"with no per-message cap the guard is the ONLY bound, so it cannot miss")
 	}
@@ -112,7 +112,7 @@ func TestUltracaveBootstrapStaysBounded(t *testing.T) {
 	// With no per-message cap, the guard is the only bound on this view, so
 	// firing on it is not optional: it is what turns an oversized view into a
 	// durable fold (which mints this conversation's pair).
-	if err := preemptiveContextGuard("gpt-4o", SentViewTokens(got), nil, 0, 128_000, len(got)); err == nil {
+	if err := preemptiveContextGuard("gpt-4o", SentViewTokens(got), 0, nil, 0, 128_000, len(got)); err == nil {
 		t.Fatal("preemptive guard accepted a ~32M-char bootstrap view on a 128k window")
 	}
 	// The overflow path is what mints the pair for this conversation: the

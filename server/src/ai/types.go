@@ -40,6 +40,12 @@ type ChatPayload struct {
 	// tokens/second the cap IS the wall-clock of the fold. json:"-" because it is
 	// server-internal: a client must not be able to set it.
 	FoldAnswerCap int `json:"-"`
+	// GuardOverride tells SendChatCompletion the preemptive guard's forecast has
+	// ALREADY been answered by a compaction attempt this loop that shrank nothing
+	// (see contextRecoveryExhausted). The request ships un-shrunken and the
+	// provider is the authority on overflow. Server-internal: json:"-" so a client
+	// cannot set it.
+	GuardOverride bool `json:"-"`
 }
 
 // --- Provider Request Types ---

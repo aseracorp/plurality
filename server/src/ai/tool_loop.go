@@ -132,6 +132,9 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 	// ultracaveMaxFoldsPerTurn folds the recovery falls through to the
 	// in-memory trim and then to the error path.
 	ultracaveFoldsThisTurn := 0
+	// guardOverrideUsed bounds the guard-forecast override to ONE per loop
+	// (see contextRecoveryExhausted at the recovery site).
+	guardOverrideUsed := false
 
 	// Retry guard for empty completions: the stream ended cleanly (provider
 	// sent [DONE]) but produced no text and no tool calls. finalizeStream
@@ -283,6 +286,31 @@ func (ar *ActiveRequest) RunLLMLoop(ctx context.Context, conversation utils.Conv
 						conversation.Messages = reloaded2.Messages
 						continue
 					}
+				}
+				// THE GUARD'S FORECAST MAY NOT KILL THE TURN (2026-11-27). Two
+				// sources reach this recovery via isContextLengthError: the
+				// provider's own context_length_exceeded — a measured fact — and
+				// the preemptive guard's estimate, a forecast. When the forecast
+				// finds nothing left to shrink, the request ships un-shrunken and
+				// the provider decides. Observed on a NEW conversation, 6 rows,
+				// 27K tokens on the wire: the guard estimated 523348 tokens, the
+				// fold refused (its floor is the newest user row, at seq 0), the
+				// refine had no checkpoint pair — and the user was told a 27K
+				// conversation does not fit a 262144 window, and the turn died.
+				// The provider answered that same request at 33645 tokens, 100%
+				// cache hit. One override per loop: if the provider then refuses,
+				// the recovery runs with a true overflow and takes the honest
+				// terminal path below.
+				if contextRecoveryExhausted(err, guardOverrideUsed) {
+					guardOverrideUsed = true
+					payload.GuardOverride = true
+					utils.Error("[LLMLoop] the guard's estimate found nothing to shrink — shipping the request and letting the provider decide", err)
+					ar.Broadcast(SSEEvent{
+						Type:           "text",
+						Content:        "(Nothing left to archive on this turn — sending the request as it is. If the model refuses it, the conversation is genuinely too long for this window.)",
+						ConversationID: ar.ConversationID,
+					})
+					continue
 				}
 				// Both durable moves are exhausted: the rows that could be folded
 				// are folded, and the roll-up cannot be shortened (no pair, no room
