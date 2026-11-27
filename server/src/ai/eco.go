@@ -1689,12 +1689,13 @@ func escalateSummarise(ctx context.Context, conversationID string, messages []ut
 	//  2. The budgeted machine render of the fold set, when the replayed prefix
 	//     cannot fit the window.
 	//
-	// The second shape is not optional. The fold runs BECAUSE the context is
-	// large, so the prefix replay's fit refusal is the rule on a real
-	// conversation, not the exception - and without a fallback stage 2 could
-	// never answer at all. Measured on the live log: stage 1 produced 2 LLM
-	// successes, stages 2 and 3 produced 0, and every escalation in the log died
-	// on "the cached prefix does not fit this fold call".
+	// The second shape is the fail-closed fallback, NOT the normal path: the
+	// replay is capped at the END (capReplayRowsToEnd) so it fits the window, and
+	// only a prefix that cannot fit down to its newest user row reaches the
+	// machine-render body. Before the end cap (2026-11-27) the refusal WAS the
+	// rule - measured on the live log: stage 1 produced 2 LLM successes, stages 2
+	// and 3 produced 0, and every escalation died on "the cached prefix does not
+	// fit this fold call" (262144 window, 232689 prefix, 28395 of schemas).
 	txt2, err2 := attemptFoldSummaryFromView(ctx, convForSummary, model, payload, foldStageSummarize, ceiling, foldedChars)
 	if err2 != nil || strings.TrimSpace(txt2) == "" {
 		reason := err2

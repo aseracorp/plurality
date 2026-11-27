@@ -178,12 +178,20 @@ func foldInstruction(stage foldStage, priorSummary string, rows int, priorVisibl
 // at the end of the range the model is asked to compress, and the file's own
 // history documents roll-ups that narrate timestamps.
 //
-// IT REFUSES WHEN THE PREFIX DOES NOT FIT. The value of this shape is that the
-// prefix is the cached one, so truncating history to make the call fit would
-// both break the cache and hide rows from the model that is being asked to
-// record them. The caller then uses buildSummaryRequestFromMegacave (head +
-// schemas + a budgeted machine render), which fits by construction and is still
-// an LLM call - the model is not skipped, only the prefix is not reused.
+// THE PREFIX IS CAPPED AT THE END TO FIT THE WINDOW (owner, 2026-11-27). The
+// prefix is the cached one, so the cap is a constraint on WHERE bytes may change,
+// not on how much history ships: rows at or before the cut stay byte-identical to
+// the chat request, whole tool pairs are dropped newest-first, and the newest user
+// row is the floor. The KV prefix then extends to the cut and only the brief is
+// new. Capping at the START would move the head on every fold and pay a full
+// re-prefill each time - the defect this subsystem exists to remove.
+//
+// THE REQUEST FITS BY CONSTRUCTION, the answer budget included: prefix + schemas
+// + brief + safety reserve + delta-bound output <= window. It refuses only when
+// the prefix down to the newest user row leaves less than the output floor. The
+// caller then uses buildSummaryRequestFromMegacave (head + schemas + a budgeted
+// machine render), which carries no prefix and is still an LLM call - the model is
+// not skipped, only the prefix is not reused.
 func buildSummaryRequestFromView(ctx context.Context, conv utils.Conversation, model utils.Model, payload ChatPayload, stage foldStage, ceiling, foldedChars int) (StandardChatRequest, error) {
 	if model.Name == "" {
 		model = chatModelForConversation(conv)
@@ -205,41 +213,94 @@ func buildSummaryRequestFromView(ctx context.Context, conv utils.Conversation, m
 		return StandardChatRequest{}, fmt.Errorf("the replayed request has no history rows for conversation %s", conv.ID)
 	}
 
-	instruction := foldInstruction(stage, PriorSummaryFromView(conv.Messages), len(rows)-headRows, true)
-
-	window := Models.DeclaredContextWindow(model.Name)
+	// THE END CAP (owner, 2026-11-27): "Prefix stays, you may cap the replay at
+	// the END to fit the context window. Best of both worlds: keep caching and
+	// make it fit the window." The cap drops WHOLE TOOL PAIRS from the newest end
+	// of the history, never the head, so the rows at or before the cut stay
+	// byte-identical to the chat request's and the KV prefix extends to the cut.
+	//
+	// The brief is built AFTER the cap and appended as the last row: "you need to
+	// put the checkpoint at the right place in the history ... after the last
+	// context you send to the model." Its row count is therefore the KEPT count —
+	// stage 1 is told how many rows it is compressing, and the number is the one
+	// on the wire, not the one in the DB.
+	//
+	// The trigger may be smaller than the model's window (configured trigger
+	// 150000 vs window 262144), so a fold can fire while the prefix is far under
+	// the window; in that case the cap is a no-op and the replay ships whole.
+	prior := PriorSummaryFromView(conv.Messages)
 	schemaTokens := len(marshalNoEscape(parts.request.Tools)) / summaryCharsPerToken
-	prefixTokens := renderedRowsTokens(rows)
-	instrTokens := len(instruction) / summaryCharsPerToken
+	window := Models.DeclaredContextWindow(model.Name)
+	prefixFull := renderedRowsTokens(rows)
+	maxOut := summaryOutputTokens(model.Name, prefixFull+schemaTokens, nil)
+	if delta := deltaOutputTokens(foldedChars, ceiling); delta < maxOut {
+		maxOut = delta
+	}
 
-	// The prefix is replayed whole or not at all: a cache hit is the point, so
-	// this is a yes/no, never a squeeze.
-	room := window - prefixTokens - schemaTokens - instrTokens - guardSafetyReserve - minSummaryOutputTokens
-	if window > 0 && room < 0 {
+	capRes := replayCap{keptRows: len(rows) - headRows}
+	// A model with NO declared window gets no cap: the room arithmetic is
+	// meaningless without a window, and capping on a negative room would silently
+	// drop history to the floor. The pre-cap behaviour (ship the whole prefix, no
+	// refusal) is preserved for that case.
+	for i := 0; window > 0 && i < 4; i++ {
+		instrTokens := len(foldInstruction(stage, prior, capRes.keptRows, true)) / summaryCharsPerToken
+		room := window - schemaTokens - guardSafetyReserve - maxOut - instrTokens
+		next := capReplayRowsToEnd(rows, headRows, room)
+		if next.keptRows == capRes.keptRows {
+			capRes = next
+			break
+		}
+		capRes = next
+	}
+	kept := rows[:headRows+capRes.keptRows]
+	instruction := foldInstruction(stage, prior, capRes.keptRows, true)
+
+	// THE REQUEST FITS BY CONSTRUCTION, output budget included: prefix + schemas
+	// + brief + safety reserve + answer budget <= window. The answer budget is
+	// paid for at its REAL size (the fold's delta bound), not at the 1024-token
+	// floor — a check against the floor is what let a request ship an 11008-token
+	// answer budget in a 12000-token window (caught by
+	// TestFoldReplayCapPlacesTheBriefAfterTheLastRowSent on 2026-11-27).
+	prefixTokens := capRes.keptTokens
+	instrTokens := len(instruction) / summaryCharsPerToken
+	maxTokens := deltaOutputTokens(foldedChars, ceiling)
+	if room := summaryOutputTokens(model.Name, prefixTokens+schemaTokens, nil); room < maxTokens {
+		maxTokens = room
+	}
+	if avail := window - prefixTokens - schemaTokens - instrTokens - guardSafetyReserve; window > 0 && avail < maxTokens {
+		maxTokens = avail
+	}
+	// The refusal is now the exception, not the rule: it happens only when the
+	// prefix down to the newest user row leaves less than the output floor.
+	if window > 0 && maxTokens < minSummaryOutputTokens {
 		return StandardChatRequest{}, fmt.Errorf(
-			"the cached prefix does not fit this fold call: prefix %d + schemas %d + instruction %d tokens + safety %d + output floor %d vs window %d",
-			prefixTokens, schemaTokens, instrTokens, guardSafetyReserve, minSummaryOutputTokens, window)
+			"the cached prefix does not fit this fold call even capped at the end: prefix %d + schemas %d + instruction %d tokens + safety %d vs window %d leaves %d tokens for the answer, under the %d floor (capped to %d of %d history rows; the floor of the cap is the newest user row)",
+			prefixTokens, schemaTokens, instrTokens, guardSafetyReserve, window, maxTokens, minSummaryOutputTokens, capRes.keptRows, len(rows)-headRows)
 	}
 
 	req := StandardChatRequest{
 		Model: model.Name, // the CHAT model: it owns the warm prefix and the history
-		// The replayed request, then ONE appended user row: append-only.
-		Messages:    append(rows, StandardMessageReq{Role: "user", Content: instruction}),
+		// The replayed request up to the cap, then ONE appended user row: the cut
+		// is at the END and the brief follows the last row that ships.
+		Messages:    append(append([]StandardMessageReq(nil), kept...), StandardMessageReq{Role: "user", Content: instruction}),
 		Stream:      false, // one-shot: the compacted text is an answer, not a stream
 		Tools:       parts.request.Tools,
 		CachePrompt: parts.request.CachePrompt,
 		NKeep:       parts.request.NKeep,
 	}
-	// The ANSWER is bounded to the new material (deltaOutputTokens), not to the
-	// window: at ~40 t/s a window-sized budget is an open invitation to replay
-	// the chain, and a replay is 40 minutes of copying the database to itself.
-	maxTokens := summaryOutputTokens(model.Name, prefixTokens+schemaTokens+instrTokens, nil)
-	if delta := deltaOutputTokens(foldedChars, ceiling); delta < maxTokens {
-		maxTokens = delta
-	}
+	// The ANSWER budget is the one computed above: bounded to the new material
+	// (deltaOutputTokens, not the window: at ~40 t/s a window-sized budget is an
+	// open invitation to replay the chain, and a replay is 40 minutes of copying
+	// the database to itself), and paid for alongside the prefix, the schemas,
+	// the brief and the safety reserve so the whole request fits the window.
 	req.MaxTokens = &maxTokens
-	utils.Log("[EcoSummary] stage %s prefix replay: %d history rows kept verbatim (~%d tokens) + schemas %d + brief %d, output budget %d, window %d",
-		stage, len(rows)-headRows, prefixTokens, schemaTokens, instrTokens, maxTokens, window)
+	if capRes.capped {
+		utils.Log("[EcoSummary] stage %s prefix replay: prefix capped at the END to fit the window — %d of %d history rows kept verbatim (~%d tokens, %d dropped from the newest end), head unchanged, brief after the last row sent; + schemas %d + brief %d, output budget %d, window %d",
+			stage, capRes.keptRows, len(rows)-headRows, prefixTokens, capRes.droppedRows, schemaTokens, instrTokens, maxTokens, window)
+	} else {
+		utils.Log("[EcoSummary] stage %s prefix replay: %d history rows kept verbatim (~%d tokens) + schemas %d + brief %d, output budget %d, window %d",
+			stage, capRes.keptRows, prefixTokens, schemaTokens, instrTokens, maxTokens, window)
+	}
 	return req, nil
 }
 
