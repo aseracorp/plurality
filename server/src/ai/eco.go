@@ -1559,7 +1559,7 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 	// exists because earlier rounds of this subsystem kept regressing the fold to
 	// megacave-first, which pays for a render nobody asked for.
 	if llmText, llmErr := attemptFoldCompress(summariserCtx, convForSummary, model, foldable, payload, ceiling, foldedChars); llmErr == nil && strings.TrimSpace(llmText) != "" {
-		_, added, replayed := stitchDelta(priorSummary, llmText)
+		chain1, added, replayed := stitchDelta(priorSummary, llmText)
 		if reason := stage1Accept(added, replayed, llmText, foldable, ceiling); reason != "" {
 			// The answer is not usable: it replayed the chain, paraphrased a user
 			// turn, added nothing, or overflowed the ceiling. Treated exactly like
@@ -1591,8 +1591,15 @@ func durableFold(ctx context.Context, conversationID string, messages []utils.Me
 		// pass, because the rows are already evicted and shipping a view over
 		// target costs the next turn a context error.
 		utils.Log("[Eco] stage 1 left the view at %d chars > target %d - escalating to stage 2 (one call)", newView, targetChars)
+		// The chain stage 1 JUST WROTE is the prior stage 2 must summarise, not
+		// the pre-fold prior. Stage 2 ends in RewriteCheckpointSummary, a
+		// full-state replacement of the summary text: hand it the old prior and
+		// the rewrite erases the section stage 1 wrote — which, after the fold,
+		// is the ONLY record of the rows that just left the context. The view
+		// projection above (tailChars + len(priorSummary) + added) is exactly
+		// tailChars + len(chain1), so the escalation gate is unchanged.
 		return escalateSummarise(summariserCtx, conversationID, messages, foldFrom, model, payload,
-			priorSummary, ceiling, foldedChars, tailChars, targetChars)
+			chain1, ceiling, foldedChars, tailChars, targetChars)
 	} else {
 		if llmErr == nil {
 			llmErr = fmt.Errorf("the summariser answered with an empty checkpoint")
@@ -1622,8 +1629,17 @@ func stage1Accept(added, replayed int, llmText string, foldable []utils.Message,
 		}
 		return "the answer added nothing to the roll-up"
 	}
-	if !userRowsVerbatimOK(llmText, foldable) {
-		return "the checkpoint does not carry the user rows verbatim"
+	// The owner's verbatim rule is NOT waived: it moved. llmFoldSummaryRenderer
+	// appends the fold set's user rows to the stored roll-up SERVER-SIDE, so the
+	// user's words survive the fold byte-for-byte at ZERO output tokens. Asking
+	// the model to copy them was the defect: user rows are the bulk of a fold set
+	// (live, conv 9f0ab235: 11529 chars = ~3843 tokens at 21:16), so the gate
+	// ORDERED a replay of exactly the text append-only forbids, the answer cap
+	// made that replay impossible to finish, and every compliant model was
+	// rejected — "the checkpoint does not carry the user rows verbatim", twice in
+	// the live log, with the LLM's work discarded and the machine render stored.
+	if answerReplaysUserRows(llmText, foldable) {
+		return "the answer replays user rows the server carries itself"
 	}
 	if added > ceiling {
 		return fmt.Sprintf("the new section is %d chars, over the %d-char ceiling", added, ceiling)
@@ -1643,14 +1659,59 @@ func stage1Accept(added, replayed int, llmText string, foldable []utils.Message,
 // archive by edit (addendum protocol), in this same pass, one call. Neither
 // stage chains further: each returns, and the next tick re-evaluates.
 func escalateSummarise(ctx context.Context, conversationID string, messages []utils.Message, foldFrom int, model utils.Model, payload ChatPayload, priorSummary string, ceiling, foldedChars, tailChars, targetChars int) (int, error) {
-	convForSummary := utils.Conversation{ID: conversationID, Messages: messages, ModelSelected: payload.ModelSelected}
+	// Stage 1's write is committed by now, so the archive on disk is the chain
+	// stage 1 wrote. Re-read the LLM-facing view and build the summariser's
+	// conversation from THAT, not from the caller's pre-fold slice.
+	//
+	// WHY: the prefix replay's brief tells the model where the archive is ("the
+	// checkpoint pair at the head of the history above") and the megacave shape
+	// QUOTES the prior from PriorSummaryFromView(conv.Messages). Both read the
+	// slice. Hand them the pre-fold slice and the model is told there is NO
+	// existing roll-up — which is an invitation to emit the whole document, the
+	// replay the output cap exists to make impossible — and the head pair it is
+	// shown carries the superseded prior. The archive stage 2 is asked to
+	// summarise must be the bytes that exist now.
+	// `view` is the archive as it exists NOW; `messages` stays the caller's
+	// pre-fold slice because `foldFrom` indexes into it.
+	view := messages
+	if conv, err := db.GetConversationByIdInternal(ctx, conversationID); err == nil && len(conv.Messages) > 0 {
+		view = conv.Messages
+	} else if err != nil {
+		utils.Log("[Eco] stage 2 could not re-read the post-fold view (%v): summarising the pre-fold slice", err)
+	}
+	convForSummary := utils.Conversation{ID: conversationID, Messages: view, ModelSelected: payload.ModelSelected}
 	if uid, ok := ctx.Value("userID").(string); ok {
 		convForSummary.UserID = uid
 	}
+	// STAGE 2, TWO SHAPES, both LLM calls, exactly as stage 1 does it:
+	//
+	//  1. The prefix replay, cache-hot from stage 1's call.
+	//  2. The budgeted machine render of the fold set, when the replayed prefix
+	//     cannot fit the window.
+	//
+	// The second shape is not optional. The fold runs BECAUSE the context is
+	// large, so the prefix replay's fit refusal is the rule on a real
+	// conversation, not the exception - and without a fallback stage 2 could
+	// never answer at all. Measured on the live log: stage 1 produced 2 LLM
+	// successes, stages 2 and 3 produced 0, and every escalation in the log died
+	// on "the cached prefix does not fit this fold call".
 	txt2, err2 := attemptFoldSummaryFromView(ctx, convForSummary, model, payload, foldStageSummarize, ceiling, foldedChars)
-	if err2 != nil {
-		utils.Log("[Eco] stage 2 failed (%v): keeping the stage-1 roll-up", err2)
-		return 1, nil
+	if err2 != nil || strings.TrimSpace(txt2) == "" {
+		reason := err2
+		if reason == nil {
+			reason = fmt.Errorf("the prefix replay answered with an empty summary")
+		}
+		capped := payload
+		capped.FoldAnswerCap = deltaOutputTokens(foldedChars, ceiling)
+		foldable := liveFoldSet(messages[:foldFrom])
+		txt2, err2 = attemptFoldSummaryMegacaveStage(ctx, convForSummary, model, foldable, foldStageSummarize, capped)
+		if err2 != nil || strings.TrimSpace(txt2) == "" {
+			if err2 == nil {
+				err2 = fmt.Errorf("the summariser answered with an empty summary")
+			}
+			utils.Log("[Eco] stage 2 failed (prefix replay: %v; megacave body: %v): keeping the stage-1 roll-up", reason, err2)
+			return 1, nil
+		}
 	}
 	chain, added2, rep2 := stitchDelta(priorSummary, txt2)
 	if strings.TrimSpace(chain) == "" || added2 == 0 {
@@ -1683,9 +1744,34 @@ func escalateSummarise(ctx context.Context, conversationID string, messages []ut
 // compactArchive runs STAGE 3: an edit-list pass over the archive, applied
 // server-side. Returns (applied, reason-when-not).
 func compactArchive(ctx context.Context, conversationID string, conv utils.Conversation, model utils.Model, payload ChatPayload, chain string, targetChars int) (bool, string) {
+	// STAGE 3, TWO SHAPES, both LLM calls. The prefix replay first (cache hit);
+	// on a prefix-fit refusal the BOUNDED archive-edit request goes instead -
+	// head + schemas + the roll-up capped to the room the head leaves + the
+	// addendum brief. It fits by construction, and the edits are applied to the
+	// bytes the model was SHOWN (the bounded chain the builder returns), never to
+	// a longer archive the model never read.
 	addendum, err := attemptFoldSummaryFromView(ctx, conv, model, payload, foldStageCompact, targetChars/2, len(chain))
-	if err != nil {
-		return false, fmt.Sprintf("%v", err)
+	if err != nil || strings.TrimSpace(addendum) == "" {
+		window := Models.DeclaredContextWindow(model.Name)
+		if window <= 0 {
+			return false, fmt.Sprintf("prefix replay: %v; the model declares no window, so no bounded archive edit can be sized", err)
+		}
+		shown, add2, err2 := attemptArchiveEditFromChain(ctx, conv, model, payload, chain, window)
+		if err2 != nil || strings.TrimSpace(add2) == "" {
+			first := "prefix replay refused"
+			if err != nil {
+				first = fmt.Sprintf("%v", err)
+			}
+			if err2 == nil {
+				err2 = fmt.Errorf("the summariser answered with an empty addendum")
+			}
+			return false, fmt.Sprintf("%s; bounded archive edit: %v", first, err2)
+		}
+		if strings.TrimSpace(shown) == "" {
+			return false, "the bounded archive render is empty"
+		}
+		chain = shown
+		addendum = add2
 	}
 	res, ok := applyCompactionAddendum(chain, addendum, targetChars)
 	if !ok {

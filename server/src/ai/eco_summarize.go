@@ -549,70 +549,18 @@ func RefineRollupSummary(ctx context.Context, conversationID string, messages []
 	// prefix hits.
 	p := payload
 	p.ConversationID = conversationID
-	// ModelSelected comes from the payload the loop's requests carried, exactly
-	// as durableFold builds its summariser conversation: buildChatRequestParts
-	// resolves the model through it (including the vision swap), so the replayed
-	// head matches the head of the conversation's real requests and the backend
-	// prefix hits.
 	conv := utils.Conversation{ID: conversationID, Messages: messages, ModelSelected: p.ModelSelected}
 	if uid, ok := ctx.Value("userID").(string); ok {
 		conv.UserID = uid
 	}
-	parts, err := buildChatRequestParts(ctx, model, conv, p)
+	req, chain, room, err := buildArchiveEditRequestFromChain(ctx, conv, model, p, prior, window)
 	if err != nil {
-		return false, fmt.Errorf("cannot replay the chat request for the roll-up refine: %w", err)
+		return false, err
 	}
-	head := append([]StandardMessageReq(nil), parts.request.Messages[:leadingSystemRows(parts.request.Messages)]...)
-	head = stripCurrentTimeTail(head)
-	schemaTokens := len(marshalNoEscape(parts.request.Tools)) / summaryCharsPerToken
-	headTokens := renderedRowsTokens(head)
-
-	// The roll-up gets the room the head does not take, and the refine output
-	// must fit below it, so the request is bounded by construction.
-	// The brief cost is sized with a nominal target: the room does not exist
-	// until the brief cost is known, and the brief is a fixed-shape block, so its
-	// size barely moves with the number in it.
-	instrTokens := len(stage3AddendumInstruction(0)) / summaryCharsPerToken
-	room := window - headTokens - schemaTokens - instrTokens - guardSafetyReserve - minSummaryOutputTokens
-	if room < minSummaryOutputTokens {
-		utils.Log("[Eco] roll-up refine refused: no room in the window (head %d + schemas %d + instruction %d + safety %d + output floor %d vs %d)",
-			headTokens, schemaTokens, instrTokens, guardSafetyReserve, minSummaryOutputTokens, window)
+	if req.MaxTokens == nil {
 		return false, nil
 	}
-	// Cap the roll-up going in, so a roll-up already over the window cannot make
-	// this request itself the one the provider rejects. The megacave chain
-	// compressor is the same bounded, idempotent render the fold uses.
-	roomChars := room * summaryCharsPerToken
-	chain := MegacaveSummaryChain(prior, roomChars)
-	if strings.TrimSpace(chain) == "" {
-		return false, nil
-	}
-	// STAGE 3 IS AN EDIT, NOT A TRANSCRIPT. The brief asks for a '-'+'+ addendum
-	// (stage3AddendumInstruction) and the server applies it (applyCompactionAddendum),
-	// so untouched archive entries cost ZERO output tokens. The brief this replaces
-	// demanded "the new archive only": at ~40 tokens/second a 50k-token archive is a
-	// 20-minute refine, and ~95% of those bytes are a replay of what the server has.
-	body := chain + "\n\n" + stage3AddendumInstruction(room*summaryCharsPerToken/2)
-	bodyTokens := len(body) / summaryCharsPerToken
-	if headTokens+schemaTokens+bodyTokens+guardSafetyReserve+minSummaryOutputTokens > window {
-		return false, nil
-	}
-
-	req := StandardChatRequest{
-		Model:       model.Name,
-		Messages:    append(head, StandardMessageReq{Role: "user", Content: body}),
-		Stream:      false,
-		Tools:       parts.request.Tools,
-		CachePrompt: parts.request.CachePrompt,
-		NKeep:       parts.request.NKeep,
-	}
-	maxTokens := summaryOutputTokens(model.Name, headTokens+schemaTokens+bodyTokens, nil)
-	// The answer is an edit list, not an archive: cap it to the archive size, so a
-	// replay of the archive cannot be paid for in output tokens at ~40 tokens/second.
-	if editCap := len(chain) / summaryCharsPerToken; editCap > 0 && editCap < maxTokens {
-		maxTokens = editCap
-	}
-	req.MaxTokens = &maxTokens
+	maxTokens := *req.MaxTokens
 
 	summariserCtx, cancel := summariserCallContext(ctx)
 	defer cancel()
@@ -655,6 +603,116 @@ func RefineRollupSummary(ctx context.Context, conversationID string, messages []
 	return true, nil
 }
 
+// buildArchiveEditRequestFromChain is STAGE 3's BUDGETED request shape: the
+// conversation's own head (leading system rows, clock stripped) plus its tool
+// schemas, then ONE user row carrying the roll-up bounded to the room the head
+// leaves, plus the addendum brief. Returns the bounded chain the model was
+// shown, so the caller applies the edit list to the SAME bytes and not to a
+// longer text the model never saw.
+//
+// WHY THIS SHAPE EXISTS. The fold's stage 3 prefers the prefix replay (cache
+// hit), and the prefix replay REFUSES when the replayed prefix does not fit the
+// window. The fold runs because the context is large, so on a real conversation
+// that refusal is the rule, not the exception: measured across the whole log
+// history, stage 3 produced ZERO successes, and the reason in the log is always
+// the prefix-fit refusal. Stage 1 solved the same problem with a budgeted
+// fallback (the machine render); stages 2 and 3 had no fallback at all, so the
+// two stages that exist to make the context fit could never run.
+//
+// The shape fits BY CONSTRUCTION: the chain is capped to the room, and the
+// builder refuses (error) when even head+schemas+brief+output floor exceed the
+// window — it never truncates the archive silently and it never ships a request
+// the provider will reject.
+//
+// It rides the same wire entry as every other fold call
+// (GenerateCheckpointSummaryFromRequest), which is the invariant
+// ultracave_llm_guard_test pins.
+func buildArchiveEditRequestFromChain(ctx context.Context, conv utils.Conversation, model utils.Model, p ChatPayload, prior string, window int) (StandardChatRequest, string, int, error) {
+	// ModelSelected comes from the payload the loop's requests carried, exactly
+	// as durableFold builds its summariser conversation: buildChatRequestParts
+	// resolves the model through it (including the vision swap), so the replayed
+	// head matches the head of the conversation's real requests and the backend
+	// prefix hits.
+	parts, err := buildChatRequestParts(ctx, model, conv, p)
+	if err != nil {
+		return StandardChatRequest{}, "", 0, fmt.Errorf("cannot replay the chat request for the archive edit: %w", err)
+	}
+	head := append([]StandardMessageReq(nil), parts.request.Messages[:leadingSystemRows(parts.request.Messages)]...)
+	head = stripCurrentTimeTail(head)
+	schemaTokens := len(marshalNoEscape(parts.request.Tools)) / summaryCharsPerToken
+	headTokens := renderedRowsTokens(head)
+
+	// The roll-up gets the room the head does not take, and the answer must fit
+	// below it, so the request is bounded by construction. The brief cost is
+	// sized with a nominal target: the room does not exist until the brief cost
+	// is known, and the brief is a fixed-shape block, so its size barely moves
+	// with the number in it.
+	instrTokens := len(stage3AddendumInstruction(0)) / summaryCharsPerToken
+	room := window - headTokens - schemaTokens - instrTokens - guardSafetyReserve - minSummaryOutputTokens
+	if room < minSummaryOutputTokens {
+		return StandardChatRequest{}, "", 0, fmt.Errorf("no room in the window for an archive edit (head %d + schemas %d + instruction %d + safety %d + output floor %d vs %d)",
+			headTokens, schemaTokens, instrTokens, guardSafetyReserve, minSummaryOutputTokens, window)
+	}
+	// Cap the archive going in, so a roll-up already over the window cannot make
+	// this request itself the one the provider rejects. The megacave chain
+	// compressor is the same bounded, idempotent render the fold uses.
+	roomChars := room * summaryCharsPerToken
+	chain := MegacaveSummaryChain(prior, roomChars)
+	if strings.TrimSpace(chain) == "" {
+		return StandardChatRequest{}, "", 0, fmt.Errorf("the archive renders empty at a %d-char room", roomChars)
+	}
+	// STAGE 3 IS AN EDIT, NOT A TRANSCRIPT. The brief asks for a '-'+'+ addendum
+	// (stage3AddendumInstruction) and the server applies it (applyCompactionAddendum),
+	// so untouched archive entries cost ZERO output tokens. The brief this replaces
+	// demanded "the new archive only": at ~40 tokens/second a 50k-token archive is a
+	// 20-minute refine, and ~95% of those bytes are a replay of what the server has.
+	body := chain + "\n\n" + stage3AddendumInstruction(room*summaryCharsPerToken/2)
+	bodyTokens := len(body) / summaryCharsPerToken
+	if headTokens+schemaTokens+bodyTokens+guardSafetyReserve+minSummaryOutputTokens > window {
+		return StandardChatRequest{}, chain, room, fmt.Errorf("archive-edit body does not fit the window: head %d + schemas %d + body %d tokens + safety %d + output floor %d vs %d",
+			headTokens, schemaTokens, bodyTokens, guardSafetyReserve, minSummaryOutputTokens, window)
+	}
+
+	req := StandardChatRequest{
+		Model:       model.Name,
+		Messages:    append(head, StandardMessageReq{Role: "user", Content: body}),
+		Stream:      false,
+		Tools:       parts.request.Tools,
+		CachePrompt: parts.request.CachePrompt,
+		NKeep:       parts.request.NKeep,
+	}
+	maxTokens := summaryOutputTokens(model.Name, headTokens+schemaTokens+bodyTokens, nil)
+	// The answer is an edit list, not an archive: cap it to the archive size, so a
+	// replay of the archive cannot be paid for in output tokens at ~40 tokens/second.
+	if editCap := len(chain) / summaryCharsPerToken; editCap > 0 && editCap < maxTokens {
+		maxTokens = editCap
+	}
+	req.MaxTokens = &maxTokens
+	utils.Log("[EcoSummary] stage 3 bounded archive edit: archive %d -> %d chars (room %d tokens), head %d + schemas %d, output budget %d, window %d",
+		len(prior), len(chain), room, headTokens, schemaTokens, maxTokens, window)
+	return req, chain, room, nil
+}
+
+// attemptArchiveEditFromChain is the fold's stage-3 fallback: ask the chat model
+// for the addendum over the BOUNDED archive, and return the archive the model
+// was shown so the caller applies the edits to the bytes that produced them.
+func attemptArchiveEditFromChain(ctx context.Context, conv utils.Conversation, model utils.Model, payload ChatPayload, chain string, window int) (shownChain string, addendum string, err error) {
+	p := payload
+	p.ConversationID = conv.ID
+	req, shown, _, err := buildArchiveEditRequestFromChain(ctx, conv, model, p, chain, window)
+	if err != nil {
+		return "", "", err
+	}
+	if req.MaxTokens != nil && *req.MaxTokens <= minSummaryOutputTokens {
+		return "", "", fmt.Errorf("archive-edit budget collapsed (max_tokens=%d): the head and the bounded archive already fill it", *req.MaxTokens)
+	}
+	txt, err := GenerateCheckpointSummaryFromRequest(ctx, req)
+	if err != nil {
+		return shown, "", err
+	}
+	return shown, txt, nil
+}
+
 // llmFoldSummaryRenderer is the SUCCESS path of the fold: the LLM's checkpoint
 // text is itself megacaved, so the stored roll-up stays a chain of megacaved
 // summaries and stays inside the same ceiling the machine render respects.
@@ -671,20 +729,93 @@ func RefineRollupSummary(ctx context.Context, conversationID string, messages []
 // conversation.
 func llmFoldSummaryRenderer(llmText string, ceiling int) func([]utils.Message) string {
 	return func(folded []utils.Message) string {
-		text := MegacaveSummaryChain(llmText, ceiling)
+		block := megacaveAttachmentBlock(folded)
+		// THE USER'S WORDS ARE CARRIED HERE, BY THE SERVER. The owner's rule is
+		// that user rows are never compressed. Enforcing it by REJECTING a model
+		// answer that did not copy them asks the model to transcribe the largest
+		// part of the fold set (live: 11529 chars of user text on a 222-row fold)
+		// inside an answer cap that is a fraction of that, which no model can
+		// satisfy — the fold then discards a good compression and stores the
+		// machine render. Carriage is a property of the STORED roll-up, so the
+		// server guarantees it and spends zero output tokens doing so.
+		//
+		// The ceiling is paid for in this order: the incompressible parts (user
+		// rows, the attachment block) are reserved first, and the model's prose
+		// gets what is left. capMegacaveExcerpt keeps the TAIL, so capping the
+		// concatenation would drop the model's compression and keep the rows; the
+		// prose is capped on its own, with the megacave banner naming the cut, and
+		// the verbatim parts are never cut at all.
+		verbatim := userRowsVerbatimBlock(folded)
+		budget := ceiling
+		if budget > 0 {
+			budget -= len(verbatim) + len(block) + 2
+		}
+		if budget < minMegacaveRowShowChars {
+			// The verbatim parts leave the prose no room: the fold's ceiling is
+			// smaller than the user's own words. Last resort — render the prose at
+			// its floor and cap the WHOLE render, exactly as
+			// MachineExcerptMegacaveCapped caps its finished excerpt (which already
+			// contains verbatim user rows), so the bound is honoured and the cut is
+			// announced by the megacave banner. The newest content survives:
+			// capMegacaveExcerpt keeps the TAIL.
+			text := MegacaveSummaryChain(llmText, minMegacaveRowShowChars)
+			if text == "" {
+				return ""
+			}
+			out := text
+			if verbatim != "" {
+				out += "\n\n" + verbatim
+			}
+			if block != "" {
+				out += "\n" + block
+			}
+			return capMegacaveExcerpt(out, ceiling)
+		}
+		text := MegacaveSummaryChain(llmText, budget)
 		if text == "" {
 			// Defensive: an empty render must not store an empty section.
 			return ""
 		}
-		block := megacaveAttachmentBlock(folded)
-		if block == "" {
+		if verbatim == "" && block == "" {
 			return text
 		}
-		// Stay inside the ceiling the caller was asked to respect. The block is
-		// bounded (<=40 ids) and costed as incompressible by the fold's own
-		// budget arithmetic, so this is the same ceiling, not a second one.
-		return capMegacaveExcerpt(text+"\n"+block, ceiling)
+		out := text
+		if verbatim != "" {
+			out += "\n\n" + verbatim
+		}
+		if block != "" {
+			out += "\n" + block
+		}
+		return out
 	}
+}
+
+// userRowsVerbatimBlock renders the fold set's user rows exactly as
+// MachineExcerptMegacaveCapped renders them (same "USER:" label, same verbatim
+// content writer), so the roll-up reads the same on both paths and the rows are
+// byte-identical to what the user sent. Returns "" when the fold set has no user
+// text.
+func userRowsVerbatimBlock(rows []utils.Message) string {
+	var b strings.Builder
+	for _, m := range rows {
+		if m.Role != "user" || m.Compacted {
+			continue
+		}
+		txt := strings.TrimSpace(m.TextContent())
+		if txt == "" {
+			continue
+		}
+		b.WriteString("USER:\n")
+		var inner strings.Builder
+		writeMegacaveContentVerbatim(&inner, m, func(s string) {
+			if s != "" {
+				inner.WriteString(s + "\n")
+			}
+		})
+		b.WriteString(inner.String())
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // machineOnlyFoldRenderer is the FALLBACK path of the fold: the deterministic

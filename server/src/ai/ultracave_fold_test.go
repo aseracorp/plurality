@@ -189,11 +189,13 @@ func TestUltracaveFoldShrinksTheViewAndFreezesThePrefix(t *testing.T) {
 	// stored the roll-up below. (The old assertion was `hits != 0` = "no LLM at
 	// all"; that invariant is retired — the guard now pins exactly one
 	// summarisation entry and no SendChatCompletion / fastShortcutModels.)
-	// Two ATTEMPTS (the prefix replay, then the budgeted render) through the
-	// ONE allowed wire entry point. The invariant is the entry point, not the
-	// attempt count: no SendChatCompletion, no fastShortcutModels.
-	if hits := installed.llmHits(); hits < 1 || hits > 2 {
-		t.Fatalf("the fold path reaches %d LLM wire entries, want 1-2 (both the fold's stages ride the chat-model summariser): %v", hits, installed.hits)
+	// ATTEMPTS = (prefix replay, budgeted render) x (stage 1, stage 2, stage 3) =
+	// up to 6, all through the ONE allowed wire entry point. The invariant is the
+	// entry point, not the attempt count: no SendChatCompletion, no
+	// fastShortcutModels, no fast model, no fold that takes a chat turn. A fold
+	// cannot exceed 6 calls at all, so the bound is structural, not a tuning knob.
+	if hits := installed.llmHits(); hits < 1 || hits > 6 {
+		t.Fatalf("the fold path reaches %d LLM wire entries, want 1-6 (3 stages x 2 request shapes, all on the chat-model summariser): %v", hits, installed.hits)
 	}
 	for _, h := range installed.hits {
 		if !strings.Contains(h, "GenerateCheckpointSummaryFromRequest") {
@@ -307,10 +309,11 @@ func TestUltracaveFoldShrinksTheViewAndFreezesThePrefix(t *testing.T) {
 	if n := countCheckpointPairs(v2); n != 1 {
 		t.Fatalf("expected exactly ONE checkpoint pair after 2 folds, got %d", n)
 	}
-	// 2 folds x 2 stages, all through the ONE allowed wire entry point. The
-	// invariant is the entry point: no SendChatCompletion, no fastShortcutModels.
-	if hits := installed.llmHits(); hits < 1 || hits > 4 {
-		t.Fatalf("the fold path reaches %d LLM wire entries across 2 folds, want 1-4 (both stages ride the chat-model summariser): %v", hits, installed.hits)
+	// 2 folds x (3 stages x 2 request shapes) = up to 12, all through the ONE
+	// allowed wire entry point. The invariant is the entry point: no
+	// SendChatCompletion, no fastShortcutModels.
+	if hits := installed.llmHits(); hits < 1 || hits > 12 {
+		t.Fatalf("the fold path reaches %d LLM wire entries across 2 folds, want 1-12 (2 folds x 3 stages x 2 shapes): %v", hits, installed.hits)
 	}
 	for _, h := range installed.hits {
 		if !strings.Contains(h, "GenerateCheckpointSummaryFromRequest") {

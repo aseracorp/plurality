@@ -106,19 +106,51 @@ func TestStripReplayOverlapIgnoresShortOverlap(t *testing.T) {
 	}
 }
 
-func TestUserRowsVerbatimOKFailsOnParaphrase(t *testing.T) {
+// The verbatim rule moved from the model's ANSWER to the stored roll-up (the
+// server appends the fold set's user rows itself), so the gate inverts: it now
+// rejects TRANSCRIPTION, and a compression that quotes one decisive user sentence
+// must pass, because that is the correct model behaviour.
+func TestAnswerReplaysUserRowsRejectsTranscription(t *testing.T) {
+	long := "please implement the megacave plan exactly as written, and do NOT restart the service " +
+		"while the migration is running, because it drops in-flight requests"
+	rows := []utils.Message{
+		{Role: "user", Content: utils.NewTextContent(long)},
+		{Role: "user", Content: utils.NewTextContent("and keep the plan text as the spec of record")},
+		{Role: "assistant", Content: utils.NewTextContent("done")},
+	}
+	// A compression that quotes ONE user sentence: not a replay.
+	compression := "TASK OF RECORD: user asked for the megacave plan; constraint: do NOT restart the service"
+	if answerReplaysUserRows(compression, rows) {
+		t.Fatal("a compression that quotes one decisive user row was called a replay")
+	}
+	// Transcribing the set: a replay.
+	var transcription strings.Builder
+	for _, m := range rows {
+		if m.Role == "user" {
+			transcription.WriteString("USER:\n" + m.Content.TextContent() + "\n\n")
+		}
+	}
+	if !answerReplaysUserRows(transcription.String(), rows) {
+		t.Fatal("transcribing every user row was not called a replay")
+	}
+	// Nothing to replay (no user text) is not a replay.
+	if answerReplaysUserRows("anything", []utils.Message{{Role: "user", Content: utils.NewTextContent("")}}) {
+		t.Fatal("an empty user row must not fail the check")
+	}
+}
+
+// The server, not the model, carries the user's words into the roll-up.
+func TestLLMRendererCarriesUserRowsVerbatim(t *testing.T) {
 	rows := []utils.Message{
 		{Role: "user", Content: utils.NewTextContent("no, do NOT restart the service")},
+		{Role: "assistant", Content: utils.NewTextContent("I stopped the restart.")},
 	}
-	if !userRowsVerbatimOK("user: no, do NOT restart the service\n- assistant declined", rows) {
-		t.Fatal("verbatim user text was rejected")
+	rendered := llmFoldSummaryRenderer("did the deploy plan", 10_000)(rows)
+	if !strings.Contains(rendered, "no, do NOT restart the service") {
+		t.Fatalf("the stored roll-up lost the user's own words (negation destroyed):\n%s", rendered)
 	}
-	if userRowsVerbatimOK("user discussed a service restart and declined it", rows) {
-		t.Fatal("a paraphrase of a NEGATION passed: the negation is the fact that matters")
-	}
-	// An attachment-only / empty row cannot be paraphrased, so it is not asserted.
-	if !userRowsVerbatimOK("anything", []utils.Message{{Role: "user", Content: utils.NewTextContent("")}}) {
-		t.Fatal("an empty user row must not fail the check")
+	if !strings.Contains(rendered, "did the deploy plan") {
+		t.Fatal("the model's compression is not in the stored roll-up")
 	}
 }
 

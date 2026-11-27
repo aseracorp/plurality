@@ -159,31 +159,59 @@ func longestPrefixInPrior(prior, section string) int {
 	return lo
 }
 
-// userRowsVerbatimOK asserts the owner's 1:1 rule on the model's OUTPUT, not in
-// the prompt: every user row's text must appear verbatim in the new section.
+// answerReplaysUserRows reports whether the model's answer reproduces the fold
+// set's user rows — the replay append-only forbids.
 //
-// The instruction asks for it; this checks it. A model that paraphrases "no, do
-// NOT restart the service" into "the user discussed a restart" has destroyed the
-// one constraint it was given, and on a fold the source rows are gone, so the
-// paraphrase is all that survives. Fails closed: the caller stores the
-// deterministic machine render instead.
-func userRowsVerbatimOK(section string, rows []utils.Message) bool {
+// THE OWNER'S VERBATIM RULE STILL HOLDS; IT MOVED. User rows used to be demanded
+// of the MODEL (this function's predecessor returned the inverse: a checkpoint
+// was rejected unless it carried every user row byte-for-byte). That gate ordered
+// the model to copy the largest part of the fold set — live, conv 9f0ab2352bf2bdc40e77384b
+// at 21:16: 11529 chars of user text = ~3843 tokens — while deltaOutputTokens
+// caps the answer to a fraction of it. The task was unsatisfiable: a compliant
+// model truncated mid-copy and was rejected ("the checkpoint does not carry the
+// user rows verbatim", 22:37 and 23:19 in the live log), and a lazy one paraphrased
+// and was rejected too. Both paths discarded the LLM's answer and stored the
+// machine render, so stage 1 could not succeed on a conversation with real user
+// text. The rule now lives in llmFoldSummaryRenderer, which appends the user rows
+// server-side: verbatim carriage at ZERO output tokens, guaranteed, not requested.
+//
+// So the check inverts. A row is "replayed" when the answer contains most of it
+// (short rows must be near-exact; long ones at 60 %), counted against a
+// threshold, so a genuine summary that quotes ONE decisive user sentence — the
+// correct thing to do — is not a replay.
+func answerReplaysUserRows(section string, rows []utils.Message) bool {
+	hits := 0
+	total := 0
 	for _, m := range rows {
 		if m.Role != "user" || m.Compacted {
 			continue
 		}
 		txt := strings.TrimSpace(m.TextContent())
-		if txt == "" {
-			continue
+		if len(txt) < 24 {
+			continue // too short to be a replay; quoting it is normal
 		}
-		// Only assert on text the model can reasonably be expected to carry:
-		// an attachment-only row has no prose to reproduce.
-		if len(txt) < 3 {
-			continue
-		}
-		if !strings.Contains(section, txt) {
-			return false
+		total++
+		if answerCarriesText(section, txt) {
+			hits++
 		}
 	}
-	return true
+	if total == 0 {
+		return false
+	}
+	// Two thirds of the fold set's user rows reproduced is not summarising, it is
+	// transcription. One third, or a single row, is quoting.
+	return hits*3 >= total*2 && hits >= 2
+}
+
+// answerCarriesText is the containment test answerReplaysUserRows needs on text
+// the model may have trimmed: exact containment, else a prefix of the row long
+// enough that a paraphrase cannot reach it by accident.
+func answerCarriesText(section, txt string) bool {
+	if strings.Contains(section, txt) {
+		return true
+	}
+	if len(txt) < 120 {
+		return false
+	}
+	return strings.Contains(section, txt[:len(txt)/2])
 }

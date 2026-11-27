@@ -237,14 +237,19 @@ func newAppendProbeProxy(t *testing.T, posts *[]StandardChatRequest, marker stri
 		if err := json.Unmarshal(body, &req); err == nil {
 			*posts = append(*posts, req)
 		}
+		// A COMPLIANT MODEL under the append-only contract: it answers with ITS
+		// COMPRESSION and quotes at most one short user sentence. It does not
+		// transcribe the fold set's user rows — llmFoldSummaryRenderer appends them
+		// to the stored roll-up server-side, and reproducing two thirds of them is
+		// what answerReplaysUserRows rejects (that rejection is the live defect the
+		// fold used to die on: 22:37 and 23:19, "does not carry the user rows
+		// verbatim").
 		answer := marker
 		for _, u := range echo.rows {
-			answer += "\n" + u
-		}
-		// The replay shape: echo the real user rows the request ships, so the
-		// checkpoint carries them verbatim as a compliant model would.
-		for _, u := range ucWireUserTexts(body) {
-			answer += "\n" + u
+			if len(u) > 0 && len(u) < 120 {
+				answer += "\nuser: " + u
+				break
+			}
 		}
 		resp := map[string]interface{}{
 			"choices": []map[string]interface{}{
