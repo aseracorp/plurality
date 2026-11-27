@@ -56,6 +56,51 @@ func IsCheckpointMessage(msg utils.Message) bool {
 	return false
 }
 
+// IsFoldCheckpointMessage reports whether msg is one half of a checkpoint pair
+// the DURABLE FOLD wrote.
+//
+// The fold's pair is identifiable by its call id: insertCheckpointPairInTx
+// mints it as "eco_" + GenerateID(), a prefix no model-issued call has — the
+// backend generates "call_" ids (observed live: "call_6125_call_af1c62b4...").
+//
+// Why the distinction is load-bearing: eco_checkpoint is a normal tool name in
+// the request's tool list, and a model CAN call it. The backend then answers
+// with its own tool result — an error string, because the tool is not
+// advertised to the client. That [assistant, tool] pair satisfies
+// IsCheckpointMessage, so a conversation ends up with TWO pairs: the fold's
+// (a real roll-up, ~228292 chars) and the model's (a 319-char error). The
+// request path and the fold both pick the LAST pair in the slice, i.e. the
+// error, and the real roll-up is dropped from the request. Observed on the
+// live 262144-token deployment: the model received ~107 tokens of archived
+// history (0.05 % of the 204166 tokens the fold had compressed) on every
+// request, while the client showed the full transcript — and the next fold
+// compressed the tail into that 319-char roll-up, which is why the durable
+// fold logged "222 rows folded, history 5380 -> 8 messages, view =71904
+// tokens" while the provider reported prompt_tokens=24531.
+//
+// Selection uses this; the request path slices from the FOLD's pair and leaves
+// a model-issued pair in the live rows (it is conversation content, and
+// FilterOutCheckpoints still hides both kinds from the client).
+func IsFoldCheckpointMessage(msg utils.Message) bool {
+	if msg.Role == "tool" && msg.Name == EcoCheckpointToolName {
+		return strings.HasPrefix(msg.ToolCallID, FoldCheckpointCallIDPrefix)
+	}
+	if msg.Role == "assistant" {
+		for _, tc := range msg.ToolCalls {
+			if tc.Function.Name == EcoCheckpointToolName &&
+				strings.HasPrefix(tc.ID, FoldCheckpointCallIDPrefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// FoldCheckpointCallIDPrefix is the call-id prefix insertCheckpointPairInTx
+// gives the fold's pair — the marker IsFoldCheckpointMessage reads. Keep the
+// two in step.
+const FoldCheckpointCallIDPrefix = "eco_"
+
 // FilterOutCheckpoints returns a copy of messages with every checkpoint
 // message (assistant half + tool half) removed. Used when returning a
 // conversation to the client — the user never sees the synthetic pair.
@@ -110,7 +155,10 @@ func GetCheckpoint(ctx context.Context, conversationID string) (*CheckpointPair,
 		}
 		calls := unmarshalToolCalls(tcJSON)
 		for _, tc := range calls {
-			if tc.Function.Name == EcoCheckpointToolName {
+			// Only the fold's pair: a model-issued eco_checkpoint call carries a
+			// backend-generated id, and rewriting IT would discard the fold's real
+			// roll-up (see IsFoldCheckpointMessage).
+			if tc.Function.Name == EcoCheckpointToolName && strings.HasPrefix(tc.ID, FoldCheckpointCallIDPrefix) {
 				assistantID = id
 				assistantSeq = seq
 				toolCallID = tc.ID
@@ -616,7 +664,12 @@ func findLiveCheckpoint(ctx context.Context, d *sql.DB, conversationID string) (
 			break
 		}
 		for _, tc := range unmarshalToolCalls(tcJSON) {
-			if tc.Function.Name == EcoCheckpointToolName {
+			// Only the FOLD's pair: a model-issued eco_checkpoint call carries a
+			// backend-generated id, and rewriting its tool row would store the
+			// roll-up where the "tool not advertised" error sits and leave the
+			// fold's real roll-up as the archived history nothing represents.
+			if tc.Function.Name == EcoCheckpointToolName &&
+				strings.HasPrefix(tc.ID, FoldCheckpointCallIDPrefix) {
 				toolCallID = tc.ID
 				break
 			}
@@ -992,7 +1045,7 @@ func stripSummaryBanners(s string) string {
 // checkpoint row count stays 2 across any number of folds.
 func insertCheckpointPairInTx(ctx context.Context, tx *sql.Tx, conversationID string, seq int64, summary string) error {
 	_ = ctx // insertMessage is tx-scoped and takes no context on this branch
-	toolCallID := "eco_" + GenerateID()
+	toolCallID := FoldCheckpointCallIDPrefix + GenerateID()
 	now := time.Now().Format(time.RFC3339)
 	assistantMsg := utils.Message{
 		Role:      "assistant",

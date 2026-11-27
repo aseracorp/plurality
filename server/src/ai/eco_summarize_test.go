@@ -806,13 +806,18 @@ func newFakeSummaryProxy(t *testing.T, gotBody *[]byte, gotPath *string, text st
 		body, _ := io.ReadAll(r.Body)
 		*gotBody = body
 		*gotPath = r.URL.Path
-		// A COMPLIANT MODEL. durableFold rejects a checkpoint that does not carry
-		// the fold set user rows verbatim, and the append-only contract makes the
-		// answer the new section, so the fixture answers with its marker plus the
-		// user rows it was shown, copied exactly, and nothing from the roll-up.
+		// A COMPLIANT MODEL, post-#224: it answers with ITS COMPRESSION and quotes
+		// at most ONE user sentence. It does NOT transcribe the fold set's user
+		// rows — the server appends them to the stored roll-up itself
+		// (llmFoldSummaryRenderer), and reproducing two thirds of them is what
+		// answerReplaysUserRows rejects. The userRows parameter is kept for the
+		// call sites that pass it; quoting one short row is what a real model does.
 		answer := text
 		for _, u := range userRows {
-			answer += "\n" + u
+			if len(u) > 0 && len(u) < 120 {
+				answer += "\nuser: " + u
+				break
+			}
 		}
 		resp := map[string]interface{}{
 			"choices": []map[string]interface{}{
