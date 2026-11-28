@@ -91,8 +91,12 @@ func TestPreemptiveGuardFiresWhenTheViewIsGenuinelyOverWindow(t *testing.T) {
 
 	// Just inside the ceiling (room left for the 1-token schema allowance of a
 	// nil tools array): no fire, so the guard does not fold a request that fits
-	// with room for the reply.
-	fits := window262k - guardReplyReserve - 1
+	// with room for the reply. The ceiling is window - guardReserve, where
+	// guardReserve is the reply reservation PLUS the measurement margin
+	// (guard_measure_margin_test.go): the guard's chars/3 estimate is a floor, so
+	// the reservation is bigger than the reply alone. Keyed on guardReserve, not
+	// a literal, so this stays correct as the margin is retuned.
+	fits := window262k - guardReserve(window262k) - 1
 	if err := preemptiveContextGuard("eco-guard-test-fits", fits, 0, nil, 1_000, window262k, 10); err != nil {
 		t.Fatalf("guard fired just under the ceiling (%d tokens, window %d): %v", fits, window262k, err)
 	}

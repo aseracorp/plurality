@@ -281,6 +281,58 @@ func buildChatRequestParts(ctx context.Context, model utils.Model, conv utils.Co
 // max_tokens on top of its own output budget (see buildSummaryRequestFromView).
 const guardSafetyReserve = 2048
 
+// guardMeasureMarginPercent is the headroom the preemptive context guard adds
+// on top of the reply reservation, as a percentage of the model's window. The
+// guard's estimate is a FLOOR, and it must not be treated as a measurement.
+//
+// MEASURED, 2026-11-27, model strata-swift, window 262144. Two requests, the
+// guard's own compared number against what the backend measured for the SAME
+// request (from /app/data/server.log):
+//
+//	76c17afbb288581be0d23812  guard compared 224193  backend measured 262705  REFUSED
+//	9f0ab2352bf2bdc40e77384b  guard compared 114823  proxy  measured 112235  served, cache 100%
+//
+// The refused request is the freeze: the guard priced it under the window, so it
+// shipped, the backend rejected it as an overflow, and the retry/slot chain froze
+// two conversations for 23 minutes (see providerRejectionIsOverflow and
+// backoffOffSlot in utils for that chain).
+//
+// TWO independent error terms, both pushing the SAME way at the top of the window:
+//
+//   - The tokenizer. chars/3 over the shipped rows and schemas gave 242493
+//     against a backend measurement of 262705: the real prompt is ~7.7% more
+//     expensive than the estimate. The backend compiles the tool schemas through
+//     a BPE tokenizer, renders them into the chat-template prefix, and charges
+//     the template scaffolding around every row.
+//   - The compression discount. The guard divides its estimate by the model's
+//     observed compression factor (1.08 in these log lines), i.e. it multiplies
+//     the estimate by 1.08 and so raises the ceiling it compares against. The
+//     discount is legitimate — headroom does compress — but it relaxes the one
+//     number that decides whether a request ships, and the pair
+//     before/afterCompression counts that feed it measure 1.0002 on this
+//     deployment's cache-mode turns.
+//
+// 7.7 + 8.0 = 15.7, so the margin is 15%: it covers the measured tokenizer floor
+// AND the discount at full strength, on the request the backend refused, while
+// leaving the request the backend served at 43% of its window untouched (114823
+// against a 216679 ceiling). A margin of 10% would NOT have fired on the refused
+// request — this number is derived from the log, not chosen.
+//
+// Proportional to the window because the deficit is a fraction of the prompt: a
+// 32k model gets ~4.9k of margin, a 1M model 157k. The effect is to compact one
+// request EARLIER, while a fold is still buildable and shippable, instead of one
+// request after the provider has refused and the loop is in recovery with no
+// foldable rows left. This is the same rule as a deployment that compacts at
+// ~85% of its context window.
+const guardMeasureMarginPercent = 15
+
+// guardReserve is the whole headroom the preemptive context guard keeps off the
+// window: the reply reservation plus the measurement margin.
+func guardReserve(windowTokens int) int {
+	margin := windowTokens * guardMeasureMarginPercent / 100
+	return guardReplyReserve + margin
+}
+
 // guardReplyReserve is the room the preemptive context guard keeps for the
 // model's answer: max_tokens (4096) + safety (2048). It is the SAME
 // reservation the request sends as max_tokens, so the guard and the backend
@@ -354,13 +406,14 @@ func preemptiveContextGuard(modelName string, viewTokens int, imageTokens int, t
 	}
 	schemaTokens := len(marshalNoEscape(tools)) / summaryCharsPerToken
 	estTokens := preemptiveGuardEstimate(viewTokens, imageTokens, tools, modelName, bodyBytes)
-	if estTokens <= windowTokens-guardReplyReserve {
+	reserve := guardReserve(windowTokens)
+	if estTokens <= windowTokens-reserve {
 		return nil
 	}
-	utils.Log("[Eco] preemptive context guard: estimated %d tokens (shipped rows %d + images %d + schemas %d, marshalled body %d) vs window %d, %d live rows — returning context-length error so the loop compacts and retries",
-		estTokens, viewTokens, imageTokens, schemaTokens, bodyBytes/summaryCharsPerToken, windowTokens, liveRows)
+	utils.Log("[Eco] preemptive context guard: estimated %d tokens (shipped rows %d + images %d + schemas %d, marshalled body %d) vs window %d with reserve %d (reply %d + measure margin %d%%), %d live rows — returning context-length error so the loop compacts and retries",
+		estTokens, viewTokens, imageTokens, schemaTokens, bodyBytes/summaryCharsPerToken, windowTokens, reserve, guardReplyReserve, guardMeasureMarginPercent, liveRows)
 	return guardProjectionErrorf("request estimated to exceed the context window: ~%d tokens vs %d (max %d) — compacting history and retrying",
-		estTokens, windowTokens, windowTokens-guardReplyReserve)
+		estTokens, windowTokens, windowTokens-reserve)
 }
 
 // guardProjectionError marks an error as the guard's PROJECTION: an estimate
