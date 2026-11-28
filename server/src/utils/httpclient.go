@@ -198,6 +198,72 @@ func RetryableStatus(code int) bool {
 	return code == 402 || code == 429 || (code >= 500 && code < 600)
 }
 
+// providerRejectionIsOverflow reports whether a rejection body says the
+// REQUEST IS TOO BIG for the model's context window.
+//
+// WHY THIS IS TERMINAL, NOT RETRYABLE (2026-11-27, conversations
+// 76c17afbb288581be0d23812 + fb3a4de4204d715e90863d9f): the local backend
+// answers an oversized prompt with
+//
+//	400 - request exceeds the context window: prompt (262705 tokens) leaves no
+//	      room to answer in the context (262144); requests are never truncated
+//
+// and LiteLLM re-publishes that as **500 Internal Server Error** after its own
+// model-fallback attempt. 500 is in RetryableStatus, so Plurality retried the
+// IDENTICAL oversized payload 15 times over ~30 minutes. Retrying cannot shrink
+// a prompt: the only recovery is compaction, and the LLM loop has that recovery
+// path — keyed on the provider's context-length text. The retry layer converted
+// a recognisable overflow into
+//
+//	"LLM provider rejected request with status 500 after 15 retries"
+//
+// which contains no such text, so the loop never compacted. The payload is
+// fixed-size, the answer is fixed, and the loop is capped: retrying it is
+// bounded only by the budget, and every attempt burns the one local-GPU slot.
+//
+// The needles mirror the ai package's isContextLengthError list on purpose: the
+// body must reach that matcher, so the fragments that make it through must be
+// the fragments that match.
+func providerRejectionIsOverflow(body string) bool {
+	low := strings.ToLower(body)
+	for _, n := range providerOverflowNeedles {
+		if strings.Contains(low, n) {
+			return true
+		}
+	}
+	return false
+}
+
+var providerOverflowNeedles = []string{
+	"context_length_exceeded",
+	"maximum context length",
+	"exceeds the context window",
+	"context window",
+	"exceeded the context length",
+	"context length is",
+	"input too long",
+	"max_prompt_tokens",
+}
+
+// providerOverflowErrorf shapes the terminal overflow error. The provider's own
+// words are carried through, because the LLM loop's compaction recovery matches
+// on them (isContextLengthError).
+func providerOverflowErrorf(status int, body string) error {
+	return fmt.Errorf("LLM provider rejected the request as a context-window overflow (status %d): %s",
+		status, providerRejectionSnippet(body))
+}
+
+// providerRejectionSnippet keeps the provider's message readable in a log and
+// in the loop's error matching, without pasting a whole HTML error page into
+// the conversation.
+func providerRejectionSnippet(body string) string {
+	b := strings.TrimSpace(body)
+	if len(b) <= 512 {
+		return b
+	}
+	return b[:512] + "…"
+}
+
 // ensureRetryableBody makes a request retry-safe by installing a GetBody
 // closure that re-creates the request body from the marshalled payload on
 // every attempt. Without it a retry re-sends the SAME *http.Request whose
@@ -274,10 +340,14 @@ func DoLLMHTTPWithRetry(ctx context.Context, req *http.Request) (*http.Response,
 		}
 
 		if RetryableStatus(resp.StatusCode) {
-			wait := ParseRetryAfter(resp)
-			// Drain + close the body so the connection can be reused.
-			io.ReadAll(resp.Body)
+			// Drain + close the body so the connection can be reused. The body
+			// decides what happens next, so it is read before the retry branch.
+			respBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			if providerRejectionIsOverflow(string(respBody)) {
+				return nil, providerOverflowErrorf(resp.StatusCode, string(respBody))
+			}
+			wait := ParseRetryAfter(resp)
 			if retries < LLMRetryBudget {
 				retries++
 				Log("[LLM] provider rejected attempt %d with status %d; backing off %v and retrying",
@@ -294,6 +364,41 @@ func DoLLMHTTPWithRetry(ctx context.Context, req *http.Request) (*http.Response,
 
 		return resp, nil
 	}
+}
+
+// backoffOffSlot sleeps a retry backoff with the capacity-1 local-GPU slot
+// RELEASED, then re-acquires it before the next attempt.
+//
+// WHY (2026-11-27): DoLLMHTTPWithRetryHeld holds LLMSlot for the whole request
+// so two giant prompts never share one GPU. That is right for a live stream and
+// wrong for a sleep — a backoff touches no GPU at all, and the queue is
+// capacity-1. A conversation in a retry loop therefore parked every OTHER
+// serialized conversation behind it for the whole backoff. The crash dump at
+// 21:45:54 shows the cost:
+//
+//	goroutine 263534 [select, 23 minutes]:
+//	  utils.HoldLLMSlot(...)            httpclient.go:151
+//	  utils.DoLLMHTTPWithRetryHeld(...) httpclient.go:336
+//	  ai.SendChatCompletion(...)        index.go:569
+//	  ai.(*ActiveRequest).RunLLMLoop(...) tool_loop.go:198
+//
+// 23 MINUTES in a slot queue, while the holder slept. The user saw "working"
+// with nothing arriving, and cancelling produced "[HandleCancel] No active
+// request" because the loop was not where the client expected it.
+//
+// SLOT CONTRACT: the caller arrives holding the slot. The helper releases it,
+// sleeps, and re-acquires it. On SUCCESS the slot is held again, exactly as the
+// caller left it. On ERROR (context done, at either point) the slot is NOT held
+// and the caller must NOT release it — every error return in the callers follows
+// that rule, and TestHeldPathReleasesSlotDuringBackoff pins the accounting.
+func backoffOffSlot(ctx context.Context, d time.Duration) error {
+	ReleaseLLMSlotHeld()
+	select {
+	case <-time.After(d):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return HoldLLMSlot(ctx)
 }
 
 // releaseOnCloseReadCloser wraps an io.ReadCloser so that closing it also
@@ -348,11 +453,11 @@ func DoLLMHTTPWithRetryHeld(ctx context.Context, req *http.Request) (*http.Respo
 			if retries < LLMRetryBudget {
 				retries++
 				backoff := time.Duration(20*retries) * time.Second
-				select {
-				case <-time.After(backoff):
-				case <-ctx.Done():
-					ReleaseLLMSlotHeld()
-					return nil, ctx.Err()
+				// Sleep OFF the slot: a backoff uses no GPU, and holding the
+				// capacity-1 queue for its duration freezes every other
+				// serialized conversation (backoffOffSlot).
+				if berr := backoffOffSlot(ctx, backoff); berr != nil {
+					return nil, berr // slot already released by the helper
 				}
 				continue
 			}
@@ -361,19 +466,28 @@ func DoLLMHTTPWithRetryHeld(ctx context.Context, req *http.Request) (*http.Respo
 		}
 
 		if RetryableStatus(resp.StatusCode) {
-			wait := ParseRetryAfter(resp)
-			// Drain + close the body so the connection can be reused.
-			io.ReadAll(resp.Body)
+			// Drain + close the body so the connection can be reused. The body
+			// decides what happens next, so it is read before the retry branch:
+			// a context-window overflow is TERMINAL (providerRejectionIsOverflow),
+			// and on this path the slot is the scarce resource — the whole reason
+			// 2026-11-27 froze two conversations for 23 minutes was retries of a
+			// payload that can never succeed, holding the one local-GPU slot.
+			respBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			if providerRejectionIsOverflow(string(respBody)) {
+				ReleaseLLMSlotHeld()
+				return nil, providerOverflowErrorf(resp.StatusCode, string(respBody))
+			}
+			wait := ParseRetryAfter(resp)
 			if retries < LLMRetryBudget {
 				retries++
 				Log("[LLM] provider rejected attempt %d with status %d; backing off %v and retrying",
 					retries, resp.StatusCode, wait)
-				select {
-				case <-time.After(wait):
-				case <-ctx.Done():
-					ReleaseLLMSlotHeld()
-					return nil, ctx.Err()
+				// Sleep OFF the slot (see backoffOffSlot). A 402 budget stall
+				// backs off for minutes; no conversation on this box may be
+				// queued behind a sleep.
+				if berr := backoffOffSlot(ctx, wait); berr != nil {
+					return nil, berr // slot already released by the helper
 				}
 				continue
 			}
